@@ -1,0 +1,64 @@
+# ===========================
+# Jarvis Global Configuration
+# ===========================
+
+# Feishu Bitable 配置
+feishu:
+  app_token: "BmjmbSpxxabP2dsuxbtcUTYAn4g"
+  table_id: "tblWQRIvZq74MhRT"
+  view_id: "vewu36X0Gx"
+  base_url: "https://nicebuild.feishu.cn/base/BmjmbSpxxabP2dsuxbtcUTYAn4g"
+
+# Agent 配置
+agent:
+  default: codex
+  timeout: 300           # 单次分析超时（秒）
+  max_turns: 25          # Agent 最大交互轮数
+
+  providers:
+    claude_code:
+      enabled: false
+      model: "claude-sonnet-4-20250514"
+      allowed_tools:
+        - "Read"
+        - "Write"
+        - "Grep"
+        - "Glob"
+        - "Shell(grep:*)"
+        - "Shell(wc:*)"
+        - "Shell(head:*)"
+        - "Shell(tail:*)"
+        - "Shell(sort:*)"
+        - "Shell(awk:*)"
+        - "Shell(date:*)"
+        - "Shell(sed:*)"
+        - "Shell(cat:*)"
+        - "Shell(zcat:*)"
+        - "Shell(gunzip:*)"
+
+    codex:
+      enabled: true
+      model: ""             # empty = use default (gpt-5.3-codex)
+      approval_mode: "full-auto"
+
+  # 按问题类型路由到不同 Agent
+  routing:
+    flutter_crash: codex
+    recording_missing: codex
+    bluetooth: codex
+    cloud_sync: codex
+    speaker: codex
+    timestamp_drift: codex
+    general: codex
+
+# 并发配置
+concurrency:
+  max_workers: 3           # 最大并行 Worker 数
+  max_agent_sessions: 3    # 最大同时 Agent 会话
+  max_downloads: 5         # 最大并行下载数
+  task_timeout: 600        # 任务整体超时（秒）
+
+# 文件存储
+storage:
+  workspace_dir: "./workspaces"    # 分析工作空间
+  data_dir: "./data"               # 数据库等持久化数据
