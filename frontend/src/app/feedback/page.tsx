@@ -34,8 +34,40 @@ export default function FeedbackPage() {
   });
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const importFromZendesk = async () => {
+    const zd = form.zendesk.trim();
+    if (!zd) { setToast({ msg: "请先输入 Zendesk 工单号", type: "error" }); setTimeout(() => setToast(null), 3000); return; }
+    setImporting(true);
+    try {
+      const fd = new FormData();
+      fd.append("zendesk_input", zd);
+      const res = await fetch("/api/feedback/import-zendesk", { method: "POST", body: fd });
+      if (!res.ok) { const t = await res.text(); throw new Error(t); }
+      const data = await res.json();
+
+      // Auto-fill form with AI summary (user can still edit)
+      setForm((prev) => ({
+        ...prev,
+        description: data.description || prev.description,
+        category: data.category || prev.category,
+        priority: data.priority || prev.priority,
+        device_sn: data.device_sn || prev.device_sn,
+        firmware: data.firmware || prev.firmware,
+        app_version: data.app_version || prev.app_version,
+        zendesk: data.zendesk_url || prev.zendesk,
+      }));
+      setToast({ msg: `已导入 Zendesk #${data.ticket_id}（${data.comment_count} 条聊天记录）`, type: "success" });
+    } catch (e: any) {
+      setToast({ msg: `导入失败: ${e.message}`, type: "error" });
+    } finally {
+      setImporting(false);
+      setTimeout(() => setToast(null), 4000);
+    }
+  };
 
   const update = (key: string, val: string) => setForm((p) => ({ ...p, [key]: val }));
 
@@ -205,12 +237,29 @@ export default function FeedbackPage() {
             </div>
             <div>
               <label className="mb-1.5 block text-sm font-medium text-gray-700">Zendesk 工单号</label>
-              <input
-                value={form.zendesk}
-                onChange={(e) => update("zendesk", e.target.value)}
-                placeholder="如 378794 或完整链接"
-                className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-black"
-              />
+              <div className="flex gap-2">
+                <input
+                  value={form.zendesk}
+                  onChange={(e) => update("zendesk", e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); importFromZendesk(); } }}
+                  placeholder="输入工单号，回车导入"
+                  className="flex-1 rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-black"
+                />
+                <button
+                  type="button"
+                  onClick={importFromZendesk}
+                  disabled={importing || !form.zendesk.trim()}
+                  className="flex-shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-40"
+                >
+                  {importing ? (
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                      导入中
+                    </span>
+                  ) : "导入"}
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] text-gray-400">输入工单号后点击「导入」，AI 将自动总结聊天记录并填充表单</p>
             </div>
           </div>
 

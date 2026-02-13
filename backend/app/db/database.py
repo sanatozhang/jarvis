@@ -40,6 +40,8 @@ class IssueRecord(Base):
     log_files_json = Column(Text, default="[]")            # JSON array
     status = Column(String(32), default="pending")         # pending / analyzing / done / failed / deleted
     rule_type = Column(String(64), default="")
+    platform = Column(String(16), default="")              # APP / Web / Desktop
+    category = Column(String(128), default="")             # problem category
     created_by = Column(String(64), default="")            # username who triggered analysis
     deleted = Column(Boolean, default=False)
     created_at_ms = Column(Integer, default=0)             # Feishu creation time (Unix ms)
@@ -156,6 +158,8 @@ async def init_db():
         for col, coltype, default in [
             ("deleted", "BOOLEAN", "0"),
             ("created_by", "VARCHAR(64)", "''"),
+            ("platform", "VARCHAR(16)", "''"),
+            ("category", "VARCHAR(128)", "''"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -192,6 +196,8 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
             zendesk=data.get("zendesk", ""),
             zendesk_id=data.get("zendesk_id", ""),
             feishu_link=data.get("feishu_link", ""),
+            platform=data.get("platform", ""),
+            category=data.get("category", ""),
             created_at_ms=data.get("created_at_ms", 0),
             log_files_json=json.dumps(data.get("log_files", []), ensure_ascii=False),
             status=status,
@@ -390,10 +396,15 @@ async def get_tracked_issues_paginated(
     page: int = 1,
     page_size: int = 20,
     created_by: Optional[str] = None,
+    platform: Optional[str] = None,
+    category: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> tuple:
     """
     Get ALL locally-tracked issues (for the tracking page).
-    Supports filtering by created_by. Excludes deleted.
+    Supports multiple filters. Excludes deleted.
     """
     async with get_session() as session:
         from sqlalchemy import select, func, and_
@@ -401,6 +412,16 @@ async def get_tracked_issues_paginated(
         conditions = [IssueRecord.deleted == False, IssueRecord.status != "pending"]
         if created_by:
             conditions.append(IssueRecord.created_by == created_by)
+        if platform:
+            conditions.append(IssueRecord.platform == platform)
+        if category:
+            conditions.append(IssueRecord.category.contains(category))
+        if status_filter:
+            conditions.append(IssueRecord.status == status_filter)
+        if date_from:
+            conditions.append(IssueRecord.created_at >= datetime.fromisoformat(date_from))
+        if date_to:
+            conditions.append(IssueRecord.created_at <= datetime.fromisoformat(date_to + "T23:59:59"))
 
         where = and_(*conditions)
 
@@ -444,7 +465,10 @@ def _issue_to_dict(
         "created_at_ms": issue.created_at_ms or 0,
         "log_files": json.loads(issue.log_files_json) if issue.log_files_json else [],
         "local_status": issue.status,
+        "platform": issue.platform or "",
+        "category": issue.category or "",
         "created_by": issue.created_by or "",
+        "created_at": issue.created_at.isoformat() if issue.created_at else "",
     }
 
     if analysis:

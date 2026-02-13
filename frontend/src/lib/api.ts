@@ -308,9 +308,25 @@ export const fetchFailed = (page = 1, pageSize = 20) =>
 export const deleteIssue = (issueId: string) =>
   request<{ status: string }>(`/local/${issueId}`, { method: "DELETE" });
 
-export const fetchTracking = (page = 1, pageSize = 20, createdBy?: string) => {
+export interface TrackingFilters {
+  created_by?: string;
+  platform?: string;
+  category?: string;
+  status?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+export const fetchTracking = (page = 1, pageSize = 20, filters?: TrackingFilters) => {
   const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-  if (createdBy) params.set("created_by", createdBy);
+  if (filters) {
+    if (filters.created_by) params.set("created_by", filters.created_by);
+    if (filters.platform) params.set("platform", filters.platform);
+    if (filters.category) params.set("category", filters.category);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.date_from) params.set("date_from", filters.date_from);
+    if (filters.date_to) params.set("date_to", filters.date_to);
+  }
   return request<PaginatedResponse<LocalIssueItem>>(`/local/tracking?${params}`);
 };
 

@@ -74,10 +74,19 @@ async def list_failed(
 async def list_all_tracked(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    created_by: Optional[str] = Query(None, description="Filter by creator username"),
+    created_by: Optional[str] = Query(None, description="Filter by creator"),
+    platform: Optional[str] = Query(None, description="Filter by platform: APP/Web/Desktop"),
+    category: Optional[str] = Query(None, description="Filter by problem category (partial match)"),
+    status: Optional[str] = Query(None, alias="status", description="Filter by status: analyzing/done/failed"),
+    date_from: Optional[str] = Query(None, description="From date YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="To date YYYY-MM-DD"),
 ):
-    """List ALL locally-tracked issues (for tracking page). Supports filtering by creator."""
-    items, total = await db.get_tracked_issues_paginated(page, page_size, created_by=created_by)
+    """List ALL locally-tracked issues with multi-filter support."""
+    items, total = await db.get_tracked_issues_paginated(
+        page, page_size,
+        created_by=created_by, platform=platform, category=category,
+        status_filter=status, date_from=date_from, date_to=date_to,
+    )
     return {
         "issues": items,
         "total": total,

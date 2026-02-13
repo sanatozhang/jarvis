@@ -15,6 +15,8 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, HTTPExce
 
 from app.config import get_settings
 from app.db import database as db
+from app.services.zendesk import extract_ticket_id, fetch_ticket_with_comments
+from app.services.summarize import summarize_ticket_conversation
 
 logger = logging.getLogger("jarvis.api.feedback")
 router = APIRouter()
@@ -90,6 +92,8 @@ async def submit_feedback(
             "zendesk": zendesk_url,
             "zendesk_id": zendesk_id,
             "feishu_link": "",
+            "platform": platform,
+            "category": category,
             "created_at_ms": int(datetime.utcnow().timestamp() * 1000),
             "log_files": saved_files,
         }
@@ -115,4 +119,48 @@ async def submit_feedback(
         }
     except Exception as e:
         logger.error("Feedback submission failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/import-zendesk")
+async def import_from_zendesk(zendesk_input: str = Form(..., description="Zendesk 工单号或链接")):
+    """
+    Import data from a Zendesk ticket:
+    1. Fetch ticket + comments from Zendesk API
+    2. Summarize conversation using ChatGPT
+    3. Return pre-filled form data for the feedback page
+    """
+    try:
+        ticket_id = extract_ticket_id(zendesk_input)
+        if not ticket_id:
+            raise HTTPException(status_code=400, detail="无法识别 Zendesk 工单号")
+
+        # Fetch ticket + comments
+        ticket_data = await fetch_ticket_with_comments(ticket_id, max_comments=50)
+        logger.info("Fetched Zendesk ticket #%s: %d comments", ticket_id, ticket_data["comment_count"])
+
+        # Summarize with ChatGPT
+        summary = await summarize_ticket_conversation(
+            ticket_subject=ticket_data["subject"],
+            comments=ticket_data["comments"],
+        )
+
+        return {
+            "status": "ok",
+            "ticket_id": ticket_id,
+            "ticket_subject": ticket_data["subject"],
+            "comment_count": ticket_data["comment_count"],
+            "zendesk_url": f"https://nicebuildllc.zendesk.com/agent/tickets/{ticket_id}",
+            # AI-filled fields (user can modify)
+            "description": summary.get("description", ""),
+            "category": summary.get("category", ""),
+            "priority": summary.get("priority", "L"),
+            "device_sn": summary.get("device_sn", ""),
+            "firmware": summary.get("firmware", ""),
+            "app_version": summary.get("app_version", ""),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Zendesk import failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
