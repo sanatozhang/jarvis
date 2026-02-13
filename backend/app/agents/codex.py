@@ -50,9 +50,23 @@ class CodexAgent(BaseAgent):
                 confidence="low", needs_engineer=True, agent_type="codex",
             )
 
-        # Check OPENAI_API_KEY
+        # Check OPENAI_API_KEY (check env + .env file)
         import os
-        if not os.environ.get("OPENAI_API_KEY"):
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            # Try reading from .env file directly
+            try:
+                from app.config import PROJECT_ROOT
+                env_path = PROJECT_ROOT / ".env"
+                if env_path.exists():
+                    for line in env_path.read_text().splitlines():
+                        if line.startswith("OPENAI_API_KEY=") and line.split("=", 1)[1].strip():
+                            api_key = line.split("=", 1)[1].strip()
+                            os.environ["OPENAI_API_KEY"] = api_key
+                            break
+            except Exception:
+                pass
+        if not api_key:
             logger.error("OPENAI_API_KEY not set")
             return AnalysisResult(
                 task_id="", issue_id="",

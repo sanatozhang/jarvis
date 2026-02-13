@@ -9,6 +9,11 @@ feishu:
   view_id: "vewu36X0Gx"
   base_url: "https://nicebuild.feishu.cn/base/BmjmbSpxxabP2dsuxbtcUTYAn4g"
 
+# Linear 配置
+linear:
+  trigger_keyword: "@ai-agent"  # 在 comment 中包含此关键词触发分析
+  # api_key 和 webhook_secret 请通过 .env 配置
+
 # Agent 配置
 agent:
   default: codex

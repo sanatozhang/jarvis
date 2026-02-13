@@ -474,8 +474,8 @@ export default function HomePage() {
                         <td className="px-3 py-3 align-top"><LocalStatusBadge item={item} /></td>
                         <td className="px-4 py-3 align-top text-right" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1.5">
-                            {item.local_status === "failed" && tab === "in_progress" && (
-                              <button onClick={() => startAnalysis(item.record_id)} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">重试</button>
+                            {item.local_status === "failed" && (
+                              <button onClick={() => startAnalysis(item.record_id)} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">重试分析</button>
                             )}
                             {item.analysis?.user_reply && <button onClick={() => copy(item.analysis!.user_reply)} className="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700">复制回复</button>}
                             <button onClick={() => handleEscalate(item.record_id)} className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100" title="转工程师">转工程师</button>
@@ -542,7 +542,13 @@ export default function HomePage() {
 
               {/* Failed */}
               {detailData.task && typeof detailData.task === "object" && detailData.task.status === "failed" && (
-                <div className="rounded-lg border border-red-200 bg-red-50 p-3"><p className="text-sm font-medium text-red-700">分析失败</p><p className="mt-1 text-xs text-red-500">{detailData.task.error}</p></div>
+                <>
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3">
+                    <p className="text-sm font-medium text-red-700">分析失败</p>
+                    <p className="mt-1 text-xs text-red-500">{detailData.task.error}</p>
+                  </div>
+                  <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">重新分析</button>
+                </>
               )}
 
               {/* Result */}
@@ -591,6 +597,15 @@ export default function HomePage() {
                     </section>
                   )}
                 </>
+              )}
+
+              {/* Retry button for failed analysis */}
+              {detailData.localItem?.local_status === "failed" && (
+                <section>
+                  <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">
+                    重新分析
+                  </button>
+                </section>
               )}
 
               {/* Escalate to engineer button — always visible */}

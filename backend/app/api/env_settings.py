@@ -6,6 +6,7 @@ Admin-only: validates username before allowing writes.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Dict, Optional
@@ -176,6 +177,11 @@ async def update_env_settings(req: EnvUpdateRequest, username: str = Query(...))
         return {"status": "no_changes"}
 
     _write_env(filtered)
-    logger.info("Env settings updated by %s: %s", username, list(filtered.keys()))
 
-    return {"status": "updated", "keys": list(filtered.keys()), "note": "部分配置需要重启服务才能生效"}
+    # Also update os.environ so running process picks it up immediately
+    for k, v in filtered.items():
+        os.environ[k] = v
+
+    logger.info("Env settings updated by %s: %s (applied to running process)", username, list(filtered.keys()))
+
+    return {"status": "updated", "keys": list(filtered.keys()), "note": "配置已生效（部分配置如数据库连接需要重启）"}

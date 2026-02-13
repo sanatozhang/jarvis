@@ -86,6 +86,15 @@ export default function TrackingPage() {
   const setMyIssues = () => { setFilters({ created_by: username }); setPage(1); };
 
   const copy = (text: string) => { navigator.clipboard.writeText(text); setToast("已复制到剪贴板"); };
+  const handleRetry = async (issueId: string) => {
+    try {
+      const res = await fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: issueId }) });
+      if (!res.ok) throw new Error(await res.text());
+      setToast("已重新触发分析");
+      setTimeout(() => load(page), 2000);
+    } catch (e: any) { setToast(`重试失败: ${e.message}`); }
+  };
+
   const handleEscalate = async (issueId: string) => {
     try {
       const res: any = await escalateIssue(issueId);
@@ -230,6 +239,7 @@ export default function TrackingPage() {
                   <td className="px-3 py-3 align-top text-xs">{item.zendesk_id ? <a href={item.zendesk} target="_blank" onClick={(e) => e.stopPropagation()} className="font-medium text-blue-600 hover:underline">{item.zendesk_id}</a> : <span className="text-gray-300">—</span>}</td>
                   <td className="px-4 py-3 align-top text-right" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1.5">
+                      {item.local_status === "failed" && <button onClick={() => handleRetry(item.record_id)} className="rounded-md bg-black px-2.5 py-1 text-[11px] font-medium text-white hover:bg-gray-800">重试</button>}
                       {item.analysis?.user_reply && <button onClick={() => copy(item.analysis!.user_reply)} className="rounded-md bg-green-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-green-700">复制回复</button>}
                       <button onClick={() => handleEscalate(item.record_id)} className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100">转工程师</button>
                     </div>
@@ -294,6 +304,9 @@ export default function TrackingPage() {
                 </section>
               )}
               <section className="border-t border-gray-100 pt-4">
+                {detailItem.local_status === "failed" && (
+                  <button onClick={() => { handleRetry(detailItem.record_id); setDetailItem(null); }} className="mb-2 w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">重新分析</button>
+                )}
                 <button onClick={() => handleEscalate(detailItem.record_id)} className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2.5 text-sm font-medium text-amber-700 hover:bg-amber-100">转工程师处理</button>
               </section>
             </div>
