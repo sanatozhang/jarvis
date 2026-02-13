@@ -2,18 +2,19 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for grep, etc.
+# System deps for grep, unzip, git (codex needs git)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    grep \
-    coreutils \
+    grep coreutils unzip git curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy backend code
+COPY app/ ./app/
+COPY rules/ ./rules/
 
-# Create data/workspace dirs
+# Create data dirs
 RUN mkdir -p /app/data /app/workspaces
 
 EXPOSE 8000
