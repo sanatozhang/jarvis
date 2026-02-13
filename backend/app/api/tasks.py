@@ -262,8 +262,9 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
         # Check if the result is a real success or a disguised failure
         is_real_failure = (
-            result.problem_type in ("分析超时", "日志解析失败", "Agent 不可用")
-            or result.confidence == "low" and result.needs_engineer and not result.user_reply
+            result.problem_type in ("分析超时", "日志解析失败", "Agent 不可用", "未知")
+            or (result.confidence == "low" and result.needs_engineer and not result.user_reply)
+            or "未产出结构化结果" in (result.root_cause or "")
         )
 
         await db.save_analysis(result.model_dump())

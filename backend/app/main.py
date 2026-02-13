@@ -91,6 +91,9 @@ from app.api.local import router as local_router
 from app.api.feedback import router as feedback_router
 from app.api.users import router as users_router
 from app.api.oncall import router as oncall_router
+from app.api.v1_analyze import router as v1_analyze_router
+from app.api.env_settings import router as env_settings_router
+from app.api.linear_webhook import router as linear_webhook_router
 
 app.include_router(issues_router, prefix="/api/issues", tags=["Issues"])
 app.include_router(tasks_router, prefix="/api/tasks", tags=["Tasks"])
@@ -102,6 +105,9 @@ app.include_router(local_router, prefix="/api/local", tags=["Local"])
 app.include_router(feedback_router, prefix="/api/feedback", tags=["Feedback"])
 app.include_router(users_router, prefix="/api/users", tags=["Users"])
 app.include_router(oncall_router, prefix="/api/oncall", tags=["Oncall"])
+app.include_router(v1_analyze_router, prefix="/api/v1", tags=["V1 Public API"])
+app.include_router(env_settings_router, prefix="/api/env", tags=["Env Settings"])
+app.include_router(linear_webhook_router, prefix="/api/linear", tags=["Linear"])
 
 
 # ---------------------------------------------------------------------------

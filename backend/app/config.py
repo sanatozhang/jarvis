@@ -39,11 +39,6 @@ def _load_yaml() -> Dict[str, Any]:
     return _yaml_config
 
 
-def _normalize_rule_key(key: str) -> str:
-    """Normalize routing keys to match rule ids (e.g. flutter_crash -> flutter-crash)."""
-    return key.strip().lower().replace("_", "-")
-
-
 # ---------------------------------------------------------------------------
 # Pydantic Settings (env vars take precedence)
 # ---------------------------------------------------------------------------
@@ -57,6 +52,20 @@ class FeishuSettings(BaseSettings):
 
     model_config = {
         "env_prefix": "FEISHU_",
+        "env_file": str(PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+
+class LinearSettings(BaseSettings):
+    api_key: str = ""                       # Linear API key
+    webhook_secret: str = ""                # Webhook signing secret
+    trigger_keyword: str = "@ai-agent"      # Keyword in comment to trigger analysis
+    team_id: str = ""                       # Default team ID (optional)
+
+    model_config = {
+        "env_prefix": "LINEAR_",
         "env_file": str(PROJECT_ROOT / ".env"),
         "env_file_encoding": "utf-8",
         "extra": "ignore",
@@ -105,6 +114,7 @@ class Settings(BaseSettings):
 
     # --- Sub-configs (populated from yaml + env) ---
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
+    linear: LinearSettings = Field(default_factory=LinearSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     concurrency: ConcurrencySettings = Field(default_factory=ConcurrencySettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
@@ -126,6 +136,12 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
         if hasattr(settings.feishu, k) and not os.getenv(f"FEISHU_{k.upper()}"):
             setattr(settings.feishu, k, v)
 
+    # Linear
+    ls = cfg.get("linear", {})
+    for k, v in ls.items():
+        if hasattr(settings.linear, k) and not os.getenv(f"LINEAR_{k.upper()}"):
+            setattr(settings.linear, k, v)
+
     # Agent
     ag = cfg.get("agent", {})
     for k in ("default", "timeout", "max_turns"):
@@ -137,11 +153,7 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
         settings.agent.providers[name] = AgentProviderConfig(**pcfg)
 
     routing_cfg = ag.get("routing", {})
-    normalized_routing: Dict[str, str] = {}
-    for k, v in routing_cfg.items():
-        nk = _normalize_rule_key(str(k))
-        normalized_routing[nk] = str(v)
-    settings.agent.routing = normalized_routing
+    settings.agent.routing = routing_cfg
 
     # Concurrency
     cc = cfg.get("concurrency", {})

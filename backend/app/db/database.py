@@ -28,7 +28,7 @@ class Base(DeclarativeBase):
 class IssueRecord(Base):
     __tablename__ = "issues"
 
-    id = Column(String(64), primary_key=True)              # Feishu record_id
+    id = Column(String(64), primary_key=True)              # Feishu record_id or Linear issue ID
     description = Column(Text, default="")
     device_sn = Column(String(64), default="")
     firmware = Column(String(32), default="")
@@ -36,7 +36,10 @@ class IssueRecord(Base):
     priority = Column(String(4), default="")
     zendesk = Column(String(256), default="")
     zendesk_id = Column(String(32), default="")
+    source = Column(String(16), default="feishu")          # feishu / linear / api / local
     feishu_link = Column(String(512), default="")
+    linear_issue_id = Column(String(64), default="")       # e.g. "ENG-123"
+    linear_issue_url = Column(String(512), default="")
     log_files_json = Column(Text, default="[]")            # JSON array
     status = Column(String(32), default="pending")         # pending / analyzing / done / failed / deleted
     rule_type = Column(String(64), default="")
@@ -44,7 +47,7 @@ class IssueRecord(Base):
     category = Column(String(128), default="")             # problem category
     created_by = Column(String(64), default="")            # username who triggered analysis
     deleted = Column(Boolean, default=False)
-    created_at_ms = Column(Integer, default=0)             # Feishu creation time (Unix ms)
+    created_at_ms = Column(Integer, default=0)             # creation time (Unix ms)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -160,6 +163,9 @@ async def init_db():
             ("created_by", "VARCHAR(64)", "''"),
             ("platform", "VARCHAR(16)", "''"),
             ("category", "VARCHAR(128)", "''"),
+            ("source", "VARCHAR(16)", "'feishu'"),
+            ("linear_issue_id", "VARCHAR(64)", "''"),
+            ("linear_issue_url", "VARCHAR(512)", "''"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -195,7 +201,10 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
             priority=data.get("priority", ""),
             zendesk=data.get("zendesk", ""),
             zendesk_id=data.get("zendesk_id", ""),
+            source=data.get("source", "feishu"),
             feishu_link=data.get("feishu_link", ""),
+            linear_issue_id=data.get("linear_issue_id", ""),
+            linear_issue_url=data.get("linear_issue_url", ""),
             platform=data.get("platform", ""),
             category=data.get("category", ""),
             created_at_ms=data.get("created_at_ms", 0),
@@ -458,8 +467,11 @@ def _issue_to_dict(
         "priority": issue.priority or "",
         "zendesk": issue.zendesk or "",
         "zendesk_id": issue.zendesk_id or "",
+        "source": issue.source or "feishu",
         "feishu_link": issue.feishu_link or "",
         "feishu_status": issue.status or "pending",
+        "linear_issue_id": issue.linear_issue_id or "",
+        "linear_issue_url": issue.linear_issue_url or "",
         "result_summary": "",
         "root_cause_summary": "",
         "created_at_ms": issue.created_at_ms or 0,

@@ -130,13 +130,8 @@ output/       ← 请将 result.json 写入此目录
     "confidence": "high 或 medium 或 low",
     "confidence_reason": "为什么是这个置信度",
     "key_evidence": ["关键日志行1", "关键日志行2（最多5条）"],
-    "core_logs": ["客服可展示给用户的核心日志原文（含时间戳）"],
-    "code_locations": ["代码定位（绝对路径:行号）"],
     "user_reply": "完整的客服回复模板（见下方示例）",
     "needs_engineer": false,
-    "requires_more_info": false,
-    "more_info_guidance": "",
-    "next_steps": ["下一步建议1", "下一步建议2"],
     "fix_suggestion": ""
 }}
 ```
@@ -201,33 +196,19 @@ output/       ← 请将 result.json 写入此目录
         if not data and raw_output:
             data = _extract_json_from_text(raw_output)
 
-        confidence = _to_confidence(data.get("confidence"))
         return AnalysisResult(
             task_id="",
             issue_id="",
             problem_type=data.get("problem_type", "未知"),
             root_cause=data.get("root_cause", raw_output[:2000] if raw_output else "分析未产出结构化结果"),
-            confidence=confidence,
+            confidence=Confidence(data.get("confidence", "low")),
             confidence_reason=data.get("confidence_reason", ""),
             key_evidence=data.get("key_evidence", []),
-            core_logs=data.get("core_logs", []),
-            code_locations=data.get("code_locations", []),
             user_reply=data.get("user_reply", ""),
             needs_engineer=data.get("needs_engineer", True),
-            requires_more_info=data.get("requires_more_info", False),
-            more_info_guidance=data.get("more_info_guidance", ""),
-            next_steps=data.get("next_steps", []),
             fix_suggestion=data.get("fix_suggestion", ""),
             raw_output=raw_output[:10000],
         )
-
-
-def _to_confidence(val: Any) -> Confidence:
-    if isinstance(val, str):
-        normalized = val.strip().lower()
-        if normalized in ("high", "medium", "low"):
-            return Confidence(normalized)
-    return Confidence.LOW
 
 
 def _extract_json_from_text(text: str) -> Dict:

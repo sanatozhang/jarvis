@@ -62,14 +62,15 @@ async def run_analysis_pipeline(
     8. Parse result
     """
     settings = get_settings()
-    is_local = issue_id.startswith("fb_")  # locally submitted via feedback form
+    is_local = issue_id.startswith("fb_")    # locally submitted via feedback form
+    is_linear = issue_id.startswith("lin_")  # Linear-sourced issue
 
     # --- Step 1: Fetch issue ---
     if on_progress:
         await on_progress(5, "获取工单信息...")
 
-    if is_local:
-        # Local feedback issue — read from DB
+    if is_local or is_linear:
+        # Local / Linear issue — read from DB (already saved by webhook handler)
         from app.db.database import get_session, IssueRecord
         import json as _json
         async with get_session() as session:
@@ -86,10 +87,13 @@ async def run_analysis_pipeline(
             priority=rec.priority or "",
             zendesk=rec.zendesk or "",
             zendesk_id=rec.zendesk_id or "",
+            source=rec.source or ("linear" if is_linear else "local"),
             feishu_link="",
+            linear_issue_id=rec.linear_issue_id or "",
+            linear_issue_url=rec.linear_issue_url or "",
             log_files=[],
         )
-        logger.info("Processing local issue %s: %s", issue_id, issue.description[:80])
+        logger.info("Processing %s issue %s: %s", issue.source, issue_id, issue.description[:80])
     else:
         # Feishu issue — fetch from API
         client = FeishuClient()

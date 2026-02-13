@@ -52,11 +52,7 @@ async def update_agent_config(req: AgentConfigUpdate):
     if req.max_turns is not None:
         settings.agent.max_turns = req.max_turns
     if req.routing is not None:
-        normalized = {
-            str(k).strip().lower().replace("_", "-"): str(v)
-            for k, v in req.routing.items()
-        }
-        settings.agent.routing.update(normalized)
+        settings.agent.routing.update(req.routing)
 
     return {"status": "updated", "agent": settings.agent.default}
 

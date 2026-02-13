@@ -39,6 +39,28 @@ class CodexAgent(BaseAgent):
         if not git_dir.exists():
             subprocess.run(["git", "init", "-q"], cwd=str(workspace), capture_output=True)
 
+        # Pre-flight: check codex is available
+        import shutil
+        if not shutil.which("codex"):
+            logger.error("Codex CLI not found in PATH")
+            return AnalysisResult(
+                task_id="", issue_id="",
+                problem_type="Agent 不可用",
+                root_cause="Codex CLI 未安装。请在服务器上安装: npm install -g @openai/codex",
+                confidence="low", needs_engineer=True, agent_type="codex",
+            )
+
+        # Check OPENAI_API_KEY
+        import os
+        if not os.environ.get("OPENAI_API_KEY"):
+            logger.error("OPENAI_API_KEY not set")
+            return AnalysisResult(
+                task_id="", issue_id="",
+                problem_type="Agent 不可用",
+                root_cause="OPENAI_API_KEY 未配置。请在 .env 文件中设置。",
+                confidence="low", needs_engineer=True, agent_type="codex",
+            )
+
         cmd = self._build_command(prompt_file)
         logger.info("Running Codex in %s (prompt: %d chars)", workspace, len(prompt))
 
