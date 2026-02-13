@@ -148,10 +148,10 @@ export const refreshIssuesCache = () => request<{ status: string }>("/issues/ref
 // Tasks
 // ============================================================
 
-export const createTask = (issueId: string, agentType?: string) =>
+export const createTask = (issueId: string, agentType?: string, username?: string) =>
   request<TaskProgress>("/tasks", {
     method: "POST",
-    body: JSON.stringify({ issue_id: issueId, agent_type: agentType || null }),
+    body: JSON.stringify({ issue_id: issueId, agent_type: agentType || null, username: username || "" }),
   });
 
 export const batchAnalyze = (issueIds: string[], agentType?: string) =>
@@ -305,12 +305,56 @@ export const fetchInProgress = (page = 1, pageSize = 20) =>
 export const fetchFailed = (page = 1, pageSize = 20) =>
   request<PaginatedResponse<LocalIssueItem>>(`/local/failed?page=${page}&page_size=${pageSize}`);
 
+export const deleteIssue = (issueId: string) =>
+  request<{ status: string }>(`/local/${issueId}`, { method: "DELETE" });
+
+export const fetchTracking = (page = 1, pageSize = 20, createdBy?: string) => {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  if (createdBy) params.set("created_by", createdBy);
+  return request<PaginatedResponse<LocalIssueItem>>(`/local/tracking?${params}`);
+};
+
 // ============================================================
 // Reports
 // ============================================================
 
 export const fetchDailyReport = (date: string) => request<DailyReport>(`/reports/daily/${date}`);
 export const fetchReportDates = () => request<{ dates: string[] }>("/reports/dates");
+
+// ============================================================
+// Users
+// ============================================================
+
+export const loginUser = (username: string) =>
+  request<{ username: string; role: string; feishu_email: string }>("/users/login", {
+    method: "POST", body: JSON.stringify({ username }),
+  });
+
+export const getUser = (username: string) =>
+  request<{ username: string; role: string; feishu_email: string }>(`/users/${username}`);
+
+// ============================================================
+// Oncall
+// ============================================================
+
+export interface OncallGroup { group_index: number; members: string[]; }
+
+export const getOncallCurrent = () => request<{ members: string[]; count: number }>("/oncall/current");
+export const getOncallSchedule = () => request<{ groups: OncallGroup[]; start_date: string; total_groups: number }>("/oncall/schedule");
+export const updateOncallSchedule = (groups: string[][], startDate: string, username: string) =>
+  request<any>(`/oncall/schedule?username=${encodeURIComponent(username)}`, {
+    method: "PUT",
+    body: JSON.stringify({ groups: groups.map((m) => ({ members: m })), start_date: startDate }),
+  });
+
+// ============================================================
+// Escalate
+// ============================================================
+
+export const escalateIssue = (issueId: string, reason?: string) =>
+  request<{ status: string }>(`/local/${issueId}/escalate`, {
+    method: "POST", body: JSON.stringify({ reason: reason || "用户手动转工程师" }),
+  });
 
 // ============================================================
 // Settings & Health

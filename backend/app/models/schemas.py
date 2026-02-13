@@ -35,11 +35,6 @@ class AgentType(str, Enum):
     CODEX = "codex"
 
 
-class TaskSource(str, Enum):
-    FEISHU = "feishu"
-    USER_UPLOAD = "user_upload"
-
-
 # ---------------------------------------------------------------------------
 # Issue (from Feishu)
 # ---------------------------------------------------------------------------
@@ -85,7 +80,7 @@ class IssueListResponse(BaseModel):
 class TaskCreate(BaseModel):
     issue_id: str               # Feishu record_id
     agent_type: Optional[AgentType] = None  # Override agent selection
-    source: TaskSource = TaskSource.FEISHU
+    username: str = ""          # Who triggered this analysis
 
 
 class TaskProgress(BaseModel):
@@ -115,13 +110,8 @@ class AnalysisResult(BaseModel):
     confidence: Confidence = Confidence.MEDIUM
     confidence_reason: str = ""
     key_evidence: List[str] = Field(default_factory=list)
-    core_logs: List[str] = Field(default_factory=list)
-    code_locations: List[str] = Field(default_factory=list)
     user_reply: str = ""
     needs_engineer: bool = False
-    requires_more_info: bool = False
-    more_info_guidance: str = ""
-    next_steps: List[str] = Field(default_factory=list)
     fix_suggestion: str = ""
     rule_type: str = ""
     agent_type: str = ""

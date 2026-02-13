@@ -7,7 +7,9 @@ import {
   fetchCompleted,
   fetchInProgress,
   createTask,
-  createFeedbackTask,
+  deleteIssue,
+  escalateIssue,
+  loginUser,
   subscribeTaskProgress,
   fetchTaskResult,
   type Issue,
@@ -46,12 +48,30 @@ function ConfBadge({ c }: { c: string }) {
 
 function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
   const task = item.task;
+  const analysis = item.analysis;
   if (task && !["done", "failed"].includes(task.status)) {
     const labels: Record<string, string> = { queued: "排队中", downloading: "下载中", decrypting: "解密中", extracting: "提取中", analyzing: "分析中" };
     return <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />{labels[task.status] || task.status}</span>;
   }
-  if (item.local_status === "done" || item.analysis)
-    return <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 ring-1 ring-green-200"><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>分析成功</span>;
+  if ((item.local_status === "done" || analysis) && analysis) {
+    // Rule matched (not "general") → show 100% confidence badge
+    const ruleMatched = analysis.rule_type && analysis.rule_type !== "general";
+    return (
+      <span className="inline-flex items-center gap-1">
+        <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 ring-1 ring-green-200">
+          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+          成功
+        </span>
+        {ruleMatched && (
+          <span className="inline-flex items-center rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700" title={`命中规则: ${analysis.rule_type}`}>
+            100%
+          </span>
+        )}
+      </span>
+    );
+  }
+  if (item.local_status === "done")
+    return <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 ring-1 ring-green-200"><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>成功</span>;
   if (item.local_status === "failed")
     return <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600 ring-1 ring-red-200">分析失败</span>;
   return <span className="text-xs text-gray-300">—</span>;
@@ -75,7 +95,6 @@ function Pagination({ page, totalPages, onChange }: { page: number; totalPages: 
 
 // ============================================================
 type Tab = "pending" | "in_progress" | "done";
-type UploadAgent = "" | "codex" | "claude_code";
 const PAGE_SIZE = 20;
 
 export default function HomePage() {
@@ -99,35 +118,57 @@ export default function HomePage() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<Tab>("pending");
   const [toast, setToast] = useState("");
-  const [tab, setTab] = useState<Tab>("pending");
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [uploadSubmitting, setUploadSubmitting] = useState(false);
-  const [uploadDescription, setUploadDescription] = useState("");
-  const [uploadDeviceSn, setUploadDeviceSn] = useState("");
-  const [uploadFirmware, setUploadFirmware] = useState("");
-  const [uploadAppVersion, setUploadAppVersion] = useState("");
-  const [uploadZendesk, setUploadZendesk] = useState("");
-  const [uploadAgentType, setUploadAgentType] = useState<UploadAgent>("codex");
-  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [tab, setTab] = useState<Tab>(() => {
+    if (typeof window === "undefined") return "pending";
+    const urlTab = new URLSearchParams(window.location.search).get("tab");
+    return (urlTab === "in_progress" || urlTab === "done") ? urlTab as Tab : "pending";
+  });
+
+  // --- Username (persisted in localStorage) ---
+  const [username, setUsername] = useState<string | null>(null);
+  const [usernameInput, setUsernameInput] = useState("");
+  const [showUsernameEdit, setShowUsernameEdit] = useState(false);
+  const [showUsernameSetup, setShowUsernameSetup] = useState(false); // first-time dialog
 
   // --- Assignee (read from URL on mount, BEFORE any data fetching) ---
-  const [assignee, setAssignee] = useState<string | null>(null); // null = not yet initialized
+  const [assignee, setAssignee] = useState<string | null>(null);
   const [assigneeInput, setAssigneeInput] = useState("");
   const [showAssigneeEdit, setShowAssigneeEdit] = useState(false);
 
   useEffect(() => {
-    // Read assignee: URL param takes priority, then localStorage
+    // Read username from localStorage
+    const savedName = typeof window !== "undefined" ? localStorage.getItem("jarvis_username") || "" : "";
+    if (savedName) {
+      setUsername(savedName);
+      setUsernameInput(savedName);
+    } else {
+      setUsername("");
+      setShowUsernameSetup(true); // first time — prompt to set username
+    }
+
+    // Read assignee
     const fromUrl = getUrlParam("assignee");
     const fromStorage = typeof window !== "undefined" ? localStorage.getItem("jarvis_assignee") || "" : "";
     const a = fromUrl || fromStorage;
     setAssignee(a);
     setAssigneeInput(a);
-    // Sync: ensure URL and localStorage are both set
-    if (a) {
-      setUrlParam("assignee", a);
-      localStorage.setItem("jarvis_assignee", a);
-    }
+    if (a) { setUrlParam("assignee", a); localStorage.setItem("jarvis_assignee", a); }
   }, []);
+
+  const saveUsername = async (name: string) => {
+    const v = name.trim();
+    if (!v) return;
+    setUsername(v);
+    setUsernameInput(v);
+    localStorage.setItem("jarvis_username", v);
+    setShowUsernameSetup(false);
+    setShowUsernameEdit(false);
+    // Register/login user on backend (gets role)
+    try {
+      const user = await loginUser(v);
+      localStorage.setItem("jarvis_role", user.role);
+    } catch {} // non-fatal
+  };
 
   const applyAssignee = () => {
     const v = assigneeInput.trim();
@@ -183,7 +224,7 @@ export default function HomePage() {
   // --- Analysis ---
   const startAnalysis = async (issueId: string) => {
     try {
-      const task = await createTask(issueId);
+      const task = await createTask(issueId, undefined, username || "");
       setActiveTasks((p) => ({ ...p, [issueId]: task }));
 
       // Remove from pending list (optimistic) + reload in-progress
@@ -216,62 +257,23 @@ export default function HomePage() {
   const batchStart = async () => { for (const id of selected) await startAnalysis(id); setSelected(new Set()); };
   const toggle = (id: string) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const copy = (text: string) => { navigator.clipboard.writeText(text); setToast("已复制到剪贴板"); };
-  const onUploadFileChange = (files: FileList | null) => setUploadFiles(files ? Array.from(files).slice(0, 10) : []);
 
-  const submitUpload = async () => {
-    if (!uploadDescription.trim()) {
-      setError("请填写问题描述");
-      return;
-    }
-    if (!uploadFiles.length) {
-      setError("请至少上传一个日志文件");
-      return;
-    }
+  const handleDelete = async (issueId: string) => {
+    if (!confirm("确定要删除这个工单吗？")) return;
     try {
-      setUploadSubmitting(true);
-      setError("");
-      const task = await createFeedbackTask({
-        description: uploadDescription.trim(),
-        device_sn: uploadDeviceSn.trim(),
-        firmware: uploadFirmware.trim(),
-        app_version: uploadAppVersion.trim(),
-        zendesk: uploadZendesk.trim(),
-        agent_type: uploadAgentType || undefined,
-        files: uploadFiles,
-      });
-      setActiveTasks((p) => ({ ...p, [task.issue_id]: task }));
-      setShowUploadModal(false);
-      setUploadDescription("");
-      setUploadDeviceSn("");
-      setUploadFirmware("");
-      setUploadAppVersion("");
-      setUploadZendesk("");
-      setUploadFiles([]);
-      setToast("上传成功，已开始分析");
-      setTab("in_progress");
-      loadInProgress(1);
-
-      subscribeTaskProgress(task.task_id, (progress) => {
-        setActiveTasks((p) => ({ ...p, [task.issue_id]: progress }));
-        if (progress.status === "done") {
-          fetchTaskResult(task.task_id).then((r) => {
-            setActiveResults((p) => ({ ...p, [task.issue_id]: r }));
-            loadInProgress(1);
-            loadDone(1);
-          }).catch(console.error);
-        }
-        if (progress.status === "failed") {
-          setToast(`分析失败: ${progress.error || "未知错误"}`);
-          loadInProgress(1);
-        }
-      });
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setUploadSubmitting(false);
-    }
+      await deleteIssue(issueId);
+      setToast("工单已删除");
+      loadInProgress(ipPage);
+      loadDone(donePage);
+    } catch (e: any) { setToast(`删除失败: ${e.message}`); }
   };
 
+  const handleEscalate = async (issueId: string) => {
+    try {
+      const res: any = await escalateIssue(issueId);
+      setToast(res.message || (res.status === "sent" ? "已通知值班工程师" : "发送失败"));
+    } catch (e: any) { setToast(`通知失败: ${e.message}`); }
+  };
   // --- Counts ---
   const counts = {
     pending: pendingData?.total ?? 0,
@@ -320,9 +322,26 @@ export default function HomePage() {
           </div>
           <div className="flex items-center gap-2">
             {selected.size > 0 && <button onClick={batchStart} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800">批量分析 ({selected.size})</button>}
-            <button onClick={() => setShowUploadModal(true)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">用户反馈上传</button>
+            <a href="/feedback" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">提交反馈</a>
             <button onClick={loadAll} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">{loading ? "加载中..." : "刷新"}</button>
             <button onClick={forceRefresh} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50">同步飞书</button>
+            {/* Username display */}
+            <div className="ml-2 border-l border-gray-200 pl-3">
+              {!showUsernameEdit ? (
+                <button onClick={() => { setShowUsernameEdit(true); setUsernameInput(username || ""); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-gray-500 hover:bg-gray-50">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-black text-[10px] font-bold text-white">
+                    {username ? username[0].toUpperCase() : "?"}
+                  </span>
+                  <span className="font-medium text-gray-700">{username || "设置用户名"}</span>
+                </button>
+              ) : (
+                <div className="flex items-center gap-1">
+                  <input autoFocus value={usernameInput} onChange={(e) => setUsernameInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveUsername(usernameInput); if (e.key === "Escape") setShowUsernameEdit(false); }} placeholder="用户名" className="w-24 rounded-md border border-gray-300 px-2 py-1 text-xs outline-none focus:border-black" />
+                  <button onClick={() => saveUsername(usernameInput)} className="rounded-md bg-black px-2 py-1 text-[11px] font-medium text-white">保存</button>
+                  <button onClick={() => setShowUsernameEdit(false)} className="text-[11px] text-gray-400">取消</button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -459,6 +478,10 @@ export default function HomePage() {
                               <button onClick={() => startAnalysis(item.record_id)} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">重试</button>
                             )}
                             {item.analysis?.user_reply && <button onClick={() => copy(item.analysis!.user_reply)} className="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700">复制回复</button>}
+                            <button onClick={() => handleEscalate(item.record_id)} className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100" title="转工程师">转工程师</button>
+                            <button onClick={() => handleDelete(item.record_id)} className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-400 hover:border-red-300 hover:text-red-500" title="删除">
+                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -471,69 +494,6 @@ export default function HomePage() {
           );
         })()}
       </div>
-
-      {/* User upload modal */}
-      {showUploadModal && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center px-4">
-          <div className="absolute inset-0 bg-black/30" onClick={() => !uploadSubmitting && setShowUploadModal(false)} />
-          <div className="relative z-10 w-full max-w-2xl rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-base font-semibold text-gray-900">用户反馈上传</h2>
-              <button onClick={() => setShowUploadModal(false)} disabled={uploadSubmitting} className="rounded-md p-1 text-gray-400 hover:bg-gray-100">X</button>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2">
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-400">问题描述</label>
-                <textarea
-                  value={uploadDescription}
-                  onChange={(e) => setUploadDescription(e.target.value)}
-                  rows={4}
-                  placeholder="请描述用户操作路径、报错提示和问题发生时间。"
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none focus:border-black"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-400">设备 SN</label>
-                <input value={uploadDeviceSn} onChange={(e) => setUploadDeviceSn(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black" />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-400">固件版本</label>
-                <input value={uploadFirmware} onChange={(e) => setUploadFirmware(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black" />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-400">App 版本</label>
-                <input value={uploadAppVersion} onChange={(e) => setUploadAppVersion(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black" />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-400">Zendesk 链接/ID</label>
-                <input value={uploadZendesk} onChange={(e) => setUploadZendesk(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black" />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-400">分析引擎</label>
-                <select value={uploadAgentType} onChange={(e) => setUploadAgentType(e.target.value as UploadAgent)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black">
-                  <option value="codex">codex</option>
-                  <option value="claude_code">claude_code</option>
-                </select>
-              </div>
-              <div className="col-span-2">
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-400">日志文件（最多 10 个）</label>
-                <input type="file" multiple onChange={(e) => onUploadFileChange(e.target.files)} className="block w-full text-sm text-gray-600 file:mr-3 file:rounded-md file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-gray-700 hover:file:bg-gray-200" />
-                {uploadFiles.length > 0 && (
-                  <div className="mt-2 max-h-28 space-y-1 overflow-auto rounded-lg bg-gray-50 p-2">
-                    {uploadFiles.map((f, idx) => (
-                      <div key={`${f.name}_${idx}`} className="text-xs text-gray-600">{f.name}</div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <button onClick={() => setShowUploadModal(false)} disabled={uploadSubmitting} className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-60">取消</button>
-              <button onClick={submitUpload} disabled={uploadSubmitting} className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-60">{uploadSubmitting ? "上传并分析中..." : "上传并开始分析"}</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Detail panel */}
       {detailId && detailData && (
@@ -632,7 +592,55 @@ export default function HomePage() {
                   )}
                 </>
               )}
+
+              {/* Escalate to engineer button — always visible */}
+              <section className="border-t border-gray-100 pt-4">
+                <button
+                  onClick={async () => {
+                    try {
+                      await escalateIssue(detailId!, "用户手动转工程师");
+                      setToast("已通知值班工程师");
+                    } catch (e: any) {
+                      setToast(`通知失败: ${e.message}`);
+                    }
+                  }}
+                  className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100"
+                >
+                  转工程师处理
+                </button>
+                <p className="mt-1 text-center text-[11px] text-gray-400">将通过飞书消息通知当前值班工程师</p>
+              </section>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* First-time username setup dialog */}
+      {showUsernameSetup && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 text-center">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-black">
+                <span className="text-lg font-bold text-white">J</span>
+              </div>
+              <h3 className="text-base font-semibold text-gray-900">欢迎使用 Jarvis</h3>
+              <p className="mt-1 text-sm text-gray-500">请设置您的用户名，用于标记工单操作</p>
+            </div>
+            <input
+              autoFocus
+              value={usernameInput}
+              onChange={(e) => setUsernameInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && usernameInput.trim()) saveUsername(usernameInput); }}
+              placeholder="输入您的名字"
+              className="mb-4 w-full rounded-lg border border-gray-200 px-4 py-2.5 text-center text-sm outline-none focus:border-black focus:ring-1 focus:ring-black"
+            />
+            <button
+              onClick={() => saveUsername(usernameInput)}
+              disabled={!usernameInput.trim()}
+              className="w-full rounded-lg bg-black py-2.5 text-sm font-semibold text-white transition-colors hover:bg-gray-800 disabled:opacity-30"
+            >
+              开始使用
+            </button>
           </div>
         </div>
       )}

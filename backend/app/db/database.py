@@ -37,10 +37,11 @@ class IssueRecord(Base):
     zendesk = Column(String(256), default="")
     zendesk_id = Column(String(32), default="")
     feishu_link = Column(String(512), default="")
-    source = Column(String(32), default="feishu")         # feishu / user_upload
     log_files_json = Column(Text, default="[]")            # JSON array
-    status = Column(String(32), default="pending")         # pending / analyzing / done / failed
+    status = Column(String(32), default="pending")         # pending / analyzing / done / failed / deleted
     rule_type = Column(String(64), default="")
+    created_by = Column(String(64), default="")            # username who triggered analysis
+    deleted = Column(Boolean, default=False)
     created_at_ms = Column(Integer, default=0)             # Feishu creation time (Unix ms)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -55,8 +56,6 @@ class TaskRecord(Base):
     progress = Column(Integer, default=0)
     message = Column(Text, default="")
     agent_type = Column(String(32), default="")
-    source = Column(String(32), default="feishu")
-    workspace_path = Column(Text, default="")
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -73,18 +72,54 @@ class AnalysisRecord(Base):
     confidence = Column(String(16), default="medium")
     confidence_reason = Column(Text, default="")
     key_evidence_json = Column(Text, default="[]")
-    core_logs_json = Column(Text, default="[]")
-    code_locations_json = Column(Text, default="[]")
     user_reply = Column(Text, default="")
     needs_engineer = Column(Boolean, default=False)
-    requires_more_info = Column(Boolean, default=False)
-    more_info_guidance = Column(Text, default="")
-    next_steps_json = Column(Text, default="[]")
     fix_suggestion = Column(Text, default="")
     rule_type = Column(String(64), default="")
     agent_type = Column(String(32), default="")
     raw_output = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RuleRecord(Base):
+    __tablename__ = "rules"
+
+    id = Column(String(64), primary_key=True)              # rule id e.g. "bluetooth"
+    name = Column(String(128), default="")
+    version = Column(Integer, default=1)
+    enabled = Column(Boolean, default=True)
+    triggers_json = Column(Text, default="{}")             # {"keywords":[], "priority":5}
+    depends_on_json = Column(Text, default="[]")
+    pre_extract_json = Column(Text, default="[]")
+    needs_code = Column(Boolean, default=False)
+    content = Column(Text, default="")                     # markdown body
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class UserRecord(Base):
+    __tablename__ = "users"
+
+    username = Column(String(64), primary_key=True)
+    role = Column(String(16), default="user")              # admin / user
+    feishu_email = Column(String(128), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OncallGroupRecord(Base):
+    __tablename__ = "oncall_groups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_index = Column(Integer, default=0)               # 0-based rotation order
+    members_json = Column(Text, default="[]")              # ["email1@plaud.ai", "email2@plaud.ai"]
+    created_by = Column(String(64), default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class OncallConfigRecord(Base):
+    __tablename__ = "oncall_config"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, default="")
 
 
 # ---------------------------------------------------------------------------
@@ -115,46 +150,17 @@ async def init_db():
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        if "sqlite" in db_url:
-            await _ensure_sqlite_columns(conn)
 
-
-async def _ensure_sqlite_columns(conn):
-    """Best-effort schema evolution for existing local SQLite databases."""
-    migrations: Dict[str, Dict[str, str]] = {
-        "issues": {
-            "source": "TEXT DEFAULT 'feishu'",
-        },
-        "tasks": {
-            "source": "TEXT DEFAULT 'feishu'",
-            "workspace_path": "TEXT DEFAULT ''",
-        },
-        "analyses": {
-            "core_logs_json": "TEXT DEFAULT '[]'",
-            "code_locations_json": "TEXT DEFAULT '[]'",
-            "requires_more_info": "BOOLEAN DEFAULT 0",
-            "more_info_guidance": "TEXT DEFAULT ''",
-            "next_steps_json": "TEXT DEFAULT '[]'",
-        },
-    }
-
-    for table, cols in migrations.items():
-        existing = await _sqlite_columns(conn, table)
-        for col, ddl in cols.items():
-            if col in existing:
-                continue
-            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
-
-
-async def _sqlite_columns(conn, table: str) -> set[str]:
-    result = await conn.execute(text(f"PRAGMA table_info({table})"))
-    names = set()
-    for row in result.fetchall():
-        try:
-            names.add(row[1])
-        except Exception:
-            pass
-    return names
+    # Migrate: add new columns to existing tables (SQLite safe)
+    async with _engine.begin() as conn:
+        for col, coltype, default in [
+            ("deleted", "BOOLEAN", "0"),
+            ("created_by", "VARCHAR(64)", "''"),
+        ]:
+            try:
+                await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
+            except Exception:
+                pass  # column already exists
 
 
 async def close_db():
@@ -186,7 +192,6 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
             zendesk=data.get("zendesk", ""),
             zendesk_id=data.get("zendesk_id", ""),
             feishu_link=data.get("feishu_link", ""),
-            source=data.get("source", "feishu"),
             created_at_ms=data.get("created_at_ms", 0),
             log_files_json=json.dumps(data.get("log_files", []), ensure_ascii=False),
             status=status,
@@ -206,20 +211,31 @@ async def update_issue_status(issue_id: str, status: str):
             await session.commit()
 
 
-async def create_task(
-    task_id: str,
-    issue_id: str,
-    agent_type: str = "",
-    source: str = "feishu",
-    workspace_path: str = "",
-) -> TaskRecord:
+async def soft_delete_issue(issue_id: str) -> bool:
+    async with get_session() as session:
+        record = await session.get(IssueRecord, issue_id)
+        if record:
+            record.deleted = True
+            record.updated_at = datetime.utcnow()
+            await session.commit()
+            return True
+        return False
+
+
+async def set_issue_created_by(issue_id: str, username: str):
+    async with get_session() as session:
+        record = await session.get(IssueRecord, issue_id)
+        if record and not record.created_by:
+            record.created_by = username
+            await session.commit()
+
+
+async def create_task(task_id: str, issue_id: str, agent_type: str = "") -> TaskRecord:
     async with get_session() as session:
         record = TaskRecord(
             id=task_id,
             issue_id=issue_id,
             agent_type=agent_type,
-            source=source,
-            workspace_path=workspace_path,
             status="queued",
         )
         session.add(record)
@@ -265,13 +281,8 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             confidence=data.get("confidence", "medium"),
             confidence_reason=data.get("confidence_reason", ""),
             key_evidence_json=json.dumps(data.get("key_evidence", []), ensure_ascii=False),
-            core_logs_json=json.dumps(data.get("core_logs", []), ensure_ascii=False),
-            code_locations_json=json.dumps(data.get("code_locations", []), ensure_ascii=False),
             user_reply=data.get("user_reply", ""),
             needs_engineer=data.get("needs_engineer", False),
-            requires_more_info=data.get("requires_more_info", False),
-            more_info_guidance=data.get("more_info_guidance", ""),
-            next_steps_json=json.dumps(data.get("next_steps", []), ensure_ascii=False),
             fix_suggestion=data.get("fix_suggestion", ""),
             rule_type=data.get("rule_type", ""),
             agent_type=data.get("agent_type", ""),
@@ -280,16 +291,6 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
         session.add(record)
         await session.commit()
         return record
-
-
-async def get_analysis_by_task(task_id: str) -> Optional[AnalysisRecord]:
-    async with get_session() as session:
-        from sqlalchemy import select
-        stmt = select(AnalysisRecord).where(
-            AnalysisRecord.task_id == task_id
-        ).order_by(AnalysisRecord.created_at.desc()).limit(1)
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
 
 
 async def get_analysis_by_issue(issue_id: str) -> Optional[AnalysisRecord]:
@@ -327,12 +328,13 @@ async def list_tasks(limit: int = 50) -> List[TaskRecord]:
 async def get_local_issue_ids() -> set:
     """
     Get issue IDs that should be EXCLUDED from the pending list.
-    Excludes analyzing, failed (shown in 进行中), and done (shown in 已完成).
+    Excludes analyzing (进行中) and done/failed (已完成).
     """
     async with get_session() as session:
         from sqlalchemy import select
         stmt = select(IssueRecord.id).where(
-            IssueRecord.status.in_(["analyzing", "failed", "done"])
+            IssueRecord.status.in_(["analyzing", "failed", "done"]),
+            IssueRecord.deleted == False,
         )
         result = await session.execute(stmt)
         return {row[0] for row in result.fetchall()}
@@ -352,7 +354,7 @@ async def get_local_issues_paginated(
         from sqlalchemy import select, func
 
         statuses = [s.strip() for s in status.split(",")]
-        status_filter = IssueRecord.status.in_(statuses)
+        status_filter = IssueRecord.status.in_(statuses) & (IssueRecord.deleted == False)
 
         # Count total
         count_stmt = select(func.count()).select_from(IssueRecord).where(status_filter)
@@ -384,6 +386,42 @@ async def get_local_issues_paginated(
         return items, total
 
 
+async def get_tracked_issues_paginated(
+    page: int = 1,
+    page_size: int = 20,
+    created_by: Optional[str] = None,
+) -> tuple:
+    """
+    Get ALL locally-tracked issues (for the tracking page).
+    Supports filtering by created_by. Excludes deleted.
+    """
+    async with get_session() as session:
+        from sqlalchemy import select, func, and_
+
+        conditions = [IssueRecord.deleted == False, IssueRecord.status != "pending"]
+        if created_by:
+            conditions.append(IssueRecord.created_by == created_by)
+
+        where = and_(*conditions)
+
+        count_stmt = select(func.count()).select_from(IssueRecord).where(where)
+        total = (await session.execute(count_stmt)).scalar() or 0
+
+        offset = (page - 1) * page_size
+        stmt = select(IssueRecord).where(where).order_by(IssueRecord.updated_at.desc()).offset(offset).limit(page_size)
+        issues = list((await session.execute(stmt)).scalars().all())
+
+        items = []
+        for issue in issues:
+            a_stmt = select(AnalysisRecord).where(AnalysisRecord.issue_id == issue.id).order_by(AnalysisRecord.created_at.desc()).limit(1)
+            analysis = (await session.execute(a_stmt)).scalar_one_or_none()
+            t_stmt = select(TaskRecord).where(TaskRecord.issue_id == issue.id).order_by(TaskRecord.created_at.desc()).limit(1)
+            task = (await session.execute(t_stmt)).scalar_one_or_none()
+            items.append(_issue_to_dict(issue, analysis=analysis, task=task))
+
+        return items, total
+
+
 def _issue_to_dict(
     issue: IssueRecord,
     analysis: Optional[AnalysisRecord] = None,
@@ -405,7 +443,8 @@ def _issue_to_dict(
         "root_cause_summary": "",
         "created_at_ms": issue.created_at_ms or 0,
         "log_files": json.loads(issue.log_files_json) if issue.log_files_json else [],
-        "local_status": issue.status,  # our own tracking
+        "local_status": issue.status,
+        "created_by": issue.created_by or "",
     }
 
     if analysis:
@@ -417,13 +456,8 @@ def _issue_to_dict(
             "confidence": analysis.confidence or "medium",
             "confidence_reason": analysis.confidence_reason or "",
             "key_evidence": json.loads(analysis.key_evidence_json) if analysis.key_evidence_json else [],
-            "core_logs": json.loads(analysis.core_logs_json) if analysis.core_logs_json else [],
-            "code_locations": json.loads(analysis.code_locations_json) if analysis.code_locations_json else [],
             "user_reply": analysis.user_reply or "",
             "needs_engineer": analysis.needs_engineer,
-            "requires_more_info": analysis.requires_more_info,
-            "more_info_guidance": analysis.more_info_guidance or "",
-            "next_steps": json.loads(analysis.next_steps_json) if analysis.next_steps_json else [],
             "fix_suggestion": analysis.fix_suggestion or "",
             "rule_type": analysis.rule_type or "",
             "agent_type": analysis.agent_type or "",
@@ -442,3 +476,158 @@ def _issue_to_dict(
         }
 
     return d
+
+
+# ---------------------------------------------------------------------------
+# User CRUD
+# ---------------------------------------------------------------------------
+ADMIN_USERNAME = "sanato"  # initial admin
+
+
+async def upsert_user(username: str, feishu_email: str = "") -> Dict[str, Any]:
+    async with get_session() as session:
+        record = UserRecord(
+            username=username,
+            role="admin" if username == ADMIN_USERNAME else "user",
+            feishu_email=feishu_email,
+        )
+        merged = await session.merge(record)
+        await session.commit()
+        return {"username": merged.username, "role": merged.role, "feishu_email": merged.feishu_email}
+
+
+async def get_user(username: str) -> Optional[Dict[str, Any]]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        record = await session.get(UserRecord, username)
+        if not record:
+            return None
+        return {"username": record.username, "role": record.role, "feishu_email": record.feishu_email}
+
+
+async def get_or_create_user(username: str) -> Dict[str, Any]:
+    user = await get_user(username)
+    if user:
+        return user
+    return await upsert_user(username)
+
+
+async def list_users() -> List[Dict[str, Any]]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(UserRecord).order_by(UserRecord.created_at)
+        result = await session.execute(stmt)
+        return [{"username": r.username, "role": r.role, "feishu_email": r.feishu_email} for r in result.scalars().all()]
+
+
+# ---------------------------------------------------------------------------
+# Oncall CRUD
+# ---------------------------------------------------------------------------
+async def save_oncall_groups(groups: List[List[str]], created_by: str = ""):
+    """Replace all oncall groups with new ones."""
+    async with get_session() as session:
+        from sqlalchemy import delete
+        await session.execute(delete(OncallGroupRecord))
+        for idx, members in enumerate(groups):
+            session.add(OncallGroupRecord(
+                group_index=idx,
+                members_json=json.dumps(members, ensure_ascii=False),
+                created_by=created_by,
+            ))
+        await session.commit()
+
+
+async def get_oncall_groups() -> List[Dict[str, Any]]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(OncallGroupRecord).order_by(OncallGroupRecord.group_index)
+        result = await session.execute(stmt)
+        return [
+            {"group_index": r.group_index, "members": json.loads(r.members_json) if r.members_json else []}
+            for r in result.scalars().all()
+        ]
+
+
+async def set_oncall_config(key: str, value: str):
+    async with get_session() as session:
+        record = OncallConfigRecord(key=key, value=value)
+        await session.merge(record)
+        await session.commit()
+
+
+async def get_oncall_config(key: str, default: str = "") -> str:
+    async with get_session() as session:
+        record = await session.get(OncallConfigRecord, key)
+        return record.value if record else default
+
+
+async def get_current_oncall() -> List[str]:
+    """Get the current week's oncall members based on rotation."""
+    groups = await get_oncall_groups()
+    if not groups:
+        return []
+    start_date_str = await get_oncall_config("start_date", "")
+    if not start_date_str:
+        return groups[0]["members"] if groups else []
+    from datetime import date
+    try:
+        start = date.fromisoformat(start_date_str)
+        today = date.today()
+        weeks_elapsed = (today - start).days // 7
+        idx = weeks_elapsed % len(groups)
+        return groups[idx]["members"]
+    except Exception:
+        return groups[0]["members"] if groups else []
+
+
+# ---------------------------------------------------------------------------
+# Rule DB CRUD
+# ---------------------------------------------------------------------------
+async def upsert_rule_to_db(rule_data: Dict[str, Any]):
+    """Save a rule to the database."""
+    async with get_session() as session:
+        record = RuleRecord(
+            id=rule_data["id"],
+            name=rule_data.get("name", ""),
+            version=rule_data.get("version", 1),
+            enabled=rule_data.get("enabled", True),
+            triggers_json=json.dumps(rule_data.get("triggers", {}), ensure_ascii=False),
+            depends_on_json=json.dumps(rule_data.get("depends_on", []), ensure_ascii=False),
+            pre_extract_json=json.dumps(rule_data.get("pre_extract", []), ensure_ascii=False),
+            needs_code=rule_data.get("needs_code", False),
+            content=rule_data.get("content", ""),
+        )
+        await session.merge(record)
+        await session.commit()
+
+
+async def get_all_rules_from_db() -> List[Dict[str, Any]]:
+    """Get all rules from the database."""
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(RuleRecord).order_by(RuleRecord.name)
+        result = await session.execute(stmt)
+        rules = []
+        for r in result.scalars().all():
+            rules.append({
+                "id": r.id,
+                "name": r.name,
+                "version": r.version,
+                "enabled": r.enabled,
+                "triggers": json.loads(r.triggers_json) if r.triggers_json else {},
+                "depends_on": json.loads(r.depends_on_json) if r.depends_on_json else [],
+                "pre_extract": json.loads(r.pre_extract_json) if r.pre_extract_json else [],
+                "needs_code": r.needs_code,
+                "content": r.content,
+            })
+        return rules
+
+
+async def delete_rule_from_db(rule_id: str) -> bool:
+    async with get_session() as session:
+        record = await session.get(RuleRecord, rule_id)
+        if record:
+            await session.delete(record)
+            await session.commit()
+            return True
+        return False

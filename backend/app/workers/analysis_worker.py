@@ -47,8 +47,6 @@ async def run_analysis_pipeline(
     task_id: str,
     agent_override: Optional[str] = None,
     on_progress: Optional[Callable[[int, str], Any]] = None,
-    issue_override: Optional[Issue] = None,
-    local_files: Optional[List[Path]] = None,
 ) -> AnalysisResult:
     """
     Run the complete analysis pipeline for a single issue.
@@ -64,6 +62,45 @@ async def run_analysis_pipeline(
     8. Parse result
     """
     settings = get_settings()
+    is_local = issue_id.startswith("fb_")  # locally submitted via feedback form
+
+    # --- Step 1: Fetch issue ---
+    if on_progress:
+        await on_progress(5, "获取工单信息...")
+
+    if is_local:
+        # Local feedback issue — read from DB
+        from app.db.database import get_session, IssueRecord
+        import json as _json
+        async with get_session() as session:
+            rec = await session.get(IssueRecord, issue_id)
+        if not rec:
+            raise RuntimeError(f"Issue {issue_id} not found in local DB")
+        log_files_raw = _json.loads(rec.log_files_json) if rec.log_files_json else []
+        issue = Issue(
+            record_id=rec.id,
+            description=rec.description or "",
+            device_sn=rec.device_sn or "",
+            firmware=rec.firmware or "",
+            app_version=rec.app_version or "",
+            priority=rec.priority or "",
+            zendesk=rec.zendesk or "",
+            zendesk_id=rec.zendesk_id or "",
+            feishu_link="",
+            log_files=[],
+        )
+        logger.info("Processing local issue %s: %s", issue_id, issue.description[:80])
+    else:
+        # Feishu issue — fetch from API
+        client = FeishuClient()
+        issue = await client.get_issue(issue_id)
+        log_files_raw = [lf.model_dump() for lf in issue.log_files]
+        logger.info("Processing issue %s: %s", issue_id, issue.description[:80])
+        await db.upsert_issue(issue.model_dump(), status="analyzing")
+
+    # --- Step 2: Download / locate logs ---
+    if on_progress:
+        await on_progress(10, "准备日志文件...")
 
     workspace = Path(settings.storage.workspace_dir) / task_id
     workspace.mkdir(parents=True, exist_ok=True)
@@ -71,47 +108,39 @@ async def run_analysis_pipeline(
     raw_dir.mkdir(exist_ok=True)
 
     downloaded_files: List[Path] = []
-    if issue_override is not None:
-        issue = issue_override
-        if on_progress:
-            await on_progress(8, "读取用户上传数据...")
-        for fp in local_files or []:
-            p = Path(fp)
-            if p.exists():
-                downloaded_files.append(p)
-        logger.info("Processing uploaded issue %s with %d files", issue_id, len(downloaded_files))
-        await db.upsert_issue({**issue.model_dump(), "source": "user_upload"}, status="analyzing")
-        if on_progress:
-            await on_progress(25, f"已接收 {len(downloaded_files)} 个上传文件")
+
+    if is_local:
+        # Local files: already saved in workspaces/{record_id}/raw/
+        local_raw = Path(settings.storage.workspace_dir) / issue_id / "raw"
+        if local_raw.exists():
+            for f in local_raw.iterdir():
+                if f.is_file():
+                    # Copy/link to task workspace
+                    dest = raw_dir / f.name
+                    if not dest.exists():
+                        import shutil
+                        shutil.copy2(f, dest)
+                    downloaded_files.append(dest)
     else:
-        # --- Step 1: Fetch issue ---
-        if on_progress:
-            await on_progress(5, "获取工单信息...")
-
+        # Feishu files: download via API
         client = FeishuClient()
-        issue = await client.get_issue(issue_id)
-        logger.info("Processing issue %s: %s", issue_id, issue.description[:80])
-
-        # Save issue to local DB and mark as "analyzing"
-        await db.upsert_issue(issue.model_dump(), status="analyzing")
-
-        # --- Step 2: Download logs ---
-        if on_progress:
-            await on_progress(10, "下载日志文件...")
-
-        for lf in issue.log_files:
-            save_path = raw_dir / lf.name
+        for lf_dict in log_files_raw:
+            name = lf_dict.get("name", "")
+            token = lf_dict.get("token", "")
+            if not token:
+                continue
+            save_path = raw_dir / name
             if not save_path.exists():
                 try:
-                    await client.download_file(lf.token, str(save_path))
+                    await client.download_file(token, str(save_path))
                     downloaded_files.append(save_path)
                 except Exception as e:
-                    logger.error("Failed to download %s: %s", lf.name, e)
+                    logger.error("Failed to download %s: %s", name, e)
             else:
                 downloaded_files.append(save_path)
 
-        if on_progress:
-            await on_progress(25, f"已下载 {len(downloaded_files)} 个文件")
+    if on_progress:
+        await on_progress(25, f"已准备 {len(downloaded_files)} 个文件")
 
     # --- Step 3: Decrypt / process ---
     if on_progress:
@@ -139,12 +168,6 @@ async def run_analysis_pipeline(
             root_cause=msg,
             confidence="low",
             needs_engineer=True,
-            requires_more_info=True,
-            more_info_guidance=(
-                "请在 APP 内复现问题后，立即通过“反馈/导出日志”上传最新日志。"
-                "同时补充问题发生时间、操作步骤和设备版本。"
-            ),
-            next_steps=["在 APP 内复现问题", "导出并上传最新日志", "补充问题发生时间与操作路径"],
             user_reply="您好，我们正在分析您的问题，由于日志文件格式异常，需要工程师进一步检查。我们会尽快回复您。",
             issue=issue,
         )

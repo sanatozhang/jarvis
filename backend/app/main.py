@@ -47,6 +47,16 @@ async def lifespan(app: FastAPI):
                 logger.warning("Cleaned up %d zombie tasks, %d zombie issues", r1.rowcount, r2.rowcount)
     except Exception as e:
         logger.warning("Zombie cleanup failed (non-fatal): %s", e)
+
+    # Sync file-based rules to DB
+    try:
+        from app.services.rule_engine import RuleEngine
+        engine = RuleEngine()
+        await engine.sync_files_to_db()
+        logger.info("Rules synced to DB: %d total", len(engine.list_rules()))
+    except Exception as e:
+        logger.warning("Rule sync failed (non-fatal): %s", e)
+
     yield
     await close_db()
     logger.info("Jarvis stopped.")
@@ -78,6 +88,9 @@ from app.api.settings import router as settings_router
 from app.api.reports import router as reports_router
 from app.api.health import router as health_router
 from app.api.local import router as local_router
+from app.api.feedback import router as feedback_router
+from app.api.users import router as users_router
+from app.api.oncall import router as oncall_router
 
 app.include_router(issues_router, prefix="/api/issues", tags=["Issues"])
 app.include_router(tasks_router, prefix="/api/tasks", tags=["Tasks"])
@@ -86,6 +99,9 @@ app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
 app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
 app.include_router(health_router, prefix="/api/health", tags=["Health"])
 app.include_router(local_router, prefix="/api/local", tags=["Local"])
+app.include_router(feedback_router, prefix="/api/feedback", tags=["Feedback"])
+app.include_router(users_router, prefix="/api/users", tags=["Users"])
+app.include_router(oncall_router, prefix="/api/oncall", tags=["Oncall"])
 
 
 # ---------------------------------------------------------------------------
