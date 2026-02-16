@@ -73,7 +73,16 @@ export default function FeedbackPage() {
 
   const addFiles = (newFiles: FileList | null) => {
     if (!newFiles) return;
-    setFiles((prev) => [...prev, ...Array.from(newFiles)]);
+    const valid: File[] = [];
+    for (const f of Array.from(newFiles)) {
+      if (f.size > 50 * 1024 * 1024) {
+        setToast({ msg: `${f.name} 超过 50MB 限制（${formatSize(f.size)}）`, type: "error" });
+        setTimeout(() => setToast(null), 4000);
+      } else {
+        valid.push(f);
+      }
+    }
+    if (valid.length) setFiles((prev) => [...prev, ...valid]);
   };
 
   const removeFile = (idx: number) => setFiles((prev) => prev.filter((_, i) => i !== idx));
@@ -84,10 +93,20 @@ export default function FeedbackPage() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
   const submit = async () => {
     if (!form.description.trim()) {
       setToast({ msg: "请填写问题描述", type: "error" });
       setTimeout(() => setToast(null), 3000);
+      return;
+    }
+
+    // Check file sizes
+    const oversized = files.find((f) => f.size > MAX_FILE_SIZE);
+    if (oversized) {
+      setToast({ msg: `文件 ${oversized.name} 超过 50MB 限制（${formatSize(oversized.size)}），请压缩后重试`, type: "error" });
+      setTimeout(() => setToast(null), 5000);
       return;
     }
 
@@ -116,9 +135,8 @@ export default function FeedbackPage() {
       }
       const data = await res.json();
 
-      setToast({ msg: `提交成功！AI 分析已启动`, type: "success" });
-      // Redirect to main page in-progress tab after a short delay
-      setTimeout(() => { window.location.href = "/?tab=in_progress"; }, 1500);
+      // Redirect to in-progress tab immediately
+      window.location.href = "/?tab=in_progress";
     } catch (e: any) {
       setToast({ msg: `提交失败: ${e.message}`, type: "error" });
     } finally {
@@ -276,7 +294,7 @@ export default function FeedbackPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.338-2.32 3.75 3.75 0 013.537 5.344A4.5 4.5 0 0118 19.5H6.75z" />
               </svg>
               <p className="text-sm text-gray-500">点击或拖拽上传日志文件</p>
-              <p className="mt-0.5 text-xs text-gray-400">支持 .plaud, .log, .zip, .gz 格式</p>
+              <p className="mt-0.5 text-xs text-gray-400">支持 .plaud, .log, .zip, .gz 格式（单个文件 ≤ 50MB）</p>
               <input
                 ref={fileRef}
                 type="file"
