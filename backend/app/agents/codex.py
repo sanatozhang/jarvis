@@ -94,14 +94,34 @@ class CodexAgent(BaseAgent):
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
 
+            # Save raw output for debugging
+            debug_dir = workspace / "output"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / "codex_stdout.txt").write_text(stdout, encoding="utf-8")
+            (debug_dir / "codex_stderr.txt").write_text(stderr, encoding="utf-8")
+            (debug_dir / "codex_exitcode.txt").write_text(str(proc.returncode), encoding="utf-8")
+
+            logger.info("Codex finished: exit=%d stdout=%d bytes stderr=%d bytes", proc.returncode, len(stdout), len(stderr))
+            if stdout:
+                logger.info("Codex stdout (first 500 chars): %s", stdout[:500])
+            if stderr:
+                logger.warning("Codex stderr (first 500 chars): %s", stderr[:500])
             if proc.returncode != 0:
-                logger.warning("Codex exited with code %d. stderr: %s", proc.returncode, stderr[:500])
+                logger.error("Codex exited with code %d", proc.returncode)
 
             if on_progress:
                 await _maybe_await(on_progress(90, "解析分析结果..."))
 
             result = self.parse_result(workspace, stdout)
             result.agent_type = "codex"
+
+            # If parse failed, include raw output in error for debugging
+            if result.problem_type == "未知" and not result.user_reply:
+                hint = stdout[:300] if stdout else "(empty stdout)"
+                if stderr:
+                    hint += f"\n\nstderr: {stderr[:300]}"
+                result.root_cause = f"分析未产出结构化结果。\n\nCodex 退出码: {proc.returncode}\nCodex 原始输出:\n{hint}"
+
             return result
 
         except asyncio.TimeoutError:
