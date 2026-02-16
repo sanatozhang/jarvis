@@ -117,10 +117,10 @@ class CodexAgent(BaseAgent):
 
             # If parse failed, include raw output in error for debugging
             if result.problem_type == "未知" and not result.user_reply:
-                hint = stdout[:300] if stdout else "(empty stdout)"
+                hint = stdout[:1000] if stdout else "(empty stdout)"
                 if stderr:
-                    hint += f"\n\nstderr: {stderr[:300]}"
-                result.root_cause = f"分析未产出结构化结果。\n\nCodex 退出码: {proc.returncode}\nCodex 原始输出:\n{hint}"
+                    hint += f"\n\nstderr:\n{stderr[:2000]}"
+                result.root_cause = f"分析未产出结构化结果。\n\nCodex 退出码: {proc.returncode}\n原始输出:\n{hint}"
 
             return result
 

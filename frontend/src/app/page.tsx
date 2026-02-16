@@ -228,7 +228,13 @@ export default function HomePage() {
       setActiveTasks((p) => ({ ...p, [issueId]: task }));
 
       // Remove from pending list (optimistic) + reload in-progress
-      setPendingData((prev) => prev ? { ...prev, issues: prev.issues.filter((i) => i.record_id !== issueId), total: prev.total - 1 } : prev);
+      // Remove from pending only if the issue is actually in the pending list
+      setPendingData((prev) => {
+        if (!prev) return prev;
+        const exists = prev.issues.some((i) => i.record_id === issueId);
+        if (!exists) return prev;
+        return { ...prev, issues: prev.issues.filter((i) => i.record_id !== issueId), total: Math.max(0, prev.total - 1) };
+      });
 
       // Backend already marked the issue as "analyzing" synchronously,
       // so in-progress tab will have it. Reload immediately.
