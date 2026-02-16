@@ -86,6 +86,19 @@ class AnalysisRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class EventRecord(Base):
+    """Core analytics events table."""
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String(64), index=True)      # analysis_start, analysis_done, analysis_fail, feedback_submit, page_visit, escalate
+    issue_id = Column(String(64), default="")
+    username = Column(String(64), default="")
+    detail_json = Column(Text, default="{}")           # flexible payload
+    duration_ms = Column(Integer, default=0)           # for timed events (analysis duration)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class RuleRecord(Base):
     __tablename__ = "rules"
 
@@ -667,3 +680,103 @@ async def delete_rule_from_db(rule_id: str) -> bool:
             await session.commit()
             return True
         return False
+
+
+# ---------------------------------------------------------------------------
+# Event tracking (analytics)
+# ---------------------------------------------------------------------------
+async def log_event(
+    event_type: str,
+    issue_id: str = "",
+    username: str = "",
+    detail: Optional[Dict] = None,
+    duration_ms: int = 0,
+):
+    """Log an analytics event."""
+    async with get_session() as session:
+        session.add(EventRecord(
+            event_type=event_type,
+            issue_id=issue_id,
+            username=username,
+            detail_json=json.dumps(detail or {}, ensure_ascii=False),
+            duration_ms=duration_ms,
+        ))
+        await session.commit()
+
+
+async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
+    """Get analytics summary for a date range."""
+    async with get_session() as session:
+        from sqlalchemy import select, func, and_, case
+
+        start = datetime.fromisoformat(date_from)
+        end = datetime.fromisoformat(date_to + "T23:59:59")
+        date_filter = and_(EventRecord.created_at >= start, EventRecord.created_at <= end)
+
+        # Total events by type
+        type_counts_stmt = select(
+            EventRecord.event_type, func.count()
+        ).where(date_filter).group_by(EventRecord.event_type)
+        type_counts = {row[0]: row[1] for row in (await session.execute(type_counts_stmt)).fetchall()}
+
+        # Unique users
+        users_stmt = select(func.count(func.distinct(EventRecord.username))).where(
+            date_filter, EventRecord.username != ""
+        )
+        unique_users = (await session.execute(users_stmt)).scalar() or 0
+
+        # Average analysis duration (for done events)
+        avg_duration_stmt = select(func.avg(EventRecord.duration_ms)).where(
+            date_filter, EventRecord.event_type == "analysis_done", EventRecord.duration_ms > 0
+        )
+        avg_duration = (await session.execute(avg_duration_stmt)).scalar() or 0
+
+        # Fail reasons
+        fail_stmt = select(EventRecord.detail_json).where(
+            date_filter, EventRecord.event_type == "analysis_fail"
+        ).limit(50)
+        fail_details = []
+        for row in (await session.execute(fail_stmt)).fetchall():
+            try:
+                fail_details.append(json.loads(row[0]))
+            except Exception:
+                pass
+
+        # Daily breakdown
+        daily_stmt = select(
+            func.date(EventRecord.created_at).label("day"),
+            EventRecord.event_type,
+            func.count(),
+        ).where(date_filter).group_by("day", EventRecord.event_type).order_by("day")
+        daily_rows = (await session.execute(daily_stmt)).fetchall()
+        daily = {}
+        for day, etype, count in daily_rows:
+            d = str(day)
+            if d not in daily:
+                daily[d] = {}
+            daily[d][etype] = count
+
+        # Top users
+        top_users_stmt = select(
+            EventRecord.username, func.count()
+        ).where(date_filter, EventRecord.username != "").group_by(
+            EventRecord.username
+        ).order_by(func.count().desc()).limit(10)
+        top_users = [{"username": row[0], "count": row[1]} for row in (await session.execute(top_users_stmt)).fetchall()]
+
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "event_counts": type_counts,
+            "unique_users": unique_users,
+            "avg_analysis_duration_ms": round(avg_duration),
+            "avg_analysis_duration_min": round(avg_duration / 60000, 1) if avg_duration else 0,
+            "fail_reasons": fail_details,
+            "daily": daily,
+            "top_users": top_users,
+            "total_analyses": type_counts.get("analysis_start", 0),
+            "successful_analyses": type_counts.get("analysis_done", 0),
+            "failed_analyses": type_counts.get("analysis_fail", 0),
+            "feedback_submitted": type_counts.get("feedback_submit", 0),
+            "escalations": type_counts.get("escalate", 0),
+        }

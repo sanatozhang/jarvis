@@ -131,6 +131,9 @@ async def escalate_to_engineer(issue_id: str, req: EscalateRequest):
             link=issue.feishu_link or "",
         )
 
+    # Track: escalation
+    await db.log_event("escalate", issue_id=issue_id, detail={"reason": req.reason, "sent": sent})
+
     if sent:
         return {"status": "sent", "issue_id": issue_id, "message": f"已通知 {', '.join(oncall_members)}"}
     else:

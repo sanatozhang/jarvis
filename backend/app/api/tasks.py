@@ -49,6 +49,9 @@ async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
     if req.username:
         await db.set_issue_created_by(req.issue_id, req.username)
 
+    # Track: analysis started
+    await db.log_event("analysis_start", issue_id=req.issue_id, username=req.username)
+
     progress = TaskProgress(
         task_id=task_id,
         issue_id=req.issue_id,
@@ -230,6 +233,8 @@ async def list_tasks(limit: int = Query(50, le=200)):
 # ---------------------------------------------------------------------------
 async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None):
     """Run the full analysis pipeline as a background task."""
+    import time as _time
+    _start_time = _time.monotonic()
     try:
         async def on_progress(pct: int, msg: str):
             status = TaskStatus.ANALYZING
@@ -288,6 +293,10 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 )
             except Exception as ne:
                 logger.warning("Failed to notify oncall on analysis failure: %s", ne)
+
+            # Track: analysis failed
+            duration = int((_time.monotonic() - _start_time) * 1000)
+            await db.log_event("analysis_fail", issue_id=issue_id, duration_ms=duration, detail={"reason": result.problem_type, "error": error_msg[:200]})
         else:
             await db.update_task(task_id, status="done", progress=100, message="分析完成")
             await db.update_issue_status(issue_id, "done")
@@ -296,10 +305,18 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 progress=100, message="分析完成", updated_at=datetime.utcnow(),
             ))
 
+            # Track: analysis succeeded
+            duration = int((_time.monotonic() - _start_time) * 1000)
+            await db.log_event("analysis_done", issue_id=issue_id, duration_ms=duration, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
+
     except Exception as e:
         logger.error("Task %s failed: %s", task_id, e, exc_info=True)
         await db.update_task(task_id, status="failed", error=str(e))
         await db.update_issue_status(issue_id, "failed")
+
+        # Track: analysis exception
+        duration = int((_time.monotonic() - _start_time) * 1000)
+        await db.log_event("analysis_fail", issue_id=issue_id, duration_ms=duration, detail={"reason": "exception", "error": str(e)[:200]})
         _update_progress(
             task_id,
             TaskProgress(

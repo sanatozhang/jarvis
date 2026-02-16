@@ -110,6 +110,9 @@ async def submit_feedback(
 
         logger.info("Feedback submitted and analysis started: %s task=%s", record_id, task_id)
 
+        # Track: feedback submitted
+        await db.log_event("feedback_submit", issue_id=record_id, username=username, detail={"platform": platform, "category": category, "has_logs": len(saved_files) > 0})
+
         return {
             "status": "ok",
             "record_id": record_id,
