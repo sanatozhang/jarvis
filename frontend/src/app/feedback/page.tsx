@@ -2,6 +2,11 @@
 
 import { useState, useRef } from "react";
 
+// For file uploads, post directly to backend (bypass Next.js proxy body size limit)
+const BACKEND_URL = typeof window !== "undefined"
+  ? (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`)
+  : "http://localhost:8000";
+
 function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error"; onClose: () => void }) {
   return (
     <div className={`fixed bottom-6 right-6 z-50 rounded-lg px-4 py-2.5 text-sm font-medium text-white shadow-lg ${type === "success" ? "bg-green-600" : "bg-red-600"}`}>
@@ -45,7 +50,7 @@ export default function FeedbackPage() {
     try {
       const fd = new FormData();
       fd.append("zendesk_input", zd);
-      const res = await fetch("/api/feedback/import-zendesk", { method: "POST", body: fd });
+      const res = await fetch(`${BACKEND_URL}/api/feedback/import-zendesk`, { method: "POST", body: fd });
       if (!res.ok) { const t = await res.text(); throw new Error(t); }
       const data = await res.json();
 
@@ -128,7 +133,7 @@ export default function FeedbackPage() {
         fd.append("log_files", f);
       }
 
-      const res = await fetch("/api/feedback", { method: "POST", body: fd });
+      const res = await fetch(`${BACKEND_URL}/api/feedback`, { method: "POST", body: fd });
       if (!res.ok) {
         const text = await res.text();
         throw new Error(text);
