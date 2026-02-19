@@ -45,11 +45,12 @@ async def get_dashboard(
     data = await db.get_analytics(date_from, date_to)
 
     # Calculate value metrics
-    total = data["total_analyses"]
     success = data["successful_analyses"]
+    failed = data["failed_analyses"]
+    completed = success + failed  # total finished analyses (denominator for success rate)
+    total = max(data["total_analyses"], completed)  # use whichever is larger (start events may be missing for old data)
     avg_min = data["avg_analysis_duration_min"]
 
-    # Estimated time saved: manual analysis ~30min per ticket, AI ~avg_min
     manual_time_min = total * 30
     ai_time_min = total * avg_min if avg_min else total * 5
     time_saved_min = max(0, manual_time_min - ai_time_min)
@@ -58,7 +59,7 @@ async def get_dashboard(
     data["value_metrics"] = {
         "time_saved_hours": time_saved_hours,
         "time_saved_per_ticket_min": round(30 - avg_min, 1) if avg_min else 25,
-        "success_rate": round(success / total * 100, 1) if total else 0,
+        "success_rate": round(success / completed * 100, 1) if completed else 0,
         "estimated_manual_hours": round(manual_time_min / 60, 1),
         "estimated_ai_hours": round(ai_time_min / 60, 1),
     }

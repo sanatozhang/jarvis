@@ -4,6 +4,12 @@ const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const nextConfig: NextConfig = {
   // output: "standalone",  // enable only for Docker production builds
+
+  experimental: {
+    // Allow large file uploads through the rewrite proxy (default 10MB)
+    proxyClientMaxBodySize: "100mb",
+  },
+
   async rewrites() {
     return [
       {
