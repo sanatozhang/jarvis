@@ -110,11 +110,14 @@ class AnalysisResult(BaseModel):
     task_id: str
     issue_id: str
     problem_type: str = ""
+    problem_type_en: str = ""
     root_cause: str = ""
+    root_cause_en: str = ""
     confidence: Confidence = Confidence.MEDIUM
     confidence_reason: str = ""
     key_evidence: List[str] = Field(default_factory=list)
     user_reply: str = ""
+    user_reply_en: str = ""
     needs_engineer: bool = False
     fix_suggestion: str = ""
     rule_type: str = ""

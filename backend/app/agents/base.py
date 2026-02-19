@@ -121,16 +121,20 @@ output/       ← 请将 result.json 写入此目录
 
 ## 输出要求
 
-分析完成后，请将结果以 JSON 格式写入 `output/result.json`：
+分析完成后，请将结果以 JSON 格式写入 `output/result.json`。
+**重要：root_cause 和 user_reply 必须同时提供中文和英文两个版本。**
 
 ```json
 {{
-    "problem_type": "问题分类",
-    "root_cause": "根本原因详细分析（2-5 句话）",
+    "problem_type": "问题分类（中文）",
+    "problem_type_en": "Problem Type (English)",
+    "root_cause": "根本原因详细分析（中文，2-5 句话）",
+    "root_cause_en": "Root cause analysis (English, 2-5 sentences)",
     "confidence": "high 或 medium 或 low",
     "confidence_reason": "为什么是这个置信度",
     "key_evidence": ["关键日志行1", "关键日志行2（最多5条）"],
-    "user_reply": "完整的客服回复模板（见下方示例）",
+    "user_reply": "完整的中文客服回复模板（见下方示例）",
+    "user_reply_en": "Complete English customer reply template (see example below)",
     "needs_engineer": false,
     "fix_suggestion": ""
 }}
@@ -138,13 +142,9 @@ output/       ← 请将 result.json 写入此目录
 
 ## user_reply 格式要求（非常重要！）
 
-客服会直接复制 user_reply 发给用户，所以必须：
-- 开头称呼："您好，" 或 "尊敬的用户您好，"
-- 说明分析结果（用用户能理解的语言，避免技术术语）
-- 给出具体操作建议（编号列出，步骤清晰）
-- 结尾："如需进一步帮助，请随时联系我们。"
+客服会直接复制 user_reply / user_reply_en 发给用户，必须完整、礼貌。
 
-### 好的 user_reply 示例
+### 中文 user_reply 示例
 
 ```
 您好，经过日志分析，您在 12月1日 的录音已成功传输到 APP。但由于设备时间偏移，该录音在 APP 中显示为 2023年9月24日 10:13 的录音（时长约 39 分钟）。
@@ -154,9 +154,20 @@ output/       ← 请将 result.json 写入此目录
 2. 向下滚动到 2023年9月 附近
 3. 查找时长约 39 分钟的录音
 
-这是由于设备内部时钟与实际时间存在偏差导致的，您的录音内容是完整的，不影响使用。
-
 如需进一步帮助，请随时联系我们。
+```
+
+### English user_reply_en 示例
+
+```
+Hello, based on our log analysis, your recording from December 1st was successfully transferred to the APP. However, due to a device clock offset, it appears as a recording from September 24, 2023 at 10:13 (approximately 39 minutes long).
+
+Please follow these steps to find it in the APP:
+1. Open the recording list
+2. Scroll down to around September 2023
+3. Look for a recording approximately 39 minutes long
+
+If you need further assistance, please don't hesitate to contact us.
 ```
 
 ### 差的 user_reply 示例（禁止）
@@ -200,11 +211,14 @@ output/       ← 请将 result.json 写入此目录
             task_id="",
             issue_id="",
             problem_type=data.get("problem_type", "未知"),
+            problem_type_en=data.get("problem_type_en", ""),
             root_cause=data.get("root_cause", raw_output[:2000] if raw_output else "分析未产出结构化结果"),
+            root_cause_en=data.get("root_cause_en", ""),
             confidence=Confidence(data.get("confidence", "low")),
             confidence_reason=data.get("confidence_reason", ""),
             key_evidence=data.get("key_evidence", []),
             user_reply=data.get("user_reply", ""),
+            user_reply_en=data.get("user_reply_en", ""),
             needs_engineer=data.get("needs_engineer", True),
             fix_suggestion=data.get("fix_suggestion", ""),
             raw_output=raw_output[:10000],

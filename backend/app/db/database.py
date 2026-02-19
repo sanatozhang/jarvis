@@ -73,11 +73,14 @@ class AnalysisRecord(Base):
     task_id = Column(String(64), index=True)
     issue_id = Column(String(64), index=True)
     problem_type = Column(String(128), default="")
+    problem_type_en = Column(String(128), default="")
     root_cause = Column(Text, default="")
+    root_cause_en = Column(Text, default="")
     confidence = Column(String(16), default="medium")
     confidence_reason = Column(Text, default="")
     key_evidence_json = Column(Text, default="[]")
     user_reply = Column(Text, default="")
+    user_reply_en = Column(Text, default="")
     needs_engineer = Column(Boolean, default=False)
     fix_suggestion = Column(Text, default="")
     rule_type = Column(String(64), default="")
@@ -184,6 +187,17 @@ async def init_db():
                 await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
             except Exception:
                 pass  # column already exists
+
+        # Migrate analyses table
+        for col, coltype, default in [
+            ("problem_type_en", "VARCHAR(128)", "''"),
+            ("root_cause_en", "TEXT", "''"),
+            ("user_reply_en", "TEXT", "''"),
+        ]:
+            try:
+                await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
+            except Exception:
+                pass
 
 
 async def close_db():
@@ -305,11 +319,14 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             task_id=data.get("task_id", ""),
             issue_id=data.get("issue_id", ""),
             problem_type=data.get("problem_type", ""),
+            problem_type_en=data.get("problem_type_en", ""),
             root_cause=data.get("root_cause", ""),
+            root_cause_en=data.get("root_cause_en", ""),
             confidence=data.get("confidence", "medium"),
             confidence_reason=data.get("confidence_reason", ""),
             key_evidence_json=json.dumps(data.get("key_evidence", []), ensure_ascii=False),
             user_reply=data.get("user_reply", ""),
+            user_reply_en=data.get("user_reply_en", ""),
             needs_engineer=data.get("needs_engineer", False),
             fix_suggestion=data.get("fix_suggestion", ""),
             rule_type=data.get("rule_type", ""),
@@ -501,11 +518,14 @@ def _issue_to_dict(
             "task_id": analysis.task_id,
             "issue_id": analysis.issue_id,
             "problem_type": analysis.problem_type or "",
+            "problem_type_en": analysis.problem_type_en or "",
             "root_cause": analysis.root_cause or "",
+            "root_cause_en": analysis.root_cause_en or "",
             "confidence": analysis.confidence or "medium",
             "confidence_reason": analysis.confidence_reason or "",
             "key_evidence": json.loads(analysis.key_evidence_json) if analysis.key_evidence_json else [],
             "user_reply": analysis.user_reply or "",
+            "user_reply_en": analysis.user_reply_en or "",
             "needs_engineer": analysis.needs_engineer,
             "fix_suggestion": analysis.fix_suggestion or "",
             "rule_type": analysis.rule_type or "",

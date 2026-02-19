@@ -1,5 +1,7 @@
 "use client";
 
+import { useT } from "@/lib/i18n";
+
 import { useState, useRef } from "react";
 
 // For file uploads, post directly to backend (bypass Next.js proxy body size limit)

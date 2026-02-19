@@ -1,5 +1,7 @@
 "use client";
 
+import { useT } from "@/lib/i18n";
+
 import { useEffect, useState } from "react";
 import { getOncallSchedule, getOncallCurrent, updateOncallSchedule, type OncallGroup } from "@/lib/api";
 

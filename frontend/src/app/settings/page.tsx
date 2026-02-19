@@ -1,5 +1,7 @@
 "use client";
 
+import { useT } from "@/lib/i18n";
+
 import { useEffect, useState } from "react";
 import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, type AgentConfig, type HealthCheck } from "@/lib/api";
 

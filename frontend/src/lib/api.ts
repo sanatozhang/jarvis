@@ -65,13 +65,16 @@ export interface AnalysisResult {
   task_id: string;
   issue_id: string;
   problem_type: string;
+  problem_type_en?: string;
   root_cause: string;
+  root_cause_en?: string;
   confidence: string;
   confidence_reason: string;
   key_evidence: string[];
   core_logs: string[];
   code_locations: string[];
   user_reply: string;
+  user_reply_en?: string;
   needs_engineer: boolean;
   requires_more_info: boolean;
   more_info_guidance: string;

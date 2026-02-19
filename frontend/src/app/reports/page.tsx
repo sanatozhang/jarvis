@@ -1,5 +1,7 @@
 "use client";
 
+import { useT } from "@/lib/i18n";
+
 import { useEffect, useState } from "react";
 import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api";
 

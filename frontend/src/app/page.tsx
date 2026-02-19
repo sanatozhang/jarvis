@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useT } from "@/lib/i18n";
 import {
   fetchPendingIssues,
   refreshIssuesCache,
@@ -98,6 +99,7 @@ type Tab = "pending" | "in_progress" | "done";
 const PAGE_SIZE = 20;
 
 export default function HomePage() {
+  const t = useT();
   // --- Per-tab data + pagination ---
   const [pendingData, setPendingData] = useState<PaginatedResponse<Issue> | null>(null);
   const [ipData, setIpData] = useState<PaginatedResponse<LocalIssueItem> | null>(null);
@@ -116,6 +118,7 @@ export default function HomePage() {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [lang, setLang] = useState<"cn" | "en">("cn");
   const [detailTab, setDetailTab] = useState<Tab>("pending");
   const [toast, setToast] = useState("");
   const [tab, setTab] = useState<Tab>(() => {
@@ -262,7 +265,7 @@ export default function HomePage() {
 
   const batchStart = async () => { for (const id of selected) await startAnalysis(id); setSelected(new Set()); };
   const toggle = (id: string) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const copy = (text: string) => { navigator.clipboard.writeText(text); setToast("已复制到剪贴板"); };
+  const copy = (text: string) => { navigator.clipboard.writeText(text); setToast(t("已复制到剪贴板")); };
 
   const handleDelete = async (issueId: string) => {
     if (!confirm("确定要删除这个工单吗？")) return;
@@ -308,29 +311,29 @@ export default function HomePage() {
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
         <div className="flex items-center justify-between px-6 py-3">
           <div className="flex items-center gap-4">
-            <h1 className="text-lg font-semibold">工单分析</h1>
+            <h1 className="text-lg font-semibold">{t("工单分析")}</h1>
             <div className="flex items-center gap-1.5">
               {!showAssigneeEdit ? (
                 <button onClick={() => setShowAssigneeEdit(true)} className="flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-xs text-gray-500 hover:bg-gray-50">
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0" /></svg>
-                  {assignee ? <span className="font-medium text-gray-800">{assignee}</span> : <span>全部指派人</span>}
+                  {assignee ? <span className="font-medium text-gray-800">{assignee}</span> : <span>{t("全部指派人")}</span>}
 
                 </button>
               ) : (
                 <div className="flex items-center gap-1">
                   <input autoFocus value={assigneeInput} onChange={(e) => setAssigneeInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") applyAssignee(); if (e.key === "Escape") setShowAssigneeEdit(false); }} placeholder="指派人" className="w-28 rounded-md border border-gray-300 px-2 py-1 text-xs outline-none focus:border-black" />
-                  <button onClick={applyAssignee} className="rounded-md bg-black px-2 py-1 text-[11px] font-medium text-white">确定</button>
-                  {assignee && <button onClick={clearAssignee} className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-500">清除</button>}
-                  <button onClick={() => setShowAssigneeEdit(false)} className="text-[11px] text-gray-400">取消</button>
+                  <button onClick={applyAssignee} className="rounded-md bg-black px-2 py-1 text-[11px] font-medium text-white">{t("确定")}</button>
+                  {assignee && <button onClick={clearAssignee} className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-500">{t("清除")}</button>}
+                  <button onClick={() => setShowAssigneeEdit(false)} className="text-[11px] text-gray-400">{t("取消")}</button>
                 </div>
               )}
             </div>
           </div>
           <div className="flex items-center gap-2">
             {selected.size > 0 && <button onClick={batchStart} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800">批量分析 ({selected.size})</button>}
-            <a href="/feedback" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">提交反馈</a>
-            <button onClick={loadAll} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">{loading ? "加载中..." : "刷新"}</button>
-            <button onClick={forceRefresh} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50">同步飞书</button>
+            <a href="/feedback" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">{t("提交反馈")}</a>
+            <button onClick={loadAll} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">{loading ? t("加载中...") : t("刷新")}</button>
+            <button onClick={forceRefresh} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50">{t("同步飞书")}</button>
             {/* Username display */}
             <div className="ml-2 border-l border-gray-200 pl-3">
               {!showUsernameEdit ? (
@@ -373,10 +376,10 @@ export default function HomePage() {
             ))
           ) : (
             [
-              { label: "待处理", value: counts.pending, color: "" },
-              { label: "进行中", value: counts.in_progress, color: "text-blue-600" },
-              { label: "已完成", value: counts.done, color: "text-green-600" },
-              { label: "高优先级", value: pendingData?.high_priority ?? 0, color: "text-red-600" },
+              { label: t("待处理"), value: counts.pending, color: "" },
+              { label: t("进行中"), value: counts.in_progress, color: "text-blue-600" },
+              { label: t("已完成"), value: counts.done, color: "text-green-600" },
+              { label: t("高优先级"), value: pendingData?.high_priority ?? 0, color: "text-red-600" },
             ].map((s) => (
               <div key={s.label} className="rounded-xl border border-gray-100 bg-white px-4 py-3">
                 <p className="text-xs text-gray-400">{s.label}</p>
@@ -391,9 +394,9 @@ export default function HomePage() {
         {/* Tabs */}
         <div className="mb-4 flex items-center gap-1 rounded-lg bg-gray-100 p-1 w-fit">
           {([
-            { key: "pending" as Tab, label: "待处理", count: counts.pending },
-            { key: "in_progress" as Tab, label: "进行中", count: counts.in_progress },
-            { key: "done" as Tab, label: "已完成", count: counts.done },
+            { key: "pending" as Tab, label: t("待处理"), count: counts.pending },
+            { key: "in_progress" as Tab, label: t("进行中"), count: counts.in_progress },
+            { key: "done" as Tab, label: t("已完成"), count: counts.done },
           ]).map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${tab === t.key ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
               {t.label}{t.count > 0 && <span className="ml-1.5 text-[11px] tabular-nums text-gray-400">{t.count}</span>}
@@ -408,16 +411,16 @@ export default function HomePage() {
               <table className="min-w-full">
                 <thead><tr className="border-b border-gray-100 bg-gray-50/50">
                   <th className="w-10 px-4 py-2.5"><input type="checkbox" className="rounded border-gray-300" onChange={(e) => setSelected(e.target.checked ? new Set((pendingData?.issues || []).map((i) => i.record_id)) : new Set())} /></th>
-                  <th className="w-14 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">级别</th>
-                  <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">问题描述</th>
-                  <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">设备 SN</th>
-                  <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">Zendesk</th>
-                  <th className="w-16 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">飞书</th>
-                  <th className="w-32 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">操作</th>
+                  <th className="w-14 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("级别")}</th>
+                  <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("问题描述")}</th>
+                  <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("设备 SN")}</th>
+                  <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("Zendesk")}</th>
+                  <th className="w-16 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("飞书")}</th>
+                  <th className="w-32 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("操作")}</th>
                 </tr></thead>
                 <tbody className="divide-y divide-gray-50">
                   {loading && !pendingData ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">加载中...</td></tr>
-                  : !pendingData?.issues.length ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">暂无待处理工单</td></tr>
+                  : !pendingData?.issues.length ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无待处理工单")}</td></tr>
                   : pendingData.issues.map((issue) => (
                     <tr key={issue.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => openDetail(issue.record_id, "pending")}>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}><input type="checkbox" className="rounded border-gray-300" checked={selected.has(issue.record_id)} onChange={() => toggle(issue.record_id)} /></td>
@@ -425,9 +428,9 @@ export default function HomePage() {
                       <td className="max-w-md px-4 py-3"><p className="text-sm leading-snug text-gray-800" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{issue.description}</p></td>
                       <td className="px-3 py-3 align-top font-mono text-xs text-gray-400">{issue.device_sn || "—"}</td>
                       <td className="px-3 py-3 align-top text-xs">{issue.zendesk_id ? <a href={issue.zendesk} target="_blank" onClick={(e) => e.stopPropagation()} className="font-medium text-blue-600 hover:underline">{issue.zendesk_id}</a> : <span className="text-gray-300">null</span>}</td>
-                      <td className="px-3 py-3 align-top text-xs"><a href={issue.feishu_link} target="_blank" onClick={(e) => e.stopPropagation()} className="text-blue-500 hover:underline">链接</a></td>
+                      <td className="px-3 py-3 align-top text-xs"><a href={issue.feishu_link} target="_blank" onClick={(e) => e.stopPropagation()} className="text-blue-500 hover:underline">{t("链接")}</a></td>
                       <td className="px-4 py-3 align-top text-right" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => startAnalysis(issue.record_id)} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">分析</button>
+                        <button onClick={() => startAnalysis(issue.record_id)} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">{t("分析")}</button>
                       </td>
                     </tr>
                   ))}
@@ -444,7 +447,7 @@ export default function HomePage() {
           const items = data?.issues || [];
           const currentPage = tab === "in_progress" ? ipPage : donePage;
           const onPageChange = tab === "in_progress" ? onIpPage : onDonePage;
-          const emptyMsg = tab === "in_progress" ? "暂无进行中工单" : "暂无已完成工单";
+          const emptyMsg = tab === "in_progress" ? t("暂无进行中工单") : t("暂无已完成工单");
 
           return (
             <>
@@ -453,10 +456,10 @@ export default function HomePage() {
                   <thead><tr className="border-b border-gray-100 bg-gray-50/50">
                     <th className="w-14 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">级别</th>
                     <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">问题描述</th>
-                    <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">设备 SN</th>
+                    <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("提交人")}</th>
+                    <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("创建时间")}</th>
                     <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">Zendesk</th>
-                    <th className="w-16 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">飞书</th>
-                    <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">状态</th>
+                    <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("状态")}</th>
                     <th className="w-32 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">操作</th>
                   </tr></thead>
                   <tbody className="divide-y divide-gray-50">
@@ -474,17 +477,17 @@ export default function HomePage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-3 py-3 align-top font-mono text-xs text-gray-400">{item.device_sn || "—"}</td>
-                        <td className="px-3 py-3 align-top text-xs">{item.zendesk_id ? <a href={item.zendesk} target="_blank" onClick={(e) => e.stopPropagation()} className="font-medium text-blue-600 hover:underline">{item.zendesk_id}</a> : <span className="text-gray-300">null</span>}</td>
-                        <td className="px-3 py-3 align-top text-xs"><a href={item.feishu_link} target="_blank" onClick={(e) => e.stopPropagation()} className="text-blue-500 hover:underline">链接</a></td>
+                        <td className="px-3 py-3 align-top text-xs text-gray-600">{(item as any).created_by || "—"}</td>
+                        <td className="px-3 py-3 align-top text-xs text-gray-400">{(item as any).created_at ? (item as any).created_at.slice(0, 16).replace("T", " ") : "—"}</td>
+                        <td className="px-3 py-3 align-top text-xs">{item.zendesk_id ? <a href={item.zendesk} target="_blank" onClick={(e) => e.stopPropagation()} className="font-medium text-blue-600 hover:underline">{item.zendesk_id}</a> : <span className="text-gray-300">—</span>}</td>
                         <td className="px-3 py-3 align-top"><LocalStatusBadge item={item} /></td>
                         <td className="px-4 py-3 align-top text-right" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1.5">
                             {item.local_status === "failed" && (
-                              <button onClick={() => startAnalysis(item.record_id)} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">重试分析</button>
+                              <button onClick={() => startAnalysis(item.record_id)} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">{t("重试分析")}</button>
                             )}
-                            {item.analysis?.user_reply && <button onClick={() => copy(item.analysis!.user_reply)} className="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700">复制回复</button>}
-                            <button onClick={() => handleEscalate(item.record_id)} className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100" title="转工程师">转工程师</button>
+                            {item.analysis?.user_reply && <button onClick={() => copy(item.analysis!.user_reply)} className="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700">{t("复制回复")}</button>}
+                            <button onClick={() => handleEscalate(item.record_id)} className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100" title="转工程师">{t("转工程师")}</button>
                             <button onClick={() => handleDelete(item.record_id)} className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-400 hover:border-red-300 hover:text-red-500" title="删除">
                               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
                             </button>
@@ -507,7 +510,7 @@ export default function HomePage() {
           <div className="flex-1 bg-black/20" onClick={() => setDetailId(null)} />
           <div className="w-[520px] flex-shrink-0 overflow-y-auto border-l border-gray-200 bg-white shadow-2xl">
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-100 bg-white px-5 py-3">
-              <h2 className="text-sm font-semibold text-gray-800">工单详情</h2>
+              <h2 className="text-sm font-semibold text-gray-800">{t("工单详情")}</h2>
               <button onClick={() => setDetailId(null)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"><svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg></button>
             </div>
             <div className="p-5 space-y-5">
@@ -535,7 +538,7 @@ export default function HomePage() {
 
               {/* Action button for pending issues */}
               {detailTab === "pending" && !detailData.task && !detailData.result && (
-                <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">开始 AI 分析</button>
+                <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("开始 AI 分析")}</button>
               )}
 
               {/* Progress */}
@@ -553,57 +556,51 @@ export default function HomePage() {
                     <p className="text-sm font-medium text-red-700">分析失败</p>
                     <p className="mt-1 text-xs text-red-500">{detailData.task.error}</p>
                   </div>
-                  <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">重新分析</button>
+                  <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("重新分析")}</button>
                 </>
               )}
 
               {/* Result */}
-              {detailData.result && (
+              {detailData.result && (() => {
+                const r = detailData.result;
+                const problemType = lang === "en" && r.problem_type_en ? r.problem_type_en : r.problem_type;
+                const rootCause = lang === "en" && r.root_cause_en ? r.root_cause_en : r.root_cause;
+                const userReply = lang === "en" && r.user_reply_en ? r.user_reply_en : r.user_reply;
+                return (
                 <>
                   <section>
-                    <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">AI 分析结果</h3>
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">{lang === "cn" ? "AI 分析结果" : "AI Analysis"}</h3>
+                      <div className="flex items-center gap-0.5 rounded-md bg-gray-100 p-0.5">
+                        <button onClick={() => setLang("cn")} className={`rounded px-2 py-0.5 text-[11px] font-medium ${lang === "cn" ? "bg-white text-gray-800 shadow-sm" : "text-gray-400"}`}>中文</button>
+                        <button onClick={() => setLang("en")} className={`rounded px-2 py-0.5 text-[11px] font-medium ${lang === "en" ? "bg-white text-gray-800 shadow-sm" : "text-gray-400"}`}>EN</button>
+                      </div>
+                    </div>
                     <div className="flex flex-wrap gap-2 mb-3">
-                      <span className="rounded-lg bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">{detailData.result.problem_type}</span>
-                      <ConfBadge c={detailData.result.confidence} />
-                      {detailData.result.needs_engineer && <span className="rounded-lg bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">需工程师</span>}
+                      <span className="rounded-lg bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">{problemType}</span>
+                      <ConfBadge c={r.confidence} />
+                      {r.needs_engineer && <span className="rounded-lg bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">{lang === "cn" ? "需工程师" : "Engineer needed"}</span>}
                     </div>
                   </section>
-                  <section><h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">问题原因</h3><div className="whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-700">{detailData.result.root_cause}</div></section>
-                  {detailData.result.key_evidence && detailData.result.key_evidence.length > 0 && (
-                    <section><h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">关键证据</h3><div className="space-y-1">{detailData.result.key_evidence.map((ev, i) => <div key={i} className="rounded bg-gray-50 px-3 py-1.5 font-mono text-[11px] text-gray-600">{ev}</div>)}</div></section>
+                  <section>
+                    <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">{lang === "cn" ? "问题原因" : "Root Cause"}</h3>
+                    <div className="whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-700">{rootCause}</div>
+                  </section>
+                  {r.key_evidence && r.key_evidence.length > 0 && (
+                    <section><h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">{lang === "cn" ? "关键证据" : "Key Evidence"}</h3><div className="space-y-1">{r.key_evidence.map((ev, i) => <div key={i} className="rounded bg-gray-50 px-3 py-1.5 font-mono text-[11px] text-gray-600">{ev}</div>)}</div></section>
                   )}
-                  {detailData.result.core_logs && detailData.result.core_logs.length > 0 && (
+                  {userReply && (
                     <section>
-                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">核心日志</h3>
-                      <div className="space-y-1">{detailData.result.core_logs.map((line, i) => <div key={i} className="rounded bg-gray-50 px-3 py-1.5 font-mono text-[11px] text-gray-600">{line}</div>)}</div>
-                    </section>
-                  )}
-                  {detailData.result.code_locations && detailData.result.code_locations.length > 0 && (
-                    <section>
-                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">代码定位</h3>
-                      <div className="space-y-1">{detailData.result.code_locations.map((loc, i) => <div key={i} className="rounded bg-blue-50 px-3 py-1.5 font-mono text-[11px] text-blue-700">{loc}</div>)}</div>
-                    </section>
-                  )}
-                  {(detailData.result.requires_more_info || detailData.result.more_info_guidance) && (
-                    <section>
-                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">补充信息要求</h3>
-                      <div className="whitespace-pre-wrap rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{detailData.result.more_info_guidance || "需要用户补充更多信息后再分析。"}</div>
-                    </section>
-                  )}
-                  {detailData.result.next_steps && detailData.result.next_steps.length > 0 && (
-                    <section>
-                      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">下一步操作</h3>
-                      <div className="space-y-1">{detailData.result.next_steps.map((step, i) => <div key={i} className="rounded bg-gray-50 px-3 py-2 text-sm text-gray-700">{i + 1}. {step}</div>)}</div>
-                    </section>
-                  )}
-                  {detailData.result.user_reply && (
-                    <section>
-                      <div className="mb-1.5 flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">建议回复</h3><button onClick={() => copy(detailData.result!.user_reply)} className="rounded-md bg-green-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-green-700">一键复制</button></div>
-                      <div className="whitespace-pre-wrap rounded-lg border border-green-200 bg-green-50/50 p-3 text-sm text-gray-700">{detailData.result.user_reply}</div>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">{lang === "cn" ? "建议回复" : "Suggested Reply"}</h3>
+                        <button onClick={() => copy(userReply)} className="rounded-md bg-green-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-green-700">{lang === "cn" ? "一键复制" : "Copy"}</button>
+                      </div>
+                      <div className="whitespace-pre-wrap rounded-lg border border-green-200 bg-green-50/50 p-3 text-sm text-gray-700">{userReply}</div>
                     </section>
                   )}
                 </>
-              )}
+                );
+              })()}
 
               {/* Retry button for failed analysis */}
               {detailData.localItem?.local_status === "failed" && (
@@ -629,7 +626,7 @@ export default function HomePage() {
                 >
                   转工程师处理
                 </button>
-                <p className="mt-1 text-center text-[11px] text-gray-400">将通过飞书消息通知当前值班工程师</p>
+                <p className="mt-1 text-center text-[11px] text-gray-400">{t("通过飞书消息通知当前值班工程师")}</p>
               </section>
             </div>
           </div>
@@ -644,8 +641,8 @@ export default function HomePage() {
               <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-black">
                 <span className="text-lg font-bold text-white">J</span>
               </div>
-              <h3 className="text-base font-semibold text-gray-900">欢迎使用 Jarvis</h3>
-              <p className="mt-1 text-sm text-gray-500">请设置您的用户名，用于标记工单操作</p>
+              <h3 className="text-base font-semibold text-gray-900">{t("欢迎使用 Jarvis")}</h3>
+              <p className="mt-1 text-sm text-gray-500">{t("请设置您的用户名，用于标记工单操作")}</p>
             </div>
             <input
               autoFocus

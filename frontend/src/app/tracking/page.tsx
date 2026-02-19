@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useT } from "@/lib/i18n";
 import { fetchTracking, escalateIssue, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
 
 const CATEGORIES = [
@@ -53,6 +54,7 @@ function Pagination({ page, totalPages, onChange }: { page: number; totalPages: 
 }
 
 export default function TrackingPage() {
+  const t = useT();
   const [data, setData] = useState<PaginatedResponse<LocalIssueItem> | null>(null);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
