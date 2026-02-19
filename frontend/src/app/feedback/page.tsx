@@ -60,7 +60,7 @@ export default function FeedbackPage() {
 
   const importFromZendesk = async () => {
     const zd = form.zendesk.trim();
-    if (!zd) { setToast({ msg: "请先输入 Zendesk 工单号", type: "error" }); setTimeout(() => setToast(null), 3000); return; }
+    if (!zd) { setToast({ msg: t("请先输入 Zendesk 工单号"), type: "error" }); setTimeout(() => setToast(null), 3000); return; }
     setImporting(true);
     try {
       const fd = new FormData();
@@ -80,9 +80,9 @@ export default function FeedbackPage() {
         app_version: data.app_version || prev.app_version,
         zendesk: data.zendesk_url || prev.zendesk,
       }));
-      setToast({ msg: `已导入 Zendesk #${data.ticket_id}（${data.comment_count} 条聊天记录）`, type: "success" });
+      setToast({ msg: `${t("已导入 Zendesk")} #${data.ticket_id}（${data.comment_count} ${t("条聊天记录")}）`, type: "success" });
     } catch (e: any) {
-      setToast({ msg: `导入失败: ${e.message}`, type: "error" });
+      setToast({ msg: `${t("导入失败")}: ${e.message}`, type: "error" });
     } finally {
       setImporting(false);
       setTimeout(() => setToast(null), 4000);
@@ -96,7 +96,7 @@ export default function FeedbackPage() {
     const valid: File[] = [];
     for (const f of Array.from(newFiles)) {
       if (f.size > 50 * 1024 * 1024) {
-        setToast({ msg: `${f.name} 超过 50MB 限制（${formatSize(f.size)}）`, type: "error" });
+        setToast({ msg: `${f.name} ${t("超过 50MB 限制")}（${formatSize(f.size)}）`, type: "error" });
         setTimeout(() => setToast(null), 4000);
       } else {
         valid.push(f);
@@ -117,7 +117,7 @@ export default function FeedbackPage() {
 
   const submit = async () => {
     if (!form.description.trim()) {
-      setToast({ msg: "请填写问题描述", type: "error" });
+      setToast({ msg: t("请填写问题描述"), type: "error" });
       setTimeout(() => setToast(null), 3000);
       return;
     }
@@ -125,7 +125,7 @@ export default function FeedbackPage() {
     // Check file sizes
     const oversized = files.find((f) => f.size > MAX_FILE_SIZE);
     if (oversized) {
-      setToast({ msg: `文件 ${oversized.name} 超过 50MB 限制（${formatSize(oversized.size)}），请压缩后重试`, type: "error" });
+      setToast({ msg: `${t("文件")} ${oversized.name} ${t("超过 50MB 限制")}（${formatSize(oversized.size)}），${t("请压缩后重试")}`, type: "error" });
       setTimeout(() => setToast(null), 5000);
       return;
     }
@@ -163,14 +163,14 @@ export default function FeedbackPage() {
             reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
           }
         };
-        xhr.onerror = () => reject(new Error("网络错误，请检查网络连接"));
-        xhr.ontimeout = () => reject(new Error("上传超时（2分钟），请检查文件大小和网络"));
+        xhr.onerror = () => reject(new Error(t("网络错误，请检查网络连接")));
+        xhr.ontimeout = () => reject(new Error(t("上传超时（2分钟），请检查文件大小和网络")));
         xhr.send(fd);
       });
 
       window.location.href = "/?tab=in_progress";
     } catch (e: any) {
-      setToast({ msg: `提交失败: ${e.message}`, type: "error" });
+      setToast({ msg: `${t("提交失败")}: ${e.message}`, type: "error" });
       setTimeout(() => setToast(null), 6000);
     } finally {
       setSubmitting(false);
@@ -293,7 +293,7 @@ export default function FeedbackPage() {
                   value={form.zendesk}
                   onChange={(e) => update("zendesk", e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); importFromZendesk(); } }}
-                  placeholder="输入工单号，回车导入"
+                  placeholder={t("输入工单号，回车导入")}
                   className="flex-1 rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-black"
                 />
                 <button
@@ -305,9 +305,9 @@ export default function FeedbackPage() {
                   {importing ? (
                     <span className="flex items-center gap-1.5">
                       <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                      导入中
+                      {t("导入中")}
                     </span>
-                  ) : "导入"}
+                  ) : t("导入")}
                 </button>
               </div>
               <p className="mt-1 text-[11px] text-gray-400">{t("输入工单号后点击导入，AI 将自动总结聊天记录并填充表单")}</p>
@@ -327,7 +327,7 @@ export default function FeedbackPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.338-2.32 3.75 3.75 0 013.537 5.344A4.5 4.5 0 0118 19.5H6.75z" />
               </svg>
               <p className="text-sm text-gray-500">{t("点击或拖拽上传日志文件")}</p>
-              <p className="mt-0.5 text-xs text-gray-400">支持 .plaud, .log, .zip, .gz 格式（单个文件 ≤ 50MB）</p>
+              <p className="mt-0.5 text-xs text-gray-400">{t("支持 .plaud, .log, .zip, .gz 格式（单个文件 ≤ 50MB）")}</p>
               <input
                 ref={fileRef}
                 type="file"

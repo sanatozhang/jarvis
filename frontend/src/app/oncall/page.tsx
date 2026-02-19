@@ -47,12 +47,12 @@ export default function OncallPage() {
 
   const save = async () => {
     const cleaned = groups.map((g) => g.filter((m) => m.trim())).filter((g) => g.length > 0);
-    if (!cleaned.length) { setToast({ msg: "至少需要一组值班人员", type: "error" }); return; }
-    if (!startDate) { setToast({ msg: "请设置起始日期", type: "error" }); return; }
+    if (!cleaned.length) { setToast({ msg: t("至少需要一组值班人员"), type: "error" }); return; }
+    if (!startDate) { setToast({ msg: t("请设置起始日期"), type: "error" }); return; }
     setSaving(true);
     try {
       await updateOncallSchedule(cleaned, startDate, username);
-      setToast({ msg: "值班表已保存", type: "success" });
+      setToast({ msg: t("值班表已保存"), type: "success" });
       setEditing(false);
       await load();
     } catch (e: any) {
@@ -83,7 +83,7 @@ export default function OncallPage() {
             <div className="flex items-center gap-2">
               {editing ? (
                 <>
-                  <button onClick={save} disabled={saving} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50">{saving ? "保存中..." : "保存"}</button>
+                  <button onClick={save} disabled={saving} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50">{saving ? t("保存中...") : t("保存")}</button>
                   <button onClick={() => { setEditing(false); load(); }} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">{t("取消")}</button>
                 </>
               ) : (
@@ -115,15 +115,15 @@ export default function OncallPage() {
           {editing ? (
             <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-black" />
           ) : (
-            <p className="text-sm text-gray-600">{startDate || "未设置"}</p>
+            <p className="text-sm text-gray-600">{startDate || t("未设置")}</p>
           )}
-          <p className="mt-1 text-xs text-gray-400">从此日期开始，每周一轮换到下一组</p>
+          <p className="mt-1 text-xs text-gray-400">{t("从此日期开始，每周一轮换到下一组")}</p>
         </section>
 
         {/* Groups */}
         <section className="rounded-xl border border-gray-100 bg-white p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">{t("值班分组")}（共 {groups.length} 组）</h2>
+            <h2 className="text-sm font-semibold">{t("值班分组")}（{t("共")} {groups.length} {t("组")}）</h2>
             {editing && (
               <button onClick={addGroup} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">{t("添加分组")}</button>
             )}
@@ -137,7 +137,7 @@ export default function OncallPage() {
                 <div key={gi} className={`rounded-lg border p-4 ${gi === currentGroupIdx ? "border-green-300 bg-green-50/30" : "border-gray-100 bg-gray-50/50"}`}>
                   <div className="mb-2 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gray-700">第 {gi + 1} 组</span>
+                      <span className="text-sm font-medium text-gray-700">{t("第")} {gi + 1} {t("组")}</span>
                       {gi === currentGroupIdx && <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700">{t("本周")}</span>}
                     </div>
                     {editing && groups.length > 1 && (
@@ -152,7 +152,7 @@ export default function OncallPage() {
                             <input
                               value={email}
                               onChange={(e) => updateMember(gi, mi, e.target.value)}
-                              placeholder="飞书邮箱，如 engineer@plaud.ai"
+                              placeholder={t("飞书邮箱，如 engineer@plaud.ai")}
                               className="flex-1 rounded-md border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-black"
                             />
                             <button onClick={() => removeMember(gi, mi)} className="text-xs text-gray-400 hover:text-red-500">{t("移除")}</button>

@@ -218,7 +218,31 @@ def get_session() -> AsyncSession:
 async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRecord:
     async with get_session() as session:
         rid = data.get("record_id") or data.get("id", "")
-        # Use merge to handle concurrent inserts safely
+        existing = await session.get(IssueRecord, rid)
+        if existing:
+            existing.description = data.get("description", "") or existing.description
+            existing.device_sn = data.get("device_sn", "") or existing.device_sn
+            existing.firmware = data.get("firmware", "") or existing.firmware
+            existing.app_version = data.get("app_version", "") or existing.app_version
+            existing.priority = data.get("priority", "") or existing.priority
+            existing.zendesk = data.get("zendesk", "") or existing.zendesk
+            existing.zendesk_id = data.get("zendesk_id", "") or existing.zendesk_id
+            existing.source = data.get("source", "") or existing.source
+            existing.feishu_link = data.get("feishu_link", "") or existing.feishu_link
+            existing.linear_issue_id = data.get("linear_issue_id", "") or existing.linear_issue_id
+            existing.linear_issue_url = data.get("linear_issue_url", "") or existing.linear_issue_url
+            existing.platform = data.get("platform", "") or existing.platform
+            existing.category = data.get("category", "") or existing.category
+            if data.get("created_at_ms"):
+                existing.created_at_ms = data["created_at_ms"]
+            if data.get("log_files"):
+                existing.log_files_json = json.dumps(data["log_files"], ensure_ascii=False)
+            if data.get("created_by"):
+                existing.created_by = data["created_by"]
+            existing.status = status
+            existing.updated_at = datetime.utcnow()
+            await session.commit()
+            return existing
         record = IssueRecord(
             id=rid,
             description=data.get("description", ""),
@@ -234,14 +258,15 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
             linear_issue_url=data.get("linear_issue_url", ""),
             platform=data.get("platform", ""),
             category=data.get("category", ""),
+            created_by=data.get("created_by", ""),
             created_at_ms=data.get("created_at_ms", 0),
             log_files_json=json.dumps(data.get("log_files", []), ensure_ascii=False),
             status=status,
             updated_at=datetime.utcnow(),
         )
-        merged = await session.merge(record)
+        session.add(record)
         await session.commit()
-        return merged
+        return record
 
 
 async def update_issue_status(issue_id: str, status: str):

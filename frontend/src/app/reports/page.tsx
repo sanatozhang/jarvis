@@ -34,7 +34,7 @@ export default function ReportsPage() {
   const copyMd = () => {
     if (!report) return;
     navigator.clipboard.writeText(report.markdown);
-    setToast("Markdown 已复制");
+    setToast(t("Markdown 已复制"));
     setTimeout(() => setToast(""), 2000);
   };
 
@@ -50,15 +50,15 @@ export default function ReportsPage() {
               className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 outline-none focus:border-black"
             >
               {/* Always show today */}
-              {!dates.includes(today) && <option value={today}>{today}（今天）</option>}
+              {!dates.includes(today) && <option value={today}>{today}（{t("今天")}）</option>}
               {dates.map((d) => (
-                <option key={d} value={d}>{d}{d === today ? "（今天）" : ""}</option>
+                <option key={d} value={d}>{d}{d === today ? `（${t("今天")}）` : ""}</option>
               ))}
               {dates.length === 0 && <option value="">{t("暂无报告")}</option>}
             </select>
             {report && (
               <button onClick={copyMd} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">
-                复制 Markdown
+                {t("复制 Markdown")}
               </button>
             )}
           </div>
@@ -72,8 +72,8 @@ export default function ReportsPage() {
           <p className="py-16 text-center text-sm text-gray-300">{t("选择日期查看报告")}</p>
         ) : report.total_issues === 0 ? (
           <div className="py-16 text-center">
-            <p className="text-sm text-gray-400">该日期暂无已分析工单</p>
-            <p className="mt-1 text-xs text-gray-300">分析工单后，报告会自动生成</p>
+            <p className="text-sm text-gray-400">{t("该日期暂无已分析工单")}</p>
+            <p className="mt-1 text-xs text-gray-300">{t("分析工单后，报告会自动生成")}</p>
           </div>
         ) : (
           <>
@@ -114,10 +114,10 @@ export default function ReportsPage() {
                       <div className="mb-1 flex items-center justify-between">
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{t("用户回复")}</span>
                         <button
-                          onClick={() => { navigator.clipboard.writeText(a.user_reply); setToast("已复制"); setTimeout(() => setToast(""), 2000); }}
+                          onClick={() => { navigator.clipboard.writeText(a.user_reply); setToast(t("已复制")); setTimeout(() => setToast(""), 2000); }}
                           className="rounded bg-green-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-green-700"
                         >
-                          复制
+                          {t("复制")}
                         </button>
                       </div>
                       <p className="whitespace-pre-wrap text-sm text-gray-600">{a.user_reply}</p>
@@ -130,7 +130,7 @@ export default function ReportsPage() {
             {/* Raw Markdown */}
             <details className="mt-6">
               <summary className="cursor-pointer text-sm font-medium text-gray-400 hover:text-gray-600">
-                查看原始 Markdown
+                {t("查看原始 Markdown")}
               </summary>
               <pre className="mt-2 max-h-96 overflow-y-auto rounded-lg bg-gray-50 p-4 font-mono text-xs text-gray-500">
                 {report.markdown}

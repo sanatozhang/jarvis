@@ -74,13 +74,13 @@ export default function AnalyticsPage() {
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
         <div className="flex items-center justify-between px-6 py-3">
           <div>
-            <h1 className="text-lg font-semibold">数据看板</h1>
-            <p className="text-xs text-gray-400">项目价值 & 使用情况统计</p>
+            <h1 className="text-lg font-semibold">{t("数据看板")}</h1>
+            <p className="text-xs text-gray-400">{t("项目价值 & 使用情况统计")}</p>
           </div>
           <div className="flex items-center gap-1 rounded-lg bg-gray-100 p-1">
             {[7, 14, 30].map((d) => (
               <button key={d} onClick={() => setDays(d)} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${days === d ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>
-                {d}天
+                {d}{t("天")}
               </button>
             ))}
           </div>
@@ -92,52 +92,52 @@ export default function AnalyticsPage() {
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-black" />
         </div>
       ) : !data ? (
-        <p className="py-24 text-center text-gray-300">暂无数据</p>
+        <p className="py-24 text-center text-gray-300">{t("暂无数据")}</p>
       ) : (
         <div className="mx-auto max-w-4xl px-6 py-6 space-y-6">
 
           {/* ===== VALUE METRICS (HERO) ===== */}
           <section className="rounded-2xl bg-gradient-to-br from-black to-gray-800 p-6 text-white">
-            <h2 className="mb-4 text-sm font-medium text-white/60">项目价值（过去 {days} 天）</h2>
+            <h2 className="mb-4 text-sm font-medium text-white/60">{t("项目价值")}（{t("过去")} {days} {t("天")}）</h2>
             <div className="grid grid-cols-3 gap-4">
               <div>
-                <p className="text-3xl font-bold">{data.value_metrics.time_saved_hours}<span className="text-lg font-normal text-white/50"> 小时</span></p>
-                <p className="mt-1 text-xs text-white/50">预估节省工时</p>
+                <p className="text-3xl font-bold">{data.value_metrics.time_saved_hours}<span className="text-lg font-normal text-white/50"> {t("小时")}</span></p>
+                <p className="mt-1 text-xs text-white/50">{t("预估节省工时")}</p>
               </div>
               <div>
-                <p className="text-3xl font-bold">{data.value_metrics.time_saved_per_ticket_min}<span className="text-lg font-normal text-white/50"> 分钟/单</span></p>
-                <p className="mt-1 text-xs text-white/50">每单节省时间</p>
+                <p className="text-3xl font-bold">{data.value_metrics.time_saved_per_ticket_min}<span className="text-lg font-normal text-white/50"> {t("分钟/单")}</span></p>
+                <p className="mt-1 text-xs text-white/50">{t("每单节省时间")}</p>
               </div>
               <div>
                 <p className="text-3xl font-bold">{data.value_metrics.success_rate}<span className="text-lg font-normal text-white/50">%</span></p>
-                <p className="mt-1 text-xs text-white/50">分析成功率</p>
+                <p className="mt-1 text-xs text-white/50">{t("分析成功率")}</p>
               </div>
             </div>
             <p className="mt-3 text-[11px] text-white/30">
-              对比: 人工处理 ~{data.value_metrics.estimated_manual_hours}h → AI 处理 ~{data.value_metrics.estimated_ai_hours}h
+              {t("对比")}: {t("人工处理")} ~{data.value_metrics.estimated_manual_hours}h → {t("AI 处理")} ~{data.value_metrics.estimated_ai_hours}h
             </p>
           </section>
 
           {/* ===== KEY METRICS ===== */}
           <div className="grid grid-cols-5 gap-3">
-            <StatCard label="总分析次数" value={data.total_analyses} />
-            <StatCard label="分析成功" value={data.successful_analyses} color="text-green-600" />
-            <StatCard label="分析失败" value={data.failed_analyses} color="text-red-600" />
-            <StatCard label="反馈提交" value={data.feedback_submitted} color="text-blue-600" />
-            <StatCard label="活跃用户" value={data.unique_users} color="text-purple-600" />
+            <StatCard label={t("总分析次数")} value={data.total_analyses} />
+            <StatCard label={t("分析成功")} value={data.successful_analyses} color="text-green-600" />
+            <StatCard label={t("分析失败")} value={data.failed_analyses} color="text-red-600" />
+            <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="text-blue-600" />
+            <StatCard label={t("活跃用户")} value={data.unique_users} color="text-purple-600" />
           </div>
 
           <div className="grid grid-cols-3 gap-3">
-            <StatCard label="平均分析耗时" value={`${data.avg_analysis_duration_min} 分钟`} sub={`${data.avg_analysis_duration_ms}ms`} />
-            <StatCard label="工单转工程师" value={data.escalations} />
-            <StatCard label="页面访问" value={data.event_counts.page_visit || 0} />
+            <StatCard label={t("平均分析耗时")} value={`${data.avg_analysis_duration_min} ${t("分钟")}`} sub={`${data.avg_analysis_duration_ms}ms`} />
+            <StatCard label={t("工单转工程师")} value={data.escalations} />
+            <StatCard label={t("页面访问")} value={data.event_counts.page_visit || 0} />
           </div>
 
           {/* ===== DAILY TREND ===== */}
           <section className="rounded-xl border border-gray-100 bg-white p-5">
-            <h2 className="mb-4 text-sm font-semibold">每日趋势</h2>
+            <h2 className="mb-4 text-sm font-semibold">{t("每日趋势")}</h2>
             {dailyDates.length === 0 ? (
-              <p className="py-8 text-center text-sm text-gray-300">暂无数据</p>
+              <p className="py-8 text-center text-sm text-gray-300">{t("暂无数据")}</p>
             ) : (
               <div className="space-y-2">
                 {dailyDates.map((date) => {
@@ -153,9 +153,9 @@ export default function AnalyticsPage() {
                         <Bar value={analyses + feedback} max={maxDaily} color="bg-black" />
                       </div>
                       <div className="flex w-40 flex-shrink-0 items-center gap-2 text-[11px]">
-                        <span className="text-gray-600">{analyses} 分析</span>
-                        <span className="text-green-600">{success} 成功</span>
-                        <span className="text-red-500">{fail} 失败</span>
+                        <span className="text-gray-600">{analyses} {t("分析")}</span>
+                        <span className="text-green-600">{success} {t("成功")}</span>
+                        <span className="text-red-500">{fail} {t("失败")}</span>
                       </div>
                     </div>
                   );
@@ -167,32 +167,32 @@ export default function AnalyticsPage() {
           {/* ===== TOP USERS + FAIL REASONS ===== */}
           <div className="grid grid-cols-2 gap-4">
             <section className="rounded-xl border border-gray-100 bg-white p-5">
-              <h2 className="mb-3 text-sm font-semibold">活跃用户 Top 10</h2>
+              <h2 className="mb-3 text-sm font-semibold">{t("活跃用户 Top 10")}</h2>
               {data.top_users.length === 0 ? (
-                <p className="py-4 text-center text-sm text-gray-300">暂无数据</p>
+                <p className="py-4 text-center text-sm text-gray-300">{t("暂无数据")}</p>
               ) : (
                 <div className="space-y-2">
                   {data.top_users.map((u, i) => (
-                    <div key={u.username} className="flex items-center justify-between">
+                    <a key={u.username} href={`/tracking?created_by=${encodeURIComponent(u.username)}`} className="flex items-center justify-between rounded-lg px-1 py-0.5 -mx-1 hover:bg-gray-50 transition-colors cursor-pointer">
                       <div className="flex items-center gap-2">
                         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-100 text-[10px] font-bold text-gray-500">{i + 1}</span>
-                        <span className="text-sm text-gray-700">{u.username}</span>
+                        <span className="text-sm text-blue-600 hover:underline">{u.username}</span>
                       </div>
-                      <span className="text-xs tabular-nums text-gray-400">{u.count} 次操作</span>
-                    </div>
+                      <span className="text-xs tabular-nums text-gray-400">{u.count} {t("次操作")}</span>
+                    </a>
                   ))}
                 </div>
               )}
             </section>
 
             <section className="rounded-xl border border-gray-100 bg-white p-5">
-              <h2 className="mb-3 text-sm font-semibold">失败原因分布</h2>
+              <h2 className="mb-3 text-sm font-semibold">{t("失败原因分布")}</h2>
               {data.fail_reasons.length === 0 ? (
-                <p className="py-4 text-center text-sm text-gray-300">暂无失败记录</p>
+                <p className="py-4 text-center text-sm text-gray-300">{t("暂无失败记录")}</p>
               ) : (() => {
                 const reasonCounts: Record<string, number> = {};
                 data.fail_reasons.forEach((f) => {
-                  const r = f.reason || "未知";
+                  const r = f.reason || t("未知");
                   reasonCounts[r] = (reasonCounts[r] || 0) + 1;
                 });
                 return (

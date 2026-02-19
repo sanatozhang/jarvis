@@ -37,9 +37,10 @@ function setUrlParam(key: string, val: string) {
 // Small components
 // ============================================================
 function PriorityBadge({ p }: { p: string }) {
+  const t = useT();
   return p === "H"
-    ? <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-600 ring-1 ring-red-200">高</span>
-    : <span className="inline-flex items-center rounded-full bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-500 ring-1 ring-gray-200">低</span>;
+    ? <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-600 ring-1 ring-red-200">{t("高")}</span>
+    : <span className="inline-flex items-center rounded-full bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-500 ring-1 ring-gray-200">{t("低")}</span>;
 }
 
 function ConfBadge({ c }: { c: string }) {
@@ -86,11 +87,12 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 
 function Pagination({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (p: number) => void }) {
   if (totalPages <= 1) return null;
+  const t = useT();
   return (
     <div className="mt-4 flex items-center justify-center gap-2">
-      <button disabled={page <= 1} onClick={() => onChange(page - 1)} className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed">上一页</button>
+      <button disabled={page <= 1} onClick={() => onChange(page - 1)} className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed">{t("上一页")}</button>
       <span className="text-xs tabular-nums text-gray-400">{page} / {totalPages}</span>
-      <button disabled={page >= totalPages} onClick={() => onChange(page + 1)} className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed">下一页</button>
+      <button disabled={page >= totalPages} onClick={() => onChange(page + 1)} className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed">{t("下一页")}</button>
     </div>
   );
 }
@@ -257,7 +259,7 @@ export default function HomePage() {
           }).catch(console.error);
         }
         if (progress.status === "failed") {
-          setToast(`分析失败: ${progress.error || "未知错误"}`);
+          setToast(`${t("分析失败")}: ${progress.error || t("未知错误")}`);
           loadInProgress(1);
           // Reload pending so the issue reappears for retry
           loadPending(pendingPage);
@@ -271,20 +273,20 @@ export default function HomePage() {
   const copy = (text: string) => { navigator.clipboard.writeText(text); setToast(t("已复制到剪贴板")); };
 
   const handleDelete = async (issueId: string) => {
-    if (!confirm("确定要删除这个工单吗？")) return;
+    if (!confirm(t("确定要删除这个工单吗？"))) return;
     try {
       await deleteIssue(issueId);
-      setToast("工单已删除");
+      setToast(t("工单已删除"));
       loadInProgress(ipPage);
       loadDone(donePage);
-    } catch (e: any) { setToast(`删除失败: ${e.message}`); }
+    } catch (e: any) { setToast(`${t("删除失败")}: ${e.message}`); }
   };
 
   const handleEscalate = async (issueId: string) => {
     try {
       const res: any = await escalateIssue(issueId);
-      setToast(res.message || (res.status === "sent" ? "已通知值班工程师" : "发送失败"));
-    } catch (e: any) { setToast(`通知失败: ${e.message}`); }
+      setToast(res.message || (res.status === "sent" ? t("已通知值班工程师") : t("发送失败")));
+    } catch (e: any) { setToast(`${t("通知失败")}: ${e.message}`); }
   };
   // --- Counts ---
   const counts = {
@@ -333,9 +335,9 @@ export default function HomePage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {selected.size > 0 && <button onClick={batchStart} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800">批量分析 ({selected.size})</button>}
+            {selected.size > 0 && <button onClick={batchStart} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800">{t("批量分析")} ({selected.size})</button>}
             <a href="/feedback" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">{t("提交反馈")}</a>
-            <button onClick={loadAll} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">{loading ? t(t("加载中...")) : t("刷新")}</button>
+            <button onClick={loadAll} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">{loading ? t("加载中...") : t("刷新")}</button>
             <button onClick={forceRefresh} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50">{t("同步飞书")}</button>
             {/* Username display */}
             <div className="ml-2 border-l border-gray-200 pl-3">
@@ -344,7 +346,7 @@ export default function HomePage() {
                   <span className="flex h-6 w-6 items-center justify-center rounded-full bg-black text-[10px] font-bold text-white">
                     {username ? username[0].toUpperCase() : "?"}
                   </span>
-                  <span className="font-medium text-gray-700">{username || "设置用户名"}</span>
+                  <span className="font-medium text-gray-700">{username || t("设置用户名")}</span>
                 </button>
               ) : (
                 <div className="flex items-center gap-1">
@@ -363,8 +365,8 @@ export default function HomePage() {
         {loading && !pendingData && !ipData && !doneData && (
           <div className="flex flex-col items-center justify-center py-24">
             <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-200 border-t-black" />
-            <p className="text-sm font-medium text-gray-500">正在从飞书加载工单...</p>
-            <p className="mt-1 text-xs text-gray-400">首次加载可能需要几秒钟</p>
+            <p className="text-sm font-medium text-gray-500">{t("正在从飞书加载工单...")}</p>
+            <p className="mt-1 text-xs text-gray-400">{t("首次加载可能需要几秒钟")}</p>
           </div>
         )}
 
@@ -422,7 +424,7 @@ export default function HomePage() {
                   <th className="w-32 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("操作")}</th>
                 </tr></thead>
                 <tbody className="divide-y divide-gray-50">
-                  {loading && !pendingData ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">加载中...</td></tr>
+                  {loading && !pendingData ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
                   : !pendingData?.issues.length ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无待处理工单")}</td></tr>
                   : pendingData.issues.map((issue) => (
                     <tr key={issue.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => openDetail(issue.record_id, "pending")}>
@@ -457,16 +459,16 @@ export default function HomePage() {
               <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
                 <table className="min-w-full">
                   <thead><tr className="border-b border-gray-100 bg-gray-50/50">
-                    <th className="w-14 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">级别</th>
-                    <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">问题描述</th>
+                    <th className="w-14 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("级别")}</th>
+                    <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("问题描述")}</th>
                     <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("提交人")}</th>
                     <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("创建时间")}</th>
                     <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">Zendesk</th>
                     <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("状态")}</th>
-                    <th className="w-32 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">操作</th>
+                    <th className="w-32 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("操作")}</th>
                   </tr></thead>
                   <tbody className="divide-y divide-gray-50">
-                    {loading && !data ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">加载中...</td></tr>
+                    {loading && !data ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
                     : !items.length ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{emptyMsg}</td></tr>
                     : items.map((item) => (
                       <tr key={item.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => openDetail(item.record_id, tab)}>
@@ -475,8 +477,8 @@ export default function HomePage() {
                           <p className="text-sm leading-snug text-gray-800" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.description}</p>
                           {(item.root_cause_summary || item.result_summary) && (
                             <div className="mt-2 space-y-1 rounded-md bg-gray-50 px-2.5 py-2">
-                              {item.root_cause_summary && <div className="flex items-start gap-1.5"><span className="mt-px flex-shrink-0 text-[10px] font-semibold text-amber-600">原因</span><p className="text-xs text-gray-600" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.root_cause_summary}</p></div>}
-                              {item.result_summary && <div className="flex items-start gap-1.5"><span className="mt-px flex-shrink-0 text-[10px] font-semibold text-green-600">结果</span><p className="text-xs text-gray-600" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.result_summary}</p></div>}
+                              {item.root_cause_summary && <div className="flex items-start gap-1.5"><span className="mt-px flex-shrink-0 text-[10px] font-semibold text-amber-600">{t("原因")}</span><p className="text-xs text-gray-600" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.root_cause_summary}</p></div>}
+                              {item.result_summary && <div className="flex items-start gap-1.5"><span className="mt-px flex-shrink-0 text-[10px] font-semibold text-green-600">{t("结果")}</span><p className="text-xs text-gray-600" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.result_summary}</p></div>}
                             </div>
                           )}
                         </td>
@@ -523,9 +525,9 @@ export default function HomePage() {
                   {detailData.localItem && <LocalStatusBadge item={detailData.localItem} />}
                   {detailData.issue.zendesk_id && <a href={detailData.issue.zendesk} target="_blank" className="text-xs font-medium text-blue-600 hover:underline">{detailData.issue.zendesk_id}</a>}
                   {detailData.issue.feishu_link ? (
-                    <a href={detailData.issue.feishu_link} target="_blank" className="text-xs text-blue-500 hover:underline">飞书</a>
+                    <a href={detailData.issue.feishu_link} target="_blank" className="text-xs text-blue-500 hover:underline">{t("飞书")}</a>
                   ) : (
-                    <span className="text-xs text-gray-400">本地上传</span>
+                    <span className="text-xs text-gray-400">{t("本地上传")}</span>
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
@@ -535,8 +537,8 @@ export default function HomePage() {
                 </div>
               </section>
               <section>
-                <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">问题描述</h3>
-                <div className="whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm leading-relaxed text-gray-700">{detailData.issue.description || "无"}</div>
+                <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">{t("问题描述")}</h3>
+                <div className="whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm leading-relaxed text-gray-700">{detailData.issue.description || t("无")}</div>
               </section>
 
               {/* Action button for pending issues */}
@@ -556,7 +558,7 @@ export default function HomePage() {
               {detailData.task && typeof detailData.task === "object" && detailData.task.status === "failed" && (
                 <>
                   <div className="rounded-lg border border-red-200 bg-red-50 p-3">
-                    <p className="text-sm font-medium text-red-700">分析失败</p>
+                    <p className="text-sm font-medium text-red-700">{t("分析失败")}</p>
                     <p className="mt-1 text-xs text-red-500">{detailData.task.error}</p>
                   </div>
                   <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("重新分析")}</button>
@@ -609,7 +611,7 @@ export default function HomePage() {
               {detailData.localItem?.local_status === "failed" && (
                 <section>
                   <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">
-                    重新分析
+                    {t("重新分析")}
                   </button>
                 </section>
               )}
@@ -620,14 +622,14 @@ export default function HomePage() {
                   onClick={async () => {
                     try {
                       await escalateIssue(detailId!, "用户手动转工程师");
-                      setToast("已通知值班工程师");
+                      setToast(t("已通知值班工程师"));
                     } catch (e: any) {
-                      setToast(`通知失败: ${e.message}`);
+                      setToast(`${t("通知失败")}: ${e.message}`);
                     }
                   }}
                   className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100"
                 >
-                  转工程师处理
+                  {t("转工程师处理")}
                 </button>
                 <p className="mt-1 text-center text-[11px] text-gray-400">{t("通过飞书消息通知当前值班工程师")}</p>
               </section>
@@ -652,7 +654,7 @@ export default function HomePage() {
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && usernameInput.trim()) saveUsername(usernameInput); }}
-              placeholder="输入您的名字"
+              placeholder={t("输入您的名字")}
               className="mb-4 w-full rounded-lg border border-gray-200 px-4 py-2.5 text-center text-sm outline-none focus:border-black focus:ring-1 focus:ring-black"
             />
             <button
@@ -660,7 +662,7 @@ export default function HomePage() {
               disabled={!usernameInput.trim()}
               className="w-full rounded-lg bg-black py-2.5 text-sm font-semibold text-white transition-colors hover:bg-gray-800 disabled:opacity-30"
             >
-              开始使用
+              {t("开始使用")}
             </button>
           </div>
         </div>

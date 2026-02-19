@@ -230,4 +230,93 @@ const EN: Record<string, string> = {
   "条规则": "rules",
   "上一页": "Prev",
   "下一页": "Next",
+
+  // Analytics extra
+  "过去": "past",
+  "对比": "Comparison",
+  "人工处理": "Manual",
+  "AI 处理": "AI",
+  "暂无失败记录": "No failures",
+  "未知": "Unknown",
+
+  // Tracking extra
+  "个工单": "tickets",
+  "共": "Total",
+  "原因": "Cause",
+  "结果": "Result",
+  "分类": "Category",
+  "用户名": "Username",
+  "已重新触发分析": "Re-analysis triggered",
+  "重试失败": "Retry failed",
+  "已通知": "Notified",
+  "通知失败": "Notification failed",
+
+  // Main page extra
+  "未知错误": "Unknown error",
+  "确定要删除这个工单吗？": "Delete this ticket?",
+  "工单已删除": "Ticket deleted",
+  "删除失败": "Delete failed",
+  "已通知值班工程师": "On-call engineer notified",
+  "发送失败": "Send failed",
+  "正在从飞书加载工单...": "Loading tickets from Feishu...",
+  "首次加载可能需要几秒钟": "First load may take a few seconds",
+  "本地上传": "Local upload",
+
+  // Feedback extra
+  "请先输入 Zendesk 工单号": "Please enter a Zendesk ticket number first",
+  "已导入 Zendesk": "Imported Zendesk",
+  "条聊天记录": "messages",
+  "导入失败": "Import failed",
+  "超过 50MB 限制": "exceeds 50MB limit",
+  "文件": "File",
+  "请压缩后重试": "please compress and retry",
+  "网络错误，请检查网络连接": "Network error, check connection",
+  "上传超时（2分钟），请检查文件大小和网络": "Upload timed out (2 min), check file size and network",
+  "提交失败": "Submit failed",
+  "输入工单号，回车导入": "Enter ticket #, press Enter to import",
+  "支持 .plaud, .log, .zip, .gz 格式（单个文件 ≤ 50MB）": "Supports .plaud, .log, .zip, .gz (max 50MB per file)",
+
+  // Oncall extra
+  "至少需要一组值班人员": "At least one group is required",
+  "请设置起始日期": "Please set a start date",
+  "值班表已保存": "Schedule saved",
+  "保存中...": "Saving...",
+  "保存失败": "Save failed",
+  "未设置": "Not set",
+  "从此日期开始，每周一轮换到下一组": "Starting from this date, rotating weekly",
+  "第": "Group",
+  "组": "",
+  "飞书邮箱，如 engineer@plaud.ai": "Feishu email, e.g. engineer@plaud.ai",
+
+  // Rules extra
+  "规则已保存": "Rule saved",
+  "切换失败": "Toggle failed",
+  "需代码": "Code needed",
+  "需要代码": "Needs code",
+  "无（兜底规则）": "None (fallback rule)",
+  "版本": "Version",
+  "依赖": "Dependencies",
+  "是": "Yes",
+  "否": "No",
+
+  // Reports extra
+  "Markdown 已复制": "Markdown copied",
+  "今天": "Today",
+  "已复制": "Copied",
+
+  // Settings extra
+  "Agent 配置已保存": "Agent config saved",
+  "没有需要保存的更改": "No changes to save",
+  "已保存": "Saved",
+  "修改后需要重启服务才能完全生效": "Changes require a restart to take full effect",
+  "敏感": "Sensitive",
+  "输入新值以更新": "Enter new value to update",
+  "环境配置仅管理员可见": "Environment config is admin-only",
+  "当前用户": "Current user",
+  "未登录": "Not logged in",
+  "已安装": "Installed",
+  "未安装": "Not installed",
+  "检查中...": "Checking...",
+  "整体": "Overall",
+  "问题类型 → Agent 路由": "Issue Type → Agent Routing",
 };

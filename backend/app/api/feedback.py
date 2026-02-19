@@ -94,12 +94,11 @@ async def submit_feedback(
             "feishu_link": "",
             "platform": platform,
             "category": category,
+            "created_by": username,
             "created_at_ms": int(datetime.utcnow().timestamp() * 1000),
             "log_files": saved_files,
         }
         await db.upsert_issue(issue_data, status="analyzing")
-        if username:
-            await db.set_issue_created_by(record_id, username)
 
         # Create task and start analysis in background
         task_id = f"task_{uuid.uuid4().hex[:12]}"

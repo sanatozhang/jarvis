@@ -42,11 +42,11 @@ export default function RulesPage() {
     if (!selected) return;
     try {
       await updateRule(selected.meta.id, { content: editContent });
-      setToast("规则已保存");
+      setToast(t("规则已保存"));
       setEditing(false);
       await load();
     } catch (e: any) {
-      setToast("保存失败: " + e.message);
+      setToast(t("保存失败") + ": " + e.message);
     }
   };
 
@@ -55,7 +55,7 @@ export default function RulesPage() {
       await updateRule(rule.meta.id, { enabled: !rule.meta.enabled });
       await load();
     } catch (e: any) {
-      setToast("切换失败: " + e.message);
+      setToast(t("切换失败") + ": " + e.message);
     }
   };
 
@@ -66,7 +66,7 @@ export default function RulesPage() {
           <h1 className="text-lg font-semibold">{t("分析规则")}</h1>
           <div className="flex items-center gap-2">
             <button onClick={handleReload} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">
-              重新加载
+              {t("重新加载")}
             </button>
           </div>
         </div>
@@ -80,7 +80,7 @@ export default function RulesPage() {
               {rules.length} {t("条规则")}
             </p>
             {loading ? (
-              <p className="px-2 py-8 text-center text-sm text-gray-300">加载中...</p>
+              <p className="px-2 py-8 text-center text-sm text-gray-300">{t("加载中...")}</p>
             ) : (
               <div className="space-y-0.5">
                 {rules.map((rule) => (
@@ -104,8 +104,8 @@ export default function RulesPage() {
                       )}
                     </div>
                     <p className="mt-1 text-[11px] text-gray-400">
-                      优先级 {rule.meta.triggers.priority} · v{rule.meta.version}
-                      {rule.meta.needs_code && " · 需代码"}
+                      {t("优先级")} {rule.meta.triggers.priority} · v{rule.meta.version}
+                      {rule.meta.needs_code && ` · ${t("需代码")}`}
                     </p>
                   </button>
                 ))}
@@ -118,7 +118,7 @@ export default function RulesPage() {
         <div className="flex-1 px-6 py-5">
           {!selected ? (
             <div className="flex h-64 items-center justify-center text-sm text-gray-300">
-              选择一{t("条规则")}查看详情
+              {t("选择一条规则查看详情")}
             </div>
           ) : (
             <div>
@@ -126,7 +126,7 @@ export default function RulesPage() {
                 <div>
                   <h2 className="text-xl font-bold">{selected.meta.name || selected.meta.id}</h2>
                   <p className="mt-1 text-xs text-gray-400">
-                    ID: {selected.meta.id} · 版本 {selected.meta.version} · 优先级 {selected.meta.triggers.priority}
+                    ID: {selected.meta.id} · {t("版本")} {selected.meta.version} · {t("优先级")} {selected.meta.triggers.priority}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -147,7 +147,7 @@ export default function RulesPage() {
                     </>
                   ) : (
                     <button onClick={() => { setEditing(true); setEditContent(selected.content); }} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">
-                      编辑
+                      {t("编辑")}
                     </button>
                   )}
                 </div>
@@ -161,7 +161,7 @@ export default function RulesPage() {
                     {selected.meta.triggers.keywords.map((kw) => (
                       <span key={kw} className="rounded-md bg-blue-50 px-2 py-0.5 text-xs text-blue-600">{kw}</span>
                     ))}
-                    {selected.meta.triggers.keywords.length === 0 && <span className="text-xs text-gray-300">无（兜底规则）</span>}
+                    {selected.meta.triggers.keywords.length === 0 && <span className="text-xs text-gray-300">{t("无（兜底规则）")}</span>}
                   </div>
                 </div>
                 <div className="rounded-lg border border-gray-100 bg-white p-3">
@@ -172,14 +172,14 @@ export default function RulesPage() {
                         {p.name}: <span className="text-gray-400">{p.pattern.slice(0, 30)}</span>
                       </p>
                     ))}
-                    {selected.meta.pre_extract.length === 0 && <span className="text-xs text-gray-300">无</span>}
+                    {selected.meta.pre_extract.length === 0 && <span className="text-xs text-gray-300">{t("无")}</span>}
                   </div>
                 </div>
                 <div className="rounded-lg border border-gray-100 bg-white p-3">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("依赖 & 属性")}</p>
                   <div className="mt-1.5 space-y-0.5 text-xs text-gray-500">
-                    <p>依赖: {selected.meta.depends_on.join(", ") || "无"}</p>
-                    <p>需要代码: {selected.meta.needs_code ? "是" : "否"}</p>
+                    <p>{t("依赖")}: {selected.meta.depends_on.join(", ") || t("无")}</p>
+                    <p>{t("需要代码")}: {selected.meta.needs_code ? t("是") : t("否")}</p>
                   </div>
                 </div>
               </div>
