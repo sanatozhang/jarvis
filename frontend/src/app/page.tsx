@@ -480,8 +480,8 @@ export default function HomePage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-3 py-3 align-top text-xs text-gray-600">{(item as any).created_by || "—"}</td>
-                        <td className="px-3 py-3 align-top text-xs text-gray-400">{(item as any).created_at ? (item as any).created_at.slice(0, 16).replace("T", " ") : "—"}</td>
+                        <td className="px-3 py-3 align-top text-xs text-gray-600">{item.created_by || "—"}</td>
+                        <td className="px-3 py-3 align-top text-xs text-gray-400">{(item as any).created_at ? String((item as any).created_at).slice(0, 16).replace("T", " ") : "—"}</td>
                         <td className="px-3 py-3 align-top text-xs">{item.zendesk_id ? <a href={item.zendesk} target="_blank" onClick={(e) => e.stopPropagation()} className="font-medium text-blue-600 hover:underline">{item.zendesk_id}</a> : <span className="text-gray-300">—</span>}</td>
                         <td className="px-3 py-3 align-top"><LocalStatusBadge item={item} /></td>
                         <td className="px-4 py-3 align-top text-right" onClick={(e) => e.stopPropagation()}>

@@ -227,12 +227,12 @@ export default function TrackingPage() {
                         <p className="text-xs text-gray-500" style={{ display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.root_cause_summary}</p>
                       </div>
                     )}
-                    {(item as any).category && (
-                      <span className="mt-1 inline-block rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">{CATEGORY_SHORT[(item as any).category] || (item as any).category}</span>
+                    {item.category && (
+                      <span className="mt-1 inline-block rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">{CATEGORY_SHORT[item.category] || item.category}</span>
                     )}
                   </td>
                   <td className="px-3 py-3 align-top"><StatusBadge status={item.local_status} ruleType={item.analysis?.rule_type} /></td>
-                  <td className="px-3 py-3 align-top text-xs text-gray-500">{(item as any).platform || "—"}</td>
+                  <td className="px-3 py-3 align-top text-xs text-gray-500">{item.platform || "—"}</td>
                   <td className="px-3 py-3 align-top">
                     {item.created_by ? (
                       <button onClick={(e) => { e.stopPropagation(); updateFilter("created_by", item.created_by!); }}
@@ -269,12 +269,11 @@ export default function TrackingPage() {
                 <div className="flex flex-wrap items-center gap-2 mb-3">
                   <PriorityBadge p={detailItem.priority} />
                   <StatusBadge status={detailItem.local_status} ruleType={detailItem.analysis?.rule_type} />
-                  {(detailItem as any).platform && <span className="rounded bg-blue-50 px-2 py-0.5 text-[11px] text-blue-600">{(detailItem as any).platform}</span>}
+                  {detailItem.platform && <span className="rounded bg-blue-50 px-2 py-0.5 text-[11px] text-blue-600">{detailItem.platform}</span>}
                   {detailItem.created_by && <span className="rounded bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{detailItem.created_by}</span>}
-                  {(detailItem as any).created_at && <span className="text-[11px] text-gray-400">{(detailItem as any).created_at.slice(0, 10)}</span>}
                 </div>
-                {(detailItem as any).category && (
-                  <p className="mb-2 text-xs text-gray-500">分类: <span className="font-medium text-gray-600">{CATEGORY_SHORT[(detailItem as any).category] || (detailItem as any).category}</span></p>
+                {detailItem.category && (
+                  <p className="mb-2 text-xs text-gray-500">分类: <span className="font-medium text-gray-600">{CATEGORY_SHORT[detailItem.category] || detailItem.category}</span></p>
                 )}
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   {[{ l: "设备 SN", v: detailItem.device_sn, m: true }, { l: "固件", v: detailItem.firmware }, { l: "APP", v: detailItem.app_version }, { l: "Zendesk", v: detailItem.zendesk_id }].map((f) => (

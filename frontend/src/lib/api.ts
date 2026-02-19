@@ -293,6 +293,9 @@ export interface LocalIssueItem {
   result_summary: string;
   root_cause_summary: string;
   created_at_ms: number;
+  created_by?: string;
+  platform?: string;
+  category?: string;
   log_files: any[];
   local_status: string;
   analysis?: AnalysisResult;

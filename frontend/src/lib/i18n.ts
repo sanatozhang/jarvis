@@ -94,7 +94,6 @@ const EN: Record<string, string> = {
   "清除": "Clear",
   "保存": "Save",
   "编辑": "Edit",
-  "提交反馈": "Submit",
 
   // Detail panel
   "工单详情": "Ticket Detail",
@@ -132,7 +131,6 @@ const EN: Record<string, string> = {
   "结束日期": "To",
 
   // Analytics
-  "数据看板": "Analytics Dashboard",
   "项目价值 & 使用情况统计": "Project Value & Usage",
   "项目价值": "Project Value",
   "预估节省工时": "Time Saved",
@@ -150,7 +148,6 @@ const EN: Record<string, string> = {
   "次操作": "actions",
 
   // Settings
-  "系统设置": "System Settings",
   "环境配置": "Environment Config",
   "Agent 配置": "Agent Config",
   "Agent 可用性": "Agent Availability",
@@ -162,7 +159,6 @@ const EN: Record<string, string> = {
   "配置已生效": "Config applied",
 
   // Oncall
-  "值班管理": "On-Call Management",
   "每周轮换，自动通知值班工程师": "Weekly rotation, auto-notify on-call engineers",
   "本周值班": "This Week On-Call",
   "编辑排班": "Edit Schedule",
@@ -176,7 +172,6 @@ const EN: Record<string, string> = {
   "尚未配置值班表": "No on-call schedule configured",
 
   // Rules
-  "分析规则": "Analysis Rules",
   "重新加载": "Reload",
   "触发关键词": "Trigger Keywords",
   "预提取模式": "Pre-extract Patterns",
@@ -209,7 +204,6 @@ const EN: Record<string, string> = {
   "该日期暂无已分析工单": "No analyzed tickets for this date",
   "分析工单后，报告会自动生成": "Reports are generated automatically after analysis",
   "暂无工单": "No tickets",
-  "请选择问题分类": "Select category",
 
   // Common
   "暂无数据": "No data",
