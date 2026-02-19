@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api";
 
 export default function ReportsPage() {
+  const t = useT();
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState("");
   const [report, setReport] = useState<DailyReport | null>(null);
@@ -41,7 +42,7 @@ export default function ReportsPage() {
     <div className="min-h-full">
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
         <div className="flex items-center justify-between px-6 py-3">
-          <h1 className="text-lg font-semibold">值班报告</h1>
+          <h1 className="text-lg font-semibold">{t("值班报告")}</h1>
           <div className="flex items-center gap-2">
             <select
               value={selectedDate}
@@ -53,7 +54,7 @@ export default function ReportsPage() {
               {dates.map((d) => (
                 <option key={d} value={d}>{d}{d === today ? "（今天）" : ""}</option>
               ))}
-              {dates.length === 0 && <option value="">暂无报告</option>}
+              {dates.length === 0 && <option value="">{t("暂无报告")}</option>}
             </select>
             {report && (
               <button onClick={copyMd} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">
@@ -66,9 +67,9 @@ export default function ReportsPage() {
 
       <div className="px-6 py-5">
         {loading ? (
-          <p className="py-16 text-center text-sm text-gray-300">加载报告中...</p>
+          <p className="py-16 text-center text-sm text-gray-300">{t("加载报告中...")}</p>
         ) : !report ? (
-          <p className="py-16 text-center text-sm text-gray-300">选择日期查看报告</p>
+          <p className="py-16 text-center text-sm text-gray-300">{t("选择日期查看报告")}</p>
         ) : report.total_issues === 0 ? (
           <div className="py-16 text-center">
             <p className="text-sm text-gray-400">该日期暂无已分析工单</p>
@@ -79,7 +80,7 @@ export default function ReportsPage() {
             {/* Summary cards */}
             <div className="mb-5 grid grid-cols-4 gap-3">
               <div className="rounded-xl border border-gray-100 bg-white px-4 py-3">
-                <p className="text-xs text-gray-400">总工单数</p>
+                <p className="text-xs text-gray-400">{t("总工单数")}</p>
                 <p className="mt-0.5 text-xl font-bold">{report.total_issues}</p>
               </div>
               {Object.entries(report.category_stats).slice(0, 3).map(([cat, count]) => (
@@ -103,7 +104,7 @@ export default function ReportsPage() {
                         a.confidence === "medium" ? "bg-yellow-50 text-yellow-600" :
                         "bg-red-50 text-red-600"
                       }`}>{a.confidence}</span>
-                      {a.needs_engineer && <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-600">需工程师</span>}
+                      {a.needs_engineer && <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-600">{t("需工程师")}</span>}
                     </div>
                     <span className="font-mono text-[11px] text-gray-400">{a.issue_id.slice(0, 12)}</span>
                   </div>
@@ -111,7 +112,7 @@ export default function ReportsPage() {
                   {a.user_reply && (
                     <div className="mt-3 rounded-lg bg-green-50/50 p-3">
                       <div className="mb-1 flex items-center justify-between">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">用户回复</span>
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{t("用户回复")}</span>
                         <button
                           onClick={() => { navigator.clipboard.writeText(a.user_reply); setToast("已复制"); setTimeout(() => setToast(""), 2000); }}
                           className="rounded bg-green-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-green-700"

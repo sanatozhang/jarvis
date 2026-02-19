@@ -48,6 +48,7 @@ function Bar({ value, max, color }: { value: number; max: number; color: string 
 }
 
 export default function AnalyticsPage() {
+  const t = useT();
   const [data, setData] = useState<Analytics | null>(null);
   const [days, setDays] = useState(7);
   const [loading, setLoading] = useState(true);

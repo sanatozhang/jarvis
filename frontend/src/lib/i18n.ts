@@ -181,6 +181,33 @@ const EN: Record<string, string> = {
   "已启用": "Enabled",
   "已禁用": "Disabled",
 
+  // Feedback form
+  "请选择问题分类": "Select category",
+  "上传中": "Uploading",
+  "导入": "Import",
+  "导入中": "Importing",
+  "提交后工单将自动进入 AI 分析": "Ticket will be automatically analyzed by AI after submission",
+  "开始 AI 分析": "Start AI Analysis",
+
+  // Feedback extra
+  "请详细描述用户遇到的问题...": "Please describe the issue in detail...",
+  "输入工单号后点击导入，AI 将自动总结聊天记录并填充表单": "Enter ticket # and click Import. AI will summarize the chat history and fill the form.",
+  "复制 Markdown": "Copy Markdown",
+  "加载报告中...": "Loading report...",
+  "选择日期查看报告": "Select a date to view report",
+  "暂无报告": "No reports",
+  "总工单数": "Total Tickets",
+  "查看原始 Markdown": "View Raw Markdown",
+  "用户回复": "User Reply",
+  "复制": "Copy",
+  "选择一条规则查看详情": "Select a rule to view details",
+  "暂未配置值班分组": "No on-call groups configured",
+  "只有管理员可以编辑值班排班": "Only admins can edit on-call schedule",
+  "该日期暂无已分析工单": "No analyzed tickets for this date",
+  "分析工单后，报告会自动生成": "Reports are generated automatically after analysis",
+  "暂无工单": "No tickets",
+  "请选择问题分类": "Select category",
+
   // Common
   "暂无数据": "No data",
   "暂无待处理工单": "No pending tickets",

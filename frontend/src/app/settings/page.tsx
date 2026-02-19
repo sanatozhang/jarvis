@@ -14,6 +14,7 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 }
 
 export default function SettingsPage() {
+  const t = useT();
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [health, setHealth] = useState<HealthCheck | null>(null);
   const [agents, setAgents] = useState<Record<string, any>>({});

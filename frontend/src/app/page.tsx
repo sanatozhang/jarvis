@@ -51,7 +51,7 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
   const task = item.task;
   const analysis = item.analysis;
   if (task && !["done", "failed"].includes(task.status)) {
-    const labels: Record<string, string> = { queued: "排队中", downloading: "下载中", decrypting: "解密中", extracting: "提取中", analyzing: "分析中" };
+    const labels: Record<string, string> = { queued: "排队中", downloading: "下载中", decrypting: "解密中", extracting: "提取中", analyzing: t("分析中") };
     return <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />{labels[task.status] || task.status}</span>;
   }
   if ((item.local_status === "done" || analysis) && analysis) {
@@ -332,7 +332,7 @@ export default function HomePage() {
           <div className="flex items-center gap-2">
             {selected.size > 0 && <button onClick={batchStart} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800">批量分析 ({selected.size})</button>}
             <a href="/feedback" className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">{t("提交反馈")}</a>
-            <button onClick={loadAll} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">{loading ? t("加载中...") : t("刷新")}</button>
+            <button onClick={loadAll} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">{loading ? t(t("加载中...")) : t("刷新")}</button>
             <button onClick={forceRefresh} disabled={loading} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50">{t("同步飞书")}</button>
             {/* Username display */}
             <div className="ml-2 border-l border-gray-200 pl-3">
@@ -346,8 +346,8 @@ export default function HomePage() {
               ) : (
                 <div className="flex items-center gap-1">
                   <input autoFocus value={usernameInput} onChange={(e) => setUsernameInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveUsername(usernameInput); if (e.key === "Escape") setShowUsernameEdit(false); }} placeholder="用户名" className="w-24 rounded-md border border-gray-300 px-2 py-1 text-xs outline-none focus:border-black" />
-                  <button onClick={() => saveUsername(usernameInput)} className="rounded-md bg-black px-2 py-1 text-[11px] font-medium text-white">保存</button>
-                  <button onClick={() => setShowUsernameEdit(false)} className="text-[11px] text-gray-400">取消</button>
+                  <button onClick={() => saveUsername(usernameInput)} className="rounded-md bg-black px-2 py-1 text-[11px] font-medium text-white">{t("保存")}</button>
+                  <button onClick={() => setShowUsernameEdit(false)} className="text-[11px] text-gray-400">{t("取消")}</button>
                 </div>
               )}
             </div>

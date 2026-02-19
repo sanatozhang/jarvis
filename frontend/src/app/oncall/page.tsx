@@ -11,6 +11,7 @@ function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error";
 }
 
 export default function OncallPage() {
+  const t = useT();
   const [groups, setGroups] = useState<string[][]>([]);
   const [startDate, setStartDate] = useState("");
   const [currentMembers, setCurrentMembers] = useState<string[]>([]);
@@ -75,18 +76,18 @@ export default function OncallPage() {
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
         <div className="flex items-center justify-between px-6 py-3">
           <div>
-            <h1 className="text-lg font-semibold">值班管理</h1>
-            <p className="text-xs text-gray-400">每周轮换，自动通知值班工程师</p>
+            <h1 className="text-lg font-semibold">{t("值班管理")}</h1>
+            <p className="text-xs text-gray-400">{t("每周轮换，自动通知值班工程师")}</p>
           </div>
           {isAdmin && (
             <div className="flex items-center gap-2">
               {editing ? (
                 <>
                   <button onClick={save} disabled={saving} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50">{saving ? "保存中..." : "保存"}</button>
-                  <button onClick={() => { setEditing(false); load(); }} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">取消</button>
+                  <button onClick={() => { setEditing(false); load(); }} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">{t("取消")}</button>
                 </>
               ) : (
-                <button onClick={() => setEditing(true)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">编辑排班</button>
+                <button onClick={() => setEditing(true)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">{t("编辑排班")}</button>
               )}
             </div>
           )}
@@ -96,7 +97,7 @@ export default function OncallPage() {
       <div className="mx-auto max-w-3xl px-6 py-6 space-y-6">
         {/* Current oncall */}
         <section className="rounded-xl border border-green-200 bg-green-50/30 p-5">
-          <h2 className="mb-2 text-sm font-semibold text-green-800">本周值班</h2>
+          <h2 className="mb-2 text-sm font-semibold text-green-800">{t("本周值班")}</h2>
           {currentMembers.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {currentMembers.map((m) => (
@@ -104,13 +105,13 @@ export default function OncallPage() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-gray-400">尚未配置值班表</p>
+            <p className="text-sm text-gray-400">{t("尚未配置值班表")}</p>
           )}
         </section>
 
         {/* Start date */}
         <section className="rounded-xl border border-gray-100 bg-white p-5">
-          <h2 className="mb-3 text-sm font-semibold">轮换起始日期</h2>
+          <h2 className="mb-3 text-sm font-semibold">{t("轮换起始日期")}</h2>
           {editing ? (
             <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-black" />
           ) : (
@@ -122,14 +123,14 @@ export default function OncallPage() {
         {/* Groups */}
         <section className="rounded-xl border border-gray-100 bg-white p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">值班分组（共 {groups.length} 组）</h2>
+            <h2 className="text-sm font-semibold">{t("值班分组")}（共 {groups.length} 组）</h2>
             {editing && (
-              <button onClick={addGroup} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">+ 添加分组</button>
+              <button onClick={addGroup} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">{t("添加分组")}</button>
             )}
           </div>
 
           {groups.length === 0 ? (
-            <p className="py-8 text-center text-sm text-gray-300">暂未配置值班分组</p>
+            <p className="py-8 text-center text-sm text-gray-300">{t("暂未配置值班分组")}</p>
           ) : (
             <div className="space-y-3">
               {groups.map((members, gi) => (
@@ -137,10 +138,10 @@ export default function OncallPage() {
                   <div className="mb-2 flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-gray-700">第 {gi + 1} 组</span>
-                      {gi === currentGroupIdx && <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700">本周</span>}
+                      {gi === currentGroupIdx && <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700">{t("本周")}</span>}
                     </div>
                     {editing && groups.length > 1 && (
-                      <button onClick={() => removeGroup(gi)} className="text-xs text-red-400 hover:text-red-600">删除分组</button>
+                      <button onClick={() => removeGroup(gi)} className="text-xs text-red-400 hover:text-red-600">{t("删除分组")}</button>
                     )}
                   </div>
                   <div className="space-y-2">
@@ -154,7 +155,7 @@ export default function OncallPage() {
                               placeholder="飞书邮箱，如 engineer@plaud.ai"
                               className="flex-1 rounded-md border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-black"
                             />
-                            <button onClick={() => removeMember(gi, mi)} className="text-xs text-gray-400 hover:text-red-500">移除</button>
+                            <button onClick={() => removeMember(gi, mi)} className="text-xs text-gray-400 hover:text-red-500">{t("移除")}</button>
                           </>
                         ) : (
                           <span className="text-sm text-gray-600">{email}</span>
@@ -162,7 +163,7 @@ export default function OncallPage() {
                       </div>
                     ))}
                     {editing && (
-                      <button onClick={() => addMember(gi)} className="text-xs text-blue-500 hover:text-blue-700">+ 添加成员</button>
+                      <button onClick={() => addMember(gi)} className="text-xs text-blue-500 hover:text-blue-700">{t("添加成员")}</button>
                     )}
                   </div>
                 </div>
@@ -172,7 +173,7 @@ export default function OncallPage() {
         </section>
 
         {!isAdmin && (
-          <p className="text-center text-xs text-gray-400">只有管理员可以编辑值班排班</p>
+          <p className="text-center text-xs text-gray-400">{t("只有管理员可以编辑值班排班")}</p>
         )}
       </div>
 

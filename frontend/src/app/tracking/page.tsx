@@ -20,9 +20,9 @@ CATEGORIES.forEach((c) => { CATEGORY_SHORT[c] = c.split("（")[0]; });
 
 function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }) {
   const m: Record<string, { bg: string; label: string }> = {
-    analyzing: { bg: "bg-blue-50 text-blue-600 ring-blue-200", label: "分析中" },
-    done: { bg: "bg-green-50 text-green-700 ring-green-200", label: "成功" },
-    failed: { bg: "bg-red-50 text-red-600 ring-red-200", label: "失败" },
+    analyzing: { bg: "bg-blue-50 text-blue-600 ring-blue-200", label: t("分析中") },
+    done: { bg: "bg-green-50 text-green-700 ring-green-200", label: t("成功") },
+    failed: { bg: "bg-red-50 text-red-600 ring-red-200", label: t("失败") },
   };
   const s = m[status] || { bg: "bg-gray-50 text-gray-500 ring-gray-200", label: status };
   const ruleMatched = status === "done" && ruleType && ruleType !== "general";
@@ -108,11 +108,11 @@ export default function TrackingPage() {
     <div className="min-h-full">
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
         <div className="flex items-center justify-between px-6 py-3">
-          <h1 className="text-lg font-semibold">工单跟踪</h1>
+          <h1 className="text-lg font-semibold">{t("工单跟踪")}</h1>
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 rounded-lg bg-gray-100 p-1">
-              <button onClick={clearFilters} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${activeFilterCount === 0 ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>全部</button>
-              <button onClick={setMyIssues} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${filters.created_by === username ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>我的</button>
+              <button onClick={clearFilters} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${activeFilterCount === 0 ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>{t("全部")}</button>
+              <button onClick={setMyIssues} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${filters.created_by === username ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>{t("我的")}</button>
             </div>
             <button onClick={() => setShowFilters(!showFilters)} className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${showFilters || activeFilterCount > 0 ? "border-black bg-black text-white" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
               筛选{activeFilterCount > 0 && ` (${activeFilterCount})`}
@@ -135,7 +135,7 @@ export default function TrackingPage() {
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-gray-400">平台</label>
                 <select value={filters.platform || ""} onChange={(e) => updateFilter("platform", e.target.value)}
                   className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs outline-none focus:border-black">
-                  <option value="">全部</option>
+                  <option value="">{t("全部")}</option>
                   <option value="APP">APP</option>
                   <option value="Web">Web</option>
                   <option value="Desktop">Desktop</option>
@@ -146,7 +146,7 @@ export default function TrackingPage() {
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-gray-400">问题分类</label>
                 <select value={filters.category || ""} onChange={(e) => updateFilter("category", e.target.value)}
                   className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs outline-none focus:border-black">
-                  <option value="">全部分类</option>
+                  <option value="">{t("全部分类")}</option>
                   {CATEGORIES.map((c) => <option key={c} value={c}>{CATEGORY_SHORT[c] || c}</option>)}
                 </select>
               </div>
@@ -155,7 +155,7 @@ export default function TrackingPage() {
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-gray-400">状态</label>
                 <select value={filters.status || ""} onChange={(e) => updateFilter("status", e.target.value)}
                   className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs outline-none focus:border-black">
-                  <option value="">全部</option>
+                  <option value="">{t("全部")}</option>
                   <option value="analyzing">分析中</option>
                   <option value="done">成功</option>
                   <option value="failed">失败</option>
@@ -175,7 +175,7 @@ export default function TrackingPage() {
               </div>
               {/* Clear */}
               {activeFilterCount > 0 && (
-                <button onClick={clearFilters} className="rounded-md px-2.5 py-1.5 text-xs text-red-500 hover:bg-red-50">清除筛选</button>
+                <button onClick={clearFilters} className="rounded-md px-2.5 py-1.5 text-xs text-red-500 hover:bg-red-50">{t("清除筛选")}</button>
               )}
             </div>
           </div>
@@ -214,7 +214,7 @@ export default function TrackingPage() {
               {loading && !data ? (
                 <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">加载中...</td></tr>
               ) : !data?.issues.length ? (
-                <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">暂无工单</td></tr>
+                <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无工单")}</td></tr>
               ) : data.issues.map((item) => (
                 <tr key={item.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => setDetailItem(item)}>
                   <td className="px-2 py-3 align-top"><PriorityBadge p={item.priority} /></td>

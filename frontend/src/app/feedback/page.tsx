@@ -4,10 +4,21 @@ import { useT } from "@/lib/i18n";
 
 import { useState, useRef } from "react";
 
-// For file uploads, post directly to backend (bypass Next.js proxy body size limit)
-const BACKEND_URL = typeof window !== "undefined"
-  ? (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`)
-  : "http://localhost:8000";
+/**
+ * For file uploads, browser must POST directly to the backend (bypass Next.js proxy).
+ * - NEXT_PUBLIC_BACKEND_URL: explicit browser-accessible backend URL (recommended for production)
+ * - Fallback: same hostname as current page, port 8000
+ * - NEVER use NEXT_PUBLIC_API_URL (may be Docker-internal like http://backend:8000)
+ */
+function getBackendUrl(): string {
+  if (typeof window === "undefined") return "http://localhost:8000";
+  // Explicit config takes priority
+  const explicit = process.env.NEXT_PUBLIC_BACKEND_URL;
+  if (explicit && !explicit.includes("backend:")) return explicit;
+  // Auto-detect: same hostname, port 8000
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
+}
+const BACKEND_URL = getBackendUrl();
 
 function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error"; onClose: () => void }) {
   return (
@@ -39,8 +50,10 @@ export default function FeedbackPage() {
     priority: "L",
     zendesk: "",
   });
+  const t = useT();
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [importing, setImporting] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -118,6 +131,7 @@ export default function FeedbackPage() {
     }
 
     setSubmitting(true);
+    setUploadProgress(0);
     try {
       const fd = new FormData();
       fd.append("description", form.description);
@@ -128,27 +142,39 @@ export default function FeedbackPage() {
       fd.append("platform", form.platform);
       fd.append("priority", form.priority);
       fd.append("zendesk", form.zendesk);
-      // Pass username
       const username = typeof window !== "undefined" ? localStorage.getItem("jarvis_username") || "" : "";
       fd.append("username", username);
       for (const f of files) {
         fd.append("log_files", f);
       }
 
-      const res = await fetch(`${BACKEND_URL}/api/feedback`, { method: "POST", body: fd });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text);
-      }
-      const data = await res.json();
+      // Use XMLHttpRequest for upload progress tracking + timeout
+      const data: any = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `${BACKEND_URL}/api/feedback`);
+        xhr.timeout = 120000; // 2 min timeout
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try { resolve(JSON.parse(xhr.responseText)); } catch { resolve({}); }
+          } else {
+            reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
+          }
+        };
+        xhr.onerror = () => reject(new Error("网络错误，请检查网络连接"));
+        xhr.ontimeout = () => reject(new Error("上传超时（2分钟），请检查文件大小和网络"));
+        xhr.send(fd);
+      });
 
-      // Redirect to in-progress tab immediately
       window.location.href = "/?tab=in_progress";
     } catch (e: any) {
       setToast({ msg: `提交失败: ${e.message}`, type: "error" });
+      setTimeout(() => setToast(null), 6000);
     } finally {
       setSubmitting(false);
-      setTimeout(() => setToast(null), 4000);
+      setUploadProgress(0);
     }
   };
 
@@ -157,8 +183,8 @@ export default function FeedbackPage() {
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
         <div className="flex items-center justify-between px-6 py-3">
           <div>
-            <h1 className="text-lg font-semibold">提交反馈</h1>
-            <p className="text-xs text-gray-400">手动上传用户问题和日志文件</p>
+            <h1 className="text-lg font-semibold">{t("提交反馈")}</h1>
+            <p className="text-xs text-gray-400">{t("手动上传用户问题和日志文件")}</p>
           </div>
         </div>
       </header>
@@ -169,12 +195,12 @@ export default function FeedbackPage() {
           {/* Problem description */}
           <div>
             <label className="mb-1.5 block text-sm font-medium text-gray-700">
-              问题描述 <span className="text-red-500">*</span>
+              {t("问题描述")} <span className="text-red-500">*</span>
             </label>
             <textarea
               value={form.description}
               onChange={(e) => update("description", e.target.value)}
-              placeholder="请详细描述用户遇到的问题..."
+              placeholder={t("请详细描述用户遇到的问题...")}
               rows={5}
               className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none transition-colors focus:border-black focus:ring-1 focus:ring-black"
             />
@@ -182,13 +208,13 @@ export default function FeedbackPage() {
 
           {/* Problem category */}
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-700">问题分类</label>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700">{t("问题分类")}</label>
             <select
               value={form.category}
               onChange={(e) => update("category", e.target.value)}
               className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-black"
             >
-              <option value="">请选择问题分类</option>
+              <option value="">{t("请选择问题分类")}</option>
               {CATEGORIES.map((cat) => (
                 <option key={cat} value={cat}>{cat}</option>
               ))}
@@ -198,23 +224,23 @@ export default function FeedbackPage() {
           {/* Platform + Priority row */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">平台</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">{t("平台")}</label>
               <select
                 value={form.platform}
                 onChange={(e) => update("platform", e.target.value)}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-black"
               >
-                <option value="APP">APP (移动端)</option>
-                <option value="Web">Web (网页端)</option>
-                <option value="Desktop">Desktop (桌面端)</option>
+                <option value="APP">APP</option>
+                <option value="Web">Web</option>
+                <option value="Desktop">Desktop</option>
               </select>
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">优先级</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">{t("优先级")}</label>
               <div className="flex gap-3 pt-1">
                 {[
-                  { value: "H", label: "高", color: "peer-checked:bg-red-50 peer-checked:text-red-700 peer-checked:ring-red-200" },
-                  { value: "L", label: "低", color: "peer-checked:bg-gray-100 peer-checked:text-gray-700 peer-checked:ring-gray-300" },
+                  { value: "H", label: t("高"), color: "peer-checked:bg-red-50 peer-checked:text-red-700 peer-checked:ring-red-200" },
+                  { value: "L", label: t("低"), color: "peer-checked:bg-gray-100 peer-checked:text-gray-700 peer-checked:ring-gray-300" },
                 ].map((opt) => (
                   <label key={opt.value} className="flex-1 cursor-pointer">
                     <input type="radio" name="priority" value={opt.value} checked={form.priority === opt.value} onChange={(e) => update("priority", e.target.value)} className="peer sr-only" />
@@ -230,7 +256,7 @@ export default function FeedbackPage() {
           {/* Device SN + Firmware */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">设备 SN</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">{t("设备 SN")}</label>
               <input
                 value={form.device_sn}
                 onChange={(e) => update("device_sn", e.target.value)}
@@ -239,7 +265,7 @@ export default function FeedbackPage() {
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">固件版本</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">{t("固件版本")}</label>
               <input
                 value={form.firmware}
                 onChange={(e) => update("firmware", e.target.value)}
@@ -252,7 +278,7 @@ export default function FeedbackPage() {
           {/* APP version + Zendesk */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">APP 版本</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">{t("APP 版本")}</label>
               <input
                 value={form.app_version}
                 onChange={(e) => update("app_version", e.target.value)}
@@ -261,7 +287,7 @@ export default function FeedbackPage() {
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">Zendesk 工单号</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">{t("Zendesk 工单号")}</label>
               <div className="flex gap-2">
                 <input
                   value={form.zendesk}
@@ -284,13 +310,13 @@ export default function FeedbackPage() {
                   ) : "导入"}
                 </button>
               </div>
-              <p className="mt-1 text-[11px] text-gray-400">输入工单号后点击「导入」，AI 将自动总结聊天记录并填充表单</p>
+              <p className="mt-1 text-[11px] text-gray-400">{t("输入工单号后点击导入，AI 将自动总结聊天记录并填充表单")}</p>
             </div>
           </div>
 
           {/* Log file upload */}
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-700">日志文件</label>
+            <label className="mb-1.5 block text-sm font-medium text-gray-700">{t("日志文件")}</label>
             <div
               onClick={() => fileRef.current?.click()}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -300,7 +326,7 @@ export default function FeedbackPage() {
               <svg className="mb-2 h-8 w-8 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.338-2.32 3.75 3.75 0 013.537 5.344A4.5 4.5 0 0118 19.5H6.75z" />
               </svg>
-              <p className="text-sm text-gray-500">点击或拖拽上传日志文件</p>
+              <p className="text-sm text-gray-500">{t("点击或拖拽上传日志文件")}</p>
               <p className="mt-0.5 text-xs text-gray-400">支持 .plaud, .log, .zip, .gz 格式（单个文件 ≤ 50MB）</p>
               <input
                 ref={fileRef}
@@ -340,17 +366,24 @@ export default function FeedbackPage() {
             className="w-full rounded-lg bg-black py-3 text-sm font-semibold text-white transition-colors hover:bg-gray-800 disabled:opacity-50"
           >
             {submitting ? (
-              <span className="flex items-center justify-center gap-2">
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                提交中...
+              <span className="flex flex-col items-center gap-1">
+                <span className="flex items-center gap-2">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  {uploadProgress < 100 ? `${t("上传中")} ${uploadProgress}%` : t("提交中...")}
+                </span>
+                {uploadProgress > 0 && uploadProgress < 100 && (
+                  <span className="h-1 w-32 overflow-hidden rounded-full bg-white/20">
+                    <span className="block h-full rounded-full bg-white transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                  </span>
+                )}
               </span>
             ) : (
-              "提交反馈"
+              t("提交反馈")
             )}
           </button>
 
           <p className="text-center text-xs text-gray-400">
-            提交后可在「待处理」列表中查看，点击「分析」触发 AI 分析
+            {t("提交后工单将自动进入 AI 分析")}
           </p>
         </div>
       </div>

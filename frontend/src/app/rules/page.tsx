@@ -11,6 +11,7 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 }
 
 export default function RulesPage() {
+  const t = useT();
   const [rules, setRules] = useState<Rule[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Rule | null>(null);
@@ -33,7 +34,7 @@ export default function RulesPage() {
 
   const handleReload = async () => {
     const r = await reloadRules();
-    setToast(`已重新加载 ${r.reloaded} 条规则`);
+    setToast(`已重新加载 ${r.reloaded} {t("条规则")}`);
     await load();
   };
 
@@ -62,7 +63,7 @@ export default function RulesPage() {
     <div className="min-h-full">
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
         <div className="flex items-center justify-between px-6 py-3">
-          <h1 className="text-lg font-semibold">分析规则</h1>
+          <h1 className="text-lg font-semibold">{t("分析规则")}</h1>
           <div className="flex items-center gap-2">
             <button onClick={handleReload} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">
               重新加载
@@ -76,7 +77,7 @@ export default function RulesPage() {
         <div className="w-80 flex-shrink-0 border-r border-gray-100 bg-white">
           <div className="p-3">
             <p className="px-2 pb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
-              {rules.length} 条规则
+              {rules.length} {t("条规则")}
             </p>
             {loading ? (
               <p className="px-2 py-8 text-center text-sm text-gray-300">加载中...</p>
@@ -117,7 +118,7 @@ export default function RulesPage() {
         <div className="flex-1 px-6 py-5">
           {!selected ? (
             <div className="flex h-64 items-center justify-center text-sm text-gray-300">
-              选择一条规则查看详情
+              选择一{t("条规则")}查看详情
             </div>
           ) : (
             <div>
@@ -137,12 +138,12 @@ export default function RulesPage() {
                         : "bg-gray-100 text-gray-500 hover:bg-gray-200"
                     }`}
                   >
-                    {selected.meta.enabled ? "已启用" : "已禁用"}
+                    {selected.meta.enabled ? t("已启用") : t("已禁用")}
                   </button>
                   {editing ? (
                     <>
-                      <button onClick={handleSave} className="rounded-lg bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">保存</button>
-                      <button onClick={() => setEditing(false)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">取消</button>
+                      <button onClick={handleSave} className="rounded-lg bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">{t("保存")}</button>
+                      <button onClick={() => setEditing(false)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">{t("取消")}</button>
                     </>
                   ) : (
                     <button onClick={() => { setEditing(true); setEditContent(selected.content); }} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">
@@ -155,7 +156,7 @@ export default function RulesPage() {
               {/* Metadata cards */}
               <div className="mb-5 grid grid-cols-3 gap-3">
                 <div className="rounded-lg border border-gray-100 bg-white p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">触发关键词</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("触发关键词")}</p>
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     {selected.meta.triggers.keywords.map((kw) => (
                       <span key={kw} className="rounded-md bg-blue-50 px-2 py-0.5 text-xs text-blue-600">{kw}</span>
@@ -164,7 +165,7 @@ export default function RulesPage() {
                   </div>
                 </div>
                 <div className="rounded-lg border border-gray-100 bg-white p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">预提取模式</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("预提取模式")}</p>
                   <div className="mt-1.5 space-y-0.5">
                     {selected.meta.pre_extract.map((p) => (
                       <p key={p.name} className="font-mono text-[11px] text-gray-500">
@@ -175,7 +176,7 @@ export default function RulesPage() {
                   </div>
                 </div>
                 <div className="rounded-lg border border-gray-100 bg-white p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">依赖 & 属性</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("依赖 & 属性")}</p>
                   <div className="mt-1.5 space-y-0.5 text-xs text-gray-500">
                     <p>依赖: {selected.meta.depends_on.join(", ") || "无"}</p>
                     <p>需要代码: {selected.meta.needs_code ? "是" : "否"}</p>
