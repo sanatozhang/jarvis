@@ -48,10 +48,11 @@ function ConfBadge({ c }: { c: string }) {
 }
 
 function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
+  const t = useT();
   const task = item.task;
   const analysis = item.analysis;
   if (task && !["done", "failed"].includes(task.status)) {
-    const labels: Record<string, string> = { queued: "排队中", downloading: "下载中", decrypting: "解密中", extracting: "提取中", analyzing: t("分析中") };
+    const labels: Record<string, string> = { queued: t("排队中"), downloading: t("下载中"), decrypting: t("解密中"), extracting: t("提取中"), analyzing: t("分析中") };
     return <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />{labels[task.status] || task.status}</span>;
   }
   if ((item.local_status === "done" || analysis) && analysis) {
@@ -61,10 +62,10 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
       <span className="inline-flex items-center gap-1">
         <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 ring-1 ring-green-200">
           <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
-          成功
+          {t("成功")}
         </span>
         {ruleMatched && (
-          <span className="inline-flex items-center rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700" title={`命中规则: ${analysis.rule_type}`}>
+          <span className="inline-flex items-center rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700" title={`${t("命中规则")}: ${analysis.rule_type}`}>
             100%
           </span>
         )}
@@ -72,9 +73,9 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
     );
   }
   if (item.local_status === "done")
-    return <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 ring-1 ring-green-200"><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>成功</span>;
+    return <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 ring-1 ring-green-200"><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>{t("成功")}</span>;
   if (item.local_status === "failed")
-    return <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600 ring-1 ring-red-200">分析失败</span>;
+    return <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600 ring-1 ring-red-200">{t("分析失败")}</span>;
   return <span className="text-xs text-gray-300">—</span>;
 }
 

@@ -19,6 +19,7 @@ const CATEGORY_SHORT: Record<string, string> = {};
 CATEGORIES.forEach((c) => { CATEGORY_SHORT[c] = c.split("（")[0]; });
 
 function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }) {
+  const t = useT();
   const m: Record<string, { bg: string; label: string }> = {
     analyzing: { bg: "bg-blue-50 text-blue-600 ring-blue-200", label: t("分析中") },
     done: { bg: "bg-green-50 text-green-700 ring-green-200", label: t("成功") },

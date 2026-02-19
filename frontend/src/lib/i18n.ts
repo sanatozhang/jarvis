@@ -75,6 +75,9 @@ const EN: Record<string, string> = {
   "成功": "Done",
   "分析成功": "Analysis Done",
   "分析失败": "Analysis Failed",
+  "失败": "Failed",
+  "命中规则": "Matched Rule",
+  "已重新加载": "Reloaded",
 
   // Buttons
   "分析": "Analyze",

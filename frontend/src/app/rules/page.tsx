@@ -34,7 +34,7 @@ export default function RulesPage() {
 
   const handleReload = async () => {
     const r = await reloadRules();
-    setToast(`已重新加载 ${r.reloaded} {t("条规则")}`);
+    setToast(`${t("已重新加载")} ${r.reloaded} ${t("条规则")}`);
     await load();
   };
 
