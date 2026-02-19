@@ -535,7 +535,7 @@ def _issue_to_dict(
         "platform": issue.platform or "",
         "category": issue.category or "",
         "created_by": issue.created_by or "",
-        "created_at": issue.created_at.isoformat() if issue.created_at else "",
+        "created_at": (issue.created_at.isoformat() + "Z") if issue.created_at else "",
     }
 
     if analysis:
@@ -555,7 +555,7 @@ def _issue_to_dict(
             "fix_suggestion": analysis.fix_suggestion or "",
             "rule_type": analysis.rule_type or "",
             "agent_type": analysis.agent_type or "",
-            "created_at": analysis.created_at.isoformat() if analysis.created_at else "",
+            "created_at": (analysis.created_at.isoformat() + "Z") if analysis.created_at else "",
         }
         d["result_summary"] = analysis.user_reply or ""
         d["root_cause_summary"] = analysis.root_cause or ""

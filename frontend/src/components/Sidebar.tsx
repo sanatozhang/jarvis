@@ -1,6 +1,7 @@
 "use client";
 
-import { useT } from "@/lib/i18n";
+import { useContext } from "react";
+import { useT, useLang, LangToggleContext } from "@/lib/i18n";
 
 const NAV_ITEMS = [
   { href: "/", label: "工单分析", icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" },
@@ -15,6 +16,8 @@ const NAV_ITEMS = [
 
 export default function Sidebar() {
   const t = useT();
+  const lang = useLang();
+  const toggleLang = useContext(LangToggleContext);
 
   return (
     <aside className="flex w-56 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
@@ -32,7 +35,7 @@ export default function Sidebar() {
           </a>
         ))}
       </nav>
-      <div className="border-t border-gray-100 px-3 py-3">
+      <div className="border-t border-gray-100 px-3 py-3 space-y-1">
         <a href="/settings" className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900">
           <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} suppressHydrationWarning>
             <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
@@ -40,6 +43,16 @@ export default function Sidebar() {
           <span className="flex-1">{t("系统状态")}</span>
           <span className="h-2 w-2 rounded-full bg-green-400" />
         </a>
+        <button
+          onClick={toggleLang}
+          className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
+        >
+          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802" />
+          </svg>
+          <span className="flex-1">{lang === "cn" ? "English" : "中文"}</span>
+          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500">{lang === "cn" ? "CN" : "EN"}</span>
+        </button>
       </div>
     </aside>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { LangContext, type Lang } from "@/lib/i18n";
+import { LangContext, LangToggleContext, type Lang } from "@/lib/i18n";
 
 export default function LangProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLang] = useState<Lang>("cn");
@@ -19,17 +19,9 @@ export default function LangProvider({ children }: { children: React.ReactNode }
 
   return (
     <LangContext.Provider value={lang}>
-      <div className="fixed top-3 right-4 z-50">
-        <button
-          onClick={toggle}
-          className="flex items-center gap-1 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-gray-600 shadow-md ring-1 ring-gray-200 transition-colors hover:bg-gray-50"
-          title="Switch language"
-        >
-          <span className="text-sm">{lang === "cn" ? "🇨🇳" : "🇺🇸"}</span>
-          {lang === "cn" ? "中文" : "EN"}
-        </button>
-      </div>
-      {children}
+      <LangToggleContext.Provider value={toggle}>
+        {children}
+      </LangToggleContext.Provider>
     </LangContext.Provider>
   );
 }

@@ -2,6 +2,20 @@
  * API client for the Jarvis backend.
  */
 
+/**
+ * Convert a UTC ISO timestamp (from the backend) to local time string.
+ * Backend sends "2026-02-19T07:30:00Z" — we display "2026-02-19 15:30" (in UTC+8).
+ */
+export function formatLocalTime(utcIso: string | undefined | null, mode: "datetime" | "date" = "datetime"): string {
+  if (!utcIso) return "—";
+  const d = new Date(utcIso.endsWith("Z") ? utcIso : utcIso + "Z");
+  if (isNaN(d.getTime())) return utcIso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  if (mode === "date") return date;
+  return `${date} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 const BASE = "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -293,6 +307,7 @@ export interface LocalIssueItem {
   result_summary: string;
   root_cause_summary: string;
   created_at_ms: number;
+  created_at?: string;
   created_by?: string;
   platform?: string;
   category?: string;

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useT } from "@/lib/i18n";
-import { fetchTracking, escalateIssue, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
+import { fetchTracking, escalateIssue, formatLocalTime, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
 
 const CATEGORIES = [
   "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）",
@@ -209,15 +209,16 @@ export default function TrackingPage() {
                 <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("状态")}</th>
                 <th className="w-16 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("平台")}</th>
                 <th className="w-24 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("提交人")}</th>
+                <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("创建时间")}</th>
                 <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">Zendesk</th>
                 <th className="w-36 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("操作")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {loading && !data ? (
-                <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
+                <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
               ) : !data?.issues.length ? (
-                <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无工单")}</td></tr>
+                <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无工单")}</td></tr>
               ) : data.issues.map((item) => (
                 <tr key={item.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => setDetailItem(item)}>
                   <td className="px-2 py-3 align-top"><PriorityBadge p={item.priority} /></td>
@@ -241,6 +242,7 @@ export default function TrackingPage() {
                         className="text-xs text-blue-600 hover:underline">{item.created_by}</button>
                     ) : <span className="text-xs text-gray-300">—</span>}
                   </td>
+                  <td className="px-3 py-3 align-top text-xs text-gray-400">{formatLocalTime(item.created_at)}</td>
                   <td className="px-3 py-3 align-top text-xs">{item.zendesk_id ? <a href={item.zendesk} target="_blank" onClick={(e) => e.stopPropagation()} className="font-medium text-blue-600 hover:underline">{item.zendesk_id}</a> : <span className="text-gray-300">—</span>}</td>
                   <td className="px-4 py-3 align-top text-right" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1.5">

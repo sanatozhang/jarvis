@@ -8,7 +8,8 @@ RUN npm install
 COPY next.config.ts tsconfig.json postcss.config.mjs ./
 COPY src/ ./src/
 
-# Build with standalone output for smaller image
+# Build with standalone output for smaller Docker image
+ENV STANDALONE=1
 RUN npm run build
 
 FROM node:20-alpine AS runner

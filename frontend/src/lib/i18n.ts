@@ -12,6 +12,7 @@ import { createContext, useContext } from "react";
 export type Lang = "cn" | "en";
 
 export const LangContext = createContext<Lang>("cn");
+export const LangToggleContext = createContext<() => void>(() => {});
 
 export function useT() {
   const lang = useContext(LangContext);
