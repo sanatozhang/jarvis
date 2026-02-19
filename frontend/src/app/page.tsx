@@ -121,11 +121,13 @@ export default function HomePage() {
   const [lang, setLang] = useState<"cn" | "en">("cn");
   const [detailTab, setDetailTab] = useState<Tab>("pending");
   const [toast, setToast] = useState("");
-  const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === "undefined") return "pending";
+  const [tab, setTab] = useState<Tab>("pending");
+
+  // Read tab from URL after mount (avoid hydration mismatch)
+  useEffect(() => {
     const urlTab = new URLSearchParams(window.location.search).get("tab");
-    return (urlTab === "in_progress" || urlTab === "done") ? urlTab as Tab : "pending";
-  });
+    if (urlTab === "in_progress" || urlTab === "done") setTab(urlTab);
+  }, []);
 
   // --- Username (persisted in localStorage) ---
   const [username, setUsername] = useState<string | null>(null);

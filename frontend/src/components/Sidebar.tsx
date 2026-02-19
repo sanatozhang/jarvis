@@ -25,7 +25,7 @@ export default function Sidebar() {
       <nav className="flex-1 space-y-0.5 px-3 py-3">
         {NAV_ITEMS.map((item) => (
           <a key={item.href} href={item.href} className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900">
-            <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} suppressHydrationWarning>
               <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
             </svg>
             <span className="flex-1">{t(item.label)}</span>
@@ -34,7 +34,7 @@ export default function Sidebar() {
       </nav>
       <div className="border-t border-gray-100 px-3 py-3">
         <a href="/settings" className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900">
-          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} suppressHydrationWarning>
             <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
           <span className="flex-1">{t("系统状态")}</span>
