@@ -77,9 +77,24 @@ export default function TrackingPage() {
     window.history.replaceState({}, "", url.toString());
   };
 
-  // Filters
-  const [filters, setFilters] = useState<TrackingFilters>({});
-  const [showFilters, setShowFilters] = useState(false);
+  // Filters — initialize from URL params
+  const [filters, setFilters] = useState<TrackingFilters>(() => {
+    if (typeof window === "undefined") return {};
+    const sp = new URLSearchParams(window.location.search);
+    const init: TrackingFilters = {};
+    if (sp.get("created_by")) init.created_by = sp.get("created_by")!;
+    if (sp.get("platform")) init.platform = sp.get("platform")!;
+    if (sp.get("category")) init.category = sp.get("category")!;
+    if (sp.get("status")) init.status = sp.get("status")!;
+    if (sp.get("date_from")) init.date_from = sp.get("date_from")!;
+    if (sp.get("date_to")) init.date_to = sp.get("date_to")!;
+    return init;
+  });
+  const [showFilters, setShowFilters] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const sp = new URLSearchParams(window.location.search);
+    return !!(sp.get("platform") || sp.get("category") || sp.get("status") || sp.get("date_from") || sp.get("date_to"));
+  });
   const username = typeof window !== "undefined" ? localStorage.getItem("jarvis_username") || "" : "";
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
@@ -101,17 +116,27 @@ export default function TrackingPage() {
     }
   }, [data]);
 
+  const syncFiltersToUrl = (f: TrackingFilters) => {
+    const url = new URL(window.location.href);
+    const filterKeys: (keyof TrackingFilters)[] = ["created_by", "platform", "category", "status", "date_from", "date_to"];
+    for (const k of filterKeys) {
+      f[k] ? url.searchParams.set(k, f[k]!) : url.searchParams.delete(k);
+    }
+    window.history.replaceState({}, "", url.toString());
+  };
+
   const updateFilter = (key: keyof TrackingFilters, val: string) => {
     setFilters((prev) => {
       const next = { ...prev, [key]: val || undefined };
       if (!val) delete next[key];
+      syncFiltersToUrl(next);
       return next;
     });
     setPage(1);
   };
 
-  const clearFilters = () => { setFilters({}); setPage(1); };
-  const setMyIssues = () => { setFilters({ created_by: username }); setPage(1); };
+  const clearFilters = () => { const f = {}; setFilters(f); syncFiltersToUrl(f); setPage(1); };
+  const setMyIssues = () => { const f: TrackingFilters = { created_by: username }; setFilters(f); syncFiltersToUrl(f); setPage(1); };
 
   const copy = (text: string) => { navigator.clipboard.writeText(text); setToast(t("已复制到剪贴板")); };
   const handleRetry = async (issueId: string) => {
