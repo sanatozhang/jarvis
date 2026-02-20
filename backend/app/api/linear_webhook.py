@@ -43,6 +43,7 @@ async def handle_linear_webhook(request: Request, background_tasks: BackgroundTa
 
     Supported events:
     - Comment create: triggers analysis if comment body contains @ai-agent
+    - Issue create: triggers analysis if issue description contains @ai-agent
     """
     settings = get_settings()
     body = await request.body()
@@ -56,17 +57,20 @@ async def handle_linear_webhook(request: Request, background_tasks: BackgroundTa
 
     payload = await request.json()
 
-    # Linear sends a URL verification on webhook creation
-    # Respond with 200 to confirm
     action = payload.get("action")
     event_type = payload.get("type")
 
     logger.info("Linear webhook received: type=%s action=%s", event_type, action)
 
+    data = payload.get("data", {})
+
     # --- Handle Comment events ---
     if event_type == "Comment" and action == "create":
-        comment_data = payload.get("data", {})
-        await _handle_comment_create(comment_data, payload, background_tasks)
+        await _handle_comment_create(data, payload, background_tasks)
+
+    # --- Handle Issue events (check description for trigger keyword) ---
+    elif event_type == "Issue" and action == "create":
+        await _handle_issue_create(data, payload, background_tasks)
 
     return {"status": "ok"}
 
@@ -111,6 +115,51 @@ async def _handle_comment_create(
         linear_issue_id=issue_id,
         trigger_comment_id=comment_id,
         trigger_body=body,
+    )
+
+
+async def _handle_issue_create(
+    issue_data: Dict[str, Any],
+    full_payload: Dict[str, Any],
+    background_tasks: BackgroundTasks,
+):
+    """Process a new issue — check description for trigger keyword and launch analysis."""
+    settings = get_settings()
+    trigger = settings.linear.trigger_keyword.lower()
+
+    title = (issue_data.get("title") or "").strip()
+    description = (issue_data.get("description") or "").strip()
+    combined = f"{title} {description}".lower()
+
+    if trigger not in combined:
+        logger.debug("Issue does not contain trigger keyword '%s', skipping", trigger)
+        return
+
+    issue_id = issue_data.get("id", "")
+    if not issue_id:
+        logger.warning("Issue webhook missing id, skipping")
+        return
+
+    if issue_id in _active_issues:
+        logger.info("Analysis already in progress for issue %s, skipping", issue_id)
+        return
+
+    _active_issues.add(issue_id)
+
+    # Remove trigger keyword from description so it doesn't pollute the analysis
+    trigger_keyword = settings.linear.trigger_keyword
+    clean_description = description.replace(trigger_keyword, "").strip()
+
+    logger.info(
+        "Trigger detected in issue! issue=%s title='%s'",
+        issue_id, title[:80],
+    )
+
+    background_tasks.add_task(
+        _run_linear_analysis,
+        linear_issue_id=issue_id,
+        trigger_comment_id="",
+        trigger_body=clean_description,
     )
 
 
