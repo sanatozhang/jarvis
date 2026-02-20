@@ -112,14 +112,34 @@ class CodexAgent(BaseAgent):
             if on_progress:
                 await _maybe_await(on_progress(90, "解析分析结果..."))
 
+            # Filesystem sync: ensure result.json is visible before parsing
+            result_path = workspace / "output" / "result.json"
+            if not result_path.exists():
+                import os
+                os.sync()
+                await asyncio.sleep(1)
+                if result_path.exists():
+                    logger.info("result.json appeared after sync+wait")
+                else:
+                    logger.warning("result.json still missing after sync+wait")
+
             result = self.parse_result(workspace, stdout)
             result.agent_type = "codex"
 
-            # If parse failed, include raw output in error for debugging
+            # If parse failed, include diagnostics
             if result.problem_type == "未知" and not result.user_reply:
+                diag = [f"Codex exit code: {proc.returncode}"]
+                diag.append(f"result.json exists: {result_path.exists()}")
+                if result_path.exists():
+                    try:
+                        raw_json = result_path.read_text(encoding="utf-8")[:500]
+                        diag.append(f"result.json content (first 500): {raw_json}")
+                    except Exception as re:
+                        diag.append(f"result.json read error: {re}")
+                diag.append(f"stdout (first 500): {stdout[:500] if stdout else '(empty)'}")
+                logger.error("Parse failed diagnostics:\n%s", "\n".join(diag))
+
                 hint = stdout[:1000] if stdout else "(empty stdout)"
-                if stderr:
-                    hint += f"\n\nstderr:\n{stderr[:2000]}"
                 result.root_cause = f"分析未产出结构化结果。\n\nCodex 退出码: {proc.returncode}\n原始输出:\n{hint}"
 
             return result

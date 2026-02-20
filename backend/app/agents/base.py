@@ -64,6 +64,7 @@ class BaseAgent(ABC):
         rules: List[Rule],
         extraction: Dict[str, Any],
         problem_date: Optional[str] = None,
+        has_logs: bool = True,
     ) -> str:
         """Build the master prompt for the agent."""
 
@@ -74,7 +75,8 @@ class BaseAgent(ABC):
 
         extraction_json = json.dumps(extraction, ensure_ascii=False, indent=2)
 
-        prompt = f"""你是 Plaud 设备日志分析专家，专门帮助客服团队分析用户工单。
+        if has_logs:
+            role_and_principles = f"""你是 Plaud 设备日志分析专家，专门帮助客服团队分析用户工单。
 你的分析结果将直接展示给客服人员，他们会复制你生成的回复模板发送给用户。
 
 ## 重要原则
@@ -82,7 +84,53 @@ class BaseAgent(ABC):
 1. **先看预提取结果**：L1 层已经自动提取了关键日志行，先基于这些信息判断
 2. **不够再 grep**：只有预提取信息不足时，才使用 grep 进一步分析 logs/ 目录下的日志
 3. **规则优先**：严格按照 rules/ 下的规则文件中的排查步骤执行
+4. **结果必须写文件**：分析完成后必须将 JSON 结果写入 output/result.json"""
+
+            extraction_section = f"""## 预提取结果（L1 层已自动提取）
+
+以下是根据规则中的 grep 模式从日志中提取的关键信息。
+- 如果 match_count > 0，说明日志中有匹配的内容，请仔细阅读 matches 数组
+- 如果 match_count = 0，说明日志中没有相关记录
+
+```json
+{extraction_json}
+```"""
+
+            workspace_section = """## 工作空间结构
+
+```
+logs/         ← 解密后的日志文件，可以直接 grep
+rules/        ← 规则文件，供参考
+code/         ← 代码仓库（如果存在），可搜索代码定位问题
+output/       ← 请将 result.json 写入此目录
+```"""
+        else:
+            role_and_principles = f"""你是 Plaud 产品和技术专家，专门帮助客服团队解答用户疑问。
+**注意：本工单没有提供日志文件**，你需要基于问题描述、代码仓库和产品知识来分析和回答。
+你的分析结果将直接展示给客服人员，他们会复制你生成的回复模板发送给用户。
+
+## 重要原则
+
+1. **代码优先**：查看 code/ 目录下的代码仓库，理解产品功能和设计逻辑
+2. **规则参考**：阅读 rules/ 下的规则文件，了解常见问题和解决方案
+3. **基于经验**：结合产品知识，给出专业的解答和建议
 4. **结果必须写文件**：分析完成后必须将 JSON 结果写入 output/result.json
+5. **无法确认时说明**：如果没有日志无法确认根因，在回复中说明需要用户提供日志进一步排查"""
+
+            extraction_section = """## 日志情况
+
+**本工单未提供日志文件。** 请仅基于问题描述、代码和规则进行分析。
+如果问题需要日志才能定位，请在 user_reply 中引导用户提供日志。"""
+
+            workspace_section = """## 工作空间结构
+
+```
+rules/        ← 规则文件，供参考
+code/         ← 代码仓库（如果存在），可搜索代码定位问题
+output/       ← 请将 result.json 写入此目录
+```"""
+
+        prompt = f"""{role_and_principles}
 
 ## 工单信息
 
@@ -100,24 +148,9 @@ class BaseAgent(ABC):
 
 {rules_section}
 
-## 预提取结果（L1 层已自动提取）
+{extraction_section}
 
-以下是根据规则中的 grep 模式从日志中提取的关键信息。
-- 如果 match_count > 0，说明日志中有匹配的内容，请仔细阅读 matches 数组
-- 如果 match_count = 0，说明日志中没有相关记录
-
-```json
-{extraction_json}
-```
-
-## 工作空间结构
-
-```
-logs/         ← 解密后的日志文件，可以直接 grep
-rules/        ← 规则文件，供参考
-code/         ← 代码仓库（如果存在），可搜索代码定位问题
-output/       ← 请将 result.json 写入此目录
-```
+{workspace_section}
 
 ## 输出要求
 
@@ -193,19 +226,44 @@ If you need further assistance, please don't hesitate to contact us.
     @staticmethod
     def parse_result(workspace: Path, raw_output: str = "") -> AnalysisResult:
         """Parse the agent's result from output/result.json or raw output."""
-        result_file = workspace / "output" / "result.json"
-
         data = {}
-        # Try reading the JSON file the agent was asked to write
+
+        # Strategy 1: read output/result.json (expected path)
+        result_file = workspace / "output" / "result.json"
         if result_file.exists():
             try:
-                data = json.loads(result_file.read_text(encoding="utf-8"))
+                content = result_file.read_text(encoding="utf-8")
+                content = content.lstrip("\ufeff")  # strip BOM
+                data = json.loads(content)
+                logger.info("Parsed result.json (%d bytes, keys: %s)", len(content), list(data.keys()))
             except Exception as e:
-                logger.warning("Failed to parse result.json: %s", e)
+                logger.warning("Failed to parse result.json at %s: %s", result_file, e)
+        else:
+            logger.warning("result.json not found at %s", result_file)
 
-        # Fallback: try extracting JSON from raw output
+        # Strategy 2: search recursively for any result.json in workspace
+        if not data:
+            for p in sorted(workspace.rglob("result.json")):
+                if p == result_file:
+                    continue
+                try:
+                    content = p.read_text(encoding="utf-8").lstrip("\ufeff")
+                    candidate = json.loads(content)
+                    if "problem_type" in candidate or "root_cause" in candidate:
+                        data = candidate
+                        logger.info("Found result.json at alternate path: %s", p)
+                        break
+                except Exception:
+                    continue
+
+        # Strategy 3: extract JSON from raw stdout
         if not data and raw_output:
             data = _extract_json_from_text(raw_output)
+            if data:
+                logger.info("Extracted JSON from raw output (keys: %s)", list(data.keys()))
+
+        if data:
+            logger.info("Analysis result: problem_type=%s confidence=%s", data.get("problem_type"), data.get("confidence"))
 
         return AnalysisResult(
             task_id="",
@@ -228,11 +286,11 @@ If you need further assistance, please don't hesitate to contact us.
 def _extract_json_from_text(text: str) -> Dict:
     """Try to extract a JSON object from text that may contain markdown."""
     import re
-    # Look for ```json ... ``` blocks
+
+    # Strategy A: look for ```json ... ``` blocks
     patterns = [
         r"```json\s*\n(.*?)\n```",
         r"```\s*\n(\{.*?\})\n```",
-        r"(\{[^{}]*\"problem_type\"[^{}]*\})",
     ]
     for pat in patterns:
         match = re.search(pat, text, re.DOTALL)
@@ -241,4 +299,28 @@ def _extract_json_from_text(text: str) -> Dict:
                 return json.loads(match.group(1))
             except Exception:
                 continue
+
+    # Strategy B: find the largest { ... } block containing "problem_type"
+    brace_depth = 0
+    start = -1
+    candidates = []
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if brace_depth == 0:
+                start = i
+            brace_depth += 1
+        elif ch == "}":
+            brace_depth -= 1
+            if brace_depth == 0 and start >= 0:
+                block = text[start : i + 1]
+                if "problem_type" in block:
+                    candidates.append(block)
+                start = -1
+
+    for block in sorted(candidates, key=len, reverse=True):
+        try:
+            return json.loads(block)
+        except Exception:
+            continue
+
     return {}

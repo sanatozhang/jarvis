@@ -223,22 +223,15 @@ async def _run_api_analysis(
                 if log_path:
                     log_paths.append(log_path)
 
-        if not log_paths:
-            result = AnalysisResult(
-                task_id=task_id, issue_id=record_id,
-                problem_type="日志解析失败",
-                root_cause="无可用日志文件" + (f" ({saved_files[0]['name']})" if saved_files else ""),
-                confidence="low", needs_engineer=True,
-                user_reply="日志文件无法解析，请检查文件格式。",
-            )
-            await _finish_task(task_id, record_id, result, webhook_url, is_failure=True)
-            return
+        has_logs = len(log_paths) > 0
 
-        await db.update_task(task_id, status="analyzing", progress=30, message="匹配规则...")
+        if has_logs:
+            await db.update_task(task_id, status="analyzing", progress=30, message="匹配规则...")
+        else:
+            await db.update_task(task_id, status="analyzing", progress=30, message="无日志，基于描述和代码分析...")
 
         # Match rules
         engine = RuleEngine()
-        # Need to load from DB if available
         try:
             await engine.sync_files_to_db()
         except Exception:
@@ -254,8 +247,7 @@ async def _run_api_analysis(
 
         await db.update_task(task_id, status="analyzing", progress=50, message="AI 分析中...")
 
-        # Pre-extract
-        extraction = extract_for_rules(rules, log_paths)
+        extraction = extract_for_rules(rules, log_paths) if has_logs else {}
 
         # Prepare workspace
         engine.prepare_workspace(workspace, rules, log_paths)
@@ -263,7 +255,7 @@ async def _run_api_analysis(
         # Run agent
         orchestrator = AgentOrchestrator()
         from app.agents.base import BaseAgent
-        prompt = BaseAgent.build_prompt(issue=issue, rules=rules, extraction=extraction)
+        prompt = BaseAgent.build_prompt(issue=issue, rules=rules, extraction=extraction, has_logs=has_logs)
 
         agent = orchestrator.select_agent(rule_type)
         result = await agent.analyze(workspace=workspace, prompt=prompt)

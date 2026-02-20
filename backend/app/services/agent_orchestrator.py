@@ -83,6 +83,7 @@ class AgentOrchestrator:
         rule_type: str = "",
         agent_override: Optional[str] = None,
         problem_date: Optional[str] = None,
+        has_logs: bool = True,
         on_progress: Optional[Callable[[int, str], Any]] = None,
     ) -> AnalysisResult:
         """
@@ -99,6 +100,7 @@ class AgentOrchestrator:
             rules=rules,
             extraction=extraction,
             problem_date=problem_date,
+            has_logs=has_logs,
         )
 
         result = await agent.analyze(

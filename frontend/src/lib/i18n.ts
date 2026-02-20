@@ -277,6 +277,11 @@ const EN: Record<string, string> = {
   "提交失败": "Submit failed",
   "输入工单号，回车导入": "Enter ticket #, press Enter to import",
   "支持 .plaud, .log, .zip, .gz 格式（单个文件 ≤ 50MB）": "Supports .plaud, .log, .zip, .gz (max 50MB per file)",
+  "未上传日志文件": "No Log Files Uploaded",
+  "没有日志文件，AI 将无法分析用户的操作行为和设备状态，只能结合代码和产品知识回答问题。": "Without log files, AI cannot analyze user actions or device state. It can only answer based on code and product knowledge.",
+  "适用于产品功能咨询、设计逻辑确认等场景。": "Suitable for product feature inquiries and design logic questions.",
+  "返回上传日志": "Go Back & Upload Logs",
+  "继续提交": "Continue Without Logs",
 
   // Oncall extra
   "至少需要一组值班人员": "At least one group is required",

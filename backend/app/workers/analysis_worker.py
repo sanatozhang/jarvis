@@ -160,24 +160,18 @@ async def run_analysis_pipeline(
         if incorrect and reason:
             log_parse_issues.append(reason)
 
-    if not log_paths:
-        msg = "无可用日志文件"
-        if log_parse_issues:
-            msg += f": {'; '.join(log_parse_issues)}"
-        await db.update_issue_status(issue_id, "failed")
-        return AnalysisResult(
-            task_id=task_id,
-            issue_id=issue_id,
-            problem_type="日志解析失败",
-            root_cause=msg,
-            confidence="low",
-            needs_engineer=True,
-            user_reply="您好，我们正在分析您的问题，由于日志文件格式异常，需要工程师进一步检查。我们会尽快回复您。",
-            issue=issue,
-        )
+    has_logs = len(log_paths) > 0
 
-    if on_progress:
-        await on_progress(40, f"解密完成，{len(log_paths)} 个日志文件")
+    if has_logs:
+        if on_progress:
+            await on_progress(40, f"解密完成，{len(log_paths)} 个日志文件")
+    else:
+        if log_parse_issues:
+            logger.warning("Log parse issues: %s", log_parse_issues)
+        if downloaded_files:
+            logger.warning("Had %d files but none produced usable logs", len(downloaded_files))
+        if on_progress:
+            await on_progress(40, "无日志文件，将基于描述和代码分析...")
 
     # --- Step 4: Match rules ---
     if on_progress:
@@ -187,17 +181,20 @@ async def run_analysis_pipeline(
     rules = engine.match_rules(issue.description)
     rule_type = engine.classify(issue.description)
 
-    logger.info("Matched rules: %s (primary: %s)", [r.meta.id for r in rules], rule_type)
+    logger.info("Matched rules: %s (primary: %s), has_logs: %s", [r.meta.id for r in rules], rule_type, has_logs)
 
     # --- Step 5: Pre-extract ---
-    if on_progress:
-        await on_progress(50, "预提取关键日志...")
+    extraction = {}
+    if has_logs:
+        if on_progress:
+            await on_progress(50, "预提取关键日志...")
+        problem_date = _guess_problem_date(issue.description)
+        extraction = extract_for_rules(rules, log_paths, problem_date=problem_date)
+    else:
+        problem_date = _guess_problem_date(issue.description)
 
-    problem_date = _guess_problem_date(issue.description)
-    extraction = extract_for_rules(rules, log_paths, problem_date=problem_date)
-
     if on_progress:
-        await on_progress(55, "预提取完成，准备 Agent 工作空间...")
+        await on_progress(55, "准备 Agent 工作空间..." if has_logs else "准备代码分析...")
 
     # --- Step 6: Prepare workspace ---
     code_repo = settings.code_repo_path if settings.code_repo_path else None
@@ -213,6 +210,7 @@ async def run_analysis_pipeline(
         rule_type=rule_type,
         agent_override=agent_override,
         problem_date=problem_date,
+        has_logs=has_logs,
         on_progress=on_progress,
     )
 

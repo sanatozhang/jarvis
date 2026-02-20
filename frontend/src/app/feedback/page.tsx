@@ -56,6 +56,7 @@ export default function FeedbackPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [importing, setImporting] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+  const [showNoLogConfirm, setShowNoLogConfirm] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const importFromZendesk = async () => {
@@ -124,7 +125,7 @@ export default function FeedbackPage() {
 
   const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
-  const submit = async () => {
+  const submit = async (skipLogCheck = false) => {
     if (!form.description.trim()) {
       setToast({ msg: t("请填写问题描述"), type: "error" });
       setTimeout(() => setToast(null), 3000);
@@ -136,6 +137,11 @@ export default function FeedbackPage() {
     if (oversized) {
       setToast({ msg: `${t("文件")} ${oversized.name} ${t("超过 50MB 限制")}（${formatSize(oversized.size)}），${t("请压缩后重试")}`, type: "error" });
       setTimeout(() => setToast(null), 5000);
+      return;
+    }
+
+    if (!skipLogCheck && files.length === 0) {
+      setShowNoLogConfirm(true);
       return;
     }
 
@@ -370,7 +376,7 @@ export default function FeedbackPage() {
 
           {/* Submit */}
           <button
-            onClick={submit}
+            onClick={() => submit()}
             disabled={submitting}
             className="w-full rounded-lg bg-black py-3 text-sm font-semibold text-white transition-colors hover:bg-gray-800 disabled:opacity-50"
           >
@@ -396,6 +402,29 @@ export default function FeedbackPage() {
           </p>
         </div>
       </div>
+
+      {showNoLogConfirm && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-amber-100">
+                <svg className="h-5 w-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">{t("未上传日志文件")}</h3>
+                <p className="mt-1.5 text-sm text-gray-500">{t("没有日志文件，AI 将无法分析用户的操作行为和设备状态，只能结合代码和产品知识回答问题。")}</p>
+                <p className="mt-2 text-sm text-gray-500">{t("适用于产品功能咨询、设计逻辑确认等场景。")}</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowNoLogConfirm(false)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">{t("返回上传日志")}</button>
+              <button onClick={() => { setShowNoLogConfirm(false); submit(true); }} className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-gray-800">{t("继续提交")}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
     </div>
