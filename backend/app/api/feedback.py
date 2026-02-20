@@ -133,6 +133,10 @@ async def import_from_zendesk(zendesk_input: str = Form(..., description="Zendes
     3. Return pre-filled form data for the feedback page
     """
     try:
+        import os
+        if not os.environ.get("ZENDESK_EMAIL") or not os.environ.get("ZENDESK_API_TOKEN"):
+            raise HTTPException(status_code=503, detail="ZENDESK_NOT_CONFIGURED")
+
         ticket_id = extract_ticket_id(zendesk_input)
         if not ticket_id:
             raise HTTPException(status_code=400, detail="无法识别 Zendesk 工单号")

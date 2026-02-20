@@ -268,6 +268,7 @@ const EN: Record<string, string> = {
   "已导入 Zendesk": "Imported Zendesk",
   "条聊天记录": "messages",
   "导入失败": "Import failed",
+  "Zendesk 导入功能暂未配置，请联系管理员设置 Zendesk API 凭证": "Zendesk import is not configured. Please contact the admin to set up Zendesk API credentials.",
   "超过 50MB 限制": "exceeds 50MB limit",
   "文件": "File",
   "请压缩后重试": "please compress and retry",

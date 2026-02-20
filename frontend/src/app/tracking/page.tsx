@@ -64,6 +64,19 @@ export default function TrackingPage() {
   const [toast, setToast] = useState("");
   const [detailItem, setDetailItem] = useState<LocalIssueItem | null>(null);
 
+  const openDetail = (item: LocalIssueItem) => {
+    setDetailItem(item);
+    const url = new URL(window.location.href);
+    url.searchParams.set("detail", item.record_id);
+    window.history.replaceState({}, "", url.toString());
+  };
+  const closeDetail = () => {
+    setDetailItem(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("detail");
+    window.history.replaceState({}, "", url.toString());
+  };
+
   // Filters
   const [filters, setFilters] = useState<TrackingFilters>({});
   const [showFilters, setShowFilters] = useState(false);
@@ -77,6 +90,16 @@ export default function TrackingPage() {
   }, [filters]);
 
   useEffect(() => { load(page); }, [load, page]);
+
+  // Auto-open detail from URL param
+  useEffect(() => {
+    if (!data) return;
+    const urlDetail = new URLSearchParams(window.location.search).get("detail");
+    if (urlDetail && !detailItem) {
+      const item = data.issues.find((i) => i.record_id === urlDetail);
+      if (item) setDetailItem(item);
+    }
+  }, [data]);
 
   const updateFilter = (key: keyof TrackingFilters, val: string) => {
     setFilters((prev) => {
@@ -220,7 +243,7 @@ export default function TrackingPage() {
               ) : !data?.issues.length ? (
                 <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无工单")}</td></tr>
               ) : data.issues.map((item) => (
-                <tr key={item.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => setDetailItem(item)}>
+                <tr key={item.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => openDetail(item)}>
                   <td className="px-2 py-3 align-top"><PriorityBadge p={item.priority} /></td>
                   <td className="max-w-md px-4 py-3">
                     <p className="text-sm leading-snug text-gray-800" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.description}</p>
@@ -262,11 +285,11 @@ export default function TrackingPage() {
       {/* Detail panel */}
       {detailItem && (
         <div className="fixed inset-0 z-50 flex">
-          <div className="flex-1 bg-black/20" onClick={() => setDetailItem(null)} />
+          <div className="flex-1 bg-black/20" onClick={closeDetail} />
           <div className="w-[520px] flex-shrink-0 overflow-y-auto border-l border-gray-200 bg-white shadow-2xl">
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-100 bg-white px-5 py-3">
               <h2 className="text-sm font-semibold text-gray-800">{t("工单详情")}</h2>
-              <button onClick={() => setDetailItem(null)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"><svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg></button>
+              <button onClick={closeDetail} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"><svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg></button>
             </div>
             <div className="p-5 space-y-5">
               <section>
@@ -311,7 +334,7 @@ export default function TrackingPage() {
               )}
               <section className="border-t border-gray-100 pt-4">
                 {detailItem.local_status === "failed" && (
-                  <button onClick={() => { handleRetry(detailItem.record_id); setDetailItem(null); }} className="mb-2 w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("重新分析")}</button>
+                  <button onClick={() => { handleRetry(detailItem.record_id); closeDetail(); }} className="mb-2 w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("重新分析")}</button>
                 )}
                 <button onClick={() => handleEscalate(detailItem.record_id)} className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2.5 text-sm font-medium text-amber-700 hover:bg-amber-100">{t("转工程师处理")}</button>
               </section>

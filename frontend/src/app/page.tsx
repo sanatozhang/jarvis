@@ -127,10 +127,17 @@ export default function HomePage() {
   const [toast, setToast] = useState("");
   const [tab, setTab] = useState<Tab>("pending");
 
-  // Read tab from URL after mount (avoid hydration mismatch)
+  // Read tab + detail from URL after mount (avoid hydration mismatch)
   useEffect(() => {
     const urlTab = new URLSearchParams(window.location.search).get("tab");
     if (urlTab === "in_progress" || urlTab === "done") setTab(urlTab);
+    const urlDetail = getUrlParam("detail");
+    if (urlDetail) {
+      setDetailId(urlDetail);
+      const urlDetailTab = getUrlParam("dtab");
+      if (urlDetailTab === "in_progress" || urlDetailTab === "done") setDetailTab(urlDetailTab);
+      else if (urlDetailTab === "pending") setDetailTab("pending");
+    }
   }, []);
 
   // --- Username (persisted in localStorage) ---
@@ -297,7 +304,8 @@ export default function HomePage() {
   };
 
   // --- Detail ---
-  const openDetail = (id: string, t: Tab) => { setDetailId(id); setDetailTab(t); };
+  const openDetail = (id: string, t: Tab) => { setDetailId(id); setDetailTab(t); setUrlParam("detail", id); setUrlParam("dtab", t); };
+  const closeDetail = () => { setDetailId(null); setUrlParam("detail", ""); setUrlParam("dtab", ""); };
   const detailData = (() => {
     if (!detailId) return null;
     if (detailTab === "pending") {
@@ -513,11 +521,11 @@ export default function HomePage() {
       {/* Detail panel */}
       {detailId && detailData && (
         <div className="fixed inset-0 z-50 flex">
-          <div className="flex-1 bg-black/20" onClick={() => setDetailId(null)} />
+          <div className="flex-1 bg-black/20" onClick={closeDetail} />
           <div className="w-[520px] flex-shrink-0 overflow-y-auto border-l border-gray-200 bg-white shadow-2xl">
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-100 bg-white px-5 py-3">
               <h2 className="text-sm font-semibold text-gray-800">{t("工单详情")}</h2>
-              <button onClick={() => setDetailId(null)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"><svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg></button>
+              <button onClick={closeDetail} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"><svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg></button>
             </div>
             <div className="p-5 space-y-5">
               <section>
@@ -544,7 +552,7 @@ export default function HomePage() {
 
               {/* Action button for pending issues */}
               {detailTab === "pending" && !detailData.task && !detailData.result && (
-                <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("开始 AI 分析")}</button>
+                <button onClick={() => { startAnalysis(detailId!); closeDetail(); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("开始 AI 分析")}</button>
               )}
 
               {/* Progress */}
@@ -562,7 +570,7 @@ export default function HomePage() {
                     <p className="text-sm font-medium text-red-700">{t("分析失败")}</p>
                     <p className="mt-1 text-xs text-red-500">{detailData.task.error}</p>
                   </div>
-                  <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("重新分析")}</button>
+                  <button onClick={() => { startAnalysis(detailId!); closeDetail(); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">{t("重新分析")}</button>
                 </>
               )}
 
@@ -611,7 +619,7 @@ export default function HomePage() {
               {/* Retry button for failed analysis */}
               {detailData.localItem?.local_status === "failed" && (
                 <section>
-                  <button onClick={() => { startAnalysis(detailId!); setDetailId(null); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">
+                  <button onClick={() => { startAnalysis(detailId!); closeDetail(); }} className="w-full rounded-lg bg-black py-2.5 text-sm font-medium text-white hover:bg-gray-800">
                     {t("重新分析")}
                   </button>
                 </section>

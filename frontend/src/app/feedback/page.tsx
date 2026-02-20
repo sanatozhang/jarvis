@@ -66,10 +66,15 @@ export default function FeedbackPage() {
       const fd = new FormData();
       fd.append("zendesk_input", zd);
       const res = await fetch(`${BACKEND_URL}/api/feedback/import-zendesk`, { method: "POST", body: fd });
-      if (!res.ok) { const t = await res.text(); throw new Error(t); }
+      if (!res.ok) {
+        const errText = await res.text();
+        if (res.status === 503 || errText.includes("ZENDESK_NOT_CONFIGURED")) {
+          throw new Error("ZENDESK_NOT_CONFIGURED");
+        }
+        throw new Error(errText);
+      }
       const data = await res.json();
 
-      // Auto-fill form with AI summary (user can still edit)
       setForm((prev) => ({
         ...prev,
         description: data.description || prev.description,
@@ -82,10 +87,14 @@ export default function FeedbackPage() {
       }));
       setToast({ msg: `${t("已导入 Zendesk")} #${data.ticket_id}（${data.comment_count} ${t("条聊天记录")}）`, type: "success" });
     } catch (e: any) {
-      setToast({ msg: `${t("导入失败")}: ${e.message}`, type: "error" });
+      if (e.message === "ZENDESK_NOT_CONFIGURED") {
+        setToast({ msg: t("Zendesk 导入功能暂未配置，请联系管理员设置 Zendesk API 凭证"), type: "error" });
+      } else {
+        setToast({ msg: `${t("导入失败")}: ${e.message}`, type: "error" });
+      }
     } finally {
       setImporting(false);
-      setTimeout(() => setToast(null), 4000);
+      setTimeout(() => setToast(null), 5000);
     }
   };
 
