@@ -270,20 +270,35 @@ async def _run_linear_analysis(
         await db.create_task(task_id=task_id, issue_id=record_id)
         await db.update_task(task_id, status="analyzing", progress=10, message="获取 Linear 工单信息...")
 
-        # --- Step 3: Download attachments ---
+        # --- Step 3: Download uploaded files ---
+        # Linear uploaded files are embedded as markdown URLs in description/comments,
+        # NOT in the GraphQL `attachments` field (which is for external link attachments).
         workspace = Path(settings.storage.workspace_dir) / task_id
         raw_dir = workspace / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
 
-        attachments = linear_issue.get("attachments", {}).get("nodes", [])
+        uploaded_files = await client.collect_uploaded_files(
+            linear_issue_id, description=description,
+        )
         downloaded_files = []
 
-        for i, att in enumerate(attachments):
+        for uf in uploaded_files:
+            filename = uf["filename"]
+            save_path = raw_dir / filename
+            try:
+                await client.download_attachment(uf["url"], str(save_path))
+                downloaded_files.append(save_path)
+                logger.info("  Downloaded: %s → %s (%d bytes)", uf["source"], filename, save_path.stat().st_size)
+            except Exception as e:
+                logger.error("  Failed to download '%s' from %s: %s", filename, uf["source"], e)
+
+        # Also try GraphQL attachments as fallback (external link attachments)
+        api_attachments = linear_issue.get("attachments", {}).get("nodes", []) if isinstance(linear_issue.get("attachments"), dict) else []
+        for att in api_attachments:
             att_url = att.get("url", "")
-            att_title = att.get("title", "") or "attachment"
-            if not att_url:
-                logger.warning("  Attachment #%d '%s': no URL, skipping", i, att_title)
+            if not att_url or att_url in {uf["url"] for uf in uploaded_files}:
                 continue
+            att_title = att.get("title", "") or "attachment"
             filename = att_title
             if "/" in att_url:
                 url_filename = att_url.rsplit("/", 1)[-1].split("?")[0]
@@ -293,16 +308,16 @@ async def _run_linear_analysis(
             try:
                 await client.download_attachment(att_url, str(save_path))
                 downloaded_files.append(save_path)
-                logger.info("  Downloaded attachment: %s → %s (%d bytes)", att_title, filename, save_path.stat().st_size)
+                logger.info("  Downloaded API attachment: %s (%d bytes)", filename, save_path.stat().st_size)
             except Exception as e:
-                logger.error("  Failed to download attachment '%s': %s", att_title, e)
+                logger.error("  Failed to download API attachment '%s': %s", att_title, e)
 
-        logger.info("  Attachments downloaded: %d/%d", len(downloaded_files), len(attachments))
-        await db.update_task(task_id, status="analyzing", progress=25, message=f"已下载 {len(downloaded_files)} 个附件")
+        logger.info("  Total files downloaded: %d (uploads: %d, API attachments: %d)",
+                     len(downloaded_files), len(uploaded_files), len(api_attachments))
+        await db.update_task(task_id, status="analyzing", progress=25, message=f"已下载 {len(downloaded_files)} 个文件")
 
         if not downloaded_files:
-            # No attachments — still try to analyze based on description alone
-            logger.warning("No downloadable attachments for issue %s, analyzing description only", identifier)
+            logger.warning("No downloadable files for issue %s, analyzing description only", identifier)
 
         # --- Step 4: Run analysis pipeline ---
         from app.services.decrypt import process_log_file

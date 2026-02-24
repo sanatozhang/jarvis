@@ -13,8 +13,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -98,17 +100,16 @@ class LinearClient:
         data = await self._graphql(query, {"id": comment_id})
         return data.get("comment", {})
 
-    async def get_issue_attachments(self, issue_id: str) -> List[Dict[str, Any]]:
-        """Fetch all attachments for an issue."""
+    async def get_issue_comments(self, issue_id: str) -> List[Dict[str, Any]]:
+        """Fetch all comments for an issue."""
         query = """
-        query GetIssueAttachments($id: String!) {
+        query GetIssueComments($id: String!) {
             issue(id: $id) {
-                attachments {
+                comments {
                     nodes {
                         id
-                        title
-                        url
-                        metadata
+                        body
+                        user { id name }
                         createdAt
                     }
                 }
@@ -117,8 +118,46 @@ class LinearClient:
         """
         data = await self._graphql(query, {"id": issue_id})
         issue = data.get("issue", {})
-        attachments = issue.get("attachments", {}).get("nodes", [])
-        return attachments
+        return issue.get("comments", {}).get("nodes", [])
+
+    async def collect_uploaded_files(self, issue_id: str, description: str = "") -> List[Dict[str, str]]:
+        """
+        Collect all uploaded file URLs from an issue's description and comments.
+
+        Linear stores uploaded files on its CDN. They appear as markdown links
+        in description/comments, e.g.:
+          [filename.plaud](https://uploads.linear.app/xxx/filename.plaud)
+          ![screenshot](https://uploads.linear.app/xxx/image.png)
+          or as raw URLs: https://uploads.linear.app/xxx/filename.zip
+
+        Returns list of {"url": ..., "filename": ..., "source": "description"|"comment"}
+        """
+        files: List[Dict[str, str]] = []
+        seen_urls: set[str] = set()
+
+        # Extract from description
+        for url, filename in _extract_upload_urls(description):
+            if url not in seen_urls:
+                files.append({"url": url, "filename": filename, "source": "description"})
+                seen_urls.add(url)
+
+        # Extract from comments
+        try:
+            comments = await self.get_issue_comments(issue_id)
+            for comment in comments:
+                body = comment.get("body", "") or ""
+                for url, filename in _extract_upload_urls(body):
+                    if url not in seen_urls:
+                        files.append({"url": url, "filename": filename, "source": "comment"})
+                        seen_urls.add(url)
+        except Exception as e:
+            logger.warning("Failed to fetch comments for file extraction: %s", e)
+
+        logger.info("Collected %d uploaded files from issue %s", len(files), issue_id)
+        for f in files:
+            logger.info("  - [%s] %s (%s)", f["source"], f["filename"], f["url"][:80])
+
+        return files
 
     # ------------------------------------------------------------------
     # Comment operations
@@ -205,6 +244,92 @@ class LinearClient:
     # ------------------------------------------------------------------
     async def close(self):
         await self._http.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Extract uploaded file URLs from markdown text
+# ---------------------------------------------------------------------------
+# Known Linear CDN domains for uploaded files
+_UPLOAD_DOMAINS = {"uploads.linear.app", "cdn.linear.app", "linear-uploads.s3.amazonaws.com"}
+
+# File extensions that are likely log/data files (not images)
+_LOG_EXTENSIONS = {
+    ".plaud", ".log", ".txt", ".zip", ".gz", ".tar", ".7z",
+    ".rar", ".csv", ".json", ".xml", ".dat", ".bin", ".db",
+}
+
+# Image extensions to skip by default
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"}
+
+
+def _extract_upload_urls(text: str, include_images: bool = False) -> List[tuple[str, str]]:
+    """
+    Extract uploaded file URLs from markdown text.
+
+    Returns list of (url, filename) tuples.
+    Looks for:
+      1. Markdown links: [filename](https://uploads.linear.app/xxx/file.ext)
+      2. Markdown images: ![alt](https://uploads.linear.app/xxx/image.png)
+      3. Raw URLs: https://uploads.linear.app/xxx/file.ext
+    """
+    results: List[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    # Pattern 1: Markdown links [text](url) and images ![text](url)
+    md_pattern = r'!?\[([^\]]*)\]\((https?://[^)]+)\)'
+    for match in re.finditer(md_pattern, text):
+        label = match.group(1)
+        url = match.group(2)
+        filename = _filename_from_url(url) or label or "attachment"
+        if _is_relevant_url(url, filename, include_images) and url not in seen:
+            results.append((url, filename))
+            seen.add(url)
+
+    # Pattern 2: Raw URLs on their own line or in text
+    raw_pattern = r'(https?://[^\s<>\]\)]+)'
+    for match in re.finditer(raw_pattern, text):
+        url = match.group(1)
+        if url in seen:
+            continue
+        filename = _filename_from_url(url) or "attachment"
+        if _is_relevant_url(url, filename, include_images) and url not in seen:
+            results.append((url, filename))
+            seen.add(url)
+
+    return results
+
+
+def _filename_from_url(url: str) -> str:
+    """Extract a clean filename from a URL."""
+    parsed = urlparse(url)
+    path = unquote(parsed.path)
+    if "/" in path:
+        name = path.rsplit("/", 1)[-1]
+        if name and "." in name:
+            return name
+    return ""
+
+
+def _is_relevant_url(url: str, filename: str, include_images: bool) -> bool:
+    """Check if a URL points to a downloadable file we care about."""
+    parsed = urlparse(url)
+    domain = parsed.hostname or ""
+
+    # Accept any URL from known Linear upload domains
+    is_linear_upload = any(domain.endswith(d) for d in _UPLOAD_DOMAINS)
+
+    # Also accept direct file download links from other sources
+    ext = Path(filename).suffix.lower() if filename else ""
+    is_log_file = ext in _LOG_EXTENSIONS
+
+    if not is_linear_upload and not is_log_file:
+        return False
+
+    # Skip images unless explicitly requested
+    if not include_images and ext in _IMAGE_EXTENSIONS:
+        return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
