@@ -286,9 +286,10 @@ async def _run_linear_analysis(
             filename = uf["filename"]
             save_path = raw_dir / filename
             try:
-                await client.download_attachment(uf["url"], str(save_path))
-                downloaded_files.append(save_path)
-                logger.info("  Downloaded: %s → %s (%d bytes)", uf["source"], filename, save_path.stat().st_size)
+                actual_path = await client.download_attachment(uf["url"], str(save_path))
+                actual_path = Path(actual_path)
+                downloaded_files.append(actual_path)
+                logger.info("  Downloaded: %s → %s (%d bytes)", uf["source"], actual_path.name, actual_path.stat().st_size)
             except Exception as e:
                 logger.error("  Failed to download '%s' from %s: %s", filename, uf["source"], e)
 
@@ -326,16 +327,42 @@ async def _run_linear_analysis(
         from app.services.agent_orchestrator import AgentOrchestrator
         from app.agents.base import BaseAgent
 
+        # Validate downloaded files
+        logger.info("=== Processing downloaded files ===")
+        valid_files = []
+        for fp in downloaded_files:
+            size = fp.stat().st_size if fp.exists() else 0
+            # Read first few bytes to check file type
+            magic = b""
+            if size > 0:
+                with open(fp, "rb") as f:
+                    magic = f.read(16)
+            logger.info("  File: %s (size: %d bytes, magic: %s)", fp.name, size, magic[:8].hex() if magic else "empty")
+            if size == 0:
+                logger.warning("  ⚠ Skipping empty file: %s", fp.name)
+                continue
+            # Check if it's actually an HTML error page (not a real file)
+            if magic[:5] in (b"<!DOC", b"<html", b"<HTML", b"<?xml"):
+                logger.warning("  ⚠ Skipping HTML/XML response (likely error page): %s", fp.name)
+                continue
+            valid_files.append(fp)
+
         # Decrypt / process log files
         log_paths = []
         processed_dir = workspace / "processed"
         processed_dir.mkdir(exist_ok=True)
 
-        for fp in downloaded_files:
+        for fp in valid_files:
+            logger.info("  Processing: %s ...", fp.name)
             log_path, incorrect, reason = process_log_file(fp, processed_dir)
             if log_path:
+                log_size = log_path.stat().st_size if log_path.exists() else 0
+                logger.info("  ✓ Decrypted: %s → %s (%d bytes)", fp.name, log_path, log_size)
                 log_paths.append(log_path)
+            else:
+                logger.warning("  ✗ Failed to process %s: incorrect=%s reason=%s", fp.name, incorrect, reason)
 
+        logger.info("=== Decrypt result: %d/%d files processed successfully ===", len(log_paths), len(valid_files))
         await db.update_task(task_id, status="analyzing", progress=40, message=f"解密完成，{len(log_paths)} 个日志文件")
 
         # Match rules

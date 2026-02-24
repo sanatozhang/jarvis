@@ -246,15 +246,41 @@ class LinearClient:
         """Download an attachment file from URL and save to disk."""
         import aiofiles
 
+        logger.info("[download] Requesting: %s", url[:150])
+
         # Linear uploaded files require API key auth to download
         headers = {"Authorization": self._api_key}
         resp = await self._http.get(url, headers=headers, follow_redirects=True)
         resp.raise_for_status()
+
+        content_type = resp.headers.get("content-type", "")
+        content_length = resp.headers.get("content-length", "?")
+        logger.info("[download] Response: %d %s | content-type: %s | content-length: %s",
+                     resp.status_code, resp.reason_phrase, content_type, content_length)
+
+        # Try to get the real filename from Content-Disposition header
+        cd = resp.headers.get("content-disposition", "")
+        if cd:
+            logger.info("[download] Content-Disposition: %s", cd)
+            import cgi
+            _, params = cgi.parse_header(cd)
+            real_name = params.get("filename", "")
+            if real_name and "." in real_name:
+                save_path = str(Path(save_path).parent / real_name)
+                logger.info("[download] ✓ Real filename from header: %s", real_name)
+        else:
+            logger.info("[download] No Content-Disposition header (filename unknown)")
+
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(save_path, "wb") as f:
             await f.write(resp.content)
 
-        logger.info("Downloaded Linear attachment to %s (%d bytes)", save_path, len(resp.content))
+        final_size = Path(save_path).stat().st_size
+        magic = b""
+        with open(save_path, "rb") as f:
+            magic = f.read(8)
+        logger.info("[download] ✓ Saved: %s (%d bytes, magic: %s)",
+                     Path(save_path).name, final_size, magic.hex() if magic else "empty")
         return save_path
 
     # ------------------------------------------------------------------

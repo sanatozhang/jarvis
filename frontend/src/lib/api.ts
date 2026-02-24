@@ -50,8 +50,11 @@ export interface Issue {
   priority: string;
   zendesk: string;
   zendesk_id: string;
+  source?: string;
   feishu_link: string;
   feishu_status: "pending" | "in_progress" | "done";
+  linear_issue_id?: string;
+  linear_issue_url?: string;
   result_summary: string;
   root_cause_summary: string;
   created_at_ms: number;
@@ -304,6 +307,8 @@ export interface LocalIssueItem {
   zendesk_id: string;
   feishu_link: string;
   feishu_status: string;
+  linear_issue_id?: string;
+  linear_issue_url?: string;
   result_summary: string;
   root_cause_summary: string;
   created_at_ms: number;

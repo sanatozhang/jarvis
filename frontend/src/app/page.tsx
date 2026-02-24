@@ -44,6 +44,22 @@ function PriorityBadge({ p }: { p: string }) {
     : <span className="inline-flex items-center rounded-full bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-500 ring-1 ring-gray-200">{t("低")}</span>;
 }
 
+function SourceBadge({ source, linearUrl }: { source?: string; linearUrl?: string }) {
+  const cfg: Record<string, { label: string; cls: string }> = {
+    feishu:  { label: "飞书",    cls: "text-blue-700 bg-blue-50 ring-blue-200" },
+    linear:  { label: "Linear",  cls: "text-purple-700 bg-purple-50 ring-purple-200" },
+    api:     { label: "API",     cls: "text-teal-700 bg-teal-50 ring-teal-200" },
+    local:   { label: "手动提交", cls: "text-orange-700 bg-orange-50 ring-orange-200" },
+  };
+  const s = source || "feishu";
+  const c = cfg[s] || cfg.feishu;
+  const badge = <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${c.cls}`}>{c.label}</span>;
+  if (s === "linear" && linearUrl) {
+    return <a href={linearUrl} target="_blank" onClick={(e) => e.stopPropagation()} className="hover:opacity-80">{badge}</a>;
+  }
+  return badge;
+}
+
 function ConfBadge({ c }: { c: string }) {
   const m: Record<string, string> = { high: "text-green-700 bg-green-50 ring-green-200", medium: "text-yellow-700 bg-yellow-50 ring-yellow-200", low: "text-red-700 bg-red-50 ring-red-200" };
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${m[c] || m.low}`}>{c}</span>;
@@ -426,6 +442,7 @@ export default function HomePage() {
                 <thead><tr className="border-b border-gray-100 bg-gray-50/50">
                   <th className="w-10 px-4 py-2.5"><input type="checkbox" className="rounded border-gray-300" onChange={(e) => setSelected(e.target.checked ? new Set((pendingData?.issues || []).map((i) => i.record_id)) : new Set())} /></th>
                   <th className="w-14 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("级别")}</th>
+                  <th className="w-16 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("来源")}</th>
                   <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("问题描述")}</th>
                   <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("设备 SN")}</th>
                   <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("Zendesk")}</th>
@@ -433,12 +450,13 @@ export default function HomePage() {
                   <th className="w-32 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("操作")}</th>
                 </tr></thead>
                 <tbody className="divide-y divide-gray-50">
-                  {loading && !pendingData ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
-                  : !pendingData?.issues.length ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无待处理工单")}</td></tr>
+                  {loading && !pendingData ? <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
+                  : !pendingData?.issues.length ? <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无待处理工单")}</td></tr>
                   : pendingData.issues.map((issue) => (
                     <tr key={issue.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => openDetail(issue.record_id, "pending")}>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}><input type="checkbox" className="rounded border-gray-300" checked={selected.has(issue.record_id)} onChange={() => toggle(issue.record_id)} /></td>
                       <td className="px-2 py-3 align-top"><PriorityBadge p={issue.priority} /></td>
+                      <td className="px-2 py-3 align-top"><SourceBadge source={issue.source} linearUrl={issue.linear_issue_url} /></td>
                       <td className="max-w-md px-4 py-3"><p className="text-sm leading-snug text-gray-800" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{issue.description}</p></td>
                       <td className="px-3 py-3 align-top font-mono text-xs text-gray-400">{issue.device_sn || "—"}</td>
                       <td className="px-3 py-3 align-top text-xs">{issue.zendesk_id ? <a href={issue.zendesk} target="_blank" onClick={(e) => e.stopPropagation()} className="font-medium text-blue-600 hover:underline">{issue.zendesk_id}</a> : <span className="text-gray-300">null</span>}</td>
@@ -469,6 +487,7 @@ export default function HomePage() {
                 <table className="min-w-full">
                   <thead><tr className="border-b border-gray-100 bg-gray-50/50">
                     <th className="w-14 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("级别")}</th>
+                    <th className="w-16 px-2 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("来源")}</th>
                     <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("问题描述")}</th>
                     <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("提交人")}</th>
                     <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("创建时间")}</th>
@@ -477,11 +496,12 @@ export default function HomePage() {
                     <th className="w-32 px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("操作")}</th>
                   </tr></thead>
                   <tbody className="divide-y divide-gray-50">
-                    {loading && !data ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
-                    : !items.length ? <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-300">{emptyMsg}</td></tr>
+                    {loading && !data ? <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
+                    : !items.length ? <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{emptyMsg}</td></tr>
                     : items.map((item) => (
                       <tr key={item.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => openDetail(item.record_id, tab)}>
                         <td className="px-2 py-3 align-top"><PriorityBadge p={item.priority} /></td>
+                        <td className="px-2 py-3 align-top"><SourceBadge source={item.source} linearUrl={item.linear_issue_url} /></td>
                         <td className="max-w-md px-4 py-3">
                           <p className="text-sm leading-snug text-gray-800" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.description}</p>
                           {(item.root_cause_summary || item.result_summary) && (
@@ -531,11 +551,12 @@ export default function HomePage() {
               <section>
                 <div className="flex items-center gap-2 mb-3">
                   <PriorityBadge p={detailData.issue.priority} />
+                  <SourceBadge source={detailData.issue.source || detailData.localItem?.source} linearUrl={detailData.issue.linear_issue_url || detailData.localItem?.linear_issue_url} />
                   {detailData.localItem && <LocalStatusBadge item={detailData.localItem} />}
                   {detailData.issue.zendesk_id && <a href={detailData.issue.zendesk} target="_blank" className="text-xs font-medium text-blue-600 hover:underline">{detailData.issue.zendesk_id}</a>}
                   {detailData.issue.feishu_link ? (
                     <a href={detailData.issue.feishu_link} target="_blank" className="text-xs text-blue-500 hover:underline">{t("飞书")}</a>
-                  ) : (
+                  ) : detailData.issue.source !== "linear" ? (
                     <span className="text-xs text-gray-400">{t("本地上传")}</span>
                   )}
                 </div>
