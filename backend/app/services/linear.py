@@ -262,9 +262,7 @@ class LinearClient:
         cd = resp.headers.get("content-disposition", "")
         if cd:
             logger.info("[download] Content-Disposition: %s", cd)
-            import cgi
-            _, params = cgi.parse_header(cd)
-            real_name = params.get("filename", "")
+            real_name = _parse_content_disposition_filename(cd)
             if real_name and "." in real_name:
                 save_path = str(Path(save_path).parent / real_name)
                 logger.info("[download] ✓ Real filename from header: %s", real_name)
@@ -288,6 +286,15 @@ class LinearClient:
     # ------------------------------------------------------------------
     async def close(self):
         await self._http.aclose()
+
+
+def _parse_content_disposition_filename(header: str) -> str:
+    """Extract filename from Content-Disposition header without the deprecated cgi module."""
+    # Match: filename="xxx" or filename=xxx
+    m = re.search(r'filename\*?=["\']?([^"\';]+)', header)
+    if m:
+        return m.group(1).strip().strip('"').strip("'")
+    return ""
 
 
 # ---------------------------------------------------------------------------
