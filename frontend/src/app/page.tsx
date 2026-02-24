@@ -558,7 +558,7 @@ export default function HomePage() {
                     <a href={detailData.issue.feishu_link} target="_blank" className="text-xs text-blue-500 hover:underline">{t("飞书")}</a>
                   ) : detailData.issue.source !== "linear" ? (
                     <span className="text-xs text-gray-400">{t("本地上传")}</span>
-                  )}
+                  ) : null}
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   {[{ l: "设备 SN", v: detailData.issue.device_sn, m: true }, { l: "固件", v: detailData.issue.firmware }, { l: "APP", v: detailData.issue.app_version }, { l: "日志", v: `${detailData.issue.log_files?.length || 0} 个` }].map((f) => (
