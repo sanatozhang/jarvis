@@ -216,18 +216,15 @@ async def _run_linear_analysis(
             "  labels: %s\n"
             "  priority: %s\n"
             "  description length: %d chars\n"
-            "  attachments: %d files%s\n"
-            "  trigger comment: %s",
+            "  link attachments (GraphQL): %d\n"
+            "  trigger comment: %s\n"
+            "  (uploaded files will be scanned from description & comments later)",
             identifier, title, issue_url, state_name, assignee_name,
             labels, linear_issue.get("priority"),
             len(description),
             len(attachments),
-            " → " + ", ".join(a.get("title", a.get("url", "")[:60]) for a in attachments[:5]) if attachments else " (none)",
             trigger_comment_id or "(from issue description)",
         )
-
-        if not attachments:
-            logger.warning("  ⚠ No attachments (log files) on this issue — will analyze description only")
 
         # Post acknowledgement comment
         await client.create_comment(
