@@ -126,6 +126,8 @@ const EN: Record<string, string> = {
   "我的": "Mine",
   "指定人": "By User",
   "筛选": "Filter",
+  "来源": "Source",
+  "网站提交": "Website",
   "清除筛选": "Clear Filters",
   "全部分类": "All Categories",
   "起始日期": "From",
@@ -326,4 +328,13 @@ const EN: Record<string, string> = {
   "检查中...": "Checking...",
   "整体": "Overall",
   "问题类型 → Agent 路由": "Issue Type → Agent Routing",
+
+  // User management
+  "用户管理": "User Management",
+  "角色": "Role",
+  "操作次数": "Actions",
+  "最后活跃": "Last Active",
+  "注册时间": "Registered",
+  "管理员": "Admin",
+  "用户": "User",
 };

@@ -6,9 +6,10 @@ services:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - jarvis-data:/app/data
-      - jarvis-workspaces:/app/workspaces
-      - ./codex-auth.json:/root/.codex/auth.json:ro  # Codex OAuth auth (optional)
+      - ./data:/app/data                    # bind mount — shares DB with bare-metal deploy
+      - ./workspaces:/app/workspaces        # bind mount — shares workspaces with bare-metal deploy
+      - ./backend/rules:/app/rules:ro       # mount latest rules
+      # - ./codex-auth.json:/root/.codex/auth.json:ro  # Codex OAuth auth (optional)
     env_file:
       - .env
     environment:
@@ -23,6 +24,7 @@ services:
     build:
       context: ./frontend
       args:
+        - STANDALONE=1
         - NEXT_PUBLIC_API_URL=http://backend:8000
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
@@ -40,6 +42,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  jarvis-data:
-  jarvis-workspaces:
   redis-data:

@@ -59,10 +59,20 @@ async def handle_linear_webhook(request: Request, background_tasks: BackgroundTa
 
     action = payload.get("action")
     event_type = payload.get("type")
-
-    logger.info("Linear webhook received: type=%s action=%s", event_type, action)
-
     data = payload.get("data", {})
+
+    logger.info(
+        "=== Linear Webhook Received ===\n"
+        "  type: %s\n"
+        "  action: %s\n"
+        "  data keys: %s\n"
+        "  data.id: %s\n"
+        "  data.issueId: %s",
+        event_type, action,
+        list(data.keys()),
+        data.get("id", ""),
+        data.get("issueId", ""),
+    )
 
     # --- Handle Comment events ---
     if event_type == "Comment" and action == "create":
@@ -85,29 +95,29 @@ async def _handle_comment_create(
     trigger = settings.linear.trigger_keyword.lower()
 
     body = (comment_data.get("body") or "").strip()
-    if trigger not in body.lower():
-        logger.debug("Comment does not contain trigger keyword '%s', skipping", trigger)
-        return
-
-    # Extract issue ID from the webhook payload
-    issue_id = comment_data.get("issueId") or comment_data.get("issue", {}).get("id", "")
     comment_id = comment_data.get("id", "")
+    issue_id = comment_data.get("issueId") or comment_data.get("issue", {}).get("id", "")
+    user_name = comment_data.get("user", {}).get("name", "") if isinstance(comment_data.get("user"), dict) else ""
+
+    logger.info(
+        "  [Comment] id=%s issueId=%s user=%s trigger='%s' body_preview='%s'",
+        comment_id, issue_id, user_name, trigger, body[:120],
+    )
+
+    if trigger not in body.lower():
+        logger.info("  → No trigger keyword found, skipping")
+        return
 
     if not issue_id:
-        logger.warning("Comment webhook missing issueId, skipping")
+        logger.warning("  → Comment missing issueId, skipping")
         return
 
-    # Avoid duplicate triggers on the same issue
     if issue_id in _active_issues:
-        logger.info("Analysis already in progress for issue %s, skipping", issue_id)
+        logger.info("  → Analysis already in progress for issue %s, skipping", issue_id)
         return
 
     _active_issues.add(issue_id)
-
-    logger.info(
-        "Trigger detected! issue=%s comment=%s body_preview='%s'",
-        issue_id, comment_id, body[:80],
-    )
+    logger.info("  → Trigger matched! Launching analysis for issue %s", issue_id)
 
     # Launch analysis in background
     background_tasks.add_task(
@@ -191,6 +201,33 @@ async def _run_linear_analysis(
         title = linear_issue.get("title", "")
         description = linear_issue.get("description", "")
         issue_url = linear_issue.get("url", "")
+        state_name = linear_issue.get("state", {}).get("name", "") if isinstance(linear_issue.get("state"), dict) else ""
+        assignee_name = linear_issue.get("assignee", {}).get("name", "") if isinstance(linear_issue.get("assignee"), dict) else ""
+        labels = [l.get("name", "") for l in linear_issue.get("labels", {}).get("nodes", [])] if isinstance(linear_issue.get("labels"), dict) else []
+        attachments = linear_issue.get("attachments", {}).get("nodes", []) if isinstance(linear_issue.get("attachments"), dict) else []
+
+        logger.info(
+            "=== Linear Issue Details ===\n"
+            "  identifier: %s\n"
+            "  title: %s\n"
+            "  url: %s\n"
+            "  state: %s\n"
+            "  assignee: %s\n"
+            "  labels: %s\n"
+            "  priority: %s\n"
+            "  description length: %d chars\n"
+            "  attachments: %d files%s\n"
+            "  trigger comment: %s",
+            identifier, title, issue_url, state_name, assignee_name,
+            labels, linear_issue.get("priority"),
+            len(description),
+            len(attachments),
+            " → " + ", ".join(a.get("title", a.get("url", "")[:60]) for a in attachments[:5]) if attachments else " (none)",
+            trigger_comment_id or "(from issue description)",
+        )
+
+        if not attachments:
+            logger.warning("  ⚠ No attachments (log files) on this issue — will analyze description only")
 
         # Post acknowledgement comment
         await client.create_comment(
@@ -241,12 +278,12 @@ async def _run_linear_analysis(
         attachments = linear_issue.get("attachments", {}).get("nodes", [])
         downloaded_files = []
 
-        for att in attachments:
+        for i, att in enumerate(attachments):
             att_url = att.get("url", "")
             att_title = att.get("title", "") or "attachment"
             if not att_url:
+                logger.warning("  Attachment #%d '%s': no URL, skipping", i, att_title)
                 continue
-            # Determine filename
             filename = att_title
             if "/" in att_url:
                 url_filename = att_url.rsplit("/", 1)[-1].split("?")[0]
@@ -256,9 +293,11 @@ async def _run_linear_analysis(
             try:
                 await client.download_attachment(att_url, str(save_path))
                 downloaded_files.append(save_path)
+                logger.info("  Downloaded attachment: %s → %s (%d bytes)", att_title, filename, save_path.stat().st_size)
             except Exception as e:
-                logger.error("Failed to download attachment '%s': %s", att_title, e)
+                logger.error("  Failed to download attachment '%s': %s", att_title, e)
 
+        logger.info("  Attachments downloaded: %d/%d", len(downloaded_files), len(attachments))
         await db.update_task(task_id, status="analyzing", progress=25, message=f"已下载 {len(downloaded_files)} 个附件")
 
         if not downloaded_files:

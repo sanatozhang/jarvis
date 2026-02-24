@@ -111,37 +111,61 @@ async def run_analysis_pipeline(
     raw_dir = workspace / "raw"
     raw_dir.mkdir(exist_ok=True)
 
+    # Log cache: reuse previously downloaded logs for the same issue
+    cache_dir = Path(settings.storage.workspace_dir) / "_cache" / issue_id / "raw"
     downloaded_files: List[Path] = []
 
     if is_local:
-        # Local files: already saved in workspaces/{record_id}/raw/
         local_raw = Path(settings.storage.workspace_dir) / issue_id / "raw"
         if local_raw.exists():
             for f in local_raw.iterdir():
                 if f.is_file():
-                    # Copy/link to task workspace
                     dest = raw_dir / f.name
                     if not dest.exists():
                         import shutil
                         shutil.copy2(f, dest)
                     downloaded_files.append(dest)
+    elif cache_dir.exists() and any(cache_dir.iterdir()):
+        # Reuse cached logs
+        import shutil
+        for f in cache_dir.iterdir():
+            if f.is_file():
+                dest = raw_dir / f.name
+                if not dest.exists():
+                    shutil.copy2(f, dest)
+                downloaded_files.append(dest)
+        logger.info("Reusing cached logs for issue %s (%d files)", issue_id, len(downloaded_files))
     else:
-        # Feishu files: download via API
-        client = FeishuClient()
-        for lf_dict in log_files_raw:
-            name = lf_dict.get("name", "")
-            token = lf_dict.get("token", "")
-            if not token:
-                continue
-            save_path = raw_dir / name
-            if not save_path.exists():
-                try:
-                    await client.download_file(token, str(save_path))
+        # Download from Feishu / Linear
+        if not is_linear:
+            client = FeishuClient()
+            for lf_dict in log_files_raw:
+                name = lf_dict.get("name", "")
+                token = lf_dict.get("token", "")
+                if not token:
+                    continue
+                save_path = raw_dir / name
+                if not save_path.exists():
+                    try:
+                        await client.download_file(token, str(save_path))
+                        downloaded_files.append(save_path)
+                    except Exception as e:
+                        logger.error("Failed to download %s: %s", name, e)
+                else:
                     downloaded_files.append(save_path)
-                except Exception as e:
-                    logger.error("Failed to download %s: %s", name, e)
-            else:
-                downloaded_files.append(save_path)
+
+        # Save to cache for future re-analysis
+        if downloaded_files:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
+            for f in downloaded_files:
+                cache_dest = cache_dir / f.name
+                if not cache_dest.exists():
+                    shutil.copy2(f, cache_dest)
+            logger.info("Cached %d log files for issue %s", len(downloaded_files), issue_id)
+
+    # Cleanup: keep only the last 200 issues' cached logs
+    _cleanup_log_cache(Path(settings.storage.workspace_dir) / "_cache", max_issues=200)
 
     if on_progress:
         await on_progress(25, f"已准备 {len(downloaded_files)} 个文件")
@@ -221,6 +245,25 @@ async def run_analysis_pipeline(
         await on_progress(100, "分析完成")
 
     return result
+
+
+def _cleanup_log_cache(cache_root: Path, max_issues: int = 200):
+    """Keep only the last N issues' cached logs, remove oldest."""
+    if not cache_root.exists():
+        return
+    try:
+        issue_dirs = sorted(
+            [d for d in cache_root.iterdir() if d.is_dir()],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+        if len(issue_dirs) > max_issues:
+            import shutil
+            for old_dir in issue_dirs[max_issues:]:
+                shutil.rmtree(old_dir, ignore_errors=True)
+            logger.info("Cleaned up log cache: removed %d old entries", len(issue_dirs) - max_issues)
+    except Exception as e:
+        logger.warning("Log cache cleanup failed: %s", e)
 
 
 def _guess_problem_date(description: str) -> Optional[str]:

@@ -124,6 +124,7 @@ class UserRecord(Base):
     role = Column(String(16), default="user")              # admin / user
     feishu_email = Column(String(128), default="")
     created_at = Column(DateTime, default=datetime.utcnow)
+    last_active_at = Column(DateTime, nullable=True)
 
 
 class OncallGroupRecord(Base):
@@ -196,6 +197,15 @@ async def init_db():
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
+            except Exception:
+                pass
+
+        # Migrate users table
+        for col, coltype, default in [
+            ("last_active_at", "DATETIME", "NULL"),
+        ]:
+            try:
+                await conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {coltype} DEFAULT {default}"))
             except Exception:
                 pass
 
@@ -292,7 +302,7 @@ async def soft_delete_issue(issue_id: str) -> bool:
 async def set_issue_created_by(issue_id: str, username: str):
     async with get_session() as session:
         record = await session.get(IssueRecord, issue_id)
-        if record and not record.created_by:
+        if record and username:
             record.created_by = username
             await session.commit()
 
@@ -463,6 +473,7 @@ async def get_tracked_issues_paginated(
     platform: Optional[str] = None,
     category: Optional[str] = None,
     status_filter: Optional[str] = None,
+    source: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> tuple:
@@ -482,6 +493,8 @@ async def get_tracked_issues_paginated(
             conditions.append(IssueRecord.category.contains(category))
         if status_filter:
             conditions.append(IssueRecord.status == status_filter)
+        if source:
+            conditions.append(IssueRecord.source == source)
         if date_from:
             conditions.append(IssueRecord.created_at >= datetime.fromisoformat(date_from))
         if date_to:
@@ -606,12 +619,38 @@ async def get_or_create_user(username: str) -> Dict[str, Any]:
     return await upsert_user(username)
 
 
+async def touch_user_active(username: str):
+    if not username:
+        return
+    async with get_session() as session:
+        user = await session.get(UserRecord, username)
+        if user:
+            user.last_active_at = datetime.utcnow()
+            await session.commit()
+
+
 async def list_users() -> List[Dict[str, Any]]:
     async with get_session() as session:
-        from sqlalchemy import select
+        from sqlalchemy import select, func
         stmt = select(UserRecord).order_by(UserRecord.created_at)
         result = await session.execute(stmt)
-        return [{"username": r.username, "role": r.role, "feishu_email": r.feishu_email} for r in result.scalars().all()]
+        users = result.scalars().all()
+
+        user_list = []
+        for u in users:
+            count_stmt = select(func.count()).select_from(EventRecord).where(EventRecord.username == u.username)
+            count_result = await session.execute(count_stmt)
+            action_count = count_result.scalar() or 0
+
+            user_list.append({
+                "username": u.username,
+                "role": u.role,
+                "feishu_email": u.feishu_email or "",
+                "created_at": (u.created_at.isoformat() + "Z") if u.created_at else "",
+                "last_active_at": (u.last_active_at.isoformat() + "Z") if u.last_active_at else "",
+                "action_count": action_count,
+            })
+        return user_list
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +786,7 @@ async def log_event(
             duration_ms=duration_ms,
         ))
         await session.commit()
+    await touch_user_active(username)
 
 
 async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:

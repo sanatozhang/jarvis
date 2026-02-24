@@ -34,6 +34,17 @@ function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }
     </span>
   );
 }
+function SourceBadge({ source }: { source?: string }) {
+  const t = useT();
+  const config: Record<string, { bg: string; label: string }> = {
+    feishu: { bg: "bg-blue-50 text-blue-600 ring-blue-200", label: t("飞书") },
+    local: { bg: "bg-purple-50 text-purple-600 ring-purple-200", label: t("网站提交") },
+    linear: { bg: "bg-orange-50 text-orange-600 ring-orange-200", label: "Linear" },
+    api: { bg: "bg-gray-50 text-gray-600 ring-gray-200", label: "API" },
+  };
+  const c = config[source || ""] || config.feishu;
+  return <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${c.bg}`}>{c.label}</span>;
+}
 function PriorityBadge({ p }: { p: string }) {
   const t = useT();
   return p === "H"
@@ -86,6 +97,7 @@ export default function TrackingPage() {
     if (sp.get("platform")) init.platform = sp.get("platform")!;
     if (sp.get("category")) init.category = sp.get("category")!;
     if (sp.get("status")) init.status = sp.get("status")!;
+    if (sp.get("source")) init.source = sp.get("source")!;
     if (sp.get("date_from")) init.date_from = sp.get("date_from")!;
     if (sp.get("date_to")) init.date_to = sp.get("date_to")!;
     return init;
@@ -93,7 +105,7 @@ export default function TrackingPage() {
   const [showFilters, setShowFilters] = useState(() => {
     if (typeof window === "undefined") return false;
     const sp = new URLSearchParams(window.location.search);
-    return !!(sp.get("platform") || sp.get("category") || sp.get("status") || sp.get("date_from") || sp.get("date_to"));
+    return !!(sp.get("platform") || sp.get("category") || sp.get("status") || sp.get("source") || sp.get("date_from") || sp.get("date_to"));
   });
   const username = typeof window !== "undefined" ? localStorage.getItem("jarvis_username") || "" : "";
 
@@ -118,7 +130,7 @@ export default function TrackingPage() {
 
   const syncFiltersToUrl = (f: TrackingFilters) => {
     const url = new URL(window.location.href);
-    const filterKeys: (keyof TrackingFilters)[] = ["created_by", "platform", "category", "status", "date_from", "date_to"];
+    const filterKeys: (keyof TrackingFilters)[] = ["created_by", "platform", "category", "status", "source", "date_from", "date_to"];
     for (const k of filterKeys) {
       f[k] ? url.searchParams.set(k, f[k]!) : url.searchParams.delete(k);
     }
@@ -141,7 +153,7 @@ export default function TrackingPage() {
   const copy = (text: string) => { navigator.clipboard.writeText(text); setToast(t("已复制到剪贴板")); };
   const handleRetry = async (issueId: string) => {
     try {
-      const res = await fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: issueId }) });
+      const res = await fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: issueId, username: username || "" }) });
       if (!res.ok) throw new Error(await res.text());
       setToast(t("已重新触发分析"));
       setTimeout(() => load(page), 2000);
@@ -190,6 +202,18 @@ export default function TrackingPage() {
                   <option value="APP">APP</option>
                   <option value="Web">Web</option>
                   <option value="Desktop">Desktop</option>
+                </select>
+              </div>
+              {/* Source */}
+              <div className="w-24">
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-gray-400">{t("来源")}</label>
+                <select value={filters.source || ""} onChange={(e) => updateFilter("source", e.target.value)}
+                  className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs outline-none focus:border-black">
+                  <option value="">{t("全部")}</option>
+                  <option value="feishu">{t("飞书")}</option>
+                  <option value="local">{t("网站提交")}</option>
+                  <option value="linear">Linear</option>
+                  <option value="api">API</option>
                 </select>
               </div>
               {/* Category */}
@@ -243,6 +267,7 @@ export default function TrackingPage() {
                 {filters.platform && <span className="ml-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">{filters.platform}</span>}
                 {filters.category && <span className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600">{CATEGORY_SHORT[filters.category] || filters.category}</span>}
                 {filters.status && <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px]">{filters.status}</span>}
+                {filters.source && <span className="ml-1 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-600">{filters.source}</span>}
               </span>
             )}
           </p>
@@ -256,6 +281,7 @@ export default function TrackingPage() {
                 <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("问题描述")}</th>
                 <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("状态")}</th>
                 <th className="w-16 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("平台")}</th>
+                <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("来源")}</th>
                 <th className="w-24 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("提交人")}</th>
                 <th className="w-28 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">{t("创建时间")}</th>
                 <th className="w-20 px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-gray-400">Zendesk</th>
@@ -264,9 +290,9 @@ export default function TrackingPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {loading && !data ? (
-                <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
+                <tr><td colSpan={9} className="px-4 py-16 text-center text-sm text-gray-300">{t("加载中...")}</td></tr>
               ) : !data?.issues.length ? (
-                <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无工单")}</td></tr>
+                <tr><td colSpan={9} className="px-4 py-16 text-center text-sm text-gray-300">{t("暂无工单")}</td></tr>
               ) : data.issues.map((item) => (
                 <tr key={item.record_id} className="cursor-pointer hover:bg-gray-50/50" onClick={() => openDetail(item)}>
                   <td className="px-2 py-3 align-top"><PriorityBadge p={item.priority} /></td>
@@ -284,6 +310,7 @@ export default function TrackingPage() {
                   </td>
                   <td className="px-3 py-3 align-top"><StatusBadge status={item.local_status} ruleType={item.analysis?.rule_type} /></td>
                   <td className="px-3 py-3 align-top text-xs text-gray-500">{item.platform || "—"}</td>
+                  <td className="px-3 py-3 align-top"><SourceBadge source={item.source} /></td>
                   <td className="px-3 py-3 align-top">
                     {item.created_by ? (
                       <button onClick={(e) => { e.stopPropagation(); updateFilter("created_by", item.created_by!); }}
@@ -322,6 +349,7 @@ export default function TrackingPage() {
                   <PriorityBadge p={detailItem.priority} />
                   <StatusBadge status={detailItem.local_status} ruleType={detailItem.analysis?.rule_type} />
                   {detailItem.platform && <span className="rounded bg-blue-50 px-2 py-0.5 text-[11px] text-blue-600">{detailItem.platform}</span>}
+                  <SourceBadge source={detailItem.source} />
                   {detailItem.created_by && <span className="rounded bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{detailItem.created_by}</span>}
                 </div>
                 {detailItem.category && (

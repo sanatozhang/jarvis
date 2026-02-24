@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 
 import { useEffect, useState } from "react";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, type AgentConfig, type HealthCheck } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, type AgentConfig, type HealthCheck, type UserListItem } from "@/lib/api";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
 interface EnvGroup { key: string; label: string; fields: EnvField[]; }
@@ -11,6 +11,46 @@ interface EnvGroup { key: string; label: string; fields: EnvField[]; }
 function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
   useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
   return <div className="fixed bottom-6 right-6 z-50 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg">{msg}</div>;
+}
+
+function UserList() {
+  const t = useT();
+  const [users, setUsers] = useState<UserListItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    fetchUsers()
+      .then(setUsers)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+  if (loading) return <p className="text-sm text-gray-400">{t("加载中...")}</p>;
+  if (users.length === 0) return <p className="text-sm text-gray-400">{t("暂无数据")}</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 text-left text-gray-500">
+            <th className="pb-2 pr-4 font-medium">{t("用户名")}</th>
+            <th className="pb-2 pr-4 font-medium">{t("角色")}</th>
+            <th className="pb-2 pr-4 font-medium">{t("操作次数")}</th>
+            <th className="pb-2 pr-4 font-medium">{t("最后活跃")}</th>
+            <th className="pb-2 font-medium">{t("注册时间")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map((u) => (
+            <tr key={u.username} className="border-b border-gray-100">
+              <td className="py-2 pr-4 font-medium text-gray-800">{u.username}</td>
+              <td className="py-2 pr-4 text-gray-600">{u.role === "admin" ? t("管理员") : t("用户")}</td>
+              <td className="py-2 pr-4 text-gray-600">{u.action_count}</td>
+              <td className="py-2 pr-4 text-gray-600">{formatLocalTime(u.last_active_at)}</td>
+              <td className="py-2 text-gray-600">{formatLocalTime(u.created_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 export default function SettingsPage() {
@@ -226,6 +266,14 @@ export default function SettingsPage() {
               </div>
             </section>
           </>
+        )}
+
+        {/* ============ USER MANAGEMENT (Admin only) ============ */}
+        {isAdmin && (
+          <section className="rounded-xl border border-gray-100 bg-white p-5">
+            <h2 className="mb-3 text-sm font-semibold">{t("用户管理")}</h2>
+            <UserList />
+          </section>
         )}
       </div>
 

@@ -311,6 +311,7 @@ export interface LocalIssueItem {
   created_by?: string;
   platform?: string;
   category?: string;
+  source?: string;
   log_files: any[];
   local_status: string;
   analysis?: AnalysisResult;
@@ -334,6 +335,7 @@ export interface TrackingFilters {
   platform?: string;
   category?: string;
   status?: string;
+  source?: string;
   date_from?: string;
   date_to?: string;
 }
@@ -345,6 +347,7 @@ export const fetchTracking = (page = 1, pageSize = 20, filters?: TrackingFilters
     if (filters.platform) params.set("platform", filters.platform);
     if (filters.category) params.set("category", filters.category);
     if (filters.status) params.set("status", filters.status);
+    if (filters.source) params.set("source", filters.source);
     if (filters.date_from) params.set("date_from", filters.date_from);
     if (filters.date_to) params.set("date_to", filters.date_to);
   }
@@ -369,6 +372,17 @@ export const loginUser = (username: string) =>
 
 export const getUser = (username: string) =>
   request<{ username: string; role: string; feishu_email: string }>(`/users/${username}`);
+
+export interface UserListItem {
+  username: string;
+  role: string;
+  feishu_email: string;
+  created_at: string;
+  last_active_at: string;
+  action_count: number;
+}
+
+export const fetchUsers = () => request<UserListItem[]>("/users");
 
 // ============================================================
 // Oncall

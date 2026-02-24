@@ -83,6 +83,23 @@ cmd_setup() {
         exit 1
     fi
 
+    # Ensure data directories exist (for bind mounts)
+    mkdir -p data workspaces
+    
+    # Stop bare-metal services if running (avoid port conflicts)
+    if [ -f .pids/backend.pid ] && kill -0 "$(cat .pids/backend.pid 2>/dev/null)" 2>/dev/null; then
+        warn "Stopping bare-metal services first..."
+        ./deploy-bare.sh stop 2>/dev/null || true
+    fi
+
+    # Migrate: if data exists from bare-metal deploy, it will be used directly
+    if [ -f data/jarvis.db ]; then
+        log "✅ Found existing database ($(du -sh data/jarvis.db | cut -f1)) — data will be preserved"
+    fi
+    if [ -d workspaces ] && [ "$(ls workspaces/ 2>/dev/null | wc -l)" -gt 0 ]; then
+        log "✅ Found existing workspaces ($(du -sh workspaces/ | cut -f1)) — data will be preserved"
+    fi
+
     log "Building Docker images..."
     dc build
 
