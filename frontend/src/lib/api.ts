@@ -407,10 +407,17 @@ export const updateOncallSchedule = (groups: string[][], startDate: string, user
 // Escalate
 // ============================================================
 
-export const escalateIssue = (issueId: string, reason?: string) =>
-  request<{ status: string }>(`/local/${issueId}/escalate`, {
-    method: "POST", body: JSON.stringify({ reason: reason || "用户手动转工程师" }),
+export const escalateIssue = (issueId: string, reason?: string, userEmail?: string) =>
+  request<{ status: string; message?: string; group_name?: string; chat_id?: string }>(`/local/${issueId}/escalate`, {
+    method: "POST", body: JSON.stringify({
+      reason: reason || "用户手动转工程师",
+      user_email: userEmail || "",
+    }),
   });
+
+export const openFeishuChat = (chatId: string) => {
+  window.open(`https://applink.feishu.cn/client/chat/open?openChatId=${chatId}`, "_blank");
+};
 
 // ============================================================
 // Settings & Health

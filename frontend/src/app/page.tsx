@@ -10,6 +10,7 @@ import {
   createTask,
   deleteIssue,
   escalateIssue,
+  openFeishuChat,
   loginUser,
   subscribeTaskProgress,
   fetchTaskResult,
@@ -199,6 +200,7 @@ export default function HomePage() {
     try {
       const user = await loginUser(v);
       localStorage.setItem("jarvis_role", user.role);
+      if (user.feishu_email) localStorage.setItem("jarvis_feishu_email", user.feishu_email);
     } catch {} // non-fatal
   };
 
@@ -308,8 +310,10 @@ export default function HomePage() {
 
   const handleEscalate = async (issueId: string) => {
     try {
-      const res: any = await escalateIssue(issueId);
+      const email = typeof window !== "undefined" ? localStorage.getItem("jarvis_feishu_email") || "" : "";
+      const res = await escalateIssue(issueId, undefined, email);
       setToast(res.message || (res.status === "sent" ? t("已通知值班工程师") : t("发送失败")));
+      if (res.chat_id) openFeishuChat(res.chat_id);
     } catch (e: any) { setToast(`${t("通知失败")}: ${e.message}`); }
   };
   // --- Counts ---
@@ -504,6 +508,11 @@ export default function HomePage() {
                         <td className="px-2 py-3 align-top"><SourceBadge source={item.source} linearUrl={item.linear_issue_url} /></td>
                         <td className="max-w-md px-4 py-3">
                           <p className="text-sm leading-snug text-gray-800" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.description}</p>
+                          {item.source === "linear" && item.linear_issue_url && (
+                            <a href={item.linear_issue_url} target="_blank" onClick={(e) => e.stopPropagation()} className="mt-1 inline-flex items-center gap-1 text-[11px] text-purple-600 hover:underline">
+                              {item.linear_issue_id || "Linear"} ↗
+                            </a>
+                          )}
                           {(item.root_cause_summary || item.result_summary) && (
                             <div className="mt-2 space-y-1 rounded-md bg-gray-50 px-2.5 py-2">
                               {item.root_cause_summary && <div className="flex items-start gap-1.5"><span className="mt-px flex-shrink-0 text-[10px] font-semibold text-amber-600">{t("原因")}</span><p className="text-xs text-gray-600" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.root_cause_summary}</p></div>}
@@ -559,6 +568,9 @@ export default function HomePage() {
                   ) : detailData.issue.source !== "linear" ? (
                     <span className="text-xs text-gray-400">{t("本地上传")}</span>
                   ) : null}
+                  {(detailData.issue.linear_issue_url || detailData.localItem?.linear_issue_url) && (
+                    <a href={detailData.issue.linear_issue_url || detailData.localItem?.linear_issue_url} target="_blank" className="text-xs font-medium text-purple-600 hover:underline">{detailData.issue.linear_issue_id || detailData.localItem?.linear_issue_id || "Linear"} ↗</a>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   {[{ l: "设备 SN", v: detailData.issue.device_sn, m: true }, { l: "固件", v: detailData.issue.firmware }, { l: "APP", v: detailData.issue.app_version }, { l: "日志", v: `${detailData.issue.log_files?.length || 0} 个` }].map((f) => (
@@ -651,8 +663,10 @@ export default function HomePage() {
                 <button
                   onClick={async () => {
                     try {
-                      await escalateIssue(detailId!, "用户手动转工程师");
-                      setToast(t("已通知值班工程师"));
+                      const email = typeof window !== "undefined" ? localStorage.getItem("jarvis_feishu_email") || "" : "";
+                      const res = await escalateIssue(detailId!, "用户手动转工程师", email);
+                      setToast(res.message || t("已通知值班工程师"));
+                      if (res.chat_id) openFeishuChat(res.chat_id);
                     } catch (e: any) {
                       setToast(`${t("通知失败")}: ${e.message}`);
                     }

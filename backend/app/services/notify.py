@@ -6,7 +6,9 @@ Currently supports Feishu. Extensible to Slack, email, etc.
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -90,11 +92,125 @@ class FeishuNotifier(BaseNotifier):
 
 
 # ---------------------------------------------------------------------------
+# Feishu group chat escalation
+# ---------------------------------------------------------------------------
+async def create_escalation_group(
+    user_email: str,
+    issue_id: str,
+    description: str,
+    problem_type: str = "",
+    issue_link: str = "",
+    zendesk_id: str = "",
+) -> Dict[str, Any]:
+    """
+    Create a Feishu group chat for issue escalation.
+
+    1. Lookup user_id by email for the current user
+    2. Get current oncall members' user_ids
+    3. Create a group chat with name: 工单处理--{problem_type}--{timestamp}
+    4. Send the issue link as the first message
+
+    Returns: {"chat_id": "...", "group_name": "...", "members": [...]}
+    """
+    settings = get_settings()
+    if not settings.feishu.app_id:
+        raise RuntimeError("Feishu not configured")
+
+    async with httpx.AsyncClient(verify=False, timeout=30) as http:
+        # Get tenant token
+        token_resp = await http.post(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal/",
+            json={"app_id": settings.feishu.app_id, "app_secret": settings.feishu.app_secret},
+        )
+        token = token_resp.json().get("tenant_access_token", "")
+        if not token:
+            raise RuntimeError("Failed to get Feishu tenant token")
+
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Collect all member emails: current user + oncall
+        oncall_emails = await db.get_current_oncall()
+        all_emails = list(set([user_email] + oncall_emails))
+        logger.info("Escalation group members (emails): %s", all_emails)
+
+        # Batch lookup user_ids by email
+        user_ids = []
+        if all_emails:
+            resp = await http.post(
+                "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id",
+                headers=headers,
+                json={"emails": all_emails},
+            )
+            data = resp.json()
+            for u in data.get("data", {}).get("user_list", []):
+                uid = u.get("user_id")
+                if uid:
+                    user_ids.append(uid)
+            logger.info("Resolved %d/%d emails to user_ids", len(user_ids), len(all_emails))
+
+        if not user_ids:
+            raise RuntimeError(f"No Feishu users found for emails: {all_emails}")
+
+        # Build group name: 工单处理--{problem_type}--{timestamp}
+        now = datetime.now().strftime("%Y%m%d%H%M")
+        category = problem_type or description[:20].replace(" ", "")
+        group_name = f"工单处理--{category}--{now}"
+
+        # Create group chat
+        resp = await http.post(
+            "https://open.feishu.cn/open-apis/im/v1/chats",
+            headers=headers,
+            json={
+                "name": group_name,
+                "chat_type": "group",
+                "user_id_list": user_ids,
+            },
+            params={"user_id_type": "user_id"},
+        )
+        result = resp.json()
+        if result.get("code") != 0:
+            logger.error("Failed to create Feishu group: %s", result)
+            raise RuntimeError(f"创建飞书群失败: {result.get('msg', result)}")
+
+        chat_id = result["data"]["chat_id"]
+        logger.info("Created Feishu group: %s (chat_id: %s)", group_name, chat_id)
+
+        # Send issue info as first message
+        msg_lines = [f"🔔 **工单转交工程师处理**\n"]
+        msg_lines.append(f"**工单ID**: {issue_id}")
+        msg_lines.append(f"**问题描述**: {description[:300]}")
+        if problem_type:
+            msg_lines.append(f"**问题分类**: {problem_type}")
+        if zendesk_id:
+            msg_lines.append(f"**Zendesk**: {zendesk_id}")
+        if issue_link:
+            msg_lines.append(f"**链接**: {issue_link}")
+
+        msg_content = json.dumps({"text": "\n".join(msg_lines)}, ensure_ascii=False)
+        await http.post(
+            "https://open.feishu.cn/open-apis/im/v1/messages",
+            headers=headers,
+            params={"receive_id_type": "chat_id"},
+            json={
+                "receive_id": chat_id,
+                "msg_type": "text",
+                "content": msg_content,
+            },
+        )
+        logger.info("Sent issue info to group %s", group_name)
+
+        return {
+            "chat_id": chat_id,
+            "group_name": group_name,
+            "members": all_emails,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Slack notifier (placeholder for future)
 # ---------------------------------------------------------------------------
 class SlackNotifier(BaseNotifier):
     async def send(self, recipients: List[str], message: Dict[str, Any]) -> bool:
-        # TODO: implement Slack webhook
         logger.info("SlackNotifier.send called (not implemented)")
         return False
 
@@ -104,7 +220,6 @@ class SlackNotifier(BaseNotifier):
 # ---------------------------------------------------------------------------
 def _build_feishu_card(msg: Dict[str, Any]) -> str:
     """Build a Feishu interactive card JSON string."""
-    import json
     title = msg.get("title", "🔔 工单需要工程师处理")
     issue_id = msg.get("issue_id", "")
     description = msg.get("description", "")[:200]

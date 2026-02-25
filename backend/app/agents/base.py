@@ -65,8 +65,13 @@ class BaseAgent(ABC):
         extraction: Dict[str, Any],
         problem_date: Optional[str] = None,
         has_logs: bool = True,
+        language: str = "zh",
     ) -> str:
-        """Build the master prompt for the agent."""
+        """Build the master prompt for the agent.
+
+        Args:
+            language: "zh" for Chinese output, "en" for English output.
+        """
 
         rules_section = ""
         for rule in rules:
@@ -156,6 +161,7 @@ output/       ← 请将 result.json 写入此目录
 
 分析完成后，请将结果以 JSON 格式写入 `output/result.json`。
 **重要：root_cause 和 user_reply 必须同时提供中文和英文两个版本。**
+**主要语言（primary language）: {"English" if language == "en" else "中文"}** — 请确保主要语言的内容最详细、最完整。
 
 ```json
 {{
@@ -163,9 +169,9 @@ output/       ← 请将 result.json 写入此目录
     "problem_type_en": "Problem Type (English)",
     "root_cause": "根本原因详细分析（中文，2-5 句话）",
     "root_cause_en": "Root cause analysis (English, 2-5 sentences)",
-    "confidence": "high 或 medium 或 low",
-    "confidence_reason": "为什么是这个置信度",
-    "key_evidence": ["关键日志行1", "关键日志行2（最多5条）"],
+    "confidence": "high / medium / low",
+    "confidence_reason": "Why this confidence level (in {'English' if language == 'en' else 'Chinese'})",
+    "key_evidence": ["key log line 1", "key log line 2 (max 5)"],
     "user_reply": "完整的中文客服回复模板（见下方示例）",
     "user_reply_en": "Complete English customer reply template (see example below)",
     "needs_engineer": false,
@@ -190,7 +196,7 @@ output/       ← 请将 result.json 写入此目录
 如需进一步帮助，请随时联系我们。
 ```
 
-### English user_reply_en 示例
+### English user_reply_en example
 
 ```
 Hello, based on our log analysis, your recording from December 1st was successfully transferred to the APP. However, due to a device clock offset, it appears as a recording from September 24, 2023 at 10:13 (approximately 39 minutes long).
@@ -203,20 +209,20 @@ Please follow these steps to find it in the APP:
 If you need further assistance, please don't hesitate to contact us.
 ```
 
-### 差的 user_reply 示例（禁止）
+### Bad user_reply example (forbidden)
 
 ```
-时间戳偏移导致 keyId 对应的 sessionId 有误。
+Timestamp drift caused keyId-sessionId mismatch.
 ```
-（过于技术化，用户无法理解）
+(Too technical, users cannot understand)
 
-## 置信度判断标准
+## Confidence criteria
 
-- **high**: 日志中有明确证据，根因清晰，解决方案明确
-- **medium**: 日志有一些线索但不完全确定，或问题有多种可能原因
-- **low**: 日志信息不足以确定根因，需要更多信息或工程师介入
+- **high**: Clear evidence in logs, root cause is certain, solution is clear
+- **medium**: Some clues but not fully certain, or multiple possible causes
+- **low**: Insufficient log data, need more info or engineer intervention
 
-当 confidence 为 low 时，设 needs_engineer 为 true。
+Set needs_engineer to true when confidence is low.
 """
         return prompt
 

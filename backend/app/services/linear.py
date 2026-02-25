@@ -388,45 +388,116 @@ def verify_webhook_signature(body: bytes, signature: str, secret: str) -> bool:
 # ---------------------------------------------------------------------------
 # Format analysis result as markdown comment
 # ---------------------------------------------------------------------------
-def format_analysis_comment(result: Dict[str, Any], issue_identifier: str = "") -> str:
-    """Format an AnalysisResult dict as a markdown comment for Linear."""
+def format_analysis_comment(
+    result: Dict[str, Any],
+    issue_identifier: str = "",
+    primary_language: str = "en",
+) -> str:
+    """Format an AnalysisResult dict as a markdown comment for Linear.
+
+    Primary language is shown expanded; the other is in a collapsible <details> block.
+    """
     confidence = result.get("confidence", "medium")
     confidence_emoji = {"high": "✅", "medium": "⚠️", "low": "❌"}.get(confidence, "")
 
-    lines = [
-        "## AI Analysis Result",
-        "",
-        f"**Problem Type**: {result.get('problem_type', 'Unknown')}",
-        f"**Confidence**: {confidence} {confidence_emoji}",
-        f"**Root Cause**: {result.get('root_cause', '')}",
-    ]
+    problem_type_en = result.get("problem_type_en") or result.get("problem_type", "Unknown")
+    root_cause_en = result.get("root_cause_en") or result.get("root_cause", "")
+    user_reply_en = result.get("user_reply_en") or result.get("user_reply", "")
 
-    if result.get("confidence_reason"):
-        lines.append(f"**Confidence Reason**: {result['confidence_reason']}")
+    problem_type_cn = result.get("problem_type", "")
+    root_cause_cn = result.get("root_cause", "")
+    user_reply_cn = result.get("user_reply", "")
 
     evidence = result.get("key_evidence", [])
-    if evidence:
-        lines.append("")
-        lines.append("### Key Evidence")
-        for e in evidence[:5]:
-            lines.append(f"- `{e}`")
 
-    user_reply = result.get("user_reply", "")
-    if user_reply:
-        lines.append("")
-        lines.append("### Suggested Reply")
-        lines.append(f"> {user_reply.replace(chr(10), chr(10) + '> ')}")
+    if primary_language == "zh":
+        # --- Chinese primary ---
+        lines = [
+            "## AI 分析结果",
+            "",
+            f"**问题分类**: {problem_type_cn}",
+            f"**置信度**: {confidence} {confidence_emoji}",
+            f"**根因分析**: {root_cause_cn}",
+        ]
+        if result.get("confidence_reason"):
+            lines.append(f"**置信度原因**: {result['confidence_reason']}")
+        if evidence:
+            lines.append("")
+            lines.append("### 关键证据")
+            for e in evidence[:5]:
+                lines.append(f"- `{e}`")
+        if user_reply_cn:
+            lines.append("")
+            lines.append("### 建议客服回复")
+            lines.append(f"> {user_reply_cn.replace(chr(10), chr(10) + '> ')}")
+        if result.get("needs_engineer"):
+            lines.append("")
+            lines.append("**⚠️ 需要工程师介入**")
+        if result.get("fix_suggestion"):
+            lines.append("")
+            lines.append("### 修复建议")
+            lines.append(result["fix_suggestion"])
+        # English collapsible
+        if root_cause_en or user_reply_en:
+            lines.append("")
+            lines.append("<details>")
+            lines.append("<summary>🌐 English Version</summary>")
+            lines.append("")
+            if problem_type_en:
+                lines.append(f"**Problem Type**: {problem_type_en}")
+            if root_cause_en:
+                lines.append(f"**Root Cause**: {root_cause_en}")
+            if user_reply_en:
+                lines.append("")
+                lines.append("### Suggested Reply")
+                lines.append(f"> {user_reply_en.replace(chr(10), chr(10) + '> ')}")
+            lines.append("")
+            lines.append("</details>")
+    else:
+        # --- English primary ---
+        lines = [
+            "## AI Analysis Result",
+            "",
+            f"**Problem Type**: {problem_type_en}",
+            f"**Confidence**: {confidence} {confidence_emoji}",
+            f"**Root Cause**: {root_cause_en}",
+        ]
+        if result.get("confidence_reason"):
+            lines.append(f"**Confidence Reason**: {result['confidence_reason']}")
+        if evidence:
+            lines.append("")
+            lines.append("### Key Evidence")
+            for e in evidence[:5]:
+                lines.append(f"- `{e}`")
+        if user_reply_en:
+            lines.append("")
+            lines.append("### Suggested Reply")
+            lines.append(f"> {user_reply_en.replace(chr(10), chr(10) + '> ')}")
+        if result.get("needs_engineer"):
+            lines.append("")
+            lines.append("**⚠️ Needs engineer review**")
+        if result.get("fix_suggestion"):
+            lines.append("")
+            lines.append("### Fix Suggestion")
+            lines.append(result["fix_suggestion"])
+        # Chinese collapsible
+        if root_cause_cn or user_reply_cn:
+            lines.append("")
+            lines.append("<details>")
+            lines.append("<summary>🇨🇳 中文版本</summary>")
+            lines.append("")
+            if problem_type_cn:
+                lines.append(f"**问题分类**: {problem_type_cn}")
+            if root_cause_cn:
+                lines.append(f"**根因分析**: {root_cause_cn}")
+            if user_reply_cn:
+                lines.append("")
+                lines.append("### 建议客服回复")
+                lines.append(f"> {user_reply_cn.replace(chr(10), chr(10) + '> ')}")
+            lines.append("")
+            lines.append("</details>")
 
-    if result.get("needs_engineer"):
-        lines.append("")
-        lines.append("**⚠️ Needs engineer review**")
-
-    if result.get("fix_suggestion"):
-        lines.append("")
-        lines.append("### Fix Suggestion")
-        lines.append(result["fix_suggestion"])
-
-    # Footer
+    # --- Footer ---
     agent = result.get("agent_type", "")
     rule = result.get("rule_type", "")
     footer_parts = ["Analyzed by Jarvis AI"]
@@ -434,6 +505,7 @@ def format_analysis_comment(result: Dict[str, Any], issue_identifier: str = "") 
         footer_parts.append(f"Agent: {agent}")
     if rule:
         footer_parts.append(f"Rule: {rule}")
+    footer_parts.append("Author: sanato.zhang")
     lines.append("")
     lines.append(f"---\n*{' | '.join(footer_parts)}*")
 

@@ -91,6 +91,7 @@ async def submit_feedback(
             "priority": priority,
             "zendesk": zendesk_url,
             "zendesk_id": zendesk_id,
+            "source": "local",
             "feishu_link": "",
             "platform": platform,
             "category": category,

@@ -122,6 +122,7 @@ async def submit_analysis(
         "description": description,
         "device_sn": device_sn,
         "priority": priority,
+        "source": "api",
         "created_at_ms": int(datetime.utcnow().timestamp() * 1000),
         "log_files": saved_files,
     }

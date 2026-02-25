@@ -264,6 +264,7 @@ async def _run_linear_analysis(
 
         # Save to DB
         await db.upsert_issue(issue.model_dump(), status="analyzing")
+        await db.set_issue_created_by(record_id, "linear")
         await db.create_task(task_id=task_id, issue_id=record_id)
         await db.update_task(task_id, status="analyzing", progress=10, message="获取 Linear 工单信息...")
 
@@ -379,8 +380,12 @@ async def _run_linear_analysis(
         # Prepare workspace
         engine.prepare_workspace(workspace, rules, log_paths)
 
+        # Detect language from issue title
+        issue_language = _detect_language(title)
+        logger.info("  Detected language from title: %s (title: '%s')", issue_language, title[:50])
+
         # Run agent
-        prompt = BaseAgent.build_prompt(issue=issue, rules=rules, extraction=extraction)
+        prompt = BaseAgent.build_prompt(issue=issue, rules=rules, extraction=extraction, language=issue_language)
         orchestrator = AgentOrchestrator()
         agent = orchestrator.select_agent(rule_type)
         result = await agent.analyze(workspace=workspace, prompt=prompt)
@@ -413,7 +418,7 @@ async def _run_linear_analysis(
             await db.update_issue_status(record_id, "done")
 
             # Post success comment with formatted result
-            comment_body = format_analysis_comment(result.model_dump(), identifier)
+            comment_body = format_analysis_comment(result.model_dump(), identifier, primary_language=issue_language)
             await client.create_comment(linear_issue_id, comment_body)
 
         logger.info(
@@ -447,9 +452,16 @@ def _extract_field(text: str, keywords: list[str]) -> str:
     """Best-effort extract a field value from text by looking for keyword patterns."""
     import re
     for kw in keywords:
-        # Match patterns like "SN: ABC123" or "SN：ABC123" or "SN = ABC123"
         pattern = rf"{re.escape(kw)}\s*[:：=]\s*(\S+)"
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
             return m.group(1).strip()
     return ""
+
+
+def _detect_language(text: str) -> str:
+    """Detect whether text is Chinese or English. Returns 'zh' or 'en'."""
+    if not text:
+        return "en"
+    chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    return "zh" if chinese_chars > 0 else "en"
