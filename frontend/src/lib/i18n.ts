@@ -264,6 +264,7 @@ const EN: Record<string, string> = {
   "正在从飞书加载工单...": "Loading tickets from Feishu...",
   "首次加载可能需要几秒钟": "First load may take a few seconds",
   "本地上传": "Local upload",
+  "手动提交": "Manual",
 
   // Feedback extra
   "请先输入 Zendesk 工单号": "Please enter a Zendesk ticket number first",
@@ -279,6 +280,9 @@ const EN: Record<string, string> = {
   "提交失败": "Submit failed",
   "输入工单号，回车导入": "Enter ticket #, press Enter to import",
   "支持 .plaud, .log, .zip, .gz 格式（单个文件 ≤ 50MB）": "Supports .plaud, .log, .zip, .gz (max 50MB per file)",
+  "支持日志 (.plaud, .log, .zip, .gz) 和图片 (.png, .jpg, .gif)（≤ 50MB）": "Supports logs (.plaud, .log, .zip, .gz) and images (.png, .jpg, .gif) (max 50MB)",
+  "点击或拖拽上传文件": "Click or drag to upload files",
+  "附件": "Attachments",
   "未上传日志文件": "No Log Files Uploaded",
   "没有日志文件，AI 将无法分析用户的操作行为和设备状态，只能结合代码和产品知识回答问题。": "Without log files, AI cannot analyze user actions or device state. It can only answer based on code and product knowledge.",
   "适用于产品功能咨询、设计逻辑确认等场景。": "Suitable for product feature inquiries and design logic questions.",

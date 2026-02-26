@@ -47,11 +47,12 @@ function PriorityBadge({ p }: { p: string }) {
 }
 
 function SourceBadge({ source, linearUrl }: { source?: string; linearUrl?: string }) {
+  const t = useT();
   const cfg: Record<string, { label: string; cls: string }> = {
-    feishu:  { label: "飞书",    cls: "text-blue-700 bg-blue-50 ring-blue-200" },
-    linear:  { label: "Linear",  cls: "text-purple-700 bg-purple-50 ring-purple-200" },
-    api:     { label: "API",     cls: "text-teal-700 bg-teal-50 ring-teal-200" },
-    local:   { label: "手动提交", cls: "text-orange-700 bg-orange-50 ring-orange-200" },
+    feishu:  { label: t("飞书"),    cls: "text-blue-700 bg-blue-50 ring-blue-200" },
+    linear:  { label: "Linear",     cls: "text-purple-700 bg-purple-50 ring-purple-200" },
+    api:     { label: "API",        cls: "text-teal-700 bg-teal-50 ring-teal-200" },
+    local:   { label: t("手动提交"), cls: "text-orange-700 bg-orange-50 ring-orange-200" },
   };
   const s = source || "feishu";
   const c = cfg[s] || cfg.feishu;

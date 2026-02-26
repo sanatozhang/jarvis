@@ -1,6 +1,6 @@
 "use client";
 
-import { useT } from "@/lib/i18n";
+import { useT, useLang } from "@/lib/i18n";
 
 import { useState, useRef } from "react";
 
@@ -30,14 +30,14 @@ function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error";
 }
 
 export default function FeedbackPage() {
-  const CATEGORIES = [
-    "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）",
-    "文件首页（首页所有功能，列表显示，移动文件夹，批量转写，重命名，合并音频，删除文件，导入音频，时钟问题导致文件名不一致）",
-    "文件管理（转写，总结，文件编辑，分享导出，更多菜单，ASK Plaud，PCS）",
-    "用户系统与管理（账号登录注册，Onboarding，个人资料，偏好设置，app push 通知）",
-    "商业化（会员购买，会员转化）",
-    "其他通用模块（Autoflow，模版社区，Plaud WEB、集成、功能许愿池、推荐朋友、隐私与安全、帮助与支持等其他功能）",
-    "iZYREC 硬件问题",
+  const CATEGORIES_DATA: { value: string; cn: string; en: string }[] = [
+    { value: "hardware", cn: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", en: "Hardware (Bluetooth, firmware, file transfer, audio playback, clipping, sound quality)" },
+    { value: "file_home", cn: "文件首页（首页所有功能，列表显示，移动文件夹，批量转写，重命名，合并音频，删除文件，导入音频，时钟问题导致文件名不一致）", en: "File Home (listing, folders, batch transcription, rename, merge, delete, import, clock issues)" },
+    { value: "file_mgmt", cn: "文件管理（转写，总结，文件编辑，分享导出，更多菜单，ASK Plaud，PCS）", en: "File Management (transcription, summary, edit, share/export, ASK Plaud, PCS)" },
+    { value: "user_system", cn: "用户系统与管理（账号登录注册，Onboarding，个人资料，偏好设置，app push 通知）", en: "User System (login, onboarding, profile, preferences, push notifications)" },
+    { value: "monetization", cn: "商业化（会员购买，会员转化）", en: "Monetization (membership purchase, conversion)" },
+    { value: "other", cn: "其他通用模块（Autoflow，模版社区，Plaud WEB、集成、功能许愿池、推荐朋友、隐私与安全、帮助与支持等其他功能）", en: "Other (Autoflow, templates, Plaud Web, integrations, wishlist, referral, privacy, help)" },
+    { value: "izyrec", cn: "iZYREC 硬件问题", en: "iZYREC Hardware Issues" },
   ];
 
   const [form, setForm] = useState({
@@ -51,6 +51,7 @@ export default function FeedbackPage() {
     zendesk: "",
   });
   const t = useT();
+  const currentLang = useLang();
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -230,8 +231,8 @@ export default function FeedbackPage() {
               className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-black"
             >
               <option value="">{t("请选择问题分类")}</option>
-              {CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>{cat}</option>
+              {CATEGORIES_DATA.map((cat) => (
+                <option key={cat.value} value={cat.cn}>{currentLang === "en" ? cat.en : cat.cn}</option>
               ))}
             </select>
           </div>
