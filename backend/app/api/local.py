@@ -9,12 +9,15 @@ API routes for locally-tracked issues (analyzed by Jarvis).
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException
+from fastapi.responses import FileResponse
 
 from pydantic import BaseModel
 
+from app.config import get_settings
 from app.db import database as db
 from app.services.notify import notify_oncall
 
@@ -95,6 +98,58 @@ async def list_all_tracked(
         "page_size": page_size,
         "total_pages": max(1, (total + page_size - 1) // page_size),
     }
+
+
+@router.get("/{issue_id}/detail")
+async def get_issue_detail(issue_id: str):
+    """Get a single issue with its analysis and task data by ID."""
+    import json as _json
+    async with db.get_session() as session:
+        issue = await session.get(db.IssueRecord, issue_id)
+        if not issue:
+            raise HTTPException(status_code=404, detail="Issue not found")
+
+        from sqlalchemy import select
+        a_stmt = select(db.AnalysisRecord).where(
+            db.AnalysisRecord.issue_id == issue_id
+        ).order_by(db.AnalysisRecord.created_at.desc()).limit(1)
+        analysis = (await session.execute(a_stmt)).scalar_one_or_none()
+
+        t_stmt = select(db.TaskRecord).where(
+            db.TaskRecord.issue_id == issue_id
+        ).order_by(db.TaskRecord.created_at.desc()).limit(1)
+        task = (await session.execute(t_stmt)).scalar_one_or_none()
+
+        return db._issue_to_dict(issue, analysis=analysis, task=task)
+
+
+@router.get("/{issue_id}/files/{filename:path}")
+async def serve_issue_file(issue_id: str, filename: str):
+    """Serve a file (image/log) from an issue's workspace."""
+    settings = get_settings()
+
+    # Look in multiple possible locations
+    search_dirs = [
+        Path(settings.storage.workspace_dir) / issue_id / "raw",
+        Path(settings.storage.workspace_dir) / issue_id / "processed",
+    ]
+
+    # Also check task workspaces that reference this issue
+    async with db.get_session() as session:
+        from sqlalchemy import select
+        stmt = select(db.TaskRecord).where(db.TaskRecord.issue_id == issue_id).order_by(db.TaskRecord.created_at.desc()).limit(1)
+        result = await session.execute(stmt)
+        task = result.scalar_one_or_none()
+        if task:
+            search_dirs.insert(0, Path(settings.storage.workspace_dir) / task.id / "raw")
+            search_dirs.insert(1, Path(settings.storage.workspace_dir) / task.id / "images")
+
+    for d in search_dirs:
+        file_path = d / filename
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+
+    raise HTTPException(status_code=404, detail="File not found")
 
 
 @router.delete("/{issue_id}")

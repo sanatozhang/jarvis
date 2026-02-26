@@ -323,6 +323,9 @@ export interface LocalIssueItem {
   task?: { task_id: string; status: string; progress: number; message: string; error?: string };
 }
 
+export const fetchIssueDetail = (issueId: string) =>
+  request<LocalIssueItem>(`/local/${issueId}/detail`);
+
 export const fetchCompleted = (page = 1, pageSize = 20) =>
   request<PaginatedResponse<LocalIssueItem>>(`/local/completed?page=${page}&page_size=${pageSize}`);
 

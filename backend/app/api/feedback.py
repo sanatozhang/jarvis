@@ -53,14 +53,20 @@ async def submit_feedback(
                 zendesk_id = f"#{ticket_num}"
                 zendesk_url = f"https://nicebuildllc.zendesk.com/agent/tickets/{ticket_num}" if not zendesk.startswith("http") else zendesk
 
-        # Save uploaded files
+        # Save uploaded files (logs go to raw/, images go to images/)
+        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
         upload_dir = Path(settings.storage.workspace_dir) / record_id / "raw"
+        images_dir = Path(settings.storage.workspace_dir) / record_id / "images"
         upload_dir.mkdir(parents=True, exist_ok=True)
+        images_dir.mkdir(parents=True, exist_ok=True)
 
         saved_files = []
         for f in log_files:
             if f.filename and f.size and f.size > 0:
-                dest = upload_dir / f.filename
+                ext = Path(f.filename).suffix.lower()
+                is_image = ext in _IMAGE_EXTS
+                dest_dir = images_dir if is_image else upload_dir
+                dest = dest_dir / f.filename
                 content = await f.read()
                 with open(dest, "wb") as out:
                     out.write(content)
@@ -70,7 +76,7 @@ async def submit_feedback(
                     "size": len(content),
                     "local_path": str(dest),
                 })
-                logger.info("Saved uploaded file: %s (%d bytes)", f.filename, len(content))
+                logger.info("Saved uploaded file [%s]: %s (%d bytes)", "image" if is_image else "log", f.filename, len(content))
 
         # Build full description
         desc_parts = []

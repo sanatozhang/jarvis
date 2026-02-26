@@ -145,8 +145,9 @@ class LinearClient:
             logger.info("    [%s] %s → %s", url_type, filename, url[:120])
 
         for url, filename, _ in all_urls_desc:
-            if url not in seen_urls and not _is_image(filename):
-                files.append({"url": url, "filename": filename, "source": "description"})
+            if url not in seen_urls:
+                file_type = "image" if _is_image(filename) else "log"
+                files.append({"url": url, "filename": filename, "source": "description", "file_type": file_type})
                 seen_urls.add(url)
 
         # Extract from comments
@@ -163,15 +164,18 @@ class LinearClient:
                 all_urls_comment = _extract_all_urls(body)
                 for url, filename, url_type in all_urls_comment:
                     logger.info("    [%s] %s → %s", url_type, filename, url[:120])
-                    if url not in seen_urls and not _is_image(filename):
-                        files.append({"url": url, "filename": filename, "source": "comment"})
+                    if url not in seen_urls:
+                        file_type = "image" if _is_image(filename) else "log"
+                        files.append({"url": url, "filename": filename, "source": "comment", "file_type": file_type})
                         seen_urls.add(url)
         except Exception as e:
             logger.warning("Failed to fetch comments for file extraction: %s", e)
 
-        logger.info("=== Result: %d downloadable files found ===", len(files))
+        log_count = sum(1 for f in files if f["file_type"] == "log")
+        img_count = sum(1 for f in files if f["file_type"] == "image")
+        logger.info("=== Result: %d files found (%d logs, %d images) ===", len(files), log_count, img_count)
         for f in files:
-            logger.info("  ✓ [%s] %s", f["source"], f["filename"])
+            logger.info("  ✓ [%s][%s] %s", f["source"], f["file_type"], f["filename"])
 
         return files
 

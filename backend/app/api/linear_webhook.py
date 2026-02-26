@@ -279,15 +279,24 @@ async def _run_linear_analysis(
             linear_issue_id, description=description,
         )
         downloaded_files = []
+        downloaded_images = []
+        images_dir = workspace / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
 
         for uf in uploaded_files:
             filename = uf["filename"]
-            save_path = raw_dir / filename
+            is_image = uf.get("file_type") == "image"
+            save_dir = images_dir if is_image else raw_dir
+            save_path = save_dir / filename
             try:
                 actual_path = await client.download_attachment(uf["url"], str(save_path))
                 actual_path = Path(actual_path)
-                downloaded_files.append(actual_path)
-                logger.info("  Downloaded: %s → %s (%d bytes)", uf["source"], actual_path.name, actual_path.stat().st_size)
+                if is_image:
+                    downloaded_images.append(actual_path)
+                else:
+                    downloaded_files.append(actual_path)
+                logger.info("  Downloaded [%s]: %s → %s (%d bytes)",
+                            "image" if is_image else "log", uf["source"], actual_path.name, actual_path.stat().st_size)
             except Exception as e:
                 logger.error("  Failed to download '%s' from %s: %s", filename, uf["source"], e)
 
@@ -311,11 +320,12 @@ async def _run_linear_analysis(
             except Exception as e:
                 logger.error("  Failed to download API attachment '%s': %s", att_title, e)
 
-        logger.info("  Total files downloaded: %d (uploads: %d, API attachments: %d)",
-                     len(downloaded_files), len(uploaded_files), len(api_attachments))
-        await db.update_task(task_id, status="analyzing", progress=25, message=f"已下载 {len(downloaded_files)} 个文件")
+        logger.info("  Total downloaded: %d logs, %d images (from %d uploads + %d API attachments)",
+                     len(downloaded_files), len(downloaded_images), len(uploaded_files), len(api_attachments))
+        await db.update_task(task_id, status="analyzing", progress=25,
+                             message=f"已下载 {len(downloaded_files)} 个日志, {len(downloaded_images)} 张图片")
 
-        if not downloaded_files:
+        if not downloaded_files and not downloaded_images:
             logger.warning("No downloadable files for issue %s, analyzing description only", identifier)
 
         # --- Step 4: Run analysis pipeline ---
