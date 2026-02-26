@@ -276,7 +276,7 @@ export default function FeedbackPage() {
               <input
                 value={form.device_sn}
                 onChange={(e) => update("device_sn", e.target.value)}
-                placeholder="如 8801030171711129"
+                placeholder={currentLang === "en" ? "e.g. 8801030171711129" : "如 8801030171711129"}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2.5 font-mono text-sm text-gray-700 outline-none focus:border-black"
               />
             </div>
@@ -285,7 +285,7 @@ export default function FeedbackPage() {
               <input
                 value={form.firmware}
                 onChange={(e) => update("firmware", e.target.value)}
-                placeholder="如 2.1.0"
+                placeholder={currentLang === "en" ? "e.g. 2.1.0" : "如 2.1.0"}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-black"
               />
             </div>
@@ -298,7 +298,7 @@ export default function FeedbackPage() {
               <input
                 value={form.app_version}
                 onChange={(e) => update("app_version", e.target.value)}
-                placeholder="如 3.5.2"
+                placeholder={currentLang === "en" ? "e.g. 3.5.2" : "如 3.5.2"}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-black"
               />
             </div>

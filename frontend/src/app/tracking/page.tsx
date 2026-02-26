@@ -1,22 +1,23 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useT } from "@/lib/i18n";
+import { useT, useLang } from "@/lib/i18n";
 import { fetchTracking, escalateIssue, formatLocalTime, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
 
-const CATEGORIES = [
-  "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）",
-  "文件首页（首页所有功能，列表显示，移动文件夹，批量转写，重命名，合并音频，删除文件，导入音频，时钟问题导致文件名不一致）",
-  "文件管理（转写，总结，文件编辑，分享导出，更多菜单，ASK Plaud，PCS）",
-  "用户系统与管理（账号登录注册，Onboarding，个人资料，偏好设置，app push 通知）",
-  "商业化（会员购买，会员转化）",
-  "其他通用模块（Autoflow，模版社区，Plaud WEB、集成、功能许愿池、推荐朋友、隐私与安全、帮助与支持等其他功能）",
-  "iZYREC 硬件问题",
+const CATEGORIES_DATA = [
+  { value: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", cn: "硬件交互", en: "Hardware" },
+  { value: "文件首页（首页所有功能，列表显示，移动文件夹，批量转写，重命名，合并音频，删除文件，导入音频，时钟问题导致文件名不一致）", cn: "文件首页", en: "File Home" },
+  { value: "文件管理（转写，总结，文件编辑，分享导出，更多菜单，ASK Plaud，PCS）", cn: "文件管理", en: "File Mgmt" },
+  { value: "用户系统与管理（账号登录注册，Onboarding，个人资料，偏好设置，app push 通知）", cn: "用户系统", en: "User System" },
+  { value: "商业化（会员购买，会员转化）", cn: "商业化", en: "Monetization" },
+  { value: "其他通用模块（Autoflow，模版社区，Plaud WEB、集成、功能许愿池、推荐朋友、隐私与安全、帮助与支持等其他功能）", cn: "其他", en: "Other" },
+  { value: "iZYREC 硬件问题", cn: "iZYREC", en: "iZYREC" },
 ];
+const CATEGORIES = CATEGORIES_DATA.map((c) => c.value);
 
-// Short labels for display
 const CATEGORY_SHORT: Record<string, string> = {};
-CATEGORIES.forEach((c) => { CATEGORY_SHORT[c] = c.split("（")[0]; });
+const CATEGORY_SHORT_EN: Record<string, string> = {};
+CATEGORIES_DATA.forEach((c) => { CATEGORY_SHORT[c.value] = c.cn; CATEGORY_SHORT_EN[c.value] = c.en; });
 
 function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }) {
   const t = useT();
@@ -69,6 +70,8 @@ function Pagination({ page, totalPages, onChange }: { page: number; totalPages: 
 
 export default function TrackingPage() {
   const t = useT();
+  const currentLang = useLang();
+  const catShort = (cat: string) => currentLang === "en" ? (CATEGORY_SHORT_EN[cat] || cat) : (CATEGORY_SHORT[cat] || cat);
   const [data, setData] = useState<PaginatedResponse<LocalIssueItem> | null>(null);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -222,7 +225,7 @@ export default function TrackingPage() {
                 <select value={filters.category || ""} onChange={(e) => updateFilter("category", e.target.value)}
                   className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs outline-none focus:border-black">
                   <option value="">{t("全部分类")}</option>
-                  {CATEGORIES.map((c) => <option key={c} value={c}>{CATEGORY_SHORT[c] || c}</option>)}
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{catShort(c)}</option>)}
                 </select>
               </div>
               {/* Status */}
@@ -265,7 +268,7 @@ export default function TrackingPage() {
               <span className="ml-2">
                 {filters.created_by && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px]">{t("提交人")}: {filters.created_by}</span>}
                 {filters.platform && <span className="ml-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">{filters.platform}</span>}
-                {filters.category && <span className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600">{CATEGORY_SHORT[filters.category] || filters.category}</span>}
+                {filters.category && <span className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600">{catShort(filters.category)}</span>}
                 {filters.status && <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px]">{filters.status}</span>}
                 {filters.source && <span className="ml-1 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-600">{filters.source}</span>}
               </span>
@@ -305,7 +308,7 @@ export default function TrackingPage() {
                       </div>
                     )}
                     {item.category && (
-                      <span className="mt-1 inline-block rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">{CATEGORY_SHORT[item.category] || item.category}</span>
+                      <span className="mt-1 inline-block rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">{catShort(item.category || "")}</span>
                     )}
                   </td>
                   <td className="px-3 py-3 align-top"><StatusBadge status={item.local_status} ruleType={item.analysis?.rule_type} /></td>
@@ -353,7 +356,7 @@ export default function TrackingPage() {
                   {detailItem.created_by && <span className="rounded bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{detailItem.created_by}</span>}
                 </div>
                 {detailItem.category && (
-                  <p className="mb-2 text-xs text-gray-500">{t("分类")}: <span className="font-medium text-gray-600">{CATEGORY_SHORT[detailItem.category] || detailItem.category}</span></p>
+                  <p className="mb-2 text-xs text-gray-500">{t("分类")}: <span className="font-medium text-gray-600">{catShort(detailItem.category || "")}</span></p>
                 )}
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   {[{ l: t("设备 SN"), v: detailItem.device_sn, m: true }, { l: t("固件"), v: detailItem.firmware }, { l: "APP", v: detailItem.app_version }, { l: "Zendesk", v: detailItem.zendesk_id }].map((f) => (

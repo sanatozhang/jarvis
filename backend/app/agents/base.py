@@ -163,20 +163,20 @@ output/       ← 请将 result.json 写入此目录
 ## 输出要求
 
 分析完成后，请将结果以 JSON 格式写入 `output/result.json`。
-**重要：root_cause 和 user_reply 必须同时提供中文和英文两个版本。**
+**重要：ALL fields with _en suffix MUST be provided. 每个字段都必须同时提供中文和英文版本，不能为空。**
 **主要语言（primary language）: {"English" if language == "en" else "中文"}** — 请确保主要语言的内容最详细、最完整。
 
 ```json
 {{
-    "problem_type": "问题分类（中文）",
-    "problem_type_en": "Problem Type (English)",
-    "root_cause": "根本原因详细分析（中文，2-5 句话）",
-    "root_cause_en": "Root cause analysis (English, 2-5 sentences)",
+    "problem_type": "问题分类（中文，不能为空）",
+    "problem_type_en": "Problem Type in English (REQUIRED, must not be empty)",
+    "root_cause": "根本原因详细分析（中文，2-5 句话，不能为空）",
+    "root_cause_en": "Root cause analysis in English (REQUIRED, 2-5 sentences, must not be empty)",
     "confidence": "high / medium / low",
     "confidence_reason": "Why this confidence level (in {'English' if language == 'en' else 'Chinese'})",
     "key_evidence": ["key log line 1", "key log line 2 (max 5)"],
-    "user_reply": "完整的中文客服回复模板（见下方示例）",
-    "user_reply_en": "Complete English customer reply template (see example below)",
+    "user_reply": "完整的中文客服回复模板（不能为空）",
+    "user_reply_en": "Complete English customer reply template (REQUIRED, must not be empty)",
     "needs_engineer": false,
     "fix_suggestion": ""
 }}

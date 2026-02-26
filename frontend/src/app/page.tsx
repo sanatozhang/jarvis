@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useT } from "@/lib/i18n";
+import { useT, useLang } from "@/lib/i18n";
 import {
   fetchPendingIssues,
   refreshIssuesCache,
@@ -142,7 +142,8 @@ export default function HomePage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detailId, setDetailId] = useState<string | null>(null);
   const [directDetail, setDirectDetail] = useState<LocalIssueItem | null>(null);
-  const [lang, setLang] = useState<"cn" | "en">("cn");
+  const siteLang = useLang();
+  const [lang, setLang] = useState<"cn" | "en">(siteLang);
   const [detailTab, setDetailTab] = useState<Tab>("pending");
   const [toast, setToast] = useState("");
   const [tab, setTab] = useState<Tab>("pending");
@@ -250,6 +251,7 @@ export default function HomePage() {
   }, [assignee, loadPending, loadInProgress, loadDone, pendingPage, ipPage, donePage]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => { setLang(siteLang); }, [siteLang]);
 
   const forceRefresh = async () => { await refreshIssuesCache(); await loadAll(); };
 
@@ -552,8 +554,8 @@ export default function HomePage() {
                               <button onClick={() => startAnalysis(item.record_id)} className="rounded-md bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800">{t("重试分析")}</button>
                             )}
                             {item.analysis?.user_reply && <button onClick={() => copy(item.analysis!.user_reply)} className="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700">{t("复制回复")}</button>}
-                            <button onClick={() => handleEscalate(item.record_id)} className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100" title="转工程师">{t("转工程师")}</button>
-                            <button onClick={() => handleDelete(item.record_id)} className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-400 hover:border-red-300 hover:text-red-500" title="删除">
+                            <button onClick={() => handleEscalate(item.record_id)} className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100" title={t("转工程师")}>{t("转工程师")}</button>
+                            <button onClick={() => handleDelete(item.record_id)} className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-400 hover:border-red-300 hover:text-red-500" title={t("删除")}>
                               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
                             </button>
                           </div>
@@ -595,7 +597,7 @@ export default function HomePage() {
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  {[{ l: "设备 SN", v: detailData.issue.device_sn, m: true }, { l: "固件", v: detailData.issue.firmware }, { l: "APP", v: detailData.issue.app_version }, { l: "日志", v: `${detailData.issue.log_files?.length || 0} 个` }].map((f) => (
+                  {[{ l: t("设备 SN"), v: detailData.issue.device_sn, m: true }, { l: t("固件"), v: detailData.issue.firmware }, { l: t("APP"), v: detailData.issue.app_version }, { l: t("日志"), v: `${detailData.issue.log_files?.length || 0} ${t("个")}` }].map((f) => (
                     <div key={f.l} className="rounded-lg bg-gray-50 px-3 py-2"><span className="text-gray-400">{f.l}</span><p className={`mt-0.5 font-medium text-gray-700 ${f.m ? "font-mono" : ""}`}>{f.v || "—"}</p></div>
                   ))}
                 </div>
@@ -664,9 +666,10 @@ export default function HomePage() {
               {/* Result */}
               {detailData.result && (() => {
                 const r = detailData.result;
-                const problemType = lang === "en" && r.problem_type_en ? r.problem_type_en : r.problem_type;
-                const rootCause = lang === "en" && r.root_cause_en ? r.root_cause_en : r.root_cause;
-                const userReply = lang === "en" && r.user_reply_en ? r.user_reply_en : r.user_reply;
+                const problemType = lang === "en" ? (r.problem_type_en || r.problem_type) : r.problem_type;
+                const rootCause = lang === "en" ? (r.root_cause_en || r.root_cause) : r.root_cause;
+                const userReply = lang === "en" ? (r.user_reply_en || r.user_reply) : r.user_reply;
+                const hasEnTranslation = !!(r.problem_type_en && r.root_cause_en);
                 return (
                 <>
                   <section>
@@ -677,6 +680,9 @@ export default function HomePage() {
                         <button onClick={() => setLang("en")} className={`rounded px-2 py-0.5 text-[11px] font-medium ${lang === "en" ? "bg-white text-gray-800 shadow-sm" : "text-gray-400"}`}>EN</button>
                       </div>
                     </div>
+                    {lang === "en" && !hasEnTranslation && (
+                      <p className="mb-2 text-[10px] text-amber-500">English translation not available for this analysis. Showing original Chinese.</p>
+                    )}
                     <div className="flex flex-wrap gap-2 mb-3">
                       <span className="rounded-lg bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">{problemType}</span>
                       <ConfBadge c={r.confidence} />
