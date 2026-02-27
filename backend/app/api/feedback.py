@@ -112,7 +112,7 @@ async def submit_feedback(
         await db.create_task(task_id=task_id, issue_id=record_id)
 
         from app.api.tasks import _run_task
-        background_tasks.add_task(_run_task, task_id=task_id, issue_id=record_id)
+        background_tasks.add_task(_run_task, task_id=task_id, issue_id=record_id, username=username)
 
         logger.info("Feedback submitted and analysis started: %s task=%s", record_id, task_id)
 

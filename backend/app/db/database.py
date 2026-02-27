@@ -841,10 +841,11 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
                 daily[d] = {}
             daily[d][etype] = count
 
-        # Top users
+        # Top users (only meaningful actions, exclude page_visit)
+        _meaningful_events = ("analysis_start", "analysis_done", "analysis_fail", "feedback_submit", "escalate")
         top_users_stmt = select(
             EventRecord.username, func.count()
-        ).where(date_filter, EventRecord.username != "").group_by(
+        ).where(date_filter, EventRecord.username != "", EventRecord.event_type.in_(_meaningful_events)).group_by(
             EventRecord.username
         ).order_by(func.count().desc()).limit(10)
         top_users = [{"username": row[0], "count": row[1]} for row in (await session.execute(top_users_stmt)).fetchall()]

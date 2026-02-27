@@ -128,6 +128,7 @@ async def submit_analysis(
     }
     await db.upsert_issue(issue_data, status="analyzing")
     await db.create_task(task_id=task_id, issue_id=record_id)
+    await db.log_event("analysis_start", issue_id=record_id, username="api")
 
     # Start background analysis
     background_tasks.add_task(
@@ -296,9 +297,13 @@ async def _finish_task(
     if is_failure:
         await db.update_task(task_id, status="failed", progress=100, message="分析失败", error=result.root_cause[:200])
         await db.update_issue_status(record_id, "failed")
+        await db.log_event("analysis_fail", issue_id=record_id, username="api",
+                           detail={"reason": result.problem_type})
     else:
         await db.update_task(task_id, status="done", progress=100, message="分析完成")
         await db.update_issue_status(record_id, "done")
+        await db.log_event("analysis_done", issue_id=record_id, username="api",
+                           detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
 
     logger.info("API analysis %s finished: %s (failure=%s)", task_id, result.problem_type, is_failure)
 

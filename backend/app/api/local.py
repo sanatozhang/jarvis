@@ -211,7 +211,7 @@ async def escalate_to_engineer(issue_id: str, req: EscalateRequest):
                     zendesk_id=issue.zendesk_id or "",
                 )
 
-                await db.log_event("escalate", issue_id=issue_id, detail={
+                await db.log_event("escalate", issue_id=issue_id, username=req.user_email or "unknown", detail={
                     "reason": req.reason,
                     "group_name": result["group_name"],
                     "chat_id": result["chat_id"],
@@ -239,7 +239,7 @@ async def escalate_to_engineer(issue_id: str, req: EscalateRequest):
             link=issue_link,
         )
 
-        await db.log_event("escalate", issue_id=issue_id, detail={"reason": req.reason, "sent": sent})
+        await db.log_event("escalate", issue_id=issue_id, username=req.user_email or "unknown", detail={"reason": req.reason, "sent": sent})
 
         if sent:
             return {"status": "sent", "issue_id": issue_id, "message": f"已通知 {', '.join(oncall_members)}"}

@@ -266,6 +266,7 @@ async def _run_linear_analysis(
         await db.upsert_issue(issue.model_dump(), status="analyzing")
         await db.set_issue_created_by(record_id, "linear")
         await db.create_task(task_id=task_id, issue_id=record_id)
+        await db.log_event("analysis_start", issue_id=record_id, username="linear")
         await db.update_task(task_id, status="analyzing", progress=10, message="获取 Linear 工单信息...")
 
         # --- Step 3: Download uploaded files ---
@@ -412,9 +413,15 @@ async def _run_linear_analysis(
 
         await db.save_analysis(result.model_dump())
 
+        # Calculate duration for analytics
+        _start_time = issue.created_at_ms or 0
+        _duration_ms = int((datetime.utcnow().timestamp() * 1000) - _start_time) if _start_time else 0
+
         if is_failure:
             await db.update_task(task_id, status="failed", progress=100, message="分析失败", error=result.root_cause[:200])
             await db.update_issue_status(record_id, "failed")
+            await db.log_event("analysis_fail", issue_id=record_id, username="linear",
+                               duration_ms=_duration_ms, detail={"reason": result.problem_type})
 
             # Post failure comment
             await client.create_comment(
@@ -426,6 +433,8 @@ async def _run_linear_analysis(
         else:
             await db.update_task(task_id, status="done", progress=100, message="分析完成")
             await db.update_issue_status(record_id, "done")
+            await db.log_event("analysis_done", issue_id=record_id, username="linear",
+                               duration_ms=_duration_ms, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
 
             # Post success comment with formatted result
             comment_body = format_analysis_comment(result.model_dump(), identifier, primary_language=issue_language)

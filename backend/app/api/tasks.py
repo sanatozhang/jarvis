@@ -67,6 +67,7 @@ async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
         task_id=task_id,
         issue_id=req.issue_id,
         agent_override=agent_type_str or None,
+        username=req.username or "",
     )
 
     return progress
@@ -80,6 +81,7 @@ async def batch_analyze(req: BatchAnalyzeRequest, background_tasks: BackgroundTa
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         agent_type_str = req.agent_type.value if req.agent_type else ""
         await db.create_task(task_id=task_id, issue_id=issue_id, agent_type=agent_type_str)
+        await db.log_event("analysis_start", issue_id=issue_id, username="batch")
 
         progress = TaskProgress(
             task_id=task_id,
@@ -95,6 +97,7 @@ async def batch_analyze(req: BatchAnalyzeRequest, background_tasks: BackgroundTa
             task_id=task_id,
             issue_id=issue_id,
             agent_override=agent_type_str or None,
+            username="batch",
         )
         results.append(progress)
 
@@ -231,7 +234,7 @@ async def list_tasks(limit: int = Query(50, le=200)):
 # ---------------------------------------------------------------------------
 # Background task runner
 # ---------------------------------------------------------------------------
-async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None):
+async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None, username: str = ""):
     """Run the full analysis pipeline as a background task."""
     import time as _time
     _start_time = _time.monotonic()
@@ -296,7 +299,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
             # Track: analysis failed
             duration = int((_time.monotonic() - _start_time) * 1000)
-            await db.log_event("analysis_fail", issue_id=issue_id, duration_ms=duration, detail={"reason": result.problem_type, "error": error_msg[:200]})
+            await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": result.problem_type, "error": error_msg[:200]})
         else:
             await db.update_task(task_id, status="done", progress=100, message="分析完成")
             await db.update_issue_status(issue_id, "done")
@@ -307,7 +310,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
             # Track: analysis succeeded
             duration = int((_time.monotonic() - _start_time) * 1000)
-            await db.log_event("analysis_done", issue_id=issue_id, duration_ms=duration, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
+            await db.log_event("analysis_done", issue_id=issue_id, username=username, duration_ms=duration, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
 
     except Exception as e:
         logger.error("Task %s failed: %s", task_id, e, exc_info=True)
@@ -316,7 +319,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
         # Track: analysis exception
         duration = int((_time.monotonic() - _start_time) * 1000)
-        await db.log_event("analysis_fail", issue_id=issue_id, duration_ms=duration, detail={"reason": "exception", "error": str(e)[:200]})
+        await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": "exception", "error": str(e)[:200]})
         _update_progress(
             task_id,
             TaskProgress(
