@@ -5,11 +5,11 @@ import { useEffect, useState, useCallback } from "react";
 import { fetchRules, reloadRules, updateRule, createRule, deleteRule, type Rule, type RuleMeta } from "@/lib/api";
 
 const S = {
-  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
-  border: "rgba(255,255,255,0.08)", borderSm: "rgba(255,255,255,0.05)",
-  accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
-  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
-  danger: "#EF4444", dangerBg: "rgba(239,68,68,0.10)",
+  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
+  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
+  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  danger: "#DC2626", dangerBg: "rgba(220,38,38,0.06)",
 };
 
 /* ─── Toast ─── */
@@ -415,7 +415,7 @@ export default function RulesPage() {
     <div className="min-h-full flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-10 flex-shrink-0 backdrop-blur-md"
-        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("分析规则")}</h1>
           <div className="flex items-center gap-2">
@@ -463,7 +463,7 @@ export default function RulesPage() {
                         {rule.meta.name || rule.meta.id}
                       </span>
                       <span className="h-2 w-2 rounded-full"
-                        style={{ background: rule.meta.enabled ? "#22C55E" : S.hover,
+                        style={{ background: rule.meta.enabled ? "#16A34A" : S.hover,
                           boxShadow: rule.meta.enabled ? "0 0 4px rgba(34,197,94,0.4)" : "none" }} />
                     </div>
                     <div className="mt-1 flex flex-wrap gap-1">

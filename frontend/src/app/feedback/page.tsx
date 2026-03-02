@@ -12,9 +12,9 @@ function getBackendUrl(): string {
 const BACKEND_URL = getBackendUrl();
 
 const S = {
-  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
-  border: "rgba(255,255,255,0.08)", accent: "#D4A843",
-  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  border: "rgba(0,0,0,0.08)", accent: "#B8922E",
+  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
 };
 
 const inputCls = "w-full rounded-lg px-3 py-2.5 text-sm font-sans outline-none transition-colors";
@@ -26,7 +26,7 @@ function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error";
     <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
       style={{
         background: type === "success" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
-        color: type === "success" ? "#4ADE80" : "#F87171",
+        color: type === "success" ? "#16A34A" : "#DC2626",
         border: `1px solid ${type === "success" ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
       }}>
       {msg}
@@ -156,7 +156,7 @@ export default function FeedbackPage() {
     <div className="min-h-full">
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="px-6 py-3">
           <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("提交反馈")}</h1>
           <p className="text-xs mt-0.5" style={{ color: S.text3 }}>{t("手动上传用户问题和日志文件")}</p>
@@ -169,7 +169,7 @@ export default function FeedbackPage() {
           {/* Description */}
           <div>
             <label className={labelCls} style={{ color: S.text2 }}>
-              {t("问题描述")} <span style={{ color: "#F87171" }}>*</span>
+              {t("问题描述")} <span style={{ color: "#DC2626" }}>*</span>
             </label>
             <textarea value={form.description} onChange={(e) => update("description", e.target.value)}
               placeholder={t("请详细描述用户遇到的问题...")} rows={5}
@@ -203,8 +203,8 @@ export default function FeedbackPage() {
               <label className={labelCls} style={{ color: S.text2 }}>{t("优先级")}</label>
               <div className="flex gap-3 pt-1">
                 {[
-                  { value: "H", label: t("高"), activeBg: "rgba(239,68,68,0.15)", activeColor: "#F87171", activeBorder: "rgba(239,68,68,0.3)" },
-                  { value: "L", label: t("低"), activeBg: "rgba(255,255,255,0.06)", activeColor: S.text2, activeBorder: S.border },
+                  { value: "H", label: t("高"), activeBg: "rgba(239,68,68,0.15)", activeColor: "#DC2626", activeBorder: "rgba(239,68,68,0.3)" },
+                  { value: "L", label: t("低"), activeBg: "rgba(0,0,0,0.04)", activeColor: S.text2, activeBorder: S.border },
                 ].map((opt) => (
                   <label key={opt.value} className="flex-1 cursor-pointer">
                     <input type="radio" name="priority" value={opt.value} checked={form.priority === opt.value}
@@ -255,10 +255,10 @@ export default function FeedbackPage() {
                   style={inputStyle} />
                 <button type="button" onClick={importFromZendesk} disabled={importing || !form.zendesk.trim()}
                   className="flex-shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40"
-                  style={{ background: "rgba(96,165,250,0.15)", color: "#60A5FA", border: "1px solid rgba(96,165,250,0.25)" }}>
+                  style={{ background: "rgba(96,165,250,0.15)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }}>
                   {importing ? (
                     <span className="flex items-center gap-1.5">
-                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2" style={{ borderColor: "rgba(96,165,250,0.3)", borderTopColor: "#60A5FA" }} />
+                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2" style={{ borderColor: "rgba(96,165,250,0.3)", borderTopColor: "#2563EB" }} />
                       {t("导入中")}
                     </span>
                   ) : t("导入")}
@@ -280,11 +280,11 @@ export default function FeedbackPage() {
               onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(false); addFiles(e.dataTransfer.files); }}
               className="flex cursor-pointer flex-col items-center justify-center rounded-xl px-6 py-10 transition-all"
               style={{
-                border: `2px dashed ${isDragOver ? S.accent : "rgba(255,255,255,0.12)"}`,
-                background: isDragOver ? "rgba(212,168,67,0.05)" : "rgba(255,255,255,0.02)",
+                border: `2px dashed ${isDragOver ? S.accent : "rgba(0,0,0,0.10)"}`,
+                background: isDragOver ? "rgba(184,146,46,0.05)" : "rgba(0,0,0,0.02)",
               }}>
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl"
-                style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${S.border}` }}>
+                style={{ background: "rgba(0,0,0,0.03)", border: `1px solid ${S.border}` }}>
                 <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} style={{ color: S.text3 }}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.338-2.32 3.75 3.75 0 013.537 5.344A4.5 4.5 0 0118 19.5H6.75z" />
                 </svg>
@@ -360,7 +360,7 @@ export default function FeedbackPage() {
           <div className="w-full max-w-md rounded-2xl p-6" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
             <div className="mb-4 flex items-start gap-3">
               <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl"
-                style={{ background: "rgba(212,168,67,0.15)", border: "1px solid rgba(212,168,67,0.3)" }}>
+                style={{ background: "rgba(184,146,46,0.15)", border: "1px solid rgba(184,146,46,0.3)" }}>
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: S.accent }}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
                 </svg>

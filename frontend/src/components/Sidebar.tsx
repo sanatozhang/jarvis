@@ -59,35 +59,34 @@ export default function Sidebar() {
   return (
     <aside
       className="flex w-[216px] flex-shrink-0 flex-col"
-      style={{ background: "#0D0E12", borderRight: "1px solid rgba(255,255,255,0.07)" }}
+      style={{ background: "#F8F9FA", borderRight: "1px solid rgba(0,0,0,0.08)" }}
     >
       {/* Logo */}
       <div
         className="flex h-[52px] items-center gap-3 px-5"
-        style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+        style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}
       >
         <div
           className="flex h-7 w-7 items-center justify-center rounded-lg"
-          style={{ background: "#D4A843" }}
+          style={{ background: "#B8922E" }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            {/* Magnifying glass + sparkle = AI analysis */}
-            <circle cx="10.5" cy="10.5" r="6" stroke="#0A0B0E" strokeWidth="2.5" />
-            <path d="M15 15L20.5 20.5" stroke="#0A0B0E" strokeWidth="2.5" strokeLinecap="round" />
-            <path d="M10.5 7V8.5M10.5 12.5V14M8 10.5H6.5M14.5 10.5H13" stroke="#0A0B0E" strokeWidth="1.5" strokeLinecap="round" />
-            <circle cx="10.5" cy="10.5" r="1.2" fill="#0A0B0E" />
+            <circle cx="10.5" cy="10.5" r="6" stroke="#FFFFFF" strokeWidth="2.5" />
+            <path d="M15 15L20.5 20.5" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" />
+            <path d="M10.5 7V8.5M10.5 12.5V14M8 10.5H6.5M14.5 10.5H13" stroke="#FFFFFF" strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="10.5" cy="10.5" r="1.2" fill="#FFFFFF" />
           </svg>
         </div>
         <div>
           <span
             className="text-sm font-semibold tracking-tight"
-            style={{ color: "#EBEBEF" }}
+            style={{ color: "#111827" }}
           >
             Appllo
           </span>
           <span
             className="ml-1.5 rounded text-[9px] font-medium px-1 py-0.5"
-            style={{ background: "rgba(212,168,67,0.15)", color: "#D4A843" }}
+            style={{ background: "rgba(184,146,46,0.10)", color: "#B8922E" }}
           >
             AI
           </span>
@@ -104,20 +103,20 @@ export default function Sidebar() {
               href={item.href}
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150"
               style={{
-                color: active ? "#EBEBEF" : "#6E6E80",
-                background: active ? "rgba(212,168,67,0.10)" : "transparent",
-                borderLeft: active ? "2px solid #D4A843" : "2px solid transparent",
+                color: active ? "#111827" : "#6B7280",
+                background: active ? "rgba(184,146,46,0.08)" : "transparent",
+                borderLeft: active ? "2px solid #B8922E" : "2px solid transparent",
               }}
               onMouseEnter={(e) => {
                 if (!active) {
-                  (e.currentTarget as HTMLElement).style.color = "#B8B8C8";
+                  (e.currentTarget as HTMLElement).style.color = "#374151";
                   (e.currentTarget as HTMLElement).style.background =
-                    "rgba(255,255,255,0.04)";
+                    "rgba(0,0,0,0.03)";
                 }
               }}
               onMouseLeave={(e) => {
                 if (!active) {
-                  (e.currentTarget as HTMLElement).style.color = "#6E6E80";
+                  (e.currentTarget as HTMLElement).style.color = "#6B7280";
                   (e.currentTarget as HTMLElement).style.background = "transparent";
                 }
               }}
@@ -136,7 +135,7 @@ export default function Sidebar() {
               {active && (
                 <span
                   className="h-1.5 w-1.5 rounded-full flex-shrink-0"
-                  style={{ background: "#D4A843" }}
+                  style={{ background: "#B8922E" }}
                 />
               )}
             </a>
@@ -147,19 +146,19 @@ export default function Sidebar() {
       {/* Footer */}
       <div
         className="px-2.5 py-3 space-y-px"
-        style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}
+        style={{ borderTop: "1px solid rgba(0,0,0,0.06)" }}
       >
         {/* System status */}
         <a
           href="/settings"
           className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
-          style={{ color: "#6E6E80" }}
+          style={{ color: "#6B7280" }}
           onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "#B8B8C8";
-            (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.04)";
+            (e.currentTarget as HTMLElement).style.color = "#374151";
+            (e.currentTarget as HTMLElement).style.background = "rgba(0,0,0,0.03)";
           }}
           onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "#6E6E80";
+            (e.currentTarget as HTMLElement).style.color = "#6B7280";
             (e.currentTarget as HTMLElement).style.background = "transparent";
           }}
         >
@@ -176,7 +175,7 @@ export default function Sidebar() {
           <span className="flex-1">{t("系统状态")}</span>
           <span
             className="h-2 w-2 rounded-full"
-            style={{ background: "#22C55E", boxShadow: "0 0 6px rgba(34,197,94,0.5)" }}
+            style={{ background: "#16A34A", boxShadow: "0 0 6px rgba(22,163,74,0.4)" }}
           />
         </a>
 
@@ -184,13 +183,13 @@ export default function Sidebar() {
         <button
           onClick={toggleLang}
           className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
-          style={{ color: "#6E6E80" }}
+          style={{ color: "#6B7280" }}
           onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "#B8B8C8";
-            (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.04)";
+            (e.currentTarget as HTMLElement).style.color = "#374151";
+            (e.currentTarget as HTMLElement).style.background = "rgba(0,0,0,0.03)";
           }}
           onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "#6E6E80";
+            (e.currentTarget as HTMLElement).style.color = "#6B7280";
             (e.currentTarget as HTMLElement).style.background = "transparent";
           }}
         >
@@ -211,8 +210,8 @@ export default function Sidebar() {
           <span
             className="rounded px-1.5 py-0.5 text-[10px] font-semibold"
             style={{
-              background: "rgba(255,255,255,0.07)",
-              color: "#9898A8",
+              background: "rgba(0,0,0,0.05)",
+              color: "#6B7280",
             }}
           >
             {lang === "cn" ? "CN" : "EN"}

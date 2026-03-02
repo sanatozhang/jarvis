@@ -1,16 +1,16 @@
 @import "tailwindcss";
 
 @theme {
-  /* ── Color palette ── */
-  --color-j-base:      #0A0B0E;
-  --color-j-surface:   #111318;
-  --color-j-overlay:   #1A1D24;
-  --color-j-hover:     #22262F;
-  --color-j-accent:    #D4A843;
-  --color-j-accent-hi: #E6BC5A;
-  --color-j-fg:        #EBEBEF;
-  --color-j-muted:     #9898A8;
-  --color-j-dim:       #4A4A57;
+  /* ── Color palette (light theme) ── */
+  --color-j-base:      #FFFFFF;
+  --color-j-surface:   #F8F9FA;
+  --color-j-overlay:   #FFFFFF;
+  --color-j-hover:     #EEF0F2;
+  --color-j-accent:    #B8922E;
+  --color-j-accent-hi: #A07D1E;
+  --color-j-fg:        #111827;
+  --color-j-muted:     #6B7280;
+  --color-j-dim:       #9CA3AF;
 
   /* ── Typography ── */
   --font-sans: 'DM Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -20,24 +20,24 @@
 /* ── Scrollbar ── */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #22262F transparent;
+  scrollbar-color: #D1D5DB transparent;
 }
 *::-webkit-scrollbar { width: 5px; height: 5px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb {
-  background-color: #22262F;
+  background-color: #D1D5DB;
   border-radius: 3px;
 }
-*::-webkit-scrollbar-thumb:hover { background-color: #2E3340; }
+*::-webkit-scrollbar-thumb:hover { background-color: #9CA3AF; }
 
 /* ── Selection ── */
 ::selection {
-  background: rgba(212, 168, 67, 0.25);
-  color: #EBEBEF;
+  background: rgba(184, 146, 46, 0.20);
+  color: #111827;
 }
 
 /* ── Focus ring ── */
 :focus-visible {
-  outline: 2px solid #D4A843;
+  outline: 2px solid #B8922E;
   outline-offset: 2px;
 }

@@ -37,16 +37,16 @@ function setUrlParam(key: string, val: string) {
 
 // ── Shared design tokens ─────────────────────────────────────
 const S = {
-  surface:  "#111318",
-  overlay:  "#1A1D24",
-  hover:    "#22262F",
-  border:   "rgba(255,255,255,0.08)",
-  borderSm: "rgba(255,255,255,0.05)",
-  accent:   "#D4A843",
-  accentBg: "rgba(212,168,67,0.10)",
-  text1:    "#EBEBEF",
-  text2:    "#9898A8",
-  text3:    "#4A4A57",
+  surface:  "#F8F9FA",
+  overlay:  "#FFFFFF",
+  hover:    "#EEF0F2",
+  border:   "rgba(0,0,0,0.08)",
+  borderSm: "rgba(0,0,0,0.04)",
+  accent:   "#B8922E",
+  accentBg: "rgba(184,146,46,0.06)",
+  text1:    "#111827",
+  text2:    "#6B7280",
+  text3:    "#9CA3AF",
 };
 
 // ── Small components ─────────────────────────────────────────
@@ -54,12 +54,12 @@ function PriorityBadge({ p }: { p: string }) {
   const t = useT();
   return p === "H" ? (
     <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
-      style={{ background: "rgba(239,68,68,0.15)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+      style={{ background: "rgba(239,68,68,0.15)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
       {t("高")}
     </span>
   ) : (
     <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-      style={{ background: "rgba(255,255,255,0.06)", color: "#6E6E80", border: "1px solid rgba(255,255,255,0.08)" }}>
+      style={{ background: "rgba(0,0,0,0.04)", color: "#6B7280", border: "1px solid rgba(0,0,0,0.08)" }}>
       {t("低")}
     </span>
   );
@@ -68,7 +68,7 @@ function PriorityBadge({ p }: { p: string }) {
 function SourceBadge({ source, linearUrl }: { source?: string; linearUrl?: string }) {
   const t = useT();
   const cfg: Record<string, { label: string; bg: string; color: string; border: string }> = {
-    feishu:  { label: t("飞书"),     bg: "rgba(96,165,250,0.12)", color: "#93C5FD", border: "rgba(96,165,250,0.25)" },
+    feishu:  { label: t("飞书"),     bg: "rgba(96,165,250,0.12)", color: "#2563EB", border: "rgba(96,165,250,0.25)" },
     linear:  { label: "Linear",      bg: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "rgba(167,139,250,0.25)" },
     api:     { label: "API",         bg: "rgba(52,211,153,0.12)", color: "#6EE7B7", border: "rgba(52,211,153,0.25)" },
     local:   { label: t("手动提交"), bg: "rgba(251,146,60,0.12)",  color: "#FCA87A", border: "rgba(251,146,60,0.25)" },
@@ -89,9 +89,9 @@ function SourceBadge({ source, linearUrl }: { source?: string; linearUrl?: strin
 
 function ConfBadge({ c }: { c: string }) {
   const m: Record<string, { bg: string; color: string; border: string }> = {
-    high:   { bg: "rgba(34,197,94,0.12)",   color: "#4ADE80", border: "rgba(34,197,94,0.25)" },
+    high:   { bg: "rgba(34,197,94,0.12)",   color: "#16A34A", border: "rgba(34,197,94,0.25)" },
     medium: { bg: "rgba(234,179,8,0.12)",   color: "#FCD34D", border: "rgba(234,179,8,0.25)" },
-    low:    { bg: "rgba(239,68,68,0.12)",   color: "#F87171", border: "rgba(239,68,68,0.25)" },
+    low:    { bg: "rgba(239,68,68,0.12)",   color: "#DC2626", border: "rgba(239,68,68,0.25)" },
   };
   const s = m[c] || m.low;
   return (
@@ -113,8 +113,8 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
     };
     return (
       <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-        style={{ background: "rgba(96,165,250,0.12)", color: "#93C5FD", border: "1px solid rgba(96,165,250,0.25)" }}>
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: "#60A5FA" }} />
+        style={{ background: "rgba(96,165,250,0.12)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }}>
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: "#2563EB" }} />
         {labels[task.status] || task.status}
       </span>
     );
@@ -124,7 +124,7 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
     return (
       <span className="inline-flex items-center gap-1">
         <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-          style={{ background: "rgba(34,197,94,0.12)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
+          style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
           <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
           </svg>
@@ -132,7 +132,7 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
         </span>
         {ruleMatched && (
           <span className="inline-flex rounded-full px-1.5 py-0.5 text-[9px] font-bold"
-            style={{ background: "rgba(212,168,67,0.15)", color: "#D4A843", border: "1px solid rgba(212,168,67,0.3)" }}>
+            style={{ background: "rgba(184,146,46,0.15)", color: "#B8922E", border: "1px solid rgba(184,146,46,0.3)" }}>
             100%
           </span>
         )}
@@ -142,7 +142,7 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
   if (item.local_status === "done")
     return (
       <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-        style={{ background: "rgba(34,197,94,0.12)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
+        style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
         <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
         </svg>
@@ -152,14 +152,14 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
   if (item.local_status === "failed")
     return (
       <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-        style={{ background: "rgba(239,68,68,0.12)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+        style={{ background: "rgba(239,68,68,0.12)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
         {t("分析失败")}
       </span>
     );
   if (item.local_status === "inaccurate")
     return (
       <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-        style={{ background: "rgba(239,68,68,0.12)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+        style={{ background: "rgba(239,68,68,0.12)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
         {t("分析不准确")}
       </span>
     );
@@ -463,7 +463,7 @@ export default function HomePage() {
 
   const TableHeader = ({ cols }: { cols: React.ReactNode[] }) => (
     <thead>
-      <tr style={{ borderBottom: `1px solid ${S.border}`, background: "rgba(255,255,255,0.02)" }}>
+      <tr style={{ borderBottom: `1px solid ${S.border}`, background: "rgba(0,0,0,0.02)" }}>
         {cols.map((col, i) => <th key={i} style={thStyle}>{col}</th>)}
       </tr>
     </thead>
@@ -473,7 +473,7 @@ export default function HomePage() {
     <div className="min-h-full">
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div className="flex items-center gap-4">
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("工单分析")}</h1>
@@ -560,7 +560,7 @@ export default function HomePage() {
         {loading && !pendingData && !ipData && !doneData && !inaccurateData && (
           <div className="flex flex-col items-center justify-center py-24">
             <div className="mb-4 h-8 w-8 animate-spin rounded-full border-4"
-              style={{ borderColor: "rgba(255,255,255,0.1)", borderTopColor: S.accent }} />
+              style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
             <p className="text-sm font-medium" style={{ color: S.text2 }}>{t("正在从飞书加载工单...")}</p>
             <p className="mt-1 text-xs" style={{ color: S.text3 }}>{t("首次加载可能需要几秒钟")}</p>
           </div>
@@ -578,9 +578,9 @@ export default function HomePage() {
           ) : (
             [
               { label: t("待处理"), value: counts.pending, color: S.text1 },
-              { label: t("进行中"), value: counts.in_progress, color: "#60A5FA" },
-              { label: t("已完成"), value: counts.done, color: "#4ADE80" },
-              { label: t("分析不准确"), value: counts.inaccurate, color: "#F87171" },
+              { label: t("进行中"), value: counts.in_progress, color: "#2563EB" },
+              { label: t("已完成"), value: counts.done, color: "#16A34A" },
+              { label: t("分析不准确"), value: counts.inaccurate, color: "#DC2626" },
             ].map((s) => (
               <div key={s.label} className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
                 <p className="text-xs" style={{ color: S.text3 }}>{s.label}</p>
@@ -592,7 +592,7 @@ export default function HomePage() {
 
         {error && (
           <div className="mb-4 rounded-lg px-4 py-3 text-sm"
-            style={{ background: "rgba(239,68,68,0.1)", color: "#F87171", border: "1px solid rgba(239,68,68,0.2)" }}>
+            style={{ background: "rgba(239,68,68,0.1)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.2)" }}>
             {error}
           </div>
         )}
@@ -640,10 +640,10 @@ export default function HomePage() {
                   ) : pendingData.issues.map((issue, idx) => (
                     <tr key={issue.record_id}
                       className="cursor-pointer transition-colors"
-                      style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)" }}
+                      style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}
                       onClick={() => openDetail(issue.record_id, "pending")}
                       onMouseEnter={(e) => (e.currentTarget.style.background = S.hover + "60")}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)")}>
+                      onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)")}>
                       <td className={tdBase} onClick={(e) => e.stopPropagation()} style={{ width: "40px" }}>
                         <input type="checkbox" className="rounded" style={{ accentColor: S.accent }}
                           checked={selected.has(issue.record_id)} onChange={() => toggle(issue.record_id)} />
@@ -661,12 +661,12 @@ export default function HomePage() {
                       <td className={tdBase} style={{ width: "80px" }}>
                         {issue.zendesk_id
                           ? <a href={issue.zendesk} target="_blank" onClick={(e) => e.stopPropagation()}
-                              className="text-xs font-medium hover:underline" style={{ color: "#60A5FA" }}>{issue.zendesk_id}</a>
+                              className="text-xs font-medium hover:underline" style={{ color: "#2563EB" }}>{issue.zendesk_id}</a>
                           : <span className="text-xs" style={{ color: S.text3 }}>—</span>}
                       </td>
                       <td className={tdBase} style={{ width: "64px" }}>
                         <a href={issue.feishu_link} target="_blank" onClick={(e) => e.stopPropagation()}
-                          className="text-xs hover:underline" style={{ color: "#60A5FA" }}>{t("链接")}</a>
+                          className="text-xs hover:underline" style={{ color: "#2563EB" }}>{t("链接")}</a>
                       </td>
                       <td className={`${tdBase} text-right`} style={{ width: "96px" }} onClick={(e) => e.stopPropagation()}>
                         <button onClick={() => startAnalysis(issue.record_id)}
@@ -706,10 +706,10 @@ export default function HomePage() {
                     ) : items.map((item, idx) => (
                       <tr key={item.record_id}
                         className="cursor-pointer transition-colors"
-                        style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)" }}
+                        style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}
                         onClick={() => openDetail(item.record_id, tab)}
                         onMouseEnter={(e) => (e.currentTarget.style.background = S.hover + "60")}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)")}>
+                        onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)")}>
                         <td className={tdBase} style={{ width: "56px" }}><PriorityBadge p={item.priority} /></td>
                         <td className={tdBase} style={{ width: "64px" }}><SourceBadge source={item.source} linearUrl={item.linear_issue_url} /></td>
                         <td className="px-3 py-3 max-w-md">
@@ -732,7 +732,7 @@ export default function HomePage() {
                               )}
                               {item.result_summary && (
                                 <div className="flex items-start gap-1.5">
-                                  <span className="mt-px flex-shrink-0 text-[10px] font-semibold" style={{ color: "#4ADE80" }}>{t("结果")}</span>
+                                  <span className="mt-px flex-shrink-0 text-[10px] font-semibold" style={{ color: "#16A34A" }}>{t("结果")}</span>
                                   <p className="text-xs" style={{ color: S.text2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.result_summary}</p>
                                 </div>
                               )}
@@ -748,7 +748,7 @@ export default function HomePage() {
                         <td className={tdBase} style={{ width: "80px" }}>
                           {item.zendesk_id
                             ? <a href={item.zendesk} target="_blank" onClick={(e) => e.stopPropagation()}
-                                className="text-xs font-medium hover:underline" style={{ color: "#60A5FA" }}>{item.zendesk_id}</a>
+                                className="text-xs font-medium hover:underline" style={{ color: "#2563EB" }}>{item.zendesk_id}</a>
                             : <span className="text-xs" style={{ color: S.text3 }}>—</span>}
                         </td>
                         <td className={tdBase} style={{ width: "112px" }}><LocalStatusBadge item={item} /></td>
@@ -764,14 +764,14 @@ export default function HomePage() {
                             {item.analysis?.user_reply && (
                               <button onClick={() => copy(item.analysis!.user_reply)}
                                 className="rounded-lg px-2.5 py-1 text-[11px] font-medium"
-                                style={{ background: "rgba(34,197,94,0.15)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
+                                style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                                 {t("复制回复")}
                               </button>
                             )}
                             {item.local_status === "done" && (
                               <button onClick={() => handleMarkInaccurate(item.record_id)}
                                 className="rounded-lg px-2 py-1 text-[11px] font-medium"
-                                style={{ background: "rgba(239,68,68,0.10)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                                style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
                                 {t("分析不准确")}
                               </button>
                             )}
@@ -800,10 +800,10 @@ export default function HomePage() {
       {detailId && detailData && (
         <div className="fixed inset-0 z-50 flex">
           <div className="flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={closeDetail} />
-          <div className="w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "#0D0E12", borderLeft: `1px solid ${S.border}` }}>
+          <div className="w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}` }}>
             {/* Panel header */}
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3"
-              style={{ background: "#0D0E12", borderBottom: `1px solid ${S.border}` }}>
+              style={{ background: "#FFFFFF", borderBottom: `1px solid ${S.border}` }}>
               <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("工单详情")}</h2>
               <button onClick={closeDetail} className="rounded-lg p-1.5 transition-colors" style={{ color: S.text3 }}>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -821,12 +821,12 @@ export default function HomePage() {
                   {detailData.localItem && <LocalStatusBadge item={detailData.localItem} />}
                   {detailData.issue.zendesk_id && (
                     <a href={detailData.issue.zendesk} target="_blank"
-                      className="text-xs font-medium hover:underline" style={{ color: "#60A5FA" }}>
+                      className="text-xs font-medium hover:underline" style={{ color: "#2563EB" }}>
                       {detailData.issue.zendesk_id}
                     </a>
                   )}
                   {detailData.issue.feishu_link
-                    ? <a href={detailData.issue.feishu_link} target="_blank" className="text-xs hover:underline" style={{ color: "#60A5FA" }}>{t("飞书")}</a>
+                    ? <a href={detailData.issue.feishu_link} target="_blank" className="text-xs hover:underline" style={{ color: "#2563EB" }}>{t("飞书")}</a>
                     : detailData.issue.source !== "linear"
                       ? <span className="text-xs" style={{ color: S.text3 }}>{t("本地上传")}</span>
                       : null}
@@ -929,7 +929,7 @@ export default function HomePage() {
               {detailData.task && typeof detailData.task === "object" && detailData.task.status === "failed" && (
                 <>
                   <div className="rounded-lg p-3" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
-                    <p className="text-sm font-medium" style={{ color: "#F87171" }}>{t("分析失败")}</p>
+                    <p className="text-sm font-medium" style={{ color: "#DC2626" }}>{t("分析失败")}</p>
                     <p className="mt-1 text-xs" style={{ color: "#FCA5A5" }}>{detailData.task.error}</p>
                   </div>
                   <button onClick={() => { startAnalysis(detailId!); closeDetail(); }}
@@ -1034,7 +1034,7 @@ export default function HomePage() {
                               </span>
                             ) : analyses.length > 1 ? (
                               <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-                                style={{ background: "rgba(255,255,255,0.06)", color: S.text3, border: `1px solid ${S.borderSm}` }}>
+                                style={{ background: "rgba(0,0,0,0.04)", color: S.text3, border: `1px solid ${S.borderSm}` }}>
                                 {t("初次分析")}
                               </span>
                             ) : null}
@@ -1061,7 +1061,7 @@ export default function HomePage() {
                             <ConfBadge c={r.confidence} />
                             {r.needs_engineer && (
                               <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
-                                style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(212,168,67,0.25)` }}>
+                                style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(184,146,46,0.25)` }}>
                                 {lang === "cn" ? "需工程师" : "Engineer needed"}
                               </span>
                             )}
@@ -1097,7 +1097,7 @@ export default function HomePage() {
                                 </h3>
                                 <button onClick={() => copy(userReply)}
                                   className="rounded-lg px-3 py-1 text-[11px] font-medium"
-                                  style={{ background: "rgba(34,197,94,0.15)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
+                                  style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                                   {lang === "cn" ? "一键复制" : "Copy"}
                                 </button>
                               </div>
@@ -1131,7 +1131,7 @@ export default function HomePage() {
                   <button
                     onClick={() => handleMarkInaccurate(detailId!)}
                     className="w-full rounded-lg py-2.5 text-sm font-medium transition-colors"
-                    style={{ background: "rgba(239,68,68,0.10)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                    style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
                     {t("标记为不准确")}
                   </button>
                 </section>

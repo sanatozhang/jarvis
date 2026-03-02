@@ -20,9 +20,9 @@ interface Analytics {
 }
 
 const S = {
-  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
-  border: "rgba(255,255,255,0.08)", accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
-  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  border: "rgba(0,0,0,0.08)", accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
+  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
 };
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -70,7 +70,7 @@ export default function AnalyticsPage() {
   return (
     <div className="min-h-full">
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("数据看板")}</h1>
@@ -82,7 +82,7 @@ export default function AnalyticsPage() {
                 <button key={d} onClick={() => { setDays(d); setCustomDays(""); }}
                   className="rounded-md px-3 py-1.5 text-sm font-medium transition-all"
                   style={days === d && !customDays
-                    ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.4)" }
+                    ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
                     : { color: S.text3 }}>
                   {d >= 365 ? `${d / 365}${t("年")}` : d >= 30 ? `${d / 30}${t("月")}` : `${d}${t("天")}`}
                 </button>
@@ -104,7 +104,7 @@ export default function AnalyticsPage() {
               {customDays && (
                 <button type="submit"
                   className="rounded-lg px-2 py-1.5 text-sm font-medium"
-                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.3)" }}>
+                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
                   ↵
                 </button>
               )}
@@ -116,7 +116,7 @@ export default function AnalyticsPage() {
       {loading && !data ? (
         <div className="flex items-center justify-center py-24">
           <div className="h-8 w-8 animate-spin rounded-full border-4"
-            style={{ borderColor: "rgba(255,255,255,0.1)", borderTopColor: S.accent }} />
+            style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
         </div>
       ) : !data ? (
         <p className="py-24 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>
@@ -125,13 +125,13 @@ export default function AnalyticsPage() {
 
           {/* Value metrics hero */}
           <section className="rounded-2xl p-6 relative overflow-hidden"
-            style={{ background: "linear-gradient(135deg, #1A1D24 0%, #111318 60%, rgba(212,168,67,0.08) 100%)", border: `1px solid ${S.border}` }}>
+            style={{ background: "linear-gradient(135deg, #FFFFFF 0%, #F8F9FA 60%, rgba(184,146,46,0.06) 100%)", border: `1px solid ${S.border}` }}>
             {/* Decorative accent */}
             <div className="absolute top-0 right-0 h-32 w-32 rounded-full opacity-10 blur-3xl"
               style={{ background: S.accent }} />
             <div className="flex items-center gap-2 mb-4">
               <span className="rounded-lg px-2 py-0.5 text-[11px] font-semibold"
-                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }}>
+                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }}>
                 {t("项目价值")}
               </span>
               <span className="text-xs" style={{ color: S.text3 }}>{t("过去")} {days} {t("天")}</span>
@@ -152,7 +152,7 @@ export default function AnalyticsPage() {
                 <p className="mt-1.5 text-xs" style={{ color: S.text3 }}>{t("每单节省时间")}</p>
               </div>
               <div>
-                <p className="text-4xl font-bold tabular-nums" style={{ color: "#4ADE80" }}>
+                <p className="text-4xl font-bold tabular-nums" style={{ color: "#16A34A" }}>
                   {data.value_metrics.success_rate}
                   <span className="text-xl font-normal ml-0.5" style={{ color: S.text3 }}>%</span>
                 </p>
@@ -167,10 +167,10 @@ export default function AnalyticsPage() {
           {/* Key metrics */}
           <div className="grid grid-cols-5 gap-3">
             <StatCard label={t("总分析次数")} value={data.total_analyses} />
-            <StatCard label={t("分析成功")} value={data.successful_analyses} color="#4ADE80" />
-            <StatCard label={t("分析失败")} value={data.failed_analyses} color="#F87171" />
-            <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="#60A5FA" />
-            <StatCard label={t("活跃用户")} value={data.unique_users} color="#C4B5FD" />
+            <StatCard label={t("分析成功")} value={data.successful_analyses} color="#16A34A" />
+            <StatCard label={t("分析失败")} value={data.failed_analyses} color="#DC2626" />
+            <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="#2563EB" />
+            <StatCard label={t("活跃用户")} value={data.unique_users} color="#7C3AED" />
           </div>
 
           <div className="grid grid-cols-3 gap-3">
@@ -200,8 +200,8 @@ export default function AnalyticsPage() {
                       </div>
                       <div className="flex w-44 flex-shrink-0 items-center gap-3 text-[11px] font-mono">
                         <span style={{ color: S.text2 }}>{analyses} {t("分析")}</span>
-                        <span style={{ color: "#4ADE80" }}>{success} ✓</span>
-                        {fail > 0 && <span style={{ color: "#F87171" }}>{fail} ✗</span>}
+                        <span style={{ color: "#16A34A" }}>{success} ✓</span>
+                        {fail > 0 && <span style={{ color: "#DC2626" }}>{fail} ✗</span>}
                       </div>
                     </div>
                   );
@@ -229,7 +229,7 @@ export default function AnalyticsPage() {
                           style={{ background: i < 3 ? S.accentBg : S.overlay, color: i < 3 ? S.accent : S.text3 }}>
                           {i + 1}
                         </span>
-                        <span className="text-sm hover:underline" style={{ color: "#60A5FA" }}>{u.username}</span>
+                        <span className="text-sm hover:underline" style={{ color: "#2563EB" }}>{u.username}</span>
                       </div>
                       <span className="text-xs tabular-nums font-mono" style={{ color: S.text3 }}>
                         {u.count} {t("次操作")}
@@ -256,7 +256,7 @@ export default function AnalyticsPage() {
                       <div key={reason} className="flex items-center justify-between">
                         <span className="text-sm" style={{ color: S.text2 }}>{reason}</span>
                         <span className="rounded-full px-2 py-0.5 text-[11px] font-medium"
-                          style={{ background: "rgba(239,68,68,0.12)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                          style={{ background: "rgba(239,68,68,0.12)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
                           {count}
                         </span>
                       </div>

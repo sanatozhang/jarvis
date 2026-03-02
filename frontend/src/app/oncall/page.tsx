@@ -5,9 +5,9 @@ import { useEffect, useState } from "react";
 import { getOncallSchedule, getOncallCurrent, updateOncallSchedule, type OncallGroup } from "@/lib/api";
 
 const S = {
-  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
-  border: "rgba(255,255,255,0.08)", accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
-  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  border: "rgba(0,0,0,0.08)", accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
+  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
 };
 
 function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error"; onClose: () => void }) {
@@ -16,7 +16,7 @@ function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error";
     <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
       style={{
         background: type === "success" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
-        color: type === "success" ? "#4ADE80" : "#F87171",
+        color: type === "success" ? "#16A34A" : "#DC2626",
         border: `1px solid ${type === "success" ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
       }}>
       {msg}
@@ -83,7 +83,7 @@ export default function OncallPage() {
   return (
     <div className="min-h-full">
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("值班管理")}</h1>
@@ -121,14 +121,14 @@ export default function OncallPage() {
         <section className="rounded-xl p-5"
           style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)" }}>
           <div className="flex items-center gap-2 mb-3">
-            <span className="h-2 w-2 rounded-full" style={{ background: "#22C55E", boxShadow: "0 0 6px rgba(34,197,94,0.5)" }} />
-            <h2 className="text-sm font-semibold" style={{ color: "#4ADE80" }}>{t("本周值班")}</h2>
+            <span className="h-2 w-2 rounded-full" style={{ background: "#16A34A", boxShadow: "0 0 6px rgba(34,197,94,0.5)" }} />
+            <h2 className="text-sm font-semibold" style={{ color: "#16A34A" }}>{t("本周值班")}</h2>
           </div>
           {currentMembers.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {currentMembers.map((m) => (
                 <span key={m} className="rounded-lg px-3 py-1.5 text-sm font-medium"
-                  style={{ background: "rgba(34,197,94,0.12)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
+                  style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                   {m}
                 </span>
               ))}
@@ -159,7 +159,7 @@ export default function OncallPage() {
             {editing && (
               <button onClick={addGroup}
                 className="rounded-lg px-3 py-1 text-xs font-medium"
-                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }}>
+                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }}>
                 {t("添加分组")}
               </button>
             )}
@@ -181,14 +181,14 @@ export default function OncallPage() {
                       </span>
                       {gi === currentGroupIdx && (
                         <span className="rounded-full px-2 py-0.5 text-[10px] font-bold"
-                          style={{ background: "rgba(34,197,94,0.15)", color: "#4ADE80" }}>
+                          style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A" }}>
                           {t("本周")}
                         </span>
                       )}
                     </div>
                     {editing && groups.length > 1 && (
                       <button onClick={() => removeGroup(gi)} className="text-xs transition-colors"
-                        style={{ color: "#F87171" }}>
+                        style={{ color: "#DC2626" }}>
                         {t("删除分组")}
                       </button>
                     )}
@@ -214,7 +214,7 @@ export default function OncallPage() {
                     ))}
                     {editing && (
                       <button onClick={() => addMember(gi)} className="text-xs transition-colors"
-                        style={{ color: "#60A5FA" }}>
+                        style={{ color: "#2563EB" }}>
                         + {t("添加成员")}
                       </button>
                     )}

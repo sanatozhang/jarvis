@@ -19,20 +19,20 @@ const CATEGORY_SHORT_EN: Record<string, string> = {};
 CATEGORIES_DATA.forEach((c) => { CATEGORY_SHORT[c.value] = c.cn; CATEGORY_SHORT_EN[c.value] = c.en; });
 
 const S = {
-  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
-  border: "rgba(255,255,255,0.08)", borderSm: "rgba(255,255,255,0.05)",
-  accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
-  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
+  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
+  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
 };
 
 function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }) {
   const t = useT();
   const cfg: Record<string, { bg: string; color: string; border: string; label: string }> = {
-    analyzing: { bg: "rgba(96,165,250,0.12)", color: "#93C5FD", border: "rgba(96,165,250,0.25)", label: t("分析中") },
-    done:       { bg: "rgba(34,197,94,0.12)",  color: "#4ADE80", border: "rgba(34,197,94,0.25)",  label: t("成功") },
-    failed:     { bg: "rgba(239,68,68,0.12)",  color: "#F87171", border: "rgba(239,68,68,0.25)",  label: t("失败") },
+    analyzing: { bg: "rgba(96,165,250,0.12)", color: "#2563EB", border: "rgba(96,165,250,0.25)", label: t("分析中") },
+    done:       { bg: "rgba(34,197,94,0.12)",  color: "#16A34A", border: "rgba(34,197,94,0.25)",  label: t("成功") },
+    failed:     { bg: "rgba(239,68,68,0.12)",  color: "#DC2626", border: "rgba(239,68,68,0.25)",  label: t("失败") },
   };
-  const s = cfg[status] || { bg: "rgba(255,255,255,0.06)", color: S.text3, border: S.border, label: status };
+  const s = cfg[status] || { bg: "rgba(0,0,0,0.04)", color: S.text3, border: S.border, label: status };
   const ruleMatched = status === "done" && ruleType && ruleType !== "general";
   return (
     <span className="inline-flex items-center gap-1">
@@ -42,7 +42,7 @@ function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }
       </span>
       {ruleMatched && (
         <span className="inline-flex rounded-full px-1.5 py-0.5 text-[9px] font-bold"
-          style={{ background: "rgba(212,168,67,0.15)", color: S.accent, border: "1px solid rgba(212,168,67,0.3)" }}>
+          style={{ background: "rgba(184,146,46,0.15)", color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
           100%
         </span>
       )}
@@ -53,10 +53,10 @@ function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }
 function SourceBadge({ source }: { source?: string }) {
   const t = useT();
   const config: Record<string, { bg: string; color: string; border: string; label: string }> = {
-    feishu: { bg: "rgba(96,165,250,0.12)",   color: "#93C5FD", border: "rgba(96,165,250,0.25)",   label: t("飞书") },
-    local:  { bg: "rgba(251,146,60,0.12)",   color: "#FCA87A", border: "rgba(251,146,60,0.25)",   label: t("网站提交") },
-    linear: { bg: "rgba(167,139,250,0.12)",  color: "#C4B5FD", border: "rgba(167,139,250,0.25)",  label: "Linear" },
-    api:    { bg: "rgba(52,211,153,0.12)",   color: "#6EE7B7", border: "rgba(52,211,153,0.25)",   label: "API" },
+    feishu: { bg: "rgba(96,165,250,0.12)",   color: "#2563EB", border: "rgba(96,165,250,0.25)",   label: t("飞书") },
+    local:  { bg: "rgba(251,146,60,0.12)",   color: "#EA580C", border: "rgba(251,146,60,0.25)",   label: t("网站提交") },
+    linear: { bg: "rgba(167,139,250,0.12)",  color: "#7C3AED", border: "rgba(167,139,250,0.25)",  label: "Linear" },
+    api:    { bg: "rgba(52,211,153,0.12)",   color: "#059669", border: "rgba(52,211,153,0.25)",   label: "API" },
   };
   const c = config[source || ""] || config.feishu;
   return (
@@ -71,12 +71,12 @@ function PriorityBadge({ p }: { p: string }) {
   const t = useT();
   return p === "H" ? (
     <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold"
-      style={{ background: "rgba(239,68,68,0.15)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+      style={{ background: "rgba(239,68,68,0.15)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
       {t("高")}
     </span>
   ) : (
     <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
-      style={{ background: "rgba(255,255,255,0.06)", color: S.text3, border: `1px solid ${S.border}` }}>
+      style={{ background: "rgba(0,0,0,0.04)", color: S.text3, border: `1px solid ${S.border}` }}>
       {t("低")}
     </span>
   );
@@ -219,7 +219,7 @@ export default function TrackingPage() {
     <div className="min-h-full">
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("工单跟踪")}</h1>
           <div className="flex items-center gap-2">
@@ -247,7 +247,7 @@ export default function TrackingPage() {
 
         {/* Filter bar */}
         {showFilters && (
-          <div className="px-6 py-3" style={{ borderTop: `1px solid ${S.border}`, background: "rgba(26,29,36,0.8)" }}>
+          <div className="px-6 py-3" style={{ borderTop: `1px solid ${S.border}`, background: "rgba(248,249,250,0.95)" }}>
             <div className="flex flex-wrap items-end gap-3">
               <div className="w-32">
                 <label style={labelStyle}>{t("提交人")}</label>
@@ -305,7 +305,7 @@ export default function TrackingPage() {
               </div>
               {activeFilterCount > 0 && (
                 <button onClick={clearFilters} className="rounded-lg px-2.5 py-1.5 text-xs transition-colors"
-                  style={{ color: "#F87171" }}>
+                  style={{ color: "#DC2626" }}>
                   {t("清除筛选")}
                 </button>
               )}
@@ -321,10 +321,10 @@ export default function TrackingPage() {
             {activeFilterCount > 0 && (
               <span className="ml-2 space-x-1">
                 {filters.created_by && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: S.overlay, color: S.text2 }}>{t("提交人")}: {filters.created_by}</span>}
-                {filters.platform && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "rgba(96,165,250,0.1)", color: "#93C5FD" }}>{filters.platform}</span>}
+                {filters.platform && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "rgba(96,165,250,0.1)", color: "#2563EB" }}>{filters.platform}</span>}
                 {filters.category && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: S.accentBg, color: S.accent }}>{catShort(filters.category)}</span>}
                 {filters.status && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: S.overlay, color: S.text2 }}>{filters.status}</span>}
-                {filters.source && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "rgba(167,139,250,0.1)", color: "#C4B5FD" }}>{filters.source}</span>}
+                {filters.source && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "rgba(167,139,250,0.1)", color: "#7C3AED" }}>{filters.source}</span>}
               </span>
             )}
           </p>
@@ -333,7 +333,7 @@ export default function TrackingPage() {
         <div className="overflow-hidden rounded-xl" style={{ border: `1px solid ${S.border}`, background: S.surface }}>
           <table className="min-w-full">
             <thead>
-              <tr style={{ borderBottom: `1px solid ${S.border}`, background: "rgba(255,255,255,0.02)" }}>
+              <tr style={{ borderBottom: `1px solid ${S.border}`, background: "rgba(0,0,0,0.02)" }}>
                 {[t("级别"), t("问题描述"), t("状态"), t("平台"), t("来源"), t("提交人"), t("创建时间"), "Zendesk", t("操作")].map((col) => (
                   <th key={col as string} style={{ ...thStyle, textAlign: col === t("操作") ? "right" : "left" }}>{col}</th>
                 ))}
@@ -347,10 +347,10 @@ export default function TrackingPage() {
               ) : data.issues.map((item, idx) => (
                 <tr key={item.record_id}
                   className="cursor-pointer transition-colors"
-                  style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)" }}
+                  style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}
                   onClick={() => openDetail(item)}
                   onMouseEnter={(e) => (e.currentTarget.style.background = S.hover + "60")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)")}>
+                  onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)")}>
                   <td className={tdBase} style={{ width: "56px" }}><PriorityBadge p={item.priority} /></td>
                   <td className="px-3 py-3 max-w-md">
                     <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
@@ -377,7 +377,7 @@ export default function TrackingPage() {
                   <td className={tdBase} style={{ width: "96px" }}>
                     {item.created_by ? (
                       <button onClick={(e) => { e.stopPropagation(); updateFilter("created_by", item.created_by!); }}
-                        className="text-xs hover:underline" style={{ color: "#60A5FA" }}>{item.created_by}</button>
+                        className="text-xs hover:underline" style={{ color: "#2563EB" }}>{item.created_by}</button>
                     ) : <span className="text-xs" style={{ color: S.text3 }}>—</span>}
                   </td>
                   <td className={tdBase} style={{ width: "112px" }}>
@@ -386,7 +386,7 @@ export default function TrackingPage() {
                   <td className={tdBase} style={{ width: "80px" }}>
                     {item.zendesk_id
                       ? <a href={item.zendesk} target="_blank" onClick={(e) => e.stopPropagation()}
-                          className="text-xs font-medium hover:underline" style={{ color: "#60A5FA" }}>{item.zendesk_id}</a>
+                          className="text-xs font-medium hover:underline" style={{ color: "#2563EB" }}>{item.zendesk_id}</a>
                       : <span className="text-xs" style={{ color: S.text3 }}>—</span>}
                   </td>
                   <td className={`${tdBase} text-right`} style={{ width: "144px" }} onClick={(e) => e.stopPropagation()}>
@@ -394,21 +394,21 @@ export default function TrackingPage() {
                       {item.local_status === "failed" && (
                         <button onClick={() => handleRetry(item.record_id)}
                           className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
-                          style={{ background: "#111318", color: S.accent, border: `1px solid rgba(212,168,67,0.3)` }}>
+                          style={{ background: "#F8F9FA", color: S.accent, border: `1px solid rgba(184,146,46,0.3)` }}>
                           {t("重试")}
                         </button>
                       )}
                       {item.analysis?.user_reply && (
                         <button onClick={() => copy(item.analysis!.user_reply)}
                           className="rounded-lg px-2.5 py-1 text-[11px] font-medium"
-                          style={{ background: "rgba(34,197,94,0.12)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
+                          style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                           {t("复制回复")}
                         </button>
                       )}
                       {item.local_status === "done" && (
                         <button onClick={() => handleMarkInaccurate(item.record_id)}
                           className="rounded-lg px-2 py-1 text-[11px] font-medium"
-                          style={{ background: "rgba(239,68,68,0.10)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                          style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
                           {t("分析不准确")}
                         </button>
                       )}
@@ -426,9 +426,9 @@ export default function TrackingPage() {
       {detailItem && (
         <div className="fixed inset-0 z-50 flex">
           <div className="flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={closeDetail} />
-          <div className="w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "#0D0E12", borderLeft: `1px solid ${S.border}` }}>
+          <div className="w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}` }}>
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3"
-              style={{ background: "#0D0E12", borderBottom: `1px solid ${S.border}` }}>
+              style={{ background: "#FFFFFF", borderBottom: `1px solid ${S.border}` }}>
               <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("工单详情")}</h2>
               <button onClick={closeDetail} className="rounded-lg p-1.5" style={{ color: S.text3 }}>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -443,7 +443,7 @@ export default function TrackingPage() {
                   <StatusBadge status={detailItem.local_status} ruleType={detailItem.analysis?.rule_type} />
                   {detailItem.platform && (
                     <span className="rounded-full px-2 py-0.5 text-[10px]"
-                      style={{ background: "rgba(96,165,250,0.1)", color: "#93C5FD" }}>{detailItem.platform}</span>
+                      style={{ background: "rgba(96,165,250,0.1)", color: "#2563EB" }}>{detailItem.platform}</span>
                   )}
                   <SourceBadge source={detailItem.source} />
                   {detailItem.created_by && (
@@ -485,7 +485,7 @@ export default function TrackingPage() {
                         <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("建议回复")}</h3>
                         <button onClick={() => copy(detailItem.analysis!.user_reply)}
                           className="rounded-lg px-3 py-1 text-[11px] font-medium"
-                          style={{ background: "rgba(34,197,94,0.12)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
+                          style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                           {t("一键复制")}
                         </button>
                       </div>
@@ -500,7 +500,7 @@ export default function TrackingPage() {
               {detailItem.task?.error && (
                 <section>
                   <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("失败原因")}</h3>
-                  <div className="rounded-lg p-3 text-sm" style={{ background: "rgba(239,68,68,0.08)", color: "#F87171", border: "1px solid rgba(239,68,68,0.2)" }}>
+                  <div className="rounded-lg p-3 text-sm" style={{ background: "rgba(239,68,68,0.08)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.2)" }}>
                     {detailItem.task.error}
                   </div>
                 </section>
@@ -516,7 +516,7 @@ export default function TrackingPage() {
                 {detailItem.local_status === "done" && (
                   <button onClick={() => { handleMarkInaccurate(detailItem.record_id); closeDetail(); }}
                     className="w-full rounded-lg py-2.5 text-sm font-medium"
-                    style={{ background: "rgba(239,68,68,0.10)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                    style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
                     {t("标记为不准确")}
                   </button>
                 )}

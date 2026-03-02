@@ -5,10 +5,10 @@ import { useEffect, useState } from "react";
 import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api";
 
 const S = {
-  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
-  border: "rgba(255,255,255,0.08)", borderSm: "rgba(255,255,255,0.05)",
-  accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
-  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
+  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
+  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
 };
 
 function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
@@ -23,9 +23,9 @@ function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
 
 function ConfBadge({ conf }: { conf: string }) {
   const styles: Record<string, { bg: string; color: string; border: string }> = {
-    high: { bg: "rgba(34,197,94,0.12)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" },
-    medium: { bg: "rgba(234,179,8,0.12)", color: "#FCD34D", border: "1px solid rgba(234,179,8,0.25)" },
-    low: { bg: "rgba(239,68,68,0.12)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" },
+    high: { bg: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" },
+    medium: { bg: "rgba(234,179,8,0.12)", color: "#CA8A04", border: "1px solid rgba(234,179,8,0.25)" },
+    low: { bg: "rgba(239,68,68,0.12)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" },
   };
   const s = styles[conf] || styles.low;
   return (
@@ -70,7 +70,7 @@ export default function ReportsPage() {
     <div className="min-h-full">
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("值班报告")}</h1>
@@ -105,7 +105,7 @@ export default function ReportsPage() {
         {loading ? (
           <div className="flex items-center justify-center py-24">
             <div className="h-8 w-8 animate-spin rounded-full border-4"
-              style={{ borderColor: "rgba(255,255,255,0.1)", borderTopColor: S.accent }} />
+              style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
           </div>
         ) : !report ? (
           <div className="flex items-center justify-center py-24">
@@ -146,7 +146,7 @@ export default function ReportsPage() {
                       <ConfBadge conf={a.confidence} />
                       {a.needs_engineer && (
                         <span className="rounded-md px-2 py-0.5 text-[10px] font-semibold"
-                          style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }}>
+                          style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }}>
                           {t("需工程师")}
                         </span>
                       )}
@@ -172,7 +172,7 @@ export default function ReportsPage() {
                             setTimeout(() => setToast(""), 2000);
                           }}
                           className="rounded-md px-2 py-0.5 text-[10px] font-semibold transition-opacity hover:opacity-80"
-                          style={{ background: "rgba(34,197,94,0.15)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.3)" }}>
+                          style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.3)" }}>
                           {t("复制")}
                         </button>
                       </div>

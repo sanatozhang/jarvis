@@ -8,10 +8,10 @@ interface EnvField { key: string; label: string; value: string; has_value: boole
 interface EnvGroup { key: string; label: string; fields: EnvField[]; }
 
 const S = {
-  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
-  border: "rgba(255,255,255,0.08)", borderSm: "rgba(255,255,255,0.05)",
-  accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
-  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
+  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
+  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
 };
 
 const inputStyle = {
@@ -64,7 +64,7 @@ function UserList() {
               <td className="py-2.5 pr-4">
                 <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
                   style={u.role === "admin"
-                    ? { background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }
+                    ? { background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }
                     : { background: S.overlay, color: S.text3, border: `1px solid ${S.border}` }}>
                   {u.role === "admin" ? t("管理员") : t("用户")}
                 </span>
@@ -149,14 +149,14 @@ export default function SettingsPage() {
   const ruleTypes = ["recording_missing", "timestamp_drift", "bluetooth", "cloud_sync", "speaker", "flutter_crash", "file_transfer", "membership_payment", "hardware_firmware", "general"];
 
   const statusColor = (s: string) =>
-    s === "ok" || s === "healthy" ? "#22C55E" :
-    s === "unavailable" ? "#EAB308" : "#EF4444";
+    s === "ok" || s === "healthy" ? "#16A34A" :
+    s === "unavailable" ? "#CA8A04" : "#DC2626";
 
   return (
     <div className="min-h-full">
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("系统设置")}</h1>
@@ -209,7 +209,7 @@ export default function SettingsPage() {
                           </span>
                         )}
                         {field.has_value && (
-                          <span className="h-1.5 w-1.5 rounded-full" style={{ background: "#22C55E" }} title={t("已配置")} />
+                          <span className="h-1.5 w-1.5 rounded-full" style={{ background: "#16A34A" }} title={t("已配置")} />
                         )}
                       </label>
                       <input
@@ -235,7 +235,7 @@ export default function SettingsPage() {
 
         {!isAdmin && (
           <div className="rounded-xl p-4 text-sm"
-            style={{ background: S.accentBg, border: "1px solid rgba(212,168,67,0.2)", color: S.text2 }}>
+            style={{ background: S.accentBg, border: "1px solid rgba(184,146,46,0.2)", color: S.text2 }}>
             {t("环境配置仅管理员可见")}。{t("当前用户")}: <span style={{ color: S.text1 }}>{username || t("未登录")}</span>
           </div>
         )}
@@ -282,7 +282,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-2.5">
                   <span className="h-2.5 w-2.5 rounded-full flex-shrink-0"
                     style={{
-                      background: info.available ? "#22C55E" : "#EF4444",
+                      background: info.available ? "#16A34A" : "#DC2626",
                       boxShadow: info.available ? "0 0 6px rgba(34,197,94,0.4)" : "none",
                     }} />
                   <span className="text-sm font-medium" style={{ color: S.text1 }}>{name}</span>
@@ -342,7 +342,7 @@ export default function SettingsPage() {
                       value={config.routing[rt] || config.default}
                       onChange={(e) => setConfig({ ...config, routing: { ...config.routing, [rt]: e.target.value } })}
                       className="rounded-md px-2 py-1 text-xs font-sans outline-none"
-                      style={{ background: "#0A0B0E", border: `1px solid ${S.border}`, color: S.text1 }}>
+                      style={{ background: "#F8F9FA", border: `1px solid ${S.border}`, color: S.text1 }}>
                       {Object.keys(config.providers).map((p) => <option key={p} value={p}>{p}</option>)}
                     </select>
                   </div>
