@@ -1,39 +1,36 @@
 "use client";
 
 import { useT } from "@/lib/i18n";
-
 import { useEffect, useState } from "react";
 
 interface Analytics {
-  date_from: string;
-  date_to: string;
+  date_from: string; date_to: string;
   event_counts: Record<string, number>;
   unique_users: number;
-  avg_analysis_duration_ms: number;
-  avg_analysis_duration_min: number;
-  total_analyses: number;
-  successful_analyses: number;
-  failed_analyses: number;
-  feedback_submitted: number;
-  escalations: number;
+  avg_analysis_duration_ms: number; avg_analysis_duration_min: number;
+  total_analyses: number; successful_analyses: number; failed_analyses: number;
+  feedback_submitted: number; escalations: number;
   fail_reasons: { reason?: string; error?: string }[];
   daily: Record<string, Record<string, number>>;
   top_users: { username: string; count: number }[];
   value_metrics: {
-    time_saved_hours: number;
-    time_saved_per_ticket_min: number;
-    success_rate: number;
-    estimated_manual_hours: number;
-    estimated_ai_hours: number;
+    time_saved_hours: number; time_saved_per_ticket_min: number;
+    success_rate: number; estimated_manual_hours: number; estimated_ai_hours: number;
   };
 }
 
+const S = {
+  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
+  border: "rgba(255,255,255,0.08)", accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
+  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+};
+
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
   return (
-    <div className="rounded-xl border border-gray-100 bg-white px-4 py-4">
-      <p className="text-xs text-gray-400">{label}</p>
-      <p className={`mt-1 text-2xl font-bold ${color || ""}`}>{value}</p>
-      {sub && <p className="mt-0.5 text-[11px] text-gray-400">{sub}</p>}
+    <div className="rounded-xl px-4 py-4" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+      <p className="text-xs" style={{ color: S.text3 }}>{label}</p>
+      <p className="mt-1 text-2xl font-bold tabular-nums" style={{ color: color || S.text1 }}>{value}</p>
+      {sub && <p className="mt-0.5 text-[11px] font-mono" style={{ color: S.text3 }}>{sub}</p>}
     </div>
   );
 }
@@ -41,8 +38,8 @@ function StatCard({ label, value, sub, color }: { label: string; value: string |
 function Bar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   return (
-    <div className="h-5 w-full overflow-hidden rounded-full bg-gray-100">
-      <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${pct}%` }} />
+    <div className="h-4 w-full overflow-hidden rounded-full" style={{ background: S.hover }}>
+      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
     </div>
   );
 }
@@ -51,6 +48,7 @@ export default function AnalyticsPage() {
   const t = useT();
   const [data, setData] = useState<Analytics | null>(null);
   const [days, setDays] = useState(7);
+  const [customDays, setCustomDays] = useState("");
   const [loading, setLoading] = useState(true);
 
   const load = async (d: number) => {
@@ -71,91 +69,139 @@ export default function AnalyticsPage() {
 
   return (
     <div className="min-h-full">
-      <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
+      <header className="sticky top-0 z-10 backdrop-blur-md"
+        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
-            <h1 className="text-lg font-semibold">{t("数据看板")}</h1>
-            <p className="text-xs text-gray-400">{t("项目价值 & 使用情况统计")}</p>
+            <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("数据看板")}</h1>
+            <p className="text-xs mt-0.5" style={{ color: S.text3 }}>{t("项目价值 & 使用情况统计")}</p>
           </div>
-          <div className="flex items-center gap-1 rounded-lg bg-gray-100 p-1">
-            {[7, 14, 30].map((d) => (
-              <button key={d} onClick={() => setDays(d)} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${days === d ? "bg-white text-gray-900 shadow-sm" : "text-gray-500"}`}>
-                {d}{t("天")}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 rounded-lg p-1" style={{ background: S.overlay }}>
+              {[7, 30, 90, 180, 365].map((d) => (
+                <button key={d} onClick={() => { setDays(d); setCustomDays(""); }}
+                  className="rounded-md px-3 py-1.5 text-sm font-medium transition-all"
+                  style={days === d && !customDays
+                    ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.4)" }
+                    : { color: S.text3 }}>
+                  {d >= 365 ? `${d / 365}${t("年")}` : d >= 30 ? `${d / 30}${t("月")}` : `${d}${t("天")}`}
+                </button>
+              ))}
+            </div>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const v = parseInt(customDays);
+              if (v > 0) setDays(v);
+            }} className="flex items-center gap-1">
+              <input
+                type="number" min={1} max={3650}
+                value={customDays}
+                onChange={(e) => setCustomDays(e.target.value)}
+                placeholder={t("自定义天数")}
+                className="w-24 rounded-lg px-2 py-1.5 text-sm font-mono outline-none"
+                style={{ background: S.overlay, border: `1px solid ${customDays ? S.accent : S.border}`, color: S.text1 }}
+              />
+              {customDays && (
+                <button type="submit"
+                  className="rounded-lg px-2 py-1.5 text-sm font-medium"
+                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.3)" }}>
+                  ↵
+                </button>
+              )}
+            </form>
           </div>
         </div>
       </header>
 
       {loading && !data ? (
         <div className="flex items-center justify-center py-24">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-black" />
+          <div className="h-8 w-8 animate-spin rounded-full border-4"
+            style={{ borderColor: "rgba(255,255,255,0.1)", borderTopColor: S.accent }} />
         </div>
       ) : !data ? (
-        <p className="py-24 text-center text-gray-300">{t("暂无数据")}</p>
+        <p className="py-24 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>
       ) : (
-        <div className="mx-auto max-w-4xl px-6 py-6 space-y-6">
+        <div className="mx-auto max-w-4xl px-6 py-6 space-y-5">
 
-          {/* ===== VALUE METRICS (HERO) ===== */}
-          <section className="rounded-2xl bg-gradient-to-br from-black to-gray-800 p-6 text-white">
-            <h2 className="mb-4 text-sm font-medium text-white/60">{t("项目价值")}（{t("过去")} {days} {t("天")}）</h2>
-            <div className="grid grid-cols-3 gap-4">
+          {/* Value metrics hero */}
+          <section className="rounded-2xl p-6 relative overflow-hidden"
+            style={{ background: "linear-gradient(135deg, #1A1D24 0%, #111318 60%, rgba(212,168,67,0.08) 100%)", border: `1px solid ${S.border}` }}>
+            {/* Decorative accent */}
+            <div className="absolute top-0 right-0 h-32 w-32 rounded-full opacity-10 blur-3xl"
+              style={{ background: S.accent }} />
+            <div className="flex items-center gap-2 mb-4">
+              <span className="rounded-lg px-2 py-0.5 text-[11px] font-semibold"
+                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }}>
+                {t("项目价值")}
+              </span>
+              <span className="text-xs" style={{ color: S.text3 }}>{t("过去")} {days} {t("天")}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-6 relative">
               <div>
-                <p className="text-3xl font-bold">{data.value_metrics.time_saved_hours}<span className="text-lg font-normal text-white/50"> {t("小时")}</span></p>
-                <p className="mt-1 text-xs text-white/50">{t("预估节省工时")}</p>
+                <p className="text-4xl font-bold tabular-nums" style={{ color: S.text1 }}>
+                  {data.value_metrics.time_saved_hours}
+                  <span className="text-xl font-normal ml-1" style={{ color: S.text3 }}>{t("小时")}</span>
+                </p>
+                <p className="mt-1.5 text-xs" style={{ color: S.text3 }}>{t("预估节省工时")}</p>
               </div>
               <div>
-                <p className="text-3xl font-bold">{data.value_metrics.time_saved_per_ticket_min}<span className="text-lg font-normal text-white/50"> {t("分钟/单")}</span></p>
-                <p className="mt-1 text-xs text-white/50">{t("每单节省时间")}</p>
+                <p className="text-4xl font-bold tabular-nums" style={{ color: S.accent }}>
+                  {data.value_metrics.time_saved_per_ticket_min}
+                  <span className="text-xl font-normal ml-1" style={{ color: S.text3 }}>{t("分钟/单")}</span>
+                </p>
+                <p className="mt-1.5 text-xs" style={{ color: S.text3 }}>{t("每单节省时间")}</p>
               </div>
               <div>
-                <p className="text-3xl font-bold">{data.value_metrics.success_rate}<span className="text-lg font-normal text-white/50">%</span></p>
-                <p className="mt-1 text-xs text-white/50">{t("分析成功率")}</p>
+                <p className="text-4xl font-bold tabular-nums" style={{ color: "#4ADE80" }}>
+                  {data.value_metrics.success_rate}
+                  <span className="text-xl font-normal ml-0.5" style={{ color: S.text3 }}>%</span>
+                </p>
+                <p className="mt-1.5 text-xs" style={{ color: S.text3 }}>{t("分析成功率")}</p>
               </div>
             </div>
-            <p className="mt-3 text-[11px] text-white/30">
+            <p className="mt-4 text-[11px] font-mono" style={{ color: S.text3 }}>
               {t("对比")}: {t("人工处理")} ~{data.value_metrics.estimated_manual_hours}h → {t("AI 处理")} ~{data.value_metrics.estimated_ai_hours}h
             </p>
           </section>
 
-          {/* ===== KEY METRICS ===== */}
+          {/* Key metrics */}
           <div className="grid grid-cols-5 gap-3">
             <StatCard label={t("总分析次数")} value={data.total_analyses} />
-            <StatCard label={t("分析成功")} value={data.successful_analyses} color="text-green-600" />
-            <StatCard label={t("分析失败")} value={data.failed_analyses} color="text-red-600" />
-            <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="text-blue-600" />
-            <StatCard label={t("活跃用户")} value={data.unique_users} color="text-purple-600" />
+            <StatCard label={t("分析成功")} value={data.successful_analyses} color="#4ADE80" />
+            <StatCard label={t("分析失败")} value={data.failed_analyses} color="#F87171" />
+            <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="#60A5FA" />
+            <StatCard label={t("活跃用户")} value={data.unique_users} color="#C4B5FD" />
           </div>
 
           <div className="grid grid-cols-3 gap-3">
             <StatCard label={t("平均分析耗时")} value={`${data.avg_analysis_duration_min} ${t("分钟")}`} sub={`${data.avg_analysis_duration_ms}ms`} />
-            <StatCard label={t("工单转工程师")} value={data.escalations} />
+            <StatCard label={t("工单转工程师")} value={data.escalations} color={S.accent} />
             <StatCard label={t("页面访问")} value={data.event_counts.page_visit || 0} />
           </div>
 
-          {/* ===== DAILY TREND ===== */}
-          <section className="rounded-xl border border-gray-100 bg-white p-5">
-            <h2 className="mb-4 text-sm font-semibold">{t("每日趋势")}</h2>
+          {/* Daily trend */}
+          <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <h2 className="mb-4 text-sm font-semibold" style={{ color: S.text1 }}>{t("每日趋势")}</h2>
             {dailyDates.length === 0 ? (
-              <p className="py-8 text-center text-sm text-gray-300">{t("暂无数据")}</p>
+              <p className="py-8 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 {dailyDates.map((date) => {
                   const day = data.daily[date];
-                  const analyses = (day.analysis_start || 0);
-                  const success = (day.analysis_done || 0);
-                  const fail = (day.analysis_fail || 0);
-                  const feedback = (day.feedback_submit || 0);
+                  const analyses = day.analysis_start || 0;
+                  const success = day.analysis_done || 0;
+                  const fail = day.analysis_fail || 0;
+                  const feedback = day.feedback_submit || 0;
                   return (
                     <div key={date} className="flex items-center gap-3">
-                      <span className="w-20 flex-shrink-0 text-xs font-mono text-gray-400">{date.slice(5)}</span>
+                      <span className="w-20 flex-shrink-0 font-mono text-xs" style={{ color: S.text3 }}>{date.slice(5)}</span>
                       <div className="flex-1">
-                        <Bar value={analyses + feedback} max={maxDaily} color="bg-black" />
+                        <Bar value={analyses + feedback} max={maxDaily} color={S.accent} />
                       </div>
-                      <div className="flex w-40 flex-shrink-0 items-center gap-2 text-[11px]">
-                        <span className="text-gray-600">{analyses} {t("分析")}</span>
-                        <span className="text-green-600">{success} {t("成功")}</span>
-                        <span className="text-red-500">{fail} {t("失败")}</span>
+                      <div className="flex w-44 flex-shrink-0 items-center gap-3 text-[11px] font-mono">
+                        <span style={{ color: S.text2 }}>{analyses} {t("分析")}</span>
+                        <span style={{ color: "#4ADE80" }}>{success} ✓</span>
+                        {fail > 0 && <span style={{ color: "#F87171" }}>{fail} ✗</span>}
                       </div>
                     </div>
                   );
@@ -164,31 +210,40 @@ export default function AnalyticsPage() {
             )}
           </section>
 
-          {/* ===== TOP USERS + FAIL REASONS ===== */}
+          {/* Top users + fail reasons */}
           <div className="grid grid-cols-2 gap-4">
-            <section className="rounded-xl border border-gray-100 bg-white p-5">
-              <h2 className="mb-3 text-sm font-semibold">{t("活跃用户 Top 10")}</h2>
+            <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <h2 className="mb-3 text-sm font-semibold" style={{ color: S.text1 }}>{t("活跃用户 Top 10")}</h2>
               {data.top_users.length === 0 ? (
-                <p className="py-4 text-center text-sm text-gray-300">{t("暂无数据")}</p>
+                <p className="py-4 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {data.top_users.map((u, i) => (
-                    <a key={u.username} href={`/tracking?created_by=${encodeURIComponent(u.username)}`} className="flex items-center justify-between rounded-lg px-1 py-0.5 -mx-1 hover:bg-gray-50 transition-colors cursor-pointer">
+                    <a key={u.username} href={`/tracking?created_by=${encodeURIComponent(u.username)}`}
+                      className="flex items-center justify-between rounded-lg px-2 py-1.5 transition-colors"
+                      style={{ color: "inherit" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = S.overlay)}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
                       <div className="flex items-center gap-2">
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-100 text-[10px] font-bold text-gray-500">{i + 1}</span>
-                        <span className="text-sm text-blue-600 hover:underline">{u.username}</span>
+                        <span className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold"
+                          style={{ background: i < 3 ? S.accentBg : S.overlay, color: i < 3 ? S.accent : S.text3 }}>
+                          {i + 1}
+                        </span>
+                        <span className="text-sm hover:underline" style={{ color: "#60A5FA" }}>{u.username}</span>
                       </div>
-                      <span className="text-xs tabular-nums text-gray-400">{u.count} {t("次操作")}</span>
+                      <span className="text-xs tabular-nums font-mono" style={{ color: S.text3 }}>
+                        {u.count} {t("次操作")}
+                      </span>
                     </a>
                   ))}
                 </div>
               )}
             </section>
 
-            <section className="rounded-xl border border-gray-100 bg-white p-5">
-              <h2 className="mb-3 text-sm font-semibold">{t("失败原因分布")}</h2>
+            <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <h2 className="mb-3 text-sm font-semibold" style={{ color: S.text1 }}>{t("失败原因分布")}</h2>
               {data.fail_reasons.length === 0 ? (
-                <p className="py-4 text-center text-sm text-gray-300">{t("暂无失败记录")}</p>
+                <p className="py-4 text-center text-sm" style={{ color: S.text3 }}>{t("暂无失败记录")}</p>
               ) : (() => {
                 const reasonCounts: Record<string, number> = {};
                 data.fail_reasons.forEach((f) => {
@@ -199,8 +254,11 @@ export default function AnalyticsPage() {
                   <div className="space-y-2">
                     {Object.entries(reasonCounts).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
                       <div key={reason} className="flex items-center justify-between">
-                        <span className="text-sm text-gray-600">{reason}</span>
-                        <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600">{count}</span>
+                        <span className="text-sm" style={{ color: S.text2 }}>{reason}</span>
+                        <span className="rounded-full px-2 py-0.5 text-[11px] font-medium"
+                          style={{ background: "rgba(239,68,68,0.12)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                          {count}
+                        </span>
                       </div>
                     ))}
                   </div>

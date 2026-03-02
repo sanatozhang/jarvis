@@ -37,7 +37,7 @@ async def track_event(req: TrackEventRequest):
 
 @router.get("/dashboard")
 async def get_dashboard(
-    days: int = Query(7, ge=1, le=90, description="Number of days to look back"),
+    days: int = Query(7, ge=1, le=3650, description="Number of days to look back"),
 ):
     """Get analytics dashboard data."""
     date_to = datetime.utcnow().strftime("%Y-%m-%d")

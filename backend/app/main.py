@@ -1,5 +1,5 @@
 """
-Jarvis - Plaud 工单智能分析平台
+Appllo - Plaud 工单智能分析平台
 FastAPI application entry point.
 """
 
@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.db.database import init_db, close_db
 
-logger = logging.getLogger("jarvis")
+logger = logging.getLogger("appllo")
 
 
 @asynccontextmanager
@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    logger.info("Starting Jarvis...")
+    logger.info("Starting Appllo...")
     await init_db()
     logger.info("Database initialized.")
 
@@ -59,11 +59,11 @@ async def lifespan(app: FastAPI):
 
     yield
     await close_db()
-    logger.info("Jarvis stopped.")
+    logger.info("Appllo stopped.")
 
 
 app = FastAPI(
-    title="Jarvis",
+    title="Appllo",
     description="Plaud 工单智能分析平台",
     version="0.1.0",
     lifespan=lifespan,

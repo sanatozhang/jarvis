@@ -1,9 +1,37 @@
 "use client";
 
 import { useT } from "@/lib/i18n";
-
 import { useEffect, useState } from "react";
 import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api";
+
+const S = {
+  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
+  border: "rgba(255,255,255,0.08)", borderSm: "rgba(255,255,255,0.05)",
+  accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
+  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+};
+
+function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
+  useEffect(() => { const id = setTimeout(onClose, 2500); return () => clearTimeout(id); }, [onClose]);
+  return (
+    <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
+      style={{ background: S.surface, color: S.text1, border: `1px solid ${S.border}` }}>
+      {msg}
+    </div>
+  );
+}
+
+function ConfBadge({ conf }: { conf: string }) {
+  const styles: Record<string, { bg: string; color: string; border: string }> = {
+    high: { bg: "rgba(34,197,94,0.12)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" },
+    medium: { bg: "rgba(234,179,8,0.12)", color: "#FCD34D", border: "1px solid rgba(234,179,8,0.25)" },
+    low: { bg: "rgba(239,68,68,0.12)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" },
+  };
+  const s = styles[conf] || styles.low;
+  return (
+    <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={s}>{conf}</span>
+  );
+}
 
 export default function ReportsPage() {
   const t = useT();
@@ -40,24 +68,32 @@ export default function ReportsPage() {
 
   return (
     <div className="min-h-full">
-      <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
+      {/* Header */}
+      <header className="sticky top-0 z-10 backdrop-blur-md"
+        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
-          <h1 className="text-lg font-semibold">{t("值班报告")}</h1>
+          <div>
+            <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("值班报告")}</h1>
+            <p className="text-xs mt-0.5" style={{ color: S.text3 }}>{t("每日分析汇总与用户回复模板")}</p>
+          </div>
           <div className="flex items-center gap-2">
             <select
               value={selectedDate}
               onChange={(e) => setSelectedDate(e.target.value)}
-              className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 outline-none focus:border-black"
-            >
-              {/* Always show today */}
-              {!dates.includes(today) && <option value={today}>{today}（{t("今天")}）</option>}
+              className="rounded-lg px-3 py-1.5 text-sm outline-none font-sans"
+              style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }}>
+              {!dates.includes(today) && (
+                <option value={today}>{today}（{t("今天")}）</option>
+              )}
               {dates.map((d) => (
                 <option key={d} value={d}>{d}{d === today ? `（${t("今天")}）` : ""}</option>
               ))}
               {dates.length === 0 && <option value="">{t("暂无报告")}</option>}
             </select>
             {report && (
-              <button onClick={copyMd} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50">
+              <button onClick={copyMd}
+                className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+                style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
                 {t("复制 Markdown")}
               </button>
             )}
@@ -67,26 +103,31 @@ export default function ReportsPage() {
 
       <div className="px-6 py-5">
         {loading ? (
-          <p className="py-16 text-center text-sm text-gray-300">{t("加载报告中...")}</p>
+          <div className="flex items-center justify-center py-24">
+            <div className="h-8 w-8 animate-spin rounded-full border-4"
+              style={{ borderColor: "rgba(255,255,255,0.1)", borderTopColor: S.accent }} />
+          </div>
         ) : !report ? (
-          <p className="py-16 text-center text-sm text-gray-300">{t("选择日期查看报告")}</p>
+          <div className="flex items-center justify-center py-24">
+            <p className="text-sm" style={{ color: S.text3 }}>{t("选择日期查看报告")}</p>
+          </div>
         ) : report.total_issues === 0 ? (
-          <div className="py-16 text-center">
-            <p className="text-sm text-gray-400">{t("该日期暂无已分析工单")}</p>
-            <p className="mt-1 text-xs text-gray-300">{t("分析工单后，报告会自动生成")}</p>
+          <div className="py-24 text-center">
+            <p className="text-sm" style={{ color: S.text3 }}>{t("该日期暂无已分析工单")}</p>
+            <p className="mt-1 text-xs" style={{ color: S.text3 }}>{t("分析工单后，报告会自动生成")}</p>
           </div>
         ) : (
-          <>
+          <div className="mx-auto max-w-3xl space-y-5">
             {/* Summary cards */}
-            <div className="mb-5 grid grid-cols-4 gap-3">
-              <div className="rounded-xl border border-gray-100 bg-white px-4 py-3">
-                <p className="text-xs text-gray-400">{t("总工单数")}</p>
-                <p className="mt-0.5 text-xl font-bold">{report.total_issues}</p>
+            <div className="grid grid-cols-4 gap-3">
+              <div className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("总工单数")}</p>
+                <p className="mt-1 text-2xl font-bold tabular-nums" style={{ color: S.text1 }}>{report.total_issues}</p>
               </div>
               {Object.entries(report.category_stats).slice(0, 3).map(([cat, count]) => (
-                <div key={cat} className="rounded-xl border border-gray-100 bg-white px-4 py-3">
-                  <p className="text-xs text-gray-400">{cat}</p>
-                  <p className="mt-0.5 text-xl font-bold">{count}</p>
+                <div key={cat} className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider truncate" style={{ color: S.text3 }}>{cat}</p>
+                  <p className="mt-1 text-2xl font-bold tabular-nums" style={{ color: S.accent }}>{count as number}</p>
                 </div>
               ))}
             </div>
@@ -94,33 +135,48 @@ export default function ReportsPage() {
             {/* Analysis list */}
             <div className="space-y-3">
               {report.analyses.map((a: any, i: number) => (
-                <div key={i} className="rounded-xl border border-gray-100 bg-white p-4">
-                  <div className="mb-2 flex items-start justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold">#{i + 1}</span>
-                      <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{a.problem_type}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        a.confidence === "high" ? "bg-green-50 text-green-600" :
-                        a.confidence === "medium" ? "bg-yellow-50 text-yellow-600" :
-                        "bg-red-50 text-red-600"
-                      }`}>{a.confidence}</span>
-                      {a.needs_engineer && <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-600">{t("需工程师")}</span>}
+                <div key={i} className="rounded-xl p-4" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                  <div className="mb-3 flex items-start justify-between">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-bold tabular-nums" style={{ color: S.text3 }}>#{i + 1}</span>
+                      <span className="rounded-md px-2 py-0.5 text-xs font-medium"
+                        style={{ background: S.overlay, color: S.text2, border: `1px solid ${S.border}` }}>
+                        {a.problem_type}
+                      </span>
+                      <ConfBadge conf={a.confidence} />
+                      {a.needs_engineer && (
+                        <span className="rounded-md px-2 py-0.5 text-[10px] font-semibold"
+                          style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }}>
+                          {t("需工程师")}
+                        </span>
+                      )}
                     </div>
-                    <span className="font-mono text-[11px] text-gray-400">{a.issue_id.slice(0, 12)}</span>
+                    <span className="font-mono text-[11px] flex-shrink-0" style={{ color: S.text3 }}>
+                      {a.issue_id.slice(0, 12)}
+                    </span>
                   </div>
-                  <p className="text-sm text-gray-600">{a.root_cause}</p>
+
+                  <p className="text-sm leading-relaxed" style={{ color: S.text2 }}>{a.root_cause}</p>
+
                   {a.user_reply && (
-                    <div className="mt-3 rounded-lg bg-green-50/50 p-3">
-                      <div className="mb-1 flex items-center justify-between">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{t("用户回复")}</span>
+                    <div className="mt-3 rounded-lg p-3"
+                      style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.15)" }}>
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                          {t("用户回复")}
+                        </span>
                         <button
-                          onClick={() => { navigator.clipboard.writeText(a.user_reply); setToast(t("已复制")); setTimeout(() => setToast(""), 2000); }}
-                          className="rounded bg-green-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-green-700"
-                        >
+                          onClick={() => {
+                            navigator.clipboard.writeText(a.user_reply);
+                            setToast(t("已复制"));
+                            setTimeout(() => setToast(""), 2000);
+                          }}
+                          className="rounded-md px-2 py-0.5 text-[10px] font-semibold transition-opacity hover:opacity-80"
+                          style={{ background: "rgba(34,197,94,0.15)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.3)" }}>
                           {t("复制")}
                         </button>
                       </div>
-                      <p className="whitespace-pre-wrap text-sm text-gray-600">{a.user_reply}</p>
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: S.text2 }}>{a.user_reply}</p>
                     </div>
                   )}
                 </div>
@@ -128,23 +184,23 @@ export default function ReportsPage() {
             </div>
 
             {/* Raw Markdown */}
-            <details className="mt-6">
-              <summary className="cursor-pointer text-sm font-medium text-gray-400 hover:text-gray-600">
+            <details className="rounded-xl overflow-hidden" style={{ border: `1px solid ${S.border}` }}>
+              <summary className="cursor-pointer px-5 py-3 text-sm font-medium select-none"
+                style={{ color: S.text3, background: S.surface }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = S.text2)}
+                onMouseLeave={(e) => (e.currentTarget.style.color = S.text3)}>
                 {t("查看原始 Markdown")}
               </summary>
-              <pre className="mt-2 max-h-96 overflow-y-auto rounded-lg bg-gray-50 p-4 font-mono text-xs text-gray-500">
+              <pre className="max-h-96 overflow-y-auto p-5 font-mono text-xs leading-relaxed"
+                style={{ background: S.overlay, color: S.text3 }}>
                 {report.markdown}
               </pre>
             </details>
-          </>
+          </div>
         )}
       </div>
 
-      {toast && (
-        <div className="fixed bottom-6 right-6 z-50 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg">
-          {toast}
-        </div>
-      )}
+      {toast && <Toast msg={toast} onClose={() => setToast("")} />}
     </div>
   );
 }

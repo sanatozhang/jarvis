@@ -217,7 +217,7 @@ const EN: Record<string, string> = {
   "通过飞书消息通知当前值班工程师": "Notify on-call engineer via Feishu message",
 
   // Username setup
-  "欢迎使用 Jarvis": "Welcome to Jarvis",
+  "欢迎使用 Appllo": "Welcome to Appllo",
   "请设置您的用户名，用于标记工单操作": "Set your username to track your actions",
   "输入您的名字": "Enter your name",
   "开始使用": "Get Started",
@@ -228,7 +228,10 @@ const EN: Record<string, string> = {
   "小时": "hours",
   "分钟/单": "min/ticket",
   "分钟": "min",
-  "天": "days",
+  "天": "d",
+  "月": "mo",
+  "年": "yr",
+  "自定义天数": "Custom days",
   "个": "",
   "条规则": "rules",
   "上一页": "Prev",

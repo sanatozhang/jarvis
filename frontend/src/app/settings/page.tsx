@@ -1,50 +1,77 @@
 "use client";
 
 import { useT } from "@/lib/i18n";
-
 import { useEffect, useState } from "react";
 import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, type AgentConfig, type HealthCheck, type UserListItem } from "@/lib/api";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
 interface EnvGroup { key: string; label: string; fields: EnvField[]; }
 
+const S = {
+  surface: "#111318", overlay: "#1A1D24", hover: "#22262F",
+  border: "rgba(255,255,255,0.08)", borderSm: "rgba(255,255,255,0.05)",
+  accent: "#D4A843", accentBg: "rgba(212,168,67,0.10)",
+  text1: "#EBEBEF", text2: "#9898A8", text3: "#4A4A57",
+};
+
+const inputStyle = {
+  background: S.overlay,
+  border: `1px solid ${S.border}`,
+  color: S.text1,
+  outline: "none",
+};
+
 function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
-  useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
-  return <div className="fixed bottom-6 right-6 z-50 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg">{msg}</div>;
+  useEffect(() => { const id = setTimeout(onClose, 3000); return () => clearTimeout(id); }, [onClose]);
+  return (
+    <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
+      style={{ background: S.surface, color: S.text1, border: `1px solid ${S.border}` }}>
+      {msg}
+    </div>
+  );
 }
 
 function UserList() {
   const t = useT();
   const [users, setUsers] = useState<UserListItem[]>([]);
   const [loading, setLoading] = useState(true);
+
   useEffect(() => {
-    fetchUsers()
-      .then(setUsers)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    fetchUsers().then(setUsers).catch(console.error).finally(() => setLoading(false));
   }, []);
-  if (loading) return <p className="text-sm text-gray-400">{t("加载中...")}</p>;
-  if (users.length === 0) return <p className="text-sm text-gray-400">{t("暂无数据")}</p>;
+
+  if (loading) return <p className="text-sm" style={{ color: S.text3 }}>{t("加载中...")}</p>;
+  if (users.length === 0) return <p className="text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>;
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-gray-200 text-left text-gray-500">
-            <th className="pb-2 pr-4 font-medium">{t("用户名")}</th>
-            <th className="pb-2 pr-4 font-medium">{t("角色")}</th>
-            <th className="pb-2 pr-4 font-medium">{t("操作次数")}</th>
-            <th className="pb-2 pr-4 font-medium">{t("最后活跃")}</th>
-            <th className="pb-2 font-medium">{t("注册时间")}</th>
+          <tr style={{ borderBottom: `1px solid ${S.border}` }}>
+            {[t("用户名"), t("角色"), t("操作次数"), t("最后活跃"), t("注册时间")].map((h) => (
+              <th key={h} className="pb-2 pr-4 text-left text-xs font-semibold uppercase tracking-wider"
+                style={{ color: S.text3 }}>{h}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
           {users.map((u) => (
-            <tr key={u.username} className="border-b border-gray-100">
-              <td className="py-2 pr-4 font-medium text-gray-800">{u.username}</td>
-              <td className="py-2 pr-4 text-gray-600">{u.role === "admin" ? t("管理员") : t("用户")}</td>
-              <td className="py-2 pr-4 text-gray-600">{u.action_count}</td>
-              <td className="py-2 pr-4 text-gray-600">{formatLocalTime(u.last_active_at)}</td>
-              <td className="py-2 text-gray-600">{formatLocalTime(u.created_at)}</td>
+            <tr key={u.username}
+              style={{ borderBottom: `1px solid ${S.borderSm}` }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = S.hover + "60")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+              <td className="py-2.5 pr-4 font-medium" style={{ color: S.text1 }}>{u.username}</td>
+              <td className="py-2.5 pr-4">
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                  style={u.role === "admin"
+                    ? { background: S.accentBg, color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }
+                    : { background: S.overlay, color: S.text3, border: `1px solid ${S.border}` }}>
+                  {u.role === "admin" ? t("管理员") : t("用户")}
+                </span>
+              </td>
+              <td className="py-2.5 pr-4 tabular-nums font-mono text-xs" style={{ color: S.text2 }}>{u.action_count}</td>
+              <td className="py-2.5 pr-4 font-mono text-xs" style={{ color: S.text3 }}>{formatLocalTime(u.last_active_at)}</td>
+              <td className="py-2.5 font-mono text-xs" style={{ color: S.text3 }}>{formatLocalTime(u.created_at)}</td>
             </tr>
           ))}
         </tbody>
@@ -61,12 +88,11 @@ export default function SettingsPage() {
   const [toast, setToast] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Env settings
   const [envGroups, setEnvGroups] = useState<EnvGroup[]>([]);
   const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
   const [envSaving, setEnvSaving] = useState(false);
 
-  const username = typeof window !== "undefined" ? localStorage.getItem("jarvis_username") || "" : "";
+  const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   const isAdmin = username === "sanato";
 
   useEffect(() => {
@@ -82,12 +108,9 @@ export default function SettingsPage() {
       if (res.ok) {
         const data = await res.json();
         setEnvGroups(data.groups);
-        // Initialize edits from current values
         const edits: Record<string, string> = {};
         for (const g of data.groups) {
-          for (const f of g.fields) {
-            edits[f.key] = f.value;
-          }
+          for (const f of g.fields) { edits[f.key] = f.value; }
         }
         setEnvEdits(edits);
       }
@@ -117,7 +140,7 @@ export default function SettingsPage() {
         setToast(t("没有需要保存的更改"));
       } else {
         setToast(`${t("已保存")}: ${data.keys?.join(", ")}${data.note ? `. ${data.note}` : ""}`);
-        loadEnv(); // reload to get fresh masked values
+        loadEnv();
       }
     } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
     finally { setEnvSaving(false); }
@@ -125,56 +148,82 @@ export default function SettingsPage() {
 
   const ruleTypes = ["recording_missing", "timestamp_drift", "bluetooth", "cloud_sync", "speaker", "flutter_crash", "file_transfer", "membership_payment", "hardware_firmware", "general"];
 
+  const statusColor = (s: string) =>
+    s === "ok" || s === "healthy" ? "#22C55E" :
+    s === "unavailable" ? "#EAB308" : "#EF4444";
+
   return (
     <div className="min-h-full">
-      <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm">
+      {/* Header */}
+      <header className="sticky top-0 z-10 backdrop-blur-md"
+        style={{ background: "rgba(10,11,14,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
-          <h1 className="text-lg font-semibold">{t("系统设置")}</h1>
-          <div className="flex items-center gap-2">
-            <button onClick={saveAgentConfig} disabled={saving} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50">
-              {saving ? t("保存中...") : t("保存 Agent 配置")}
-            </button>
+          <div>
+            <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("系统设置")}</h1>
+            <p className="text-xs mt-0.5" style={{ color: S.text3 }}>{t("Agent 配置、环境变量与系统状态")}</p>
           </div>
+          <button onClick={saveAgentConfig} disabled={saving}
+            className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50 transition-opacity"
+            style={{ background: S.accent, color: "#0A0B0E" }}>
+            {saving ? t("保存中...") : t("保存 Agent 配置")}
+          </button>
         </div>
       </header>
 
-      <div className="mx-auto max-w-3xl px-6 py-6 space-y-6">
+      <div className="mx-auto max-w-3xl px-6 py-6 space-y-5">
 
-        {/* ============ ENV SETTINGS (Admin only) ============ */}
+        {/* ENV SETTINGS (Admin only) */}
         {isAdmin && envGroups.length > 0 && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold text-gray-800">{t("环境配置")}</h2>
-              <button onClick={saveEnv} disabled={envSaving} className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50">
+              <div>
+                <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("环境配置")}</h2>
+                <p className="text-xs mt-0.5" style={{ color: S.text3 }}>{t("修改后需要重启服务才能完全生效")}</p>
+              </div>
+              <button onClick={saveEnv} disabled={envSaving}
+                className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50 transition-opacity"
+                style={{ background: S.overlay, color: S.text1, border: `1px solid ${S.border}` }}>
                 {envSaving ? t("保存中...") : t("保存环境配置")}
               </button>
             </div>
-            <p className="text-xs text-gray-400">{t("修改后需要重启服务才能完全生效")}</p>
 
             {envGroups.map((group) => (
-              <section key={group.key} className="rounded-xl border border-gray-100 bg-white p-5">
-                <h3 className="mb-3 text-sm font-semibold text-gray-700">{group.label}</h3>
-                <div className="space-y-3">
+              <section key={group.key} className="rounded-xl p-5"
+                style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                <h3 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                  {group.label}
+                </h3>
+                <div className="space-y-4">
                   {group.fields.map((field) => (
                     <div key={field.key}>
-                      <label className="mb-1 flex items-center gap-2 text-xs font-medium text-gray-500">
+                      <label className="mb-1.5 flex items-center gap-2 text-xs font-medium" style={{ color: S.text2 }}>
                         {field.label}
-                        <code className="rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-400">{field.key}</code>
-                        {field.sensitive && <span className="rounded bg-amber-50 px-1 py-0.5 text-[9px] text-amber-600">{t("敏感")}</span>}
-                        {field.has_value && <span className="h-1.5 w-1.5 rounded-full bg-green-400" title="已配置" />}
+                        <code className="rounded px-1.5 py-0.5 font-mono text-[10px]"
+                          style={{ background: S.overlay, color: S.text3 }}>
+                          {field.key}
+                        </code>
+                        {field.sensitive && (
+                          <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold"
+                            style={{ background: S.accentBg, color: S.accent }}>
+                            {t("敏感")}
+                          </span>
+                        )}
+                        {field.has_value && (
+                          <span className="h-1.5 w-1.5 rounded-full" style={{ background: "#22C55E" }} title={t("已配置")} />
+                        )}
                       </label>
                       <input
                         type={field.sensitive ? "password" : "text"}
                         value={envEdits[field.key] || ""}
                         onChange={(e) => setEnvEdits((p) => ({ ...p, [field.key]: e.target.value }))}
                         onFocus={(e) => {
-                          // Clear masked value on focus so user can type new value
                           if (field.sensitive && e.target.value.includes("••••")) {
                             setEnvEdits((p) => ({ ...p, [field.key]: "" }));
                           }
                         }}
                         placeholder={field.sensitive ? t("输入新值以更新") : t("未设置")}
-                        className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-gray-700 outline-none transition-colors focus:border-black"
+                        className="w-full rounded-lg px-3 py-2 font-mono text-sm transition-colors"
+                        style={inputStyle}
                       />
                     </div>
                   ))}
@@ -185,80 +234,115 @@ export default function SettingsPage() {
         )}
 
         {!isAdmin && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
-            {t("环境配置仅管理员可见")}。{t("当前用户")}: {username || t("未登录")}
+          <div className="rounded-xl p-4 text-sm"
+            style={{ background: S.accentBg, border: "1px solid rgba(212,168,67,0.2)", color: S.text2 }}>
+            {t("环境配置仅管理员可见")}。{t("当前用户")}: <span style={{ color: S.text1 }}>{username || t("未登录")}</span>
           </div>
         )}
 
-        <hr className="border-gray-100" />
-
-        {/* ============ SYSTEM HEALTH ============ */}
-        <section className="rounded-xl border border-gray-100 bg-white p-5">
-          <h2 className="mb-3 text-sm font-semibold">{t("系统状态")}</h2>
-          {!health ? <p className="text-sm text-gray-300">{t("检查中...")}</p> : (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex items-center gap-2">
-                <span className={`h-2.5 w-2.5 rounded-full ${health.status === "healthy" ? "bg-green-400" : "bg-yellow-400"}`} />
-                <span className="text-sm text-gray-600">{t("整体")}: <span className="font-medium">{health.status}</span></span>
+        {/* SYSTEM HEALTH */}
+        <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+          <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("系统状态")}</h2>
+          {!health ? (
+            <p className="text-sm" style={{ color: S.text3 }}>{t("检查中...")}</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2.5">
+              <div className="flex items-center gap-2.5 rounded-lg px-3 py-2.5"
+                style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                  style={{ background: statusColor(health.status), boxShadow: `0 0 6px ${statusColor(health.status)}60` }} />
+                <span className="text-sm" style={{ color: S.text2 }}>
+                  {t("整体")}: <span style={{ color: S.text1, fontWeight: 500 }}>{health.status}</span>
+                </span>
               </div>
-              {health.checks && Object.entries(health.checks).map(([key, val]: [string, any]) => (
+              {health.checks && Object.entries(health.checks).map(([key, val]: [string, any]) =>
                 key !== "agents" && (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${val.status === "ok" ? "bg-green-400" : val.status === "unavailable" ? "bg-yellow-400" : "bg-red-400"}`} />
-                    <span className="text-sm text-gray-500">{key}: {val.status} {val.note ? `(${val.note})` : ""}</span>
+                  <div key={key} className="flex items-center gap-2.5 rounded-lg px-3 py-2.5"
+                    style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                    <span className="h-2 w-2 flex-shrink-0 rounded-full"
+                      style={{ background: statusColor(val.status) }} />
+                    <span className="text-sm truncate" style={{ color: S.text2 }}>
+                      {key}: <span style={{ color: S.text1 }}>{val.status}</span>
+                      {val.note && <span style={{ color: S.text3 }}> ({val.note})</span>}
+                    </span>
                   </div>
                 )
-              ))}
+              )}
             </div>
           )}
         </section>
 
-        {/* Agent Availability */}
-        <section className="rounded-xl border border-gray-100 bg-white p-5">
-          <h2 className="mb-3 text-sm font-semibold">{t("Agent 可用性")}</h2>
+        {/* AGENT AVAILABILITY */}
+        <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+          <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("Agent 可用性")}</h2>
           <div className="space-y-2">
             {Object.entries(agents).map(([name, info]: [string, any]) => (
-              <div key={name} className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-2.5">
-                <div className="flex items-center gap-2">
-                  <span className={`h-2.5 w-2.5 rounded-full ${info.available ? "bg-green-400" : "bg-red-400"}`} />
-                  <span className="text-sm font-medium text-gray-700">{name}</span>
+              <div key={name} className="flex items-center justify-between rounded-lg px-4 py-2.5"
+                style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                <div className="flex items-center gap-2.5">
+                  <span className="h-2.5 w-2.5 rounded-full flex-shrink-0"
+                    style={{
+                      background: info.available ? "#22C55E" : "#EF4444",
+                      boxShadow: info.available ? "0 0 6px rgba(34,197,94,0.4)" : "none",
+                    }} />
+                  <span className="text-sm font-medium" style={{ color: S.text1 }}>{name}</span>
                 </div>
-                <span className="text-xs text-gray-400">{info.available ? (info.version || t("已安装")) : (info.error || t("未安装"))}</span>
+                <span className="text-xs font-mono" style={{ color: S.text3 }}>
+                  {info.available ? (info.version || t("已安装")) : (info.error || t("未安装"))}
+                </span>
               </div>
             ))}
           </div>
         </section>
 
-        {/* Agent Configuration */}
+        {/* AGENT CONFIGURATION */}
         {config && (
           <>
-            <section className="rounded-xl border border-gray-100 bg-white p-5">
-              <h2 className="mb-4 text-sm font-semibold">{t("Agent 配置")}</h2>
+            <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("Agent 配置")}</h2>
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-500">{t("默认 Agent")}</label>
-                  <select value={config.default} onChange={(e) => setConfig({ ...config, default: e.target.value })} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-black">
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("默认 Agent")}</label>
+                  <select value={config.default}
+                    onChange={(e) => setConfig({ ...config, default: e.target.value })}
+                    className="w-full rounded-lg px-3 py-2 text-sm outline-none font-sans"
+                    style={inputStyle}>
                     {Object.keys(config.providers).map((p) => <option key={p} value={p}>{p}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-500">{t("超时（秒）")}</label>
-                  <input type="number" value={config.timeout} onChange={(e) => setConfig({ ...config, timeout: parseInt(e.target.value) || 300 })} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-black" />
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("超时（秒）")}</label>
+                  <input type="number" value={config.timeout}
+                    onChange={(e) => setConfig({ ...config, timeout: parseInt(e.target.value) || 300 })}
+                    className="w-full rounded-lg px-3 py-2 text-sm font-mono"
+                    style={inputStyle} />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-500">{t("最大轮数")}</label>
-                  <input type="number" value={config.max_turns} onChange={(e) => setConfig({ ...config, max_turns: parseInt(e.target.value) || 25 })} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-black" />
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("最大轮数")}</label>
+                  <input type="number" value={config.max_turns}
+                    onChange={(e) => setConfig({ ...config, max_turns: parseInt(e.target.value) || 25 })}
+                    className="w-full rounded-lg px-3 py-2 text-sm font-mono"
+                    style={inputStyle} />
                 </div>
               </div>
             </section>
 
-            <section className="rounded-xl border border-gray-100 bg-white p-5">
-              <h2 className="mb-3 text-sm font-semibold">{t("问题类型 → Agent 路由")}</h2>
-              <div className="space-y-2">
+            <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                {t("问题类型 → Agent 路由")}
+              </h2>
+              <div className="space-y-1.5">
                 {ruleTypes.map((rt) => (
-                  <div key={rt} className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-2">
-                    <span className="text-sm text-gray-600">{rt}</span>
-                    <select value={config.routing[rt] || config.default} onChange={(e) => setConfig({ ...config, routing: { ...config.routing, [rt]: e.target.value } })} className="rounded-md border border-gray-200 px-2 py-1 text-xs outline-none">
+                  <div key={rt} className="flex items-center justify-between rounded-lg px-4 py-2"
+                    style={{ background: S.overlay }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = S.hover)}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = S.overlay)}>
+                    <span className="text-sm font-mono" style={{ color: S.text2 }}>{rt}</span>
+                    <select
+                      value={config.routing[rt] || config.default}
+                      onChange={(e) => setConfig({ ...config, routing: { ...config.routing, [rt]: e.target.value } })}
+                      className="rounded-md px-2 py-1 text-xs font-sans outline-none"
+                      style={{ background: "#0A0B0E", border: `1px solid ${S.border}`, color: S.text1 }}>
                       {Object.keys(config.providers).map((p) => <option key={p} value={p}>{p}</option>)}
                     </select>
                   </div>
@@ -268,10 +352,12 @@ export default function SettingsPage() {
           </>
         )}
 
-        {/* ============ USER MANAGEMENT (Admin only) ============ */}
+        {/* USER MANAGEMENT (Admin only) */}
         {isAdmin && (
-          <section className="rounded-xl border border-gray-100 bg-white p-5">
-            <h2 className="mb-3 text-sm font-semibold">{t("用户管理")}</h2>
+          <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+              {t("用户管理")}
+            </h2>
             <UserList />
           </section>
         )}

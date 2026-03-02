@@ -1,57 +1,216 @@
 "use client";
 
 import { useContext } from "react";
+import { usePathname } from "next/navigation";
 import { useT, useLang, LangToggleContext } from "@/lib/i18n";
 
 const NAV_ITEMS = [
-  { href: "/", label: "工单分析", icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" },
-  { href: "/tracking", label: "工单跟踪", icon: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" },
-  { href: "/feedback", label: "提交反馈", icon: "M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" },
-  { href: "/oncall", label: "值班管理", icon: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" },
-  { href: "/analytics", label: "数据看板", icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" },
-  { href: "/rules", label: "分析规则", icon: "M4 6h16M4 10h16M4 14h16M4 18h16" },
-  { href: "/reports", label: "值班报告", icon: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" },
-  { href: "/settings", label: "系统设置", icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z" },
+  {
+    href: "/",
+    label: "工单分析",
+    icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+  },
+  {
+    href: "/tracking",
+    label: "工单跟踪",
+    icon: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z",
+  },
+  {
+    href: "/feedback",
+    label: "提交反馈",
+    icon: "M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z",
+  },
+  {
+    href: "/oncall",
+    label: "值班管理",
+    icon: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
+  },
+  {
+    href: "/analytics",
+    label: "数据看板",
+    icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
+  },
+  {
+    href: "/rules",
+    label: "分析规则",
+    icon: "M4 6h16M4 10h16M4 14h16M4 18h16",
+  },
+  {
+    href: "/reports",
+    label: "值班报告",
+    icon: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
+  },
+  {
+    href: "/settings",
+    label: "系统设置",
+    icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z",
+  },
 ];
 
 export default function Sidebar() {
   const t = useT();
   const lang = useLang();
   const toggleLang = useContext(LangToggleContext);
+  const pathname = usePathname();
+
+  const isActive = (href: string) =>
+    href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   return (
-    <aside className="flex w-56 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
-      <div className="flex h-14 items-center gap-2 border-b border-gray-100 px-5">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-black text-xs font-bold text-white">J</div>
-        <span className="text-base font-semibold tracking-tight">Jarvis</span>
+    <aside
+      className="flex w-[216px] flex-shrink-0 flex-col"
+      style={{ background: "#0D0E12", borderRight: "1px solid rgba(255,255,255,0.07)" }}
+    >
+      {/* Logo */}
+      <div
+        className="flex h-[52px] items-center gap-3 px-5"
+        style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+      >
+        <div
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold"
+          style={{ background: "#D4A843", color: "#0A0B0E" }}
+        >
+          J
+        </div>
+        <div>
+          <span
+            className="text-sm font-semibold tracking-tight"
+            style={{ color: "#EBEBEF" }}
+          >
+            Appllo
+          </span>
+          <span
+            className="ml-1.5 rounded text-[9px] font-medium px-1 py-0.5"
+            style={{ background: "rgba(212,168,67,0.15)", color: "#D4A843" }}
+          >
+            AI
+          </span>
+        </div>
       </div>
-      <nav className="flex-1 space-y-0.5 px-3 py-3">
-        {NAV_ITEMS.map((item) => (
-          <a key={item.href} href={item.href} className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900">
-            <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} suppressHydrationWarning>
-              <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
-            </svg>
-            <span className="flex-1">{t(item.label)}</span>
-          </a>
-        ))}
+
+      {/* Nav */}
+      <nav className="flex-1 space-y-px px-2.5 py-3">
+        {NAV_ITEMS.map((item) => {
+          const active = isActive(item.href);
+          return (
+            <a
+              key={item.href}
+              href={item.href}
+              className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150"
+              style={{
+                color: active ? "#EBEBEF" : "#6E6E80",
+                background: active ? "rgba(212,168,67,0.10)" : "transparent",
+                borderLeft: active ? "2px solid #D4A843" : "2px solid transparent",
+              }}
+              onMouseEnter={(e) => {
+                if (!active) {
+                  (e.currentTarget as HTMLElement).style.color = "#B8B8C8";
+                  (e.currentTarget as HTMLElement).style.background =
+                    "rgba(255,255,255,0.04)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!active) {
+                  (e.currentTarget as HTMLElement).style.color = "#6E6E80";
+                  (e.currentTarget as HTMLElement).style.background = "transparent";
+                }
+              }}
+            >
+              <svg
+                className="h-4 w-4 flex-shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={active ? 2 : 1.5}
+                suppressHydrationWarning
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+              </svg>
+              <span className="flex-1 truncate">{t(item.label)}</span>
+              {active && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full flex-shrink-0"
+                  style={{ background: "#D4A843" }}
+                />
+              )}
+            </a>
+          );
+        })}
       </nav>
-      <div className="border-t border-gray-100 px-3 py-3 space-y-1">
-        <a href="/settings" className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900">
-          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} suppressHydrationWarning>
+
+      {/* Footer */}
+      <div
+        className="px-2.5 py-3 space-y-px"
+        style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}
+      >
+        {/* System status */}
+        <a
+          href="/settings"
+          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
+          style={{ color: "#6E6E80" }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLElement).style.color = "#B8B8C8";
+            (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.04)";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLElement).style.color = "#6E6E80";
+            (e.currentTarget as HTMLElement).style.background = "transparent";
+          }}
+        >
+          <svg
+            className="h-4 w-4 flex-shrink-0"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            suppressHydrationWarning
+          >
             <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
           <span className="flex-1">{t("系统状态")}</span>
-          <span className="h-2 w-2 rounded-full bg-green-400" />
+          <span
+            className="h-2 w-2 rounded-full"
+            style={{ background: "#22C55E", boxShadow: "0 0 6px rgba(34,197,94,0.5)" }}
+          />
         </a>
+
+        {/* Language toggle */}
         <button
           onClick={toggleLang}
-          className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
+          className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
+          style={{ color: "#6E6E80" }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLElement).style.color = "#B8B8C8";
+            (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.04)";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLElement).style.color = "#6E6E80";
+            (e.currentTarget as HTMLElement).style.background = "transparent";
+          }}
         >
-          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802" />
+          <svg
+            className="h-4 w-4 flex-shrink-0"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802"
+            />
           </svg>
           <span className="flex-1">{lang === "cn" ? "English" : "中文"}</span>
-          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500">{lang === "cn" ? "CN" : "EN"}</span>
+          <span
+            className="rounded px-1.5 py-0.5 text-[10px] font-semibold"
+            style={{
+              background: "rgba(255,255,255,0.07)",
+              color: "#9898A8",
+            }}
+          >
+            {lang === "cn" ? "CN" : "EN"}
+          </span>
         </button>
       </div>
     </aside>

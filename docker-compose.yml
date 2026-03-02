@@ -14,7 +14,7 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=sqlite+aiosqlite:///./data/jarvis.db
+      - DATABASE_URL=sqlite+aiosqlite:///./data/appllo.db
     depends_on:
       - redis
     restart: unless-stopped

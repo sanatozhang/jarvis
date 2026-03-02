@@ -104,7 +104,7 @@ class StorageSettings(BaseSettings):
 class Settings(BaseSettings):
     # --- Env-based settings ---
     redis_url: str = "redis://localhost:6379/0"
-    database_url: str = "sqlite+aiosqlite:///./data/jarvis.db"
+    database_url: str = "sqlite+aiosqlite:///./data/appllo.db"
     code_repo_path: str = ""
     host: str = "0.0.0.0"
     port: int = 8000

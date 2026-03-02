@@ -4,7 +4,7 @@
  */
 
 export function trackEvent(eventType: string, detail?: Record<string, any>) {
-  const username = typeof window !== "undefined" ? localStorage.getItem("jarvis_username") || "" : "";
+  const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   fetch("/api/analytics/track", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
