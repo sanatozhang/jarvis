@@ -7,11 +7,12 @@ import {
   refreshIssuesCache,
   fetchCompleted,
   fetchInProgress,
+  fetchInaccurate,
+  markInaccurate,
   createTask,
   deleteIssue,
-  escalateIssue,
-  openFeishuChat,
   fetchIssueDetail,
+  fetchIssueAnalyses,
   loginUser,
   subscribeTaskProgress,
   fetchTaskResult,
@@ -155,6 +156,13 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
         {t("分析失败")}
       </span>
     );
+  if (item.local_status === "inaccurate")
+    return (
+      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+        style={{ background: "rgba(239,68,68,0.12)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+        {t("分析不准确")}
+      </span>
+    );
   return <span style={{ color: S.text3, fontSize: "12px" }}>—</span>;
 }
 
@@ -193,7 +201,7 @@ const btnPrimary = "rounded-lg px-3 py-1.5 text-sm font-semibold transition-colo
 const btnGhost = "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors";
 
 // ── Types ─────────────────────────────────────────────────────
-type Tab = "pending" | "in_progress" | "done";
+type Tab = "pending" | "in_progress" | "done" | "inaccurate";
 const PAGE_SIZE = 20;
 
 export default function HomePage() {
@@ -202,9 +210,12 @@ export default function HomePage() {
   const [ipData, setIpData] = useState<PaginatedResponse<LocalIssueItem> | null>(null);
   const [doneData, setDoneData] = useState<PaginatedResponse<LocalIssueItem> | null>(null);
 
+  const [inaccurateData, setInaccurateData] = useState<PaginatedResponse<LocalIssueItem> | null>(null);
+
   const [pendingPage, setPendingPage] = useState(1);
   const [ipPage, setIpPage] = useState(1);
   const [donePage, setDonePage] = useState(1);
+  const [inaccuratePage, setInaccuratePage] = useState(1);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -221,14 +232,19 @@ export default function HomePage() {
   const [toast, setToast] = useState("");
   const [tab, setTab] = useState<Tab>("pending");
 
+  // Follow-up state
+  const [issueAnalyses, setIssueAnalyses] = useState<Record<string, AnalysisResult[]>>({});
+  const [followupText, setFollowupText] = useState("");
+  const [followupSubmitting, setFollowupSubmitting] = useState(false);
+
   useEffect(() => {
     const urlTab = new URLSearchParams(window.location.search).get("tab");
-    if (urlTab === "in_progress" || urlTab === "done") setTab(urlTab);
+    if (urlTab === "in_progress" || urlTab === "done" || urlTab === "inaccurate") setTab(urlTab);
     const urlDetail = getUrlParam("detail");
     if (urlDetail) {
       setDetailId(urlDetail);
       const urlDetailTab = getUrlParam("dtab");
-      if (urlDetailTab === "in_progress" || urlDetailTab === "done") setDetailTab(urlDetailTab);
+      if (urlDetailTab === "in_progress" || urlDetailTab === "done" || urlDetailTab === "inaccurate") setDetailTab(urlDetailTab);
       else if (urlDetailTab === "pending") setDetailTab("pending");
     }
   }, []);
@@ -292,12 +308,16 @@ export default function HomePage() {
     try { setDoneData(await fetchCompleted(page, PAGE_SIZE)); } catch (e: any) { setError(e.message); }
   }, []);
 
+  const loadInaccurate = useCallback(async (page: number) => {
+    try { setInaccurateData(await fetchInaccurate(page, PAGE_SIZE)); } catch (e: any) { setError(e.message); }
+  }, []);
+
   const loadAll = useCallback(async () => {
     if (assignee === null) return;
     setLoading(true); setError("");
-    await Promise.all([loadPending(pendingPage), loadInProgress(ipPage), loadDone(donePage)]);
+    await Promise.all([loadPending(pendingPage), loadInProgress(ipPage), loadDone(donePage), loadInaccurate(inaccuratePage)]);
     setLoading(false);
-  }, [assignee, loadPending, loadInProgress, loadDone, pendingPage, ipPage, donePage]);
+  }, [assignee, loadPending, loadInProgress, loadDone, loadInaccurate, pendingPage, ipPage, donePage, inaccuratePage]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => { setLang(siteLang); }, [siteLang]);
@@ -306,6 +326,7 @@ export default function HomePage() {
   const onPendingPage = (p: number) => { setPendingPage(p); loadPending(p); };
   const onIpPage = (p: number) => { setIpPage(p); loadInProgress(p); };
   const onDonePage = (p: number) => { setDonePage(p); loadDone(p); };
+  const onInaccuratePage = (p: number) => { setInaccuratePage(p); loadInaccurate(p); };
 
   const startAnalysis = async (issueId: string) => {
     try {
@@ -346,19 +367,51 @@ export default function HomePage() {
     } catch (e: any) { setToast(`${t("删除失败")}: ${e.message}`); }
   };
 
-  const handleEscalate = async (issueId: string) => {
+  const handleMarkInaccurate = async (issueId: string) => {
     try {
-      const email = typeof window !== "undefined" ? localStorage.getItem("appllo_feishu_email") || "" : "";
-      const res = await escalateIssue(issueId, undefined, email);
-      setToast(res.message || (res.status === "sent" ? t("已通知值班工程师") : t("发送失败")));
-      if (res.chat_id) openFeishuChat(res.chat_id);
-    } catch (e: any) { setToast(`${t("通知失败")}: ${e.message}`); }
+      await markInaccurate(issueId);
+      setToast(t("已标记为不准确"));
+      loadDone(donePage);
+      loadInaccurate(inaccuratePage);
+      if (detailId === issueId) closeDetail();
+    } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
   };
 
-  const counts = { pending: pendingData?.total ?? 0, in_progress: ipData?.total ?? 0, done: doneData?.total ?? 0 };
+  const startFollowup = async (issueId: string, question: string) => {
+    if (!question.trim()) return;
+    setFollowupSubmitting(true);
+    try {
+      const task = await createTask(issueId, undefined, username || "", question.trim());
+      setActiveTasks((p) => ({ ...p, [issueId]: task }));
+      subscribeTaskProgress(task.task_id, (progress) => {
+        setActiveTasks((p) => ({ ...p, [issueId]: progress }));
+        if (progress.status === "done") {
+          // Reload all analyses for this issue
+          fetchIssueAnalyses(issueId).then((analyses) => {
+            setIssueAnalyses((prev) => ({ ...prev, [issueId]: analyses }));
+          }).catch(() => {});
+          fetchTaskResult(task.task_id).then((r) => {
+            setActiveResults((p) => ({ ...p, [issueId]: r }));
+            loadDone(1);
+          }).catch(console.error);
+          setFollowupSubmitting(false);
+          setFollowupText("");
+        }
+        if (progress.status === "failed") {
+          setToast(`${t("分析失败")}: ${progress.error || t("未知错误")}`);
+          setFollowupSubmitting(false);
+        }
+      });
+    } catch (e: any) {
+      setToast(e.message);
+      setFollowupSubmitting(false);
+    }
+  };
+
+  const counts = { pending: pendingData?.total ?? 0, in_progress: ipData?.total ?? 0, done: doneData?.total ?? 0, inaccurate: inaccurateData?.total ?? 0 };
 
   const openDetail = (id: string, t: Tab) => { setDetailId(id); setDirectDetail(null); setDetailTab(t); setUrlParam("detail", id); setUrlParam("dtab", t); };
-  const closeDetail = () => { setDetailId(null); setDirectDetail(null); setUrlParam("detail", ""); setUrlParam("dtab", ""); };
+  const closeDetail = () => { setDetailId(null); setDirectDetail(null); setFollowupText(""); setFollowupSubmitting(false); setUrlParam("detail", ""); setUrlParam("dtab", ""); };
 
   const detailData = (() => {
     if (!detailId) return null;
@@ -366,7 +419,7 @@ export default function HomePage() {
       const issue = pendingData?.issues.find((i) => i.record_id === detailId);
       if (issue) return { issue, task: activeTasks[detailId], result: activeResults[detailId], localItem: null as LocalIssueItem | null };
     } else {
-      const items = detailTab === "in_progress" ? ipData?.issues : doneData?.issues;
+      const items = detailTab === "in_progress" ? ipData?.issues : detailTab === "inaccurate" ? inaccurateData?.issues : doneData?.issues;
       const item = items?.find((i) => i.record_id === detailId);
       if (item) return { issue: item as any as Issue, task: item.task as any, result: item.analysis || activeResults[detailId], localItem: item };
     }
@@ -382,12 +435,27 @@ export default function HomePage() {
     fetchIssueDetail(detailId).then((item) => {
       if (!cancelled) {
         setDirectDetail(item);
-        if (item.local_status === "done" || item.local_status === "failed") setDetailTab("done");
+        if (item.local_status === "inaccurate") setDetailTab("inaccurate");
+        else if (item.local_status === "done" || item.local_status === "failed") setDetailTab("done");
         else if (item.local_status === "analyzing") setDetailTab("in_progress");
       }
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [detailId, detailData]);
+
+  // Load all analyses for the issue when detail panel opens with a result
+  useEffect(() => {
+    if (!detailId) return;
+    const hasResult = detailData?.result;
+    if (!hasResult) return;
+    let cancelled = false;
+    fetchIssueAnalyses(detailId).then((analyses) => {
+      if (!cancelled && analyses.length > 0) {
+        setIssueAnalyses((prev) => ({ ...prev, [detailId]: analyses }));
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [detailId, detailData?.result]);
 
   // ── Render ──────────────────────────────────────────────────
   const thStyle = { color: S.text3, fontSize: "10px", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.08em", padding: "10px 12px", textAlign: "left" as const };
@@ -489,7 +557,7 @@ export default function HomePage() {
 
       <div className="px-6 py-5">
         {/* Loading state */}
-        {loading && !pendingData && !ipData && !doneData && (
+        {loading && !pendingData && !ipData && !doneData && !inaccurateData && (
           <div className="flex flex-col items-center justify-center py-24">
             <div className="mb-4 h-8 w-8 animate-spin rounded-full border-4"
               style={{ borderColor: "rgba(255,255,255,0.1)", borderTopColor: S.accent }} />
@@ -512,7 +580,7 @@ export default function HomePage() {
               { label: t("待处理"), value: counts.pending, color: S.text1 },
               { label: t("进行中"), value: counts.in_progress, color: "#60A5FA" },
               { label: t("已完成"), value: counts.done, color: "#4ADE80" },
-              { label: t("高优先级"), value: pendingData?.high_priority ?? 0, color: "#F87171" },
+              { label: t("分析不准确"), value: counts.inaccurate, color: "#F87171" },
             ].map((s) => (
               <div key={s.label} className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
                 <p className="text-xs" style={{ color: S.text3 }}>{s.label}</p>
@@ -536,6 +604,7 @@ export default function HomePage() {
             { key: "pending" as Tab, label: t("待处理"), count: counts.pending },
             { key: "in_progress" as Tab, label: t("进行中"), count: counts.in_progress },
             { key: "done" as Tab, label: t("已完成"), count: counts.done },
+            { key: "inaccurate" as Tab, label: t("分析不准确"), count: counts.inaccurate },
           ]).map((item) => (
             <button key={item.key} onClick={() => setTab(item.key)}
               className="rounded-md px-3 py-1.5 text-sm font-medium transition-all"
@@ -615,13 +684,13 @@ export default function HomePage() {
           </>
         )}
 
-        {/* ── IN_PROGRESS / DONE TABS ── */}
-        {(tab === "in_progress" || tab === "done") && (() => {
-          const data = tab === "in_progress" ? ipData : doneData;
+        {/* ── IN_PROGRESS / DONE / INACCURATE TABS ── */}
+        {(tab === "in_progress" || tab === "done" || tab === "inaccurate") && (() => {
+          const data = tab === "in_progress" ? ipData : tab === "inaccurate" ? inaccurateData : doneData;
           const items = data?.issues || [];
-          const currentPage = tab === "in_progress" ? ipPage : donePage;
-          const onPageChange = tab === "in_progress" ? onIpPage : onDonePage;
-          const emptyMsg = tab === "in_progress" ? t("暂无进行中工单") : t("暂无已完成工单");
+          const currentPage = tab === "in_progress" ? ipPage : tab === "inaccurate" ? inaccuratePage : donePage;
+          const onPageChange = tab === "in_progress" ? onIpPage : tab === "inaccurate" ? onInaccuratePage : onDonePage;
+          const emptyMsg = tab === "in_progress" ? t("暂无进行中工单") : tab === "inaccurate" ? t("暂无不准确工单") : t("暂无已完成工单");
           return (
             <>
               <div className="overflow-hidden rounded-xl" style={{ border: `1px solid ${S.border}`, background: S.surface }}>
@@ -699,11 +768,13 @@ export default function HomePage() {
                                 {t("复制回复")}
                               </button>
                             )}
-                            <button onClick={() => handleEscalate(item.record_id)}
-                              className="rounded-lg px-2 py-1 text-[11px] font-medium"
-                              style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(212,168,67,0.25)` }}>
-                              {t("转工程师")}
-                            </button>
+                            {item.local_status === "done" && (
+                              <button onClick={() => handleMarkInaccurate(item.record_id)}
+                                className="rounded-lg px-2 py-1 text-[11px] font-medium"
+                                style={{ background: "rgba(239,68,68,0.10)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                                {t("分析不准确")}
+                              </button>
+                            )}
                             <button onClick={() => handleDelete(item.record_id)}
                               className="rounded-lg p-1 transition-colors"
                               style={{ color: S.text3, border: `1px solid ${S.border}` }}
@@ -869,19 +940,19 @@ export default function HomePage() {
                 </>
               )}
 
-              {/* Result */}
+              {/* Result — stacked analyses (newest first) */}
               {detailData.result && (() => {
-                const r = detailData.result;
-                const problemType = lang === "en" ? (r.problem_type_en || r.problem_type) : r.problem_type;
-                const rootCause = lang === "en" ? (r.root_cause_en || r.root_cause) : r.root_cause;
-                const userReply = lang === "en" ? (r.user_reply_en || r.user_reply) : r.user_reply;
-                const hasEnTranslation = !!(r.problem_type_en && r.root_cause_en);
+                // Use all analyses if loaded, otherwise fall back to single result
+                const allAnalyses = issueAnalyses[detailId!];
+                const analyses = allAnalyses && allAnalyses.length > 0 ? allAnalyses : [detailData.result];
                 return (
                   <>
+                    {/* Language toggle — shared across all analyses */}
                     <section>
                       <div className="mb-2 flex items-center justify-between">
                         <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
                           {lang === "cn" ? "AI 分析结果" : "AI Analysis"}
+                          {analyses.length > 1 && <span className="ml-1.5 text-[10px] font-normal" style={{ color: S.text3 }}>({analyses.length})</span>}
                         </h3>
                         <div className="flex items-center gap-0.5 rounded-md p-0.5" style={{ background: S.overlay }}>
                           <button onClick={() => setLang("cn")}
@@ -896,63 +967,149 @@ export default function HomePage() {
                           </button>
                         </div>
                       </div>
-                      {lang === "en" && !hasEnTranslation && (
-                        <p className="mb-2 text-[10px]" style={{ color: S.accent }}>English translation not available. Showing Chinese.</p>
-                      )}
-                      <div className="flex flex-wrap gap-2 mb-3">
-                        <span className="rounded-lg px-2.5 py-1 text-xs font-semibold" style={{ background: S.overlay, color: S.text1 }}>
-                          {problemType}
+                    </section>
+
+                    {/* Follow-up input */}
+                    <section className="rounded-lg p-3" style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                      <textarea
+                        value={followupText}
+                        onChange={(e) => setFollowupText(e.target.value)}
+                        placeholder={t("请输入追问内容...")}
+                        rows={2}
+                        disabled={followupSubmitting}
+                        className="w-full resize-none rounded-md px-3 py-2 text-sm outline-none"
+                        style={{ background: S.surface, border: `1px solid ${S.borderSm}`, color: S.text1 }}
+                      />
+                      <div className="mt-2 flex items-center justify-between">
+                        <span className="text-[10px]" style={{ color: S.text3 }}>
+                          {followupSubmitting ? t("追问分析中...") : t("追问")}
                         </span>
-                        <ConfBadge c={r.confidence} />
-                        {r.needs_engineer && (
-                          <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
-                            style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(212,168,67,0.25)` }}>
-                            {lang === "cn" ? "需工程师" : "Engineer needed"}
-                          </span>
-                        )}
+                        <button
+                          onClick={() => startFollowup(detailId!, followupText)}
+                          disabled={!followupText.trim() || followupSubmitting}
+                          className="rounded-lg px-3 py-1 text-[11px] font-semibold transition-colors disabled:opacity-30"
+                          style={{ background: S.accent, color: "#0A0B0E" }}>
+                          {followupSubmitting ? t("追问分析中...") : t("提交追问")}
+                        </button>
                       </div>
                     </section>
-                    <section>
-                      <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                        {lang === "cn" ? "问题原因" : "Root Cause"}
-                      </h3>
-                      <div className="whitespace-pre-wrap rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
-                        {rootCause}
+
+                    {/* Follow-up progress */}
+                    {followupSubmitting && activeTasks[detailId!] && !["done", "failed"].includes(activeTasks[detailId!].status) && (
+                      <div className="rounded-lg p-3" style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                        <div className="mb-2 flex justify-between text-xs" style={{ color: S.text2 }}>
+                          <span>{activeTasks[detailId!].message}</span>
+                          <span className="tabular-nums">{activeTasks[detailId!].progress}%</span>
+                        </div>
+                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: S.hover }}>
+                          <div className="h-full rounded-full transition-all duration-700"
+                            style={{ width: `${activeTasks[detailId!].progress}%`, background: S.accent }} />
+                        </div>
                       </div>
-                    </section>
-                    {r.key_evidence && r.key_evidence.length > 0 && (
-                      <section>
-                        <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                          {lang === "cn" ? "关键证据" : "Key Evidence"}
-                        </h3>
-                        <div className="space-y-1">
-                          {r.key_evidence.map((ev, i) => (
-                            <div key={i} className="rounded font-mono px-3 py-1.5 text-[11px]"
-                              style={{ background: S.overlay, color: S.text2, border: `1px solid ${S.borderSm}` }}>
-                              {ev}
+                    )}
+
+                    {/* Stacked analyses */}
+                    {analyses.map((r, idx) => {
+                      const isLatest = idx === 0;
+                      const problemType = lang === "en" ? (r.problem_type_en || r.problem_type) : r.problem_type;
+                      const rootCause = lang === "en" ? (r.root_cause_en || r.root_cause) : r.root_cause;
+                      const userReply = lang === "en" ? (r.user_reply_en || r.user_reply) : r.user_reply;
+                      const hasEnTranslation = !!(r.problem_type_en && r.root_cause_en);
+                      const isFollowup = !!(r as any).followup_question;
+                      return (
+                        <div key={r.task_id || idx}
+                          className="space-y-4 rounded-lg p-4"
+                          style={{
+                            background: S.surface,
+                            border: `1px solid ${S.border}`,
+                            borderLeft: isLatest ? `3px solid ${S.accent}` : `3px solid ${S.border}`,
+                            opacity: isLatest ? 1 : 0.75,
+                          }}>
+                          {/* Follow-up question badge or Initial analysis label */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {isFollowup ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                                style={{ background: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "1px solid rgba(167,139,250,0.25)" }}>
+                                {t("追问分析")}
+                              </span>
+                            ) : analyses.length > 1 ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                                style={{ background: "rgba(255,255,255,0.06)", color: S.text3, border: `1px solid ${S.borderSm}` }}>
+                                {t("初次分析")}
+                              </span>
+                            ) : null}
+                            {(r as any).created_at && (
+                              <span className="text-[10px]" style={{ color: S.text3 }}>{formatLocalTime((r as any).created_at)}</span>
+                            )}
+                          </div>
+
+                          {/* Follow-up question */}
+                          {isFollowup && (
+                            <div className="rounded-md px-3 py-2 text-xs"
+                              style={{ background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)", color: "#C4B5FD" }}>
+                              <span className="font-semibold">{t("追问问题")}:</span> {(r as any).followup_question}
                             </div>
-                          ))}
+                          )}
+
+                          {lang === "en" && !hasEnTranslation && (
+                            <p className="text-[10px]" style={{ color: S.accent }}>English translation not available. Showing Chinese.</p>
+                          )}
+                          <div className="flex flex-wrap gap-2">
+                            <span className="rounded-lg px-2.5 py-1 text-xs font-semibold" style={{ background: S.overlay, color: S.text1 }}>
+                              {problemType}
+                            </span>
+                            <ConfBadge c={r.confidence} />
+                            {r.needs_engineer && (
+                              <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
+                                style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(212,168,67,0.25)` }}>
+                                {lang === "cn" ? "需工程师" : "Engineer needed"}
+                              </span>
+                            )}
+                          </div>
+                          <div>
+                            <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                              {lang === "cn" ? "问题原因" : "Root Cause"}
+                            </h3>
+                            <div className="whitespace-pre-wrap rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
+                              {rootCause}
+                            </div>
+                          </div>
+                          {r.key_evidence && r.key_evidence.length > 0 && (
+                            <div>
+                              <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                                {lang === "cn" ? "关键证据" : "Key Evidence"}
+                              </h3>
+                              <div className="space-y-1">
+                                {r.key_evidence.map((ev, i) => (
+                                  <div key={i} className="rounded font-mono px-3 py-1.5 text-[11px]"
+                                    style={{ background: S.overlay, color: S.text2, border: `1px solid ${S.borderSm}` }}>
+                                    {ev}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {userReply && (
+                            <div>
+                              <div className="mb-1.5 flex items-center justify-between">
+                                <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                                  {lang === "cn" ? "建议回复" : "Suggested Reply"}
+                                </h3>
+                                <button onClick={() => copy(userReply)}
+                                  className="rounded-lg px-3 py-1 text-[11px] font-medium"
+                                  style={{ background: "rgba(34,197,94,0.15)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
+                                  {lang === "cn" ? "一键复制" : "Copy"}
+                                </button>
+                              </div>
+                              <div className="whitespace-pre-wrap rounded-lg p-3 text-sm"
+                                style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
+                                {userReply}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      </section>
-                    )}
-                    {userReply && (
-                      <section>
-                        <div className="mb-1.5 flex items-center justify-between">
-                          <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                            {lang === "cn" ? "建议回复" : "Suggested Reply"}
-                          </h3>
-                          <button onClick={() => copy(userReply)}
-                            className="rounded-lg px-3 py-1 text-[11px] font-medium"
-                            style={{ background: "rgba(34,197,94,0.15)", color: "#4ADE80", border: "1px solid rgba(34,197,94,0.25)" }}>
-                            {lang === "cn" ? "一键复制" : "Copy"}
-                          </button>
-                        </div>
-                        <div className="whitespace-pre-wrap rounded-lg p-3 text-sm"
-                          style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
-                          {userReply}
-                        </div>
-                      </section>
-                    )}
+                      );
+                    })}
                   </>
                 );
               })()}
@@ -968,25 +1125,17 @@ export default function HomePage() {
                 </section>
               )}
 
-              {/* Escalate */}
-              <section className="pt-4" style={{ borderTop: `1px solid ${S.border}` }}>
-                <button
-                  onClick={async () => {
-                    try {
-                      const email = typeof window !== "undefined" ? localStorage.getItem("appllo_feishu_email") || "" : "";
-                      const res = await escalateIssue(detailId!, "用户手动转工程师", email);
-                      setToast(res.message || t("已通知值班工程师"));
-                      if (res.chat_id) openFeishuChat(res.chat_id);
-                    } catch (e: any) { setToast(`${t("通知失败")}: ${e.message}`); }
-                  }}
-                  className="w-full rounded-lg py-2.5 text-sm font-medium transition-colors"
-                  style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(212,168,67,0.25)` }}>
-                  {t("转工程师处理")}
-                </button>
-                <p className="mt-1 text-center text-[11px]" style={{ color: S.text3 }}>
-                  {t("通过飞书消息通知当前值班工程师")}
-                </p>
-              </section>
+              {/* Mark inaccurate */}
+              {detailData.localItem?.local_status === "done" && (
+                <section className="pt-4" style={{ borderTop: `1px solid ${S.border}` }}>
+                  <button
+                    onClick={() => handleMarkInaccurate(detailId!)}
+                    className="w-full rounded-lg py-2.5 text-sm font-medium transition-colors"
+                    style={{ background: "rgba(239,68,68,0.10)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                    {t("标记为不准确")}
+                  </button>
+                </section>
+              )}
             </div>
           </div>
         </div>
@@ -999,7 +1148,12 @@ export default function HomePage() {
             <div className="mb-5 text-center">
               <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full"
                 style={{ background: S.accent }}>
-                <span className="text-lg font-bold" style={{ color: "#0A0B0E" }}>J</span>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                  <circle cx="10.5" cy="10.5" r="6" stroke="#0A0B0E" strokeWidth="2.5" />
+                  <path d="M15 15L20.5 20.5" stroke="#0A0B0E" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M10.5 7V8.5M10.5 12.5V14M8 10.5H6.5M14.5 10.5H13" stroke="#0A0B0E" strokeWidth="1.5" strokeLinecap="round" />
+                  <circle cx="10.5" cy="10.5" r="1.2" fill="#0A0B0E" />
+                </svg>
               </div>
               <h3 className="text-base font-semibold" style={{ color: S.text1 }}>{t("欢迎使用 Appllo")}</h3>
               <p className="mt-1 text-sm" style={{ color: S.text2 }}>{t("请设置您的用户名，用于标记工单操作")}</p>

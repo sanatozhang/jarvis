@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useT, useLang } from "@/lib/i18n";
-import { fetchTracking, escalateIssue, formatLocalTime, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
+import { fetchTracking, markInaccurate, formatLocalTime, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
 
 const CATEGORIES_DATA = [
   { value: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", cn: "硬件交互", en: "Hardware" },
@@ -207,9 +207,9 @@ export default function TrackingPage() {
       setToast(t("已重新触发分析")); setTimeout(() => load(page), 2000);
     } catch (e: any) { setToast(`${t("重试失败")}: ${e.message}`); }
   };
-  const handleEscalate = async (issueId: string) => {
-    try { const res: any = await escalateIssue(issueId); setToast(res.message || t("已通知")); }
-    catch (e: any) { setToast(`${t("通知失败")}: ${e.message}`); }
+  const handleMarkInaccurate = async (issueId: string) => {
+    try { await markInaccurate(issueId); setToast(t("已标记为不准确")); setTimeout(() => load(page), 500); }
+    catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
   };
 
   const thStyle = { color: S.text3, fontSize: "10px", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.08em", padding: "10px 12px" };
@@ -405,11 +405,13 @@ export default function TrackingPage() {
                           {t("复制回复")}
                         </button>
                       )}
-                      <button onClick={() => handleEscalate(item.record_id)}
-                        className="rounded-lg px-2 py-1 text-[11px] font-medium"
-                        style={{ background: "rgba(212,168,67,0.1)", color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }}>
-                        {t("转工程师")}
-                      </button>
+                      {item.local_status === "done" && (
+                        <button onClick={() => handleMarkInaccurate(item.record_id)}
+                          className="rounded-lg px-2 py-1 text-[11px] font-medium"
+                          style={{ background: "rgba(239,68,68,0.10)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                          {t("分析不准确")}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -511,11 +513,13 @@ export default function TrackingPage() {
                     {t("重新分析")}
                   </button>
                 )}
-                <button onClick={() => handleEscalate(detailItem.record_id)}
-                  className="w-full rounded-lg py-2.5 text-sm font-medium"
-                  style={{ background: "rgba(212,168,67,0.1)", color: S.accent, border: "1px solid rgba(212,168,67,0.25)" }}>
-                  {t("转工程师处理")}
-                </button>
+                {detailItem.local_status === "done" && (
+                  <button onClick={() => { handleMarkInaccurate(detailItem.record_id); closeDetail(); }}
+                    className="w-full rounded-lg py-2.5 text-sm font-medium"
+                    style={{ background: "rgba(239,68,68,0.10)", color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" }}>
+                    {t("标记为不准确")}
+                  </button>
+                )}
               </section>
             </div>
           </div>

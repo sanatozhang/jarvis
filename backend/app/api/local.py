@@ -15,11 +15,8 @@ from typing import Optional
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import FileResponse
 
-from pydantic import BaseModel
-
 from app.config import get_settings
 from app.db import database as db
-from app.services.notify import notify_oncall
 
 logger = logging.getLogger("jarvis.api.local")
 router = APIRouter()
@@ -100,6 +97,51 @@ async def list_all_tracked(
     }
 
 
+@router.get("/inaccurate")
+async def list_inaccurate(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """Get issues marked as inaccurate."""
+    items, total = await db.get_local_issues_paginated("inaccurate", page, page_size)
+    return {
+        "issues": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
+@router.get("/{issue_id}/analyses")
+async def get_issue_analyses(issue_id: str):
+    """Get ALL analyses for an issue, ordered newest first."""
+    import json as _json
+    analyses = await db.get_all_analyses_by_issue(issue_id)
+    return [
+        {
+            "task_id": a.task_id,
+            "issue_id": a.issue_id,
+            "problem_type": a.problem_type or "",
+            "problem_type_en": a.problem_type_en or "",
+            "root_cause": a.root_cause or "",
+            "root_cause_en": a.root_cause_en or "",
+            "confidence": a.confidence or "medium",
+            "confidence_reason": a.confidence_reason or "",
+            "key_evidence": _json.loads(a.key_evidence_json) if a.key_evidence_json else [],
+            "user_reply": a.user_reply or "",
+            "user_reply_en": a.user_reply_en or "",
+            "needs_engineer": a.needs_engineer,
+            "fix_suggestion": a.fix_suggestion or "",
+            "rule_type": a.rule_type or "",
+            "agent_type": a.agent_type or "",
+            "followup_question": a.followup_question or "",
+            "created_at": (a.created_at.isoformat() + "Z") if a.created_at else "",
+        }
+        for a in analyses
+    ]
+
+
 @router.get("/{issue_id}/detail")
 async def get_issue_detail(issue_id: str):
     """Get a single issue with its analysis and task data by ID."""
@@ -161,87 +203,14 @@ async def delete_issue(issue_id: str):
     return {"status": "deleted", "issue_id": issue_id}
 
 
-class EscalateRequest(BaseModel):
-    reason: str = "用户手动转工程师"
-    user_email: str = ""
-
-
-@router.post("/{issue_id}/escalate")
-async def escalate_to_engineer(issue_id: str, req: EscalateRequest):
-    """
-    Escalate an issue to oncall engineers.
-
-    Creates a Feishu group chat with the current user and oncall members,
-    then sends the issue link to the group.
-    Group name: 工单处理--{problem_type}--{timestamp}
-    """
-    from app.services.notify import create_escalation_group, notify_oncall
-
+@router.post("/{issue_id}/inaccurate")
+async def mark_inaccurate(issue_id: str):
+    """Mark an issue's analysis as inaccurate."""
     async with db.get_session() as session:
         issue = await session.get(db.IssueRecord, issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
 
-        # Check if oncall is configured
-        oncall_members = await db.get_current_oncall()
-        if not oncall_members:
-            return {"status": "no_oncall", "issue_id": issue_id, "message": "暂无值班人员，请先在值班管理中配置"}
-
-        # Get the analysis result for problem_type
-        analysis = await db.get_analysis_by_issue(issue_id)
-        problem_type = analysis.problem_type if analysis else ""
-
-        # Build issue link
-        issue_link = ""
-        if issue.linear_issue_url:
-            issue_link = issue.linear_issue_url
-        elif issue.feishu_link:
-            issue_link = issue.feishu_link
-
-        # Try to create a Feishu group chat
-        user_email = req.user_email
-        if user_email:
-            try:
-                result = await create_escalation_group(
-                    user_email=user_email,
-                    issue_id=issue.id,
-                    description=issue.description or "",
-                    problem_type=problem_type,
-                    issue_link=issue_link,
-                    zendesk_id=issue.zendesk_id or "",
-                )
-
-                await db.log_event("escalate", issue_id=issue_id, username=req.user_email or "unknown", detail={
-                    "reason": req.reason,
-                    "group_name": result["group_name"],
-                    "chat_id": result["chat_id"],
-                    "members": result["members"],
-                })
-
-                return {
-                    "status": "sent",
-                    "issue_id": issue_id,
-                    "message": f"已创建飞书群: {result['group_name']}",
-                    "group_name": result["group_name"],
-                    "chat_id": result["chat_id"],
-                }
-            except Exception as e:
-                logger.error("Failed to create escalation group: %s", e)
-                # Fallback to simple notification
-                pass
-
-        # Fallback: send direct notification (no group chat)
-        sent = await notify_oncall(
-            issue_id=issue.id,
-            description=issue.description or "",
-            reason=req.reason,
-            zendesk_id=issue.zendesk_id or "",
-            link=issue_link,
-        )
-
-        await db.log_event("escalate", issue_id=issue_id, username=req.user_email or "unknown", detail={"reason": req.reason, "sent": sent})
-
-        if sent:
-            return {"status": "sent", "issue_id": issue_id, "message": f"已通知 {', '.join(oncall_members)}"}
-        else:
-            return {"status": "send_failed", "issue_id": issue_id, "message": f"发送失败，请检查飞书邮箱是否正确: {', '.join(oncall_members)}"}
+    await db.update_issue_status(issue_id, "inaccurate")
+    await db.log_event("mark_inaccurate", issue_id=issue_id)
+    return {"status": "ok"}

@@ -66,6 +66,8 @@ class BaseAgent(ABC):
         problem_date: Optional[str] = None,
         has_logs: bool = True,
         language: str = "zh",
+        previous_analysis: Optional[Dict[str, Any]] = None,
+        followup_question: str = "",
     ) -> str:
         """Build the master prompt for the agent.
 
@@ -227,6 +229,35 @@ Timestamp drift caused keyId-sessionId mismatch.
 
 Set needs_engineer to true when confidence is low.
 """
+
+        # Append follow-up analysis section if this is a follow-up
+        if previous_analysis and followup_question:
+            prev_json = json.dumps(previous_analysis, ensure_ascii=False, indent=2)
+            prompt += f"""
+
+## 追问分析
+
+这是一次追问分析。用户看了之前的分析结果后，提出了新的问题。请基于之前的分析、同样的日志/代码、以及用户的追问，重新分析并给出更有针对性的回答。
+
+### 之前的分析结果
+
+```json
+{prev_json}
+```
+
+### 用户追问
+
+{followup_question}
+
+### 追问分析要求
+
+1. **仔细阅读之前的分析结果**，理解已经做过的分析
+2. **针对用户的追问**，从日志/代码中寻找更多相关证据
+3. **如果之前的结论需要修正**，明确说明
+4. **回复模板（user_reply / user_reply_en）必须直接回答用户的追问**，不要简单重复之前的回复
+5. 仍然按照上面要求的 JSON 格式输出到 output/result.json
+"""
+
         return prompt
 
     # ------------------------------------------------------------------

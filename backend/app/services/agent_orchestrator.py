@@ -85,6 +85,8 @@ class AgentOrchestrator:
         problem_date: Optional[str] = None,
         has_logs: bool = True,
         on_progress: Optional[Callable[[int, str], Any]] = None,
+        previous_analysis: Optional[Dict[str, Any]] = None,
+        followup_question: str = "",
     ) -> AnalysisResult:
         """
         Full analysis pipeline:
@@ -101,6 +103,8 @@ class AgentOrchestrator:
             extraction=extraction,
             problem_date=problem_date,
             has_logs=has_logs,
+            previous_analysis=previous_analysis,
+            followup_question=followup_question,
         )
 
         result = await agent.analyze(

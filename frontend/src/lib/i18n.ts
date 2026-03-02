@@ -87,8 +87,8 @@ const EN: Record<string, string> = {
   "重新分析": "Re-analyze",
   "复制回复": "Copy Reply",
   "一键复制": "Copy",
-  "转工程师": "Escalate",
-  "转工程师处理": "Escalate to Engineer",
+  "分析不准确": "Inaccurate",
+  "标记为不准确": "Mark Inaccurate",
   "删除": "Delete",
   "确定": "Apply",
   "取消": "Cancel",
@@ -144,6 +144,7 @@ const EN: Record<string, string> = {
   "活跃用户": "Active Users",
   "平均分析耗时": "Avg Duration",
   "工单转工程师": "Escalations",
+  "分析不准确数": "Inaccurate",
   "页面访问": "Page Visits",
   "每日趋势": "Daily Trend",
   "活跃用户 Top 10": "Top 10 Users",
@@ -209,6 +210,8 @@ const EN: Record<string, string> = {
   "暂无工单": "No tickets",
 
   // Common
+  "已标记为不准确": "Marked as inaccurate",
+  "暂无不准确工单": "No inaccurate tickets",
   "暂无数据": "No data",
   "暂无待处理工单": "No pending tickets",
   "暂无进行中工单": "No in-progress tickets",
@@ -314,6 +317,24 @@ const EN: Record<string, string> = {
   "依赖": "Dependencies",
   "是": "Yes",
   "否": "No",
+  "新建规则": "New Rule",
+  "规则说明": "Rule Guide",
+  "规则 ID": "Rule ID",
+  "规则名称": "Rule Name",
+  "触发关键词（逗号或回车分隔）": "Keywords (comma or Enter to add)",
+  "预提取名称": "Pattern Name",
+  "正则表达式": "Regex Pattern",
+  "日期过滤": "Date Filter",
+  "添加模式": "Add Pattern",
+  "依赖规则（逗号分隔）": "Dependencies (comma-separated)",
+  "规则内容（Markdown）": "Rule Content (Markdown)",
+  "创建": "Create",
+  "确定要删除规则吗？": "Delete this rule?",
+  "此操作不可撤销。": "This action cannot be undone.",
+  "规则已创建": "Rule created",
+  "创建失败": "Create failed",
+  "规则已删除": "Rule deleted",
+  "删除规则失败": "Delete rule failed",
 
   // Reports extra
   "Markdown 已复制": "Markdown copied",
@@ -335,6 +356,15 @@ const EN: Record<string, string> = {
   "检查中...": "Checking...",
   "整体": "Overall",
   "问题类型 → Agent 路由": "Issue Type → Agent Routing",
+
+  // Follow-up (追问)
+  "追问": "Follow-up",
+  "提交追问": "Submit Follow-up",
+  "追问分析中...": "Analyzing follow-up...",
+  "请输入追问内容...": "Enter your follow-up question...",
+  "追问问题": "Follow-up Question",
+  "初次分析": "Initial Analysis",
+  "追问分析": "Follow-up Analysis",
 
   // User management
   "用户管理": "User Management",

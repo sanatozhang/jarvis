@@ -85,6 +85,7 @@ class TaskCreate(BaseModel):
     issue_id: str               # Feishu record_id
     agent_type: Optional[AgentType] = None  # Override agent selection
     username: str = ""          # Who triggered this analysis
+    followup_question: str = "" # Follow-up question for re-analysis
 
 
 class TaskProgress(BaseModel):
@@ -123,6 +124,7 @@ class AnalysisResult(BaseModel):
     rule_type: str = ""
     agent_type: str = ""
     raw_output: str = ""
+    followup_question: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Issue context (denormalized for convenience)

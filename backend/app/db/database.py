@@ -86,6 +86,7 @@ class AnalysisRecord(Base):
     rule_type = Column(String(64), default="")
     agent_type = Column(String(32), default="")
     raw_output = Column(Text, default="")
+    followup_question = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -194,6 +195,7 @@ async def init_db():
             ("problem_type_en", "VARCHAR(128)", "''"),
             ("root_cause_en", "TEXT", "''"),
             ("user_reply_en", "TEXT", "''"),
+            ("followup_question", "TEXT", "''"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -367,6 +369,7 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             rule_type=data.get("rule_type", ""),
             agent_type=data.get("agent_type", ""),
             raw_output=data.get("raw_output", ""),
+            followup_question=data.get("followup_question", ""),
         )
         session.add(record)
         await session.commit()
@@ -379,6 +382,28 @@ async def get_analysis_by_issue(issue_id: str) -> Optional[AnalysisRecord]:
         stmt = select(AnalysisRecord).where(
             AnalysisRecord.issue_id == issue_id
         ).order_by(AnalysisRecord.created_at.desc()).limit(1)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
+async def get_all_analyses_by_issue(issue_id: str) -> List[AnalysisRecord]:
+    """Get ALL analyses for an issue, ordered by created_at DESC (newest first)."""
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(AnalysisRecord).where(
+            AnalysisRecord.issue_id == issue_id
+        ).order_by(AnalysisRecord.created_at.desc())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+
+async def get_analysis_by_task(task_id: str) -> Optional[AnalysisRecord]:
+    """Get a single analysis by task_id."""
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(AnalysisRecord).where(
+            AnalysisRecord.task_id == task_id
+        ).limit(1)
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -413,7 +438,7 @@ async def get_local_issue_ids() -> set:
     async with get_session() as session:
         from sqlalchemy import select
         stmt = select(IssueRecord.id).where(
-            IssueRecord.status.in_(["analyzing", "failed", "done"]),
+            IssueRecord.status.in_(["analyzing", "failed", "done", "inaccurate"]),
             IssueRecord.deleted == False,
         )
         result = await session.execute(stmt)
@@ -568,6 +593,7 @@ def _issue_to_dict(
             "fix_suggestion": analysis.fix_suggestion or "",
             "rule_type": analysis.rule_type or "",
             "agent_type": analysis.agent_type or "",
+            "followup_question": analysis.followup_question or "",
             "created_at": (analysis.created_at.isoformat() + "Z") if analysis.created_at else "",
         }
         d["result_summary"] = analysis.user_reply or ""

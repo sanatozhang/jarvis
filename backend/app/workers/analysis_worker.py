@@ -47,6 +47,7 @@ async def run_analysis_pipeline(
     task_id: str,
     agent_override: Optional[str] = None,
     on_progress: Optional[Callable[[int, str], Any]] = None,
+    followup_question: str = "",
 ) -> AnalysisResult:
     """
     Run the complete analysis pipeline for a single issue.
@@ -225,6 +226,21 @@ async def run_analysis_pipeline(
     engine.prepare_workspace(workspace, rules, log_paths, code_repo=code_repo)
 
     # --- Step 7: Run agent ---
+    # For follow-ups, load the previous analysis to provide context
+    previous_analysis = None
+    if followup_question:
+        prev = await db.get_analysis_by_issue(issue_id)
+        if prev:
+            import json as _json2
+            previous_analysis = {
+                "problem_type": prev.problem_type or "",
+                "root_cause": prev.root_cause or "",
+                "confidence": prev.confidence or "",
+                "key_evidence": _json2.loads(prev.key_evidence_json) if prev.key_evidence_json else [],
+                "user_reply": prev.user_reply or "",
+                "fix_suggestion": prev.fix_suggestion or "",
+            }
+
     orchestrator = _get_orchestrator()
     result = await orchestrator.run_analysis(
         workspace=workspace,
@@ -236,10 +252,14 @@ async def run_analysis_pipeline(
         problem_date=problem_date,
         has_logs=has_logs,
         on_progress=on_progress,
+        previous_analysis=previous_analysis,
+        followup_question=followup_question,
     )
 
     result.task_id = task_id
     result.issue = issue
+    if followup_question:
+        result.followup_question = followup_question
 
     if on_progress:
         await on_progress(100, "分析完成")

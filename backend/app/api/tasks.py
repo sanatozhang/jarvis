@@ -68,6 +68,7 @@ async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
         issue_id=req.issue_id,
         agent_override=agent_type_str or None,
         username=req.username or "",
+        followup_question=req.followup_question or "",
     )
 
     return progress
@@ -234,7 +235,7 @@ async def list_tasks(limit: int = Query(50, le=200)):
 # ---------------------------------------------------------------------------
 # Background task runner
 # ---------------------------------------------------------------------------
-async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None, username: str = ""):
+async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None, username: str = "", followup_question: str = ""):
     """Run the full analysis pipeline as a background task."""
     import time as _time
     _start_time = _time.monotonic()
@@ -266,6 +267,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             task_id=task_id,
             agent_override=agent_override,
             on_progress=on_progress,
+            followup_question=followup_question,
         )
 
         # Check if the result is a real success or a disguised failure

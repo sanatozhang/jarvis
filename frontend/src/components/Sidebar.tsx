@@ -67,10 +67,16 @@ export default function Sidebar() {
         style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
       >
         <div
-          className="flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold"
-          style={{ background: "#D4A843", color: "#0A0B0E" }}
+          className="flex h-7 w-7 items-center justify-center rounded-lg"
+          style={{ background: "#D4A843" }}
         >
-          J
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            {/* Magnifying glass + sparkle = AI analysis */}
+            <circle cx="10.5" cy="10.5" r="6" stroke="#0A0B0E" strokeWidth="2.5" />
+            <path d="M15 15L20.5 20.5" stroke="#0A0B0E" strokeWidth="2.5" strokeLinecap="round" />
+            <path d="M10.5 7V8.5M10.5 12.5V14M8 10.5H6.5M14.5 10.5H13" stroke="#0A0B0E" strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="10.5" cy="10.5" r="1.2" fill="#0A0B0E" />
+          </svg>
         </div>
         <div>
           <span

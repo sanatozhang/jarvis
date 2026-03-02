@@ -99,6 +99,7 @@ export interface AnalysisResult {
   fix_suggestion: string;
   rule_type: string;
   agent_type: string;
+  followup_question?: string;
   created_at?: string;
 }
 
@@ -168,10 +169,15 @@ export const refreshIssuesCache = () => request<{ status: string }>("/issues/ref
 // Tasks
 // ============================================================
 
-export const createTask = (issueId: string, agentType?: string, username?: string) =>
+export const createTask = (issueId: string, agentType?: string, username?: string, followupQuestion?: string) =>
   request<TaskProgress>("/tasks", {
     method: "POST",
-    body: JSON.stringify({ issue_id: issueId, agent_type: agentType || null, username: username || "" }),
+    body: JSON.stringify({
+      issue_id: issueId,
+      agent_type: agentType || null,
+      username: username || "",
+      followup_question: followupQuestion || "",
+    }),
   });
 
 export const batchAnalyze = (issueIds: string[], agentType?: string) =>
@@ -326,6 +332,9 @@ export interface LocalIssueItem {
 export const fetchIssueDetail = (issueId: string) =>
   request<LocalIssueItem>(`/local/${issueId}/detail`);
 
+export const fetchIssueAnalyses = (issueId: string) =>
+  request<AnalysisResult[]>(`/local/${issueId}/analyses`);
+
 export const fetchCompleted = (page = 1, pageSize = 20) =>
   request<PaginatedResponse<LocalIssueItem>>(`/local/completed?page=${page}&page_size=${pageSize}`);
 
@@ -407,20 +416,14 @@ export const updateOncallSchedule = (groups: string[][], startDate: string, user
   });
 
 // ============================================================
-// Escalate
+// Inaccurate
 // ============================================================
 
-export const escalateIssue = (issueId: string, reason?: string, userEmail?: string) =>
-  request<{ status: string; message?: string; group_name?: string; chat_id?: string }>(`/local/${issueId}/escalate`, {
-    method: "POST", body: JSON.stringify({
-      reason: reason || "用户手动转工程师",
-      user_email: userEmail || "",
-    }),
-  });
+export const markInaccurate = (issueId: string) =>
+  request<{ status: string }>(`/local/${issueId}/inaccurate`, { method: "POST" });
 
-export const openFeishuChat = (chatId: string) => {
-  window.open(`https://applink.feishu.cn/client/chat/open?openChatId=${chatId}`, "_blank");
-};
+export const fetchInaccurate = (page = 1, pageSize = 20) =>
+  request<PaginatedResponse<LocalIssueItem>>(`/local/inaccurate?page=${page}&page_size=${pageSize}`);
 
 // ============================================================
 // Settings & Health
