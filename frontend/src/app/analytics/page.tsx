@@ -2,6 +2,7 @@
 
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
+import { fetchRuleAccuracy, type RuleAccuracyStat } from "@/lib/api";
 
 interface Analytics {
   date_from: string; date_to: string;
@@ -50,12 +51,17 @@ export default function AnalyticsPage() {
   const [days, setDays] = useState(7);
   const [customDays, setCustomDays] = useState("");
   const [loading, setLoading] = useState(true);
+  const [ruleAccuracy, setRuleAccuracy] = useState<RuleAccuracyStat[]>([]);
 
   const load = async (d: number) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/analytics/dashboard?days=${d}`);
+      const [res, ra] = await Promise.all([
+        fetch(`/api/analytics/dashboard?days=${d}`),
+        fetchRuleAccuracy(d).catch(() => []),
+      ]);
       if (res.ok) setData(await res.json());
+      setRuleAccuracy(ra);
     } catch {} finally { setLoading(false); }
   };
 
@@ -266,6 +272,51 @@ export default function AnalyticsPage() {
               })()}
             </section>
           </div>
+
+          {/* Rule accuracy */}
+          {ruleAccuracy.length > 0 && (
+            <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <h2 className="mb-4 text-sm font-semibold" style={{ color: S.text1 }}>{t("规则准确率")}</h2>
+              <div className="overflow-hidden rounded-lg" style={{ border: `1px solid ${S.border}` }}>
+                <table className="min-w-full">
+                  <thead>
+                    <tr style={{ background: "rgba(0,0,0,0.02)" }}>
+                      {[t("关联规则"), t("分析量"), t("成功"), t("不准确"), t("准确率"), t("平均置信度")].map((h) => (
+                        <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ruleAccuracy.map((r) => (
+                      <tr key={r.rule_type} style={{ borderTop: `1px solid ${S.border}` }}>
+                        <td className="px-3 py-2">
+                          <span className="rounded px-1.5 py-0.5 text-xs font-medium"
+                            style={{ background: S.accentBg, color: S.accent }}>{r.rule_type}</span>
+                        </td>
+                        <td className="px-3 py-2 text-xs tabular-nums" style={{ color: S.text2 }}>{r.total}</td>
+                        <td className="px-3 py-2 text-xs tabular-nums" style={{ color: "#16A34A" }}>{r.done}</td>
+                        <td className="px-3 py-2 text-xs tabular-nums" style={{ color: "#DC2626" }}>{r.inaccurate}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <div className="w-16 h-2 rounded-full overflow-hidden" style={{ background: S.hover }}>
+                              <div className="h-full rounded-full" style={{
+                                width: `${r.accuracy_rate}%`,
+                                background: r.accuracy_rate >= 80 ? "#16A34A" : r.accuracy_rate >= 50 ? "#EA580C" : "#DC2626",
+                              }} />
+                            </div>
+                            <span className="text-xs font-mono font-semibold" style={{
+                              color: r.accuracy_rate >= 80 ? "#16A34A" : r.accuracy_rate >= 50 ? "#EA580C" : "#DC2626",
+                            }}>{r.accuracy_rate}%</span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-xs tabular-nums" style={{ color: S.text2 }}>{r.avg_confidence_score.toFixed(1)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
         </div>
       )}
     </div>

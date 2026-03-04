@@ -145,6 +145,50 @@ class OncallConfigRecord(Base):
     value = Column(Text, default="")
 
 
+class GoldenSampleRecord(Base):
+    __tablename__ = "golden_samples"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issue_id = Column(String(64), index=True)
+    analysis_id = Column(Integer)
+    problem_type = Column(String(128), default="")
+    description = Column(Text, default="")
+    root_cause = Column(Text, default="")
+    user_reply = Column(Text, default="")
+    confidence = Column(String(16), default="high")
+    rule_type = Column(String(64), default="")
+    tags_json = Column(Text, default="[]")
+    quality = Column(String(16), default="verified")
+    created_by = Column(String(64), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EvalDatasetRecord(Base):
+    __tablename__ = "eval_datasets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128))
+    description = Column(Text, default="")
+    sample_ids_json = Column(Text, default="[]")
+    created_by = Column(String(64), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EvalRunRecord(Base):
+    __tablename__ = "eval_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dataset_id = Column(Integer, index=True)
+    status = Column(String(16), default="pending")
+    config_json = Column(Text, default="{}")
+    results_json = Column(Text, default="[]")
+    summary_json = Column(Text, default="{}")
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_by = Column(String(64), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Engine / Session
 # ---------------------------------------------------------------------------
@@ -578,6 +622,7 @@ def _issue_to_dict(
 
     if analysis:
         d["analysis"] = {
+            "id": analysis.id,
             "task_id": analysis.task_id,
             "issue_id": analysis.issue_id,
             "problem_type": analysis.problem_type or "",
@@ -891,4 +936,207 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
             "failed_analyses": type_counts.get("analysis_fail", 0),
             "feedback_submitted": type_counts.get("feedback_submit", 0),
             "escalations": type_counts.get("escalate", 0),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Golden Samples CRUD
+# ---------------------------------------------------------------------------
+async def add_golden_sample(data: Dict[str, Any]) -> GoldenSampleRecord:
+    async with get_session() as session:
+        record = GoldenSampleRecord(
+            issue_id=data.get("issue_id", ""),
+            analysis_id=data.get("analysis_id", 0),
+            problem_type=data.get("problem_type", ""),
+            description=data.get("description", ""),
+            root_cause=data.get("root_cause", ""),
+            user_reply=data.get("user_reply", ""),
+            confidence=data.get("confidence", "high"),
+            rule_type=data.get("rule_type", ""),
+            tags_json=json.dumps(data.get("tags", []), ensure_ascii=False),
+            quality=data.get("quality", "verified"),
+            created_by=data.get("created_by", ""),
+        )
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        return record
+
+
+async def list_golden_samples(rule_type: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(GoldenSampleRecord).order_by(GoldenSampleRecord.created_at.desc())
+        if rule_type:
+            stmt = stmt.where(GoldenSampleRecord.rule_type == rule_type)
+        stmt = stmt.limit(limit)
+        result = await session.execute(stmt)
+        return [_golden_sample_to_dict(r) for r in result.scalars().all()]
+
+
+async def get_golden_sample(sample_id: int) -> Optional[Dict[str, Any]]:
+    async with get_session() as session:
+        record = await session.get(GoldenSampleRecord, sample_id)
+        if not record:
+            return None
+        return _golden_sample_to_dict(record)
+
+
+async def delete_golden_sample(sample_id: int) -> bool:
+    async with get_session() as session:
+        record = await session.get(GoldenSampleRecord, sample_id)
+        if record:
+            await session.delete(record)
+            await session.commit()
+            return True
+        return False
+
+
+async def get_golden_samples_stats() -> Dict[str, Any]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(GoldenSampleRecord)
+        result = await session.execute(stmt)
+        samples = list(result.scalars().all())
+        by_rule: Dict[str, int] = {}
+        by_type: Dict[str, int] = {}
+        for s in samples:
+            rt = s.rule_type or "unknown"
+            by_rule[rt] = by_rule.get(rt, 0) + 1
+            pt = s.problem_type or "unknown"
+            by_type[pt] = by_type.get(pt, 0) + 1
+        return {"total": len(samples), "by_rule_type": by_rule, "by_problem_type": by_type}
+
+
+def _golden_sample_to_dict(r: GoldenSampleRecord) -> Dict[str, Any]:
+    return {
+        "id": r.id,
+        "issue_id": r.issue_id or "",
+        "analysis_id": r.analysis_id or 0,
+        "problem_type": r.problem_type or "",
+        "description": r.description or "",
+        "root_cause": r.root_cause or "",
+        "user_reply": r.user_reply or "",
+        "confidence": r.confidence or "high",
+        "rule_type": r.rule_type or "",
+        "tags": json.loads(r.tags_json) if r.tags_json else [],
+        "quality": r.quality or "verified",
+        "created_by": r.created_by or "",
+        "created_at": (r.created_at.isoformat() + "Z") if r.created_at else "",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Eval CRUD
+# ---------------------------------------------------------------------------
+async def create_eval_dataset(data: Dict[str, Any]) -> EvalDatasetRecord:
+    async with get_session() as session:
+        record = EvalDatasetRecord(
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            sample_ids_json=json.dumps(data.get("sample_ids", []), ensure_ascii=False),
+            created_by=data.get("created_by", ""),
+        )
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        return record
+
+
+async def list_eval_datasets() -> List[Dict[str, Any]]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(EvalDatasetRecord).order_by(EvalDatasetRecord.created_at.desc())
+        result = await session.execute(stmt)
+        return [{
+            "id": r.id,
+            "name": r.name or "",
+            "description": r.description or "",
+            "sample_ids": json.loads(r.sample_ids_json) if r.sample_ids_json else [],
+            "created_by": r.created_by or "",
+            "created_at": (r.created_at.isoformat() + "Z") if r.created_at else "",
+        } for r in result.scalars().all()]
+
+
+async def get_eval_dataset(dataset_id: int) -> Optional[Dict[str, Any]]:
+    async with get_session() as session:
+        record = await session.get(EvalDatasetRecord, dataset_id)
+        if not record:
+            return None
+        return {
+            "id": record.id,
+            "name": record.name or "",
+            "description": record.description or "",
+            "sample_ids": json.loads(record.sample_ids_json) if record.sample_ids_json else [],
+            "created_by": record.created_by or "",
+            "created_at": (record.created_at.isoformat() + "Z") if record.created_at else "",
+        }
+
+
+async def create_eval_run(data: Dict[str, Any]) -> EvalRunRecord:
+    async with get_session() as session:
+        record = EvalRunRecord(
+            dataset_id=data.get("dataset_id", 0),
+            status="pending",
+            config_json=json.dumps(data.get("config", {}), ensure_ascii=False),
+            created_by=data.get("created_by", ""),
+        )
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        return record
+
+
+async def update_eval_run(run_id: int, **kwargs):
+    async with get_session() as session:
+        record = await session.get(EvalRunRecord, run_id)
+        if not record:
+            return
+        for key, value in kwargs.items():
+            if key == "results":
+                record.results_json = json.dumps(value, ensure_ascii=False)
+            elif key == "summary":
+                record.summary_json = json.dumps(value, ensure_ascii=False)
+            elif hasattr(record, key):
+                setattr(record, key, value)
+        await session.commit()
+
+
+async def list_eval_runs(dataset_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = select(EvalRunRecord).order_by(EvalRunRecord.created_at.desc())
+        if dataset_id:
+            stmt = stmt.where(EvalRunRecord.dataset_id == dataset_id)
+        result = await session.execute(stmt)
+        return [{
+            "id": r.id,
+            "dataset_id": r.dataset_id,
+            "status": r.status or "pending",
+            "config": json.loads(r.config_json) if r.config_json else {},
+            "results": json.loads(r.results_json) if r.results_json else [],
+            "summary": json.loads(r.summary_json) if r.summary_json else {},
+            "started_at": (r.started_at.isoformat() + "Z") if r.started_at else None,
+            "finished_at": (r.finished_at.isoformat() + "Z") if r.finished_at else None,
+            "created_by": r.created_by or "",
+            "created_at": (r.created_at.isoformat() + "Z") if r.created_at else "",
+        } for r in result.scalars().all()]
+
+
+async def get_eval_run(run_id: int) -> Optional[Dict[str, Any]]:
+    async with get_session() as session:
+        record = await session.get(EvalRunRecord, run_id)
+        if not record:
+            return None
+        return {
+            "id": record.id,
+            "dataset_id": record.dataset_id,
+            "status": record.status or "pending",
+            "config": json.loads(record.config_json) if record.config_json else {},
+            "results": json.loads(record.results_json) if record.results_json else [],
+            "summary": json.loads(record.summary_json) if record.summary_json else {},
+            "started_at": (record.started_at.isoformat() + "Z") if record.started_at else None,
+            "finished_at": (record.finished_at.isoformat() + "Z") if record.finished_at else None,
+            "created_by": record.created_by or "",
+            "created_at": (record.created_at.isoformat() + "Z") if record.created_at else "",
         }

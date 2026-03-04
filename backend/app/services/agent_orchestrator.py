@@ -97,6 +97,18 @@ class AgentOrchestrator:
         """
         agent = self.select_agent(rule_type, override=agent_override)
 
+        # Retrieve similar golden samples for few-shot injection
+        few_shot_examples = []
+        try:
+            from app.services.golden_samples import find_similar_samples
+            few_shot_examples = await find_similar_samples(
+                issue.description, rule_type=rule_type or None, top_k=3,
+            )
+            if few_shot_examples:
+                logger.info("Injecting %d few-shot examples for issue %s", len(few_shot_examples), issue.record_id)
+        except Exception as e:
+            logger.warning("Failed to retrieve golden samples: %s", e)
+
         prompt = BaseAgent.build_prompt(
             issue=issue,
             rules=rules,
@@ -105,6 +117,7 @@ class AgentOrchestrator:
             has_logs=has_logs,
             previous_analysis=previous_analysis,
             followup_question=followup_question,
+            few_shot_examples=few_shot_examples,
         )
 
         result = await agent.analyze(

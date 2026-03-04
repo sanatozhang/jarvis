@@ -95,6 +95,8 @@ from app.api.v1_analyze import router as v1_analyze_router
 from app.api.env_settings import router as env_settings_router
 from app.api.analytics import router as analytics_router
 from app.api.linear_webhook import router as linear_webhook_router
+from app.api.golden_samples import router as golden_samples_router
+from app.api.eval import router as eval_router
 
 app.include_router(issues_router, prefix="/api/issues", tags=["Issues"])
 app.include_router(tasks_router, prefix="/api/tasks", tags=["Tasks"])
@@ -110,6 +112,8 @@ app.include_router(v1_analyze_router, prefix="/api/v1", tags=["V1 Public API"])
 app.include_router(env_settings_router, prefix="/api/env", tags=["Env Settings"])
 app.include_router(analytics_router, prefix="/api/analytics", tags=["Analytics"])
 app.include_router(linear_webhook_router, prefix="/api/linear", tags=["Linear"])
+app.include_router(golden_samples_router, prefix="/api/golden-samples", tags=["Golden Samples"])
+app.include_router(eval_router, prefix="/api/eval", tags=["Eval"])
 
 
 # ---------------------------------------------------------------------------

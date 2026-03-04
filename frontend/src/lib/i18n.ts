@@ -11,7 +11,7 @@ import { createContext, useContext } from "react";
 
 export type Lang = "cn" | "en";
 
-export const LangContext = createContext<Lang>("cn");
+export const LangContext = createContext<Lang>("en");
 export const LangToggleContext = createContext<() => void>(() => {});
 
 export function useT() {
@@ -374,4 +374,53 @@ const EN: Record<string, string> = {
   "注册时间": "Registered",
   "管理员": "Admin",
   "用户": "User",
+
+  // Golden Samples
+  "金样本": "Golden Samples",
+  "金样本库": "Golden Samples",
+  "标记为金样本": "Mark as Golden Sample",
+  "已标记为金样本": "Marked as golden sample",
+  "问题类型": "Problem Type",
+  "根因": "Root Cause",
+  "置信度": "Confidence",
+  "关联规则": "Rule",
+  "创建者": "Created by",
+  "暂无金样本": "No golden samples yet",
+  "确定要删除此金样本吗？": "Delete this golden sample?",
+  "金样本已删除": "Golden sample deleted",
+  "按规则分组": "By Rule",
+  "按时间排序": "By Time",
+  "样本统计": "Sample Stats",
+  "管理已验证的准确分析样本": "Manage verified analysis samples",
+
+  // Rule Accuracy
+  "规则准确率": "Rule Accuracy",
+  "准确率": "Accuracy",
+  "分析量": "Analyses",
+  "平均置信度": "Avg Confidence",
+  "不准确": "Inaccurate",
+
+  // Eval Pipeline
+  "评测中心": "Eval Center",
+  "评测数据集": "Eval Datasets",
+  "评测记录": "Eval Runs",
+  "创建数据集": "Create Dataset",
+  "数据集名称": "Dataset Name",
+  "选择样本": "Select Samples",
+  "开始评测": "Start Eval",
+  "评测中...": "Running eval...",
+  "总分": "Score",
+  "类型匹配": "Type Match",
+  "根因相似度": "Cause Similarity",
+  "置信度匹配": "Confidence Match",
+  "综合评分": "Overall Score",
+  "评测详情": "Eval Details",
+  "预期结果": "Expected",
+  "实际结果": "Actual",
+  "运行评测以量化分析质量": "Run evaluations to measure analysis quality",
+  "评测完成": "Eval completed",
+  "评测失败": "Eval failed",
+  "暂无评测数据集": "No eval datasets",
+  "暂无评测记录": "No eval runs",
+  "样本数": "Samples",
 };

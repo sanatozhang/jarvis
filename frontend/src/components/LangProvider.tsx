@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { LangContext, LangToggleContext, type Lang } from "@/lib/i18n";
 
 export default function LangProvider({ children }: { children: React.ReactNode }) {
-  const [lang, setLang] = useState<Lang>("cn");
+  const [lang, setLang] = useState<Lang>("en");
 
   useEffect(() => {
     const saved = localStorage.getItem("appllo_lang");

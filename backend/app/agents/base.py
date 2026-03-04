@@ -68,6 +68,7 @@ class BaseAgent(ABC):
         language: str = "zh",
         previous_analysis: Optional[Dict[str, Any]] = None,
         followup_question: str = "",
+        few_shot_examples: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Build the master prompt for the agent.
 
@@ -140,6 +141,24 @@ code/         ← 代码仓库（如果存在），可搜索代码定位问题
 output/       ← 请将 result.json 写入此目录
 ```"""
 
+        # Build few-shot section if examples are provided
+        few_shot_section = ""
+        if few_shot_examples:
+            examples_text = ""
+            for idx, ex in enumerate(few_shot_examples[:3], 1):
+                examples_text += f"""
+### 案例 {idx}
+- 问题描述: {ex.get('description', '')[:200]}
+- 问题分类: {ex.get('problem_type', '')}
+- 根因分析: {ex.get('root_cause', '')}
+- 用户回复: {ex.get('user_reply', '')[:300]}
+"""
+            few_shot_section = f"""
+## 参考案例（历史准确分析）
+
+以下是与当前工单相似的历史分析案例，仅供参考，请结合当前工单的实际日志进行独立分析。
+{examples_text}"""
+
         prompt = f"""{role_and_principles}
 
 ## 工单信息
@@ -157,7 +176,7 @@ output/       ← 请将 result.json 写入此目录
 以下是规则摘要：
 
 {rules_section}
-
+{few_shot_section}
 {extraction_section}
 
 {workspace_section}

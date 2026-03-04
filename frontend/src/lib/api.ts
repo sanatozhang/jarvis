@@ -434,3 +434,124 @@ export const updateAgentConfig = (data: any) =>
   request<any>("/settings/agent", { method: "PUT", body: JSON.stringify(data) });
 export const fetchHealth = () => request<HealthCheck>("/health");
 export const checkAgents = () => request<Record<string, any>>("/health/agents");
+
+// ============================================================
+// Golden Samples
+// ============================================================
+
+export interface GoldenSample {
+  id: number;
+  issue_id: string;
+  analysis_id: number;
+  problem_type: string;
+  description: string;
+  root_cause: string;
+  user_reply: string;
+  confidence: string;
+  rule_type: string;
+  tags: string[];
+  quality: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface GoldenSamplesStats {
+  total: number;
+  by_rule_type: Record<string, number>;
+  by_problem_type: Record<string, number>;
+}
+
+export const promoteToGoldenSample = (analysisId: number, createdBy: string = "") =>
+  request<GoldenSample>("/golden-samples", {
+    method: "POST",
+    body: JSON.stringify({ analysis_id: analysisId, created_by: createdBy }),
+  });
+
+export const fetchGoldenSamples = (ruleType?: string, limit?: number) => {
+  const params = new URLSearchParams();
+  if (ruleType) params.set("rule_type", ruleType);
+  if (limit) params.set("limit", String(limit));
+  return request<GoldenSample[]>(`/golden-samples?${params}`);
+};
+
+export const fetchGoldenSamplesStats = () =>
+  request<GoldenSamplesStats>("/golden-samples/stats");
+
+export const deleteGoldenSample = (id: number) =>
+  request<{ status: string }>(`/golden-samples/${id}`, { method: "DELETE" });
+
+// ============================================================
+// Rule Accuracy
+// ============================================================
+
+export interface RuleAccuracyStat {
+  rule_type: string;
+  total: number;
+  done: number;
+  inaccurate: number;
+  accuracy_rate: number;
+  avg_confidence_score: number;
+}
+
+export const fetchRuleAccuracy = (days: number = 30) =>
+  request<RuleAccuracyStat[]>(`/analytics/rule-accuracy?days=${days}`);
+
+// ============================================================
+// Eval Pipeline
+// ============================================================
+
+export interface EvalDataset {
+  id: number;
+  name: string;
+  description: string;
+  sample_ids: number[];
+  created_by: string;
+  created_at: string;
+}
+
+export interface EvalRunSummary {
+  total_samples: number;
+  completed: number;
+  errors: number;
+  avg_overall_score: number;
+  avg_problem_type_match: number;
+  avg_root_cause_similarity: number;
+  avg_confidence_match: number;
+}
+
+export interface EvalRun {
+  id: number;
+  dataset_id: number;
+  status: string;
+  config: Record<string, any>;
+  results: any[];
+  summary: EvalRunSummary & Record<string, any>;
+  started_at: string | null;
+  finished_at: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export const createEvalDataset = (data: { name: string; description?: string; sample_ids: number[]; created_by?: string }) =>
+  request<{ id: number; name: string; status: string }>("/eval/datasets", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const fetchEvalDatasets = () => request<EvalDataset[]>("/eval/datasets");
+
+export const fetchEvalDataset = (id: number) => request<EvalDataset>(`/eval/datasets/${id}`);
+
+export const startEvalRun = (datasetId: number, config: Record<string, any> = {}, createdBy: string = "") =>
+  request<{ id: number; status: string }>("/eval/run", {
+    method: "POST",
+    body: JSON.stringify({ dataset_id: datasetId, config, created_by: createdBy }),
+  });
+
+export const fetchEvalRuns = (datasetId?: number) => {
+  const params = new URLSearchParams();
+  if (datasetId) params.set("dataset_id", String(datasetId));
+  return request<EvalRun[]>(`/eval/runs?${params}`);
+};
+
+export const fetchEvalRun = (id: number) => request<EvalRun>(`/eval/runs/${id}`);

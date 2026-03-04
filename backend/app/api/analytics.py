@@ -65,3 +65,12 @@ async def get_dashboard(
     }
 
     return data
+
+
+@router.get("/rule-accuracy")
+async def get_rule_accuracy(
+    days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),
+):
+    """Get rule accuracy statistics."""
+    from app.services.rule_accuracy import get_rule_accuracy_stats
+    return await get_rule_accuracy_stats(days=days)

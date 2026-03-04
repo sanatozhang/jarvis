@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useT, useLang } from "@/lib/i18n";
-import { fetchTracking, markInaccurate, formatLocalTime, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
+import { fetchTracking, markInaccurate, promoteToGoldenSample, formatLocalTime, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
 
 const CATEGORIES_DATA = [
   { value: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", cn: "硬件交互", en: "Hardware" },
@@ -210,6 +210,15 @@ export default function TrackingPage() {
   const handleMarkInaccurate = async (issueId: string) => {
     try { await markInaccurate(issueId); setToast(t("已标记为不准确")); setTimeout(() => load(page), 500); }
     catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
+  };
+  const handlePromoteToGolden = async (item: LocalIssueItem) => {
+    if (!item.analysis) return;
+    try {
+      const analysisId = (item.analysis as any).id;
+      if (!analysisId) { setToast(t("失败")); return; }
+      await promoteToGoldenSample(analysisId, username);
+      setToast(t("已标记为金样本"));
+    } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
   };
 
   const thStyle = { color: S.text3, fontSize: "10px", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.08em", padding: "10px 12px" };
@@ -514,11 +523,18 @@ export default function TrackingPage() {
                   </button>
                 )}
                 {detailItem.local_status === "done" && (
-                  <button onClick={() => { handleMarkInaccurate(detailItem.record_id); closeDetail(); }}
-                    className="w-full rounded-lg py-2.5 text-sm font-medium"
-                    style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
-                    {t("标记为不准确")}
-                  </button>
+                  <div className="space-y-2">
+                    <button onClick={() => { handlePromoteToGolden(detailItem); }}
+                      className="w-full rounded-lg py-2.5 text-sm font-semibold"
+                      style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
+                      {t("标记为金样本")}
+                    </button>
+                    <button onClick={() => { handleMarkInaccurate(detailItem.record_id); closeDetail(); }}
+                      className="w-full rounded-lg py-2.5 text-sm font-medium"
+                      style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
+                      {t("标记为不准确")}
+                    </button>
+                  </div>
                 )}
               </section>
             </div>
