@@ -188,36 +188,25 @@ export default function FeedbackPage() {
             </select>
           </div>
 
-          {/* Platform + Priority */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={labelCls} style={{ color: S.text2 }}>{t("平台")}</label>
-              <select value={form.platform} onChange={(e) => update("platform", e.target.value)}
-                className={inputCls} style={inputStyle}>
-                <option value="APP">APP</option>
-                <option value="Web">Web</option>
-                <option value="Desktop">Desktop</option>
-              </select>
-            </div>
-            <div>
-              <label className={labelCls} style={{ color: S.text2 }}>{t("优先级")}</label>
-              <div className="flex gap-3 pt-1">
-                {[
-                  { value: "H", label: t("高"), activeBg: "rgba(239,68,68,0.15)", activeColor: "#DC2626", activeBorder: "rgba(239,68,68,0.3)" },
-                  { value: "L", label: t("低"), activeBg: "rgba(0,0,0,0.04)", activeColor: S.text2, activeBorder: S.border },
-                ].map((opt) => (
-                  <label key={opt.value} className="flex-1 cursor-pointer">
-                    <input type="radio" name="priority" value={opt.value} checked={form.priority === opt.value}
-                      onChange={(e) => update("priority", e.target.value)} className="sr-only" />
-                    <div className="rounded-lg py-2 text-center text-sm font-medium transition-all"
-                      style={form.priority === opt.value
-                        ? { background: opt.activeBg, color: opt.activeColor, border: `1px solid ${opt.activeBorder}` }
-                        : { background: "transparent", color: S.text3, border: `1px solid ${S.border}` }}>
-                      {opt.label}
-                    </div>
-                  </label>
-                ))}
-              </div>
+          {/* Priority */}
+          <div>
+            <label className={labelCls} style={{ color: S.text2 }}>{t("优先级")}</label>
+            <div className="flex gap-3 pt-1">
+              {[
+                { value: "H", label: t("高"), activeBg: "rgba(239,68,68,0.15)", activeColor: "#DC2626", activeBorder: "rgba(239,68,68,0.3)" },
+                { value: "L", label: t("低"), activeBg: "rgba(0,0,0,0.04)", activeColor: S.text2, activeBorder: S.border },
+              ].map((opt) => (
+                <label key={opt.value} className="w-20 cursor-pointer">
+                  <input type="radio" name="priority" value={opt.value} checked={form.priority === opt.value}
+                    onChange={(e) => update("priority", e.target.value)} className="sr-only" />
+                  <div className="rounded-lg py-2 text-center text-sm font-medium transition-all"
+                    style={form.priority === opt.value
+                      ? { background: opt.activeBg, color: opt.activeColor, border: `1px solid ${opt.activeBorder}` }
+                      : { background: "transparent", color: S.text3, border: `1px solid ${S.border}` }}>
+                    {opt.label}
+                  </div>
+                </label>
+              ))}
             </div>
           </div>
 
