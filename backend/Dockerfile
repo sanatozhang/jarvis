@@ -1,4 +1,17 @@
-FROM python:3.12-slim
+# ---- Test stage: tests must pass before building production image ----
+FROM python:3.12-slim AS test
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/ ./app/
+COPY rules/ ./rules/
+COPY tests/ ./tests/
+COPY pytest.ini .
+RUN python -m pytest --tb=short -q
+
+# ---- Production stage ----
+FROM python:3.12-slim AS production
 
 WORKDIR /app
 
@@ -18,7 +31,7 @@ RUN npm install -g @openai/codex 2>/dev/null || echo "Codex install skipped (opt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend code
+# Copy backend code (no tests in production)
 COPY app/ ./app/
 COPY rules/ ./rules/
 
