@@ -439,7 +439,12 @@ export default function HomePage() {
         else if (item.local_status === "done" || item.local_status === "failed") setDetailTab("done");
         else if (item.local_status === "analyzing") setDetailTab("in_progress");
       }
-    }).catch(() => {});
+    }).catch(() => {
+      if (!cancelled) {
+        setToast(`${t("加载失败")}: ${detailId}`);
+        closeDetail();
+      }
+    });
     return () => { cancelled = true; };
   }, [detailId, detailData]);
 

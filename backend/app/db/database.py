@@ -46,6 +46,7 @@ class IssueRecord(Base):
     platform = Column(String(16), default="")              # APP / Web / Desktop
     category = Column(String(128), default="")             # problem category
     created_by = Column(String(64), default="")            # username who triggered analysis
+    occurred_at = Column(DateTime, nullable=True)            # when the bug occurred (user-reported)
     deleted = Column(Boolean, default=False)
     created_at_ms = Column(Integer, default=0)             # creation time (Unix ms)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -228,6 +229,7 @@ async def init_db():
             ("source", "VARCHAR(16)", "'feishu'"),
             ("linear_issue_id", "VARCHAR(64)", "''"),
             ("linear_issue_url", "VARCHAR(512)", "''"),
+            ("occurred_at", "DATETIME", "NULL"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -295,6 +297,8 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
                 existing.log_files_json = json.dumps(data["log_files"], ensure_ascii=False)
             if data.get("created_by"):
                 existing.created_by = data["created_by"]
+            if "occurred_at" in data:
+                existing.occurred_at = data["occurred_at"]
             existing.status = status
             existing.updated_at = datetime.utcnow()
             await session.commit()
@@ -315,6 +319,7 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
             platform=data.get("platform", ""),
             category=data.get("category", ""),
             created_by=data.get("created_by", ""),
+            occurred_at=data.get("occurred_at"),
             created_at_ms=data.get("created_at_ms", 0),
             log_files_json=json.dumps(data.get("log_files", []), ensure_ascii=False),
             status=status,
@@ -525,12 +530,15 @@ async def get_local_issues_paginated(
             ).order_by(AnalysisRecord.created_at.desc()).limit(1)
             analysis = (await session.execute(a_stmt)).scalar_one_or_none()
 
+            a_count_stmt = select(func.count()).select_from(AnalysisRecord).where(AnalysisRecord.issue_id == issue.id)
+            a_count = (await session.execute(a_count_stmt)).scalar() or 0
+
             t_stmt = select(TaskRecord).where(
                 TaskRecord.issue_id == issue.id
             ).order_by(TaskRecord.created_at.desc()).limit(1)
             task = (await session.execute(t_stmt)).scalar_one_or_none()
 
-            items.append(_issue_to_dict(issue, analysis=analysis, task=task))
+            items.append(_issue_to_dict(issue, analysis=analysis, task=task, analysis_count=a_count))
 
         return items, total
 
@@ -582,9 +590,11 @@ async def get_tracked_issues_paginated(
         for issue in issues:
             a_stmt = select(AnalysisRecord).where(AnalysisRecord.issue_id == issue.id).order_by(AnalysisRecord.created_at.desc()).limit(1)
             analysis = (await session.execute(a_stmt)).scalar_one_or_none()
+            a_count_stmt = select(func.count()).select_from(AnalysisRecord).where(AnalysisRecord.issue_id == issue.id)
+            a_count = (await session.execute(a_count_stmt)).scalar() or 0
             t_stmt = select(TaskRecord).where(TaskRecord.issue_id == issue.id).order_by(TaskRecord.created_at.desc()).limit(1)
             task = (await session.execute(t_stmt)).scalar_one_or_none()
-            items.append(_issue_to_dict(issue, analysis=analysis, task=task))
+            items.append(_issue_to_dict(issue, analysis=analysis, task=task, analysis_count=a_count))
 
         return items, total
 
@@ -593,6 +603,7 @@ def _issue_to_dict(
     issue: IssueRecord,
     analysis: Optional[AnalysisRecord] = None,
     task: Optional[TaskRecord] = None,
+    analysis_count: int = 0,
 ) -> Dict[str, Any]:
     """Convert DB records to a dict matching the frontend Issue+Result shape."""
     d: Dict[str, Any] = {
@@ -618,6 +629,7 @@ def _issue_to_dict(
         "category": issue.category or "",
         "created_by": issue.created_by or "",
         "created_at": (issue.created_at.isoformat() + "Z") if issue.created_at else "",
+        "analysis_count": analysis_count,
     }
 
     if analysis:
@@ -887,16 +899,29 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
         )
         avg_duration = (await session.execute(avg_duration_stmt)).scalar() or 0
 
-        # Fail reasons
-        fail_stmt = select(EventRecord.detail_json).where(
+        # Fail reasons (with issue_id, username, duration, timestamp for drill-down)
+        fail_stmt = select(
+            EventRecord.issue_id,
+            EventRecord.detail_json,
+            EventRecord.username,
+            EventRecord.duration_ms,
+            EventRecord.created_at,
+        ).where(
             date_filter, EventRecord.event_type == "analysis_fail"
-        ).limit(50)
+        ).order_by(EventRecord.created_at.desc()).limit(100)
         fail_details = []
         for row in (await session.execute(fail_stmt)).fetchall():
             try:
-                fail_details.append(json.loads(row[0]))
+                detail = json.loads(row.detail_json) if row.detail_json else {}
             except Exception:
-                pass
+                detail = {}
+            fail_details.append({
+                "issue_id": row.issue_id or "",
+                "username": row.username or "",
+                "duration_ms": row.duration_ms or 0,
+                "created_at": row.created_at.isoformat() + "Z" if row.created_at else "",
+                **detail,
+            })
 
         # Daily breakdown
         daily_stmt = select(

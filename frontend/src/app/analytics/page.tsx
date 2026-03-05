@@ -1,8 +1,17 @@
 "use client";
 
 import { useT } from "@/lib/i18n";
-import { useEffect, useState } from "react";
-import { fetchRuleAccuracy, type RuleAccuracyStat } from "@/lib/api";
+import { useEffect, useState, useCallback } from "react";
+import { fetchRuleAccuracy, fetchIssueDetail, formatLocalTime, type RuleAccuracyStat, type LocalIssueItem } from "@/lib/api";
+
+interface FailReasonItem {
+  issue_id?: string;
+  reason?: string;
+  error?: string;
+  username?: string;
+  duration_ms?: number;
+  created_at?: string;
+}
 
 interface Analytics {
   date_from: string; date_to: string;
@@ -11,7 +20,7 @@ interface Analytics {
   avg_analysis_duration_ms: number; avg_analysis_duration_min: number;
   total_analyses: number; successful_analyses: number; failed_analyses: number;
   feedback_submitted: number; escalations: number;
-  fail_reasons: { reason?: string; error?: string }[];
+  fail_reasons: FailReasonItem[];
   daily: Record<string, Record<string, number>>;
   top_users: { username: string; count: number }[];
   value_metrics: {
@@ -52,6 +61,19 @@ export default function AnalyticsPage() {
   const [customDays, setCustomDays] = useState("");
   const [loading, setLoading] = useState(true);
   const [ruleAccuracy, setRuleAccuracy] = useState<RuleAccuracyStat[]>([]);
+  const [expandedReason, setExpandedReason] = useState<string | null>(null);
+  const [issueDetails, setIssueDetails] = useState<Record<string, LocalIssueItem | "loading" | "error">>({});
+
+  const loadIssueDetail = useCallback(async (issueId: string) => {
+    if (!issueId || issueDetails[issueId]) return;
+    setIssueDetails((prev) => ({ ...prev, [issueId]: "loading" }));
+    try {
+      const detail = await fetchIssueDetail(issueId);
+      setIssueDetails((prev) => ({ ...prev, [issueId]: detail }));
+    } catch {
+      setIssueDetails((prev) => ({ ...prev, [issueId]: "error" }));
+    }
+  }, [issueDetails]);
 
   const load = async (d: number) => {
     setLoading(true);
@@ -251,22 +273,101 @@ export default function AnalyticsPage() {
               {data.fail_reasons.length === 0 ? (
                 <p className="py-4 text-center text-sm" style={{ color: S.text3 }}>{t("暂无失败记录")}</p>
               ) : (() => {
-                const reasonCounts: Record<string, number> = {};
+                const grouped: Record<string, FailReasonItem[]> = {};
                 data.fail_reasons.forEach((f) => {
                   const r = f.reason || t("未知");
-                  reasonCounts[r] = (reasonCounts[r] || 0) + 1;
+                  if (!grouped[r]) grouped[r] = [];
+                  grouped[r].push(f);
                 });
                 return (
-                  <div className="space-y-2">
-                    {Object.entries(reasonCounts).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
-                      <div key={reason} className="flex items-center justify-between">
-                        <span className="text-sm" style={{ color: S.text2 }}>{reason}</span>
-                        <span className="rounded-full px-2 py-0.5 text-[11px] font-medium"
-                          style={{ background: "rgba(239,68,68,0.12)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
-                          {count}
-                        </span>
-                      </div>
-                    ))}
+                  <div className="space-y-1">
+                    {Object.entries(grouped).sort((a, b) => b[1].length - a[1].length).map(([reason, items]) => {
+                      const isExpanded = expandedReason === reason;
+                      return (
+                        <div key={reason}>
+                          <button
+                            onClick={() => {
+                              setExpandedReason(isExpanded ? null : reason);
+                              if (!isExpanded) {
+                                items.forEach((item) => { if (item.issue_id) loadIssueDetail(item.issue_id); });
+                              }
+                            }}
+                            className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 transition-colors text-left"
+                            onMouseEnter={(e) => (e.currentTarget.style.background = S.overlay)}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px]" style={{ color: S.text3 }}>{isExpanded ? "▼" : "▶"}</span>
+                              <span className="text-sm" style={{ color: S.text2 }}>{reason}</span>
+                            </div>
+                            <span className="rounded-full px-2 py-0.5 text-[11px] font-medium"
+                              style={{ background: "rgba(239,68,68,0.12)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
+                              {items.length}
+                            </span>
+                          </button>
+                          {isExpanded && (
+                            <div className="ml-4 mt-1 mb-2 space-y-1">
+                              {items.map((item, idx) => {
+                                const detail = item.issue_id ? issueDetails[item.issue_id] : undefined;
+                                const desc = detail && typeof detail === "object" ? detail.description : "";
+                                const durationMin = item.duration_ms ? (item.duration_ms / 60000).toFixed(1) : "—";
+                                return (
+                                  <div key={item.issue_id || idx}
+                                    className="rounded-lg px-3 py-2 text-xs"
+                                    style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        {item.issue_id ? (
+                                          <a href={`/tracking?detail=${encodeURIComponent(item.issue_id)}`}
+                                            className="font-mono font-medium shrink-0 hover:underline"
+                                            style={{ color: "#2563EB" }}>
+                                            {item.issue_id.length > 12 ? item.issue_id.slice(0, 12) + "…" : item.issue_id}
+                                          </a>
+                                        ) : (
+                                          <span className="font-mono" style={{ color: S.text3 }}>—</span>
+                                        )}
+                                        {item.username && (
+                                          <span className="shrink-0" style={{ color: S.text3 }}>{item.username}</span>
+                                        )}
+                                        <span className="shrink-0 tabular-nums font-mono" style={{ color: S.text3 }}>
+                                          {durationMin}{t("分钟")}
+                                        </span>
+                                        {item.created_at && (
+                                          <span className="shrink-0 font-mono" style={{ color: S.text3 }}>
+                                            {formatLocalTime(item.created_at)}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {item.issue_id && (
+                                        <a href={`/tracking?detail=${encodeURIComponent(item.issue_id)}`}
+                                          className="shrink-0 text-[10px] font-medium hover:underline"
+                                          style={{ color: S.accent }}>
+                                          {t("查看详情")}
+                                        </a>
+                                      )}
+                                    </div>
+                                    {item.error && (
+                                      <p className="mt-1 font-mono truncate" style={{ color: "#DC2626" }}
+                                        title={item.error}>
+                                        {t("错误信息")}: {item.error}
+                                      </p>
+                                    )}
+                                    {detail === "loading" && (
+                                      <p className="mt-1" style={{ color: S.text3 }}>{t("加载中")}...</p>
+                                    )}
+                                    {desc && (
+                                      <p className="mt-1 truncate" style={{ color: S.text2 }}
+                                        title={desc}>
+                                        {t("原始输入")}: {desc}
+                                      </p>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })()}

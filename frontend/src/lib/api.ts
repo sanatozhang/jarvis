@@ -325,6 +325,7 @@ export interface LocalIssueItem {
   source?: string;
   log_files: any[];
   local_status: string;
+  analysis_count?: number;
   analysis?: AnalysisResult;
   task?: { task_id: string; status: string; progress: number; message: string; error?: string };
 }

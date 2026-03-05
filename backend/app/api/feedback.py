@@ -34,6 +34,7 @@ async def submit_feedback(
     priority: str = Form("L", description="优先级: H / L"),
     zendesk: str = Form("", description="Zendesk 工单号或链接"),
     username: str = Form("", description="提交人"),
+    occurred_at: str = Form("", description="问题发生时间 (ISO 格式)"),
     log_files: list[UploadFile] = File(default=[], description="日志文件"),
 ):
     """
@@ -102,6 +103,7 @@ async def submit_feedback(
             "platform": platform,
             "category": category,
             "created_by": username,
+            "occurred_at": datetime.fromisoformat(occurred_at) if occurred_at else None,
             "created_at_ms": int(datetime.utcnow().timestamp() * 1000),
             "log_files": saved_files,
         }

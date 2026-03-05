@@ -113,6 +113,7 @@ const EN: Record<string, string> = {
   "手动上传用户问题和日志文件": "Upload user issues and log files",
   "问题分类": "Category",
   "优先级": "Priority",
+  "问题发生时间": "Time of Occurrence",
   "固件版本": "Firmware Version",
   "APP 版本": "APP Version",
   "Zendesk 工单号": "Zendesk Ticket",
@@ -247,6 +248,14 @@ const EN: Record<string, string> = {
   "AI 处理": "AI",
   "暂无失败记录": "No failures",
   "未知": "Unknown",
+  "失败详情": "Failure Details",
+  "错误信息": "Error Message",
+  "原始输入": "Original Input",
+  "分析耗时": "Analysis Duration",
+  "查看详情": "View Details",
+  "收起": "Collapse",
+  "加载中": "Loading",
+  "加载失败": "Load failed",
 
   // Tracking extra
   "个工单": "tickets",
@@ -362,9 +371,13 @@ const EN: Record<string, string> = {
   "提交追问": "Submit Follow-up",
   "追问分析中...": "Analyzing follow-up...",
   "请输入追问内容...": "Enter your follow-up question...",
+  "请等待当前分析完成...": "Please wait for analysis to finish...",
+  "正在分析中，请稍候": "Analysis in progress, please wait",
+  "分析完成后将自动更新结果": "Results will update automatically when done",
   "追问问题": "Follow-up Question",
   "初次分析": "Initial Analysis",
   "追问分析": "Follow-up Analysis",
+  "分析结果": "Analysis Results",
 
   // User management
   "用户管理": "User Management",

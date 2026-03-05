@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
-import { fetchTracking, markInaccurate, promoteToGoldenSample, formatLocalTime, type LocalIssueItem, type PaginatedResponse, type TrackingFilters } from "@/lib/api";
+import { fetchTracking, markInaccurate, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
 const CATEGORIES_DATA = [
   { value: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", cn: "硬件交互", en: "Hardware" },
@@ -129,17 +129,90 @@ export default function TrackingPage() {
   const [toast, setToast] = useState("");
   const [detailItem, setDetailItem] = useState<LocalIssueItem | null>(null);
 
+  // Follow-up state
+  const [followupText, setFollowupText] = useState("");
+  const [followupSubmitting, setFollowupSubmitting] = useState(false);
+  const [issueAnalyses, setIssueAnalyses] = useState<Record<string, AnalysisResult[]>>({});
+  const [activeTasks, setActiveTasks] = useState<Record<string, TaskProgress>>({});
+
+  // Ref to hold latest load function for use in async callbacks
+  const loadRef = useRef<((p: number) => Promise<void>) | null>(null);
+
+  // Subscribe to in-progress task for an issue
+  const subscribeIfAnalyzing = useCallback((item: LocalIssueItem) => {
+    const taskStatus = item.task?.status;
+    if (!item.task?.task_id || !taskStatus || ["done", "failed"].includes(taskStatus)) return;
+    // Already tracking this issue
+    if (activeTasks[item.record_id]) return;
+    setActiveTasks((p) => ({ ...p, [item.record_id]: item.task as TaskProgress }));
+    setFollowupSubmitting(true);
+    subscribeTaskProgress(item.task.task_id, (progress) => {
+      setActiveTasks((p) => ({ ...p, [item.record_id]: progress }));
+      if (progress.status === "done") {
+        fetchIssueAnalyses(item.record_id).then((analyses) => {
+          setIssueAnalyses((prev) => ({ ...prev, [item.record_id]: analyses }));
+        }).catch(() => {});
+        fetchIssueDetail(item.record_id).then((updated) => {
+          setDetailItem(updated);
+        }).catch(() => {});
+        setFollowupSubmitting(false);
+        setFollowupText("");
+        // Refresh list after a short delay
+        setTimeout(() => { loadRef.current?.(page); }, 2000);
+      }
+      if (progress.status === "failed") {
+        setToast(`${t("分析失败")}: ${progress.error || t("未知错误")}`);
+        setFollowupSubmitting(false);
+      }
+    });
+  }, [activeTasks, page, t]);
+
   const openDetail = (item: LocalIssueItem) => {
     setDetailItem(item);
     const url = new URL(window.location.href);
     url.searchParams.set("detail", item.record_id);
     window.history.replaceState({}, "", url.toString());
+    // Pre-load all analyses for this issue
+    fetchIssueAnalyses(item.record_id).then((analyses) => {
+      setIssueAnalyses((prev) => ({ ...prev, [item.record_id]: analyses }));
+    }).catch(() => {});
+    // Auto-subscribe if the issue is currently being analyzed
+    subscribeIfAnalyzing(item);
   };
   const closeDetail = () => {
     setDetailItem(null);
+    setFollowupText("");
+    setFollowupSubmitting(false);
     const url = new URL(window.location.href);
     url.searchParams.delete("detail");
     window.history.replaceState({}, "", url.toString());
+  };
+
+  const startFollowup = async (issueId: string, question: string) => {
+    if (!question.trim()) return;
+    setFollowupSubmitting(true);
+    try {
+      const task = await createTask(issueId, undefined, username || "", question.trim());
+      setActiveTasks((p) => ({ ...p, [issueId]: task }));
+      subscribeTaskProgress(task.task_id, (progress) => {
+        setActiveTasks((p) => ({ ...p, [issueId]: progress }));
+        if (progress.status === "done") {
+          fetchIssueAnalyses(issueId).then((analyses) => {
+            setIssueAnalyses((prev) => ({ ...prev, [issueId]: analyses }));
+          }).catch(() => {});
+          setFollowupSubmitting(false);
+          setFollowupText("");
+          setTimeout(() => load(page), 2000);
+        }
+        if (progress.status === "failed") {
+          setToast(`${t("分析失败")}: ${progress.error || t("未知错误")}`);
+          setFollowupSubmitting(false);
+        }
+      });
+    } catch (e: any) {
+      setToast(e.message);
+      setFollowupSubmitting(false);
+    }
   };
 
   const [filters, setFilters] = useState<TrackingFilters>(() => {
@@ -167,15 +240,38 @@ export default function TrackingPage() {
     setLoading(true);
     try { setData(await fetchTracking(p, 20, filters)); } catch {} finally { setLoading(false); }
   }, [filters]);
+  loadRef.current = load;
 
   useEffect(() => { load(page); }, [load, page]);
 
+  // Restore detail panel from URL ?detail= param
+  const urlDetailHandled = useRef(false);
   useEffect(() => {
-    if (!data) return;
+    if (urlDetailHandled.current) return;
     const urlDetail = new URLSearchParams(window.location.search).get("detail");
-    if (urlDetail && !detailItem) {
-      const item = data.issues.find((i) => i.record_id === urlDetail);
-      if (item) setDetailItem(item);
+    if (!urlDetail) return;
+    // Wait for data to load before trying to find in current page
+    if (!data) return;
+
+    urlDetailHandled.current = true;
+
+    const enrichDetail = (item: LocalIssueItem) => {
+      setDetailItem(item);
+      fetchIssueAnalyses(item.record_id).then((analyses) => {
+        setIssueAnalyses((prev) => ({ ...prev, [item.record_id]: analyses }));
+      }).catch(() => {});
+      subscribeIfAnalyzing(item);
+    };
+
+    // Try to find in current page first
+    const item = data.issues.find((i) => i.record_id === urlDetail);
+    if (item) {
+      enrichDetail(item);
+    } else {
+      // Not on current page — fetch directly via API
+      fetchIssueDetail(urlDetail).then(enrichDetail).catch(() => {
+        setToast(`${t("加载失败")}: ${urlDetail}`);
+      });
     }
   }, [data]);
 
@@ -377,7 +473,15 @@ export default function TrackingPage() {
                     )}
                   </td>
                   <td className={tdBase} style={{ width: "96px" }}>
-                    <StatusBadge status={item.local_status} ruleType={item.analysis?.rule_type} />
+                    <div className="flex flex-col gap-1">
+                      <StatusBadge status={item.local_status} ruleType={item.analysis?.rule_type} />
+                      {(item.analysis_count ?? 0) > 1 && (
+                        <span className="inline-flex w-fit items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-semibold"
+                          style={{ background: "rgba(167,139,250,0.12)", color: "#7C3AED", border: "1px solid rgba(167,139,250,0.25)" }}>
+                          {t("追问")} ×{(item.analysis_count ?? 0) - 1}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className={tdBase} style={{ width: "64px" }}>
                     <span className="text-xs" style={{ color: S.text2 }}>{item.platform || "—"}</span>
@@ -480,32 +584,143 @@ export default function TrackingPage() {
                   {detailItem.description}
                 </div>
               </section>
-              {detailItem.analysis && (
-                <>
-                  <section>
-                    <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("问题原因")}</h3>
-                    <div className="whitespace-pre-wrap rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
-                      {detailItem.analysis.root_cause}
-                    </div>
-                  </section>
-                  {detailItem.analysis.user_reply && (
+              {detailItem.analysis && (() => {
+                const allAnalyses = issueAnalyses[detailItem.record_id];
+                const analyses = allAnalyses && allAnalyses.length > 0 ? allAnalyses : [detailItem.analysis];
+                return (
+                  <>
+                    {/* Section header */}
                     <section>
-                      <div className="mb-1.5 flex items-center justify-between">
-                        <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("建议回复")}</h3>
-                        <button onClick={() => copy(detailItem.analysis!.user_reply)}
-                          className="rounded-lg px-3 py-1 text-[11px] font-medium"
-                          style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
-                          {t("一键复制")}
-                        </button>
-                      </div>
-                      <div className="whitespace-pre-wrap rounded-lg p-3 text-sm"
-                        style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
-                        {detailItem.analysis.user_reply}
-                      </div>
+                      <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                        {t("分析结果")}
+                        {analyses.length > 1 && <span className="ml-1.5 text-[10px] font-normal" style={{ color: S.text3 }}>({analyses.length})</span>}
+                      </h3>
                     </section>
-                  )}
-                </>
-              )}
+
+                    {/* Analysis in progress banner */}
+                    {(() => {
+                      const activeTask = activeTasks[detailItem.record_id];
+                      const isAnalyzing = activeTask && !["done", "failed"].includes(activeTask.status);
+                      return isAnalyzing ? (
+                        <section className="rounded-lg p-3" style={{ background: "rgba(96,165,250,0.08)", border: "1px solid rgba(96,165,250,0.25)" }}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className="h-4 w-4 animate-spin rounded-full border-2"
+                              style={{ borderColor: "rgba(96,165,250,0.3)", borderTopColor: "#2563EB" }} />
+                            <span className="text-xs font-medium" style={{ color: "#2563EB" }}>{t("分析中")}</span>
+                            <span className="text-xs" style={{ color: S.text2 }}>{activeTask.message}</span>
+                            <span className="ml-auto text-xs tabular-nums font-mono" style={{ color: "#2563EB" }}>{activeTask.progress}%</span>
+                          </div>
+                          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(96,165,250,0.15)" }}>
+                            <div className="h-full rounded-full transition-all duration-700"
+                              style={{ width: `${activeTask.progress}%`, background: "#2563EB" }} />
+                          </div>
+                          <p className="mt-2 text-[10px]" style={{ color: S.text3 }}>{t("分析完成后将自动更新结果")}</p>
+                        </section>
+                      ) : null;
+                    })()}
+
+                    {/* Follow-up input */}
+                    {(() => {
+                      const activeTask = activeTasks[detailItem.record_id];
+                      const isAnalyzing = activeTask && !["done", "failed"].includes(activeTask.status);
+                      const disabled = followupSubmitting || !!isAnalyzing;
+                      return (
+                        <section className="rounded-lg p-3" style={{ background: S.overlay, border: `1px solid ${S.border}`, opacity: isAnalyzing ? 0.6 : 1 }}>
+                          <textarea
+                            value={followupText}
+                            onChange={(e) => setFollowupText(e.target.value)}
+                            placeholder={isAnalyzing ? t("请等待当前分析完成...") : t("请输入追问内容...")}
+                            rows={2}
+                            disabled={disabled}
+                            className="w-full resize-none rounded-md px-3 py-2 text-sm outline-none"
+                            style={{ background: S.surface, border: `1px solid ${S.borderSm}`, color: S.text1 }}
+                          />
+                          <div className="mt-2 flex items-center justify-between">
+                            <span className="text-[10px]" style={{ color: S.text3 }}>
+                              {isAnalyzing ? t("正在分析中，请稍候") : followupSubmitting ? t("追问分析中...") : t("追问")}
+                            </span>
+                            <button
+                              onClick={() => startFollowup(detailItem.record_id, followupText)}
+                              disabled={!followupText.trim() || disabled}
+                              className="rounded-lg px-3 py-1 text-[11px] font-semibold transition-colors disabled:opacity-30"
+                              style={{ background: S.accent, color: "#0A0B0E" }}>
+                              {followupSubmitting ? t("追问分析中...") : t("提交追问")}
+                            </button>
+                          </div>
+                        </section>
+                      );
+                    })()}
+
+                    {/* Stacked analyses */}
+                    {analyses.map((r, idx) => {
+                      const isLatest = idx === 0;
+                      const isFollowup = !!r.followup_question;
+                      return (
+                        <div key={r.task_id || idx}
+                          className="space-y-3 rounded-lg p-4"
+                          style={{
+                            background: S.surface,
+                            border: `1px solid ${S.border}`,
+                            borderLeft: isLatest ? `3px solid ${S.accent}` : `3px solid ${S.border}`,
+                            opacity: isLatest ? 1 : 0.75,
+                          }}>
+                          {/* Badge + timestamp */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {isFollowup ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                                style={{ background: "rgba(167,139,250,0.12)", color: "#7C3AED", border: "1px solid rgba(167,139,250,0.25)" }}>
+                                {t("追问分析")}
+                              </span>
+                            ) : analyses.length > 1 ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                                style={{ background: "rgba(0,0,0,0.04)", color: S.text3, border: `1px solid ${S.borderSm}` }}>
+                                {t("初次分析")}
+                              </span>
+                            ) : null}
+                            {r.created_at && (
+                              <span className="text-[10px]" style={{ color: S.text3 }}>{formatLocalTime(r.created_at)}</span>
+                            )}
+                          </div>
+
+                          {/* Follow-up question */}
+                          {isFollowup && r.followup_question && (
+                            <div className="rounded-md px-3 py-2 text-xs"
+                              style={{ background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)", color: "#7C3AED" }}>
+                              <span className="font-semibold">{t("追问问题")}:</span> {r.followup_question}
+                            </div>
+                          )}
+
+                          {/* Root cause */}
+                          <div>
+                            <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("问题原因")}</h3>
+                            <div className="whitespace-pre-wrap rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
+                              {r.root_cause}
+                            </div>
+                          </div>
+
+                          {/* Suggested reply */}
+                          {r.user_reply && (
+                            <div>
+                              <div className="mb-1.5 flex items-center justify-between">
+                                <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("建议回复")}</h3>
+                                <button onClick={() => copy(r.user_reply)}
+                                  className="rounded-lg px-3 py-1 text-[11px] font-medium"
+                                  style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
+                                  {t("一键复制")}
+                                </button>
+                              </div>
+                              <div className="whitespace-pre-wrap rounded-lg p-3 text-sm"
+                                style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
+                                {r.user_reply}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </>
+                );
+              })()}
               {detailItem.task?.error && (
                 <section>
                   <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("失败原因")}</h3>

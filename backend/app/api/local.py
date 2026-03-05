@@ -151,18 +151,21 @@ async def get_issue_detail(issue_id: str):
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
 
-        from sqlalchemy import select
+        from sqlalchemy import select, func
         a_stmt = select(db.AnalysisRecord).where(
             db.AnalysisRecord.issue_id == issue_id
         ).order_by(db.AnalysisRecord.created_at.desc()).limit(1)
         analysis = (await session.execute(a_stmt)).scalar_one_or_none()
+
+        a_count_stmt = select(func.count()).select_from(db.AnalysisRecord).where(db.AnalysisRecord.issue_id == issue_id)
+        a_count = (await session.execute(a_count_stmt)).scalar() or 0
 
         t_stmt = select(db.TaskRecord).where(
             db.TaskRecord.issue_id == issue_id
         ).order_by(db.TaskRecord.created_at.desc()).limit(1)
         task = (await session.execute(t_stmt)).scalar_one_or_none()
 
-        return db._issue_to_dict(issue, analysis=analysis, task=task)
+        return db._issue_to_dict(issue, analysis=analysis, task=task, analysis_count=a_count)
 
 
 @router.get("/{issue_id}/files/{filename:path}")
