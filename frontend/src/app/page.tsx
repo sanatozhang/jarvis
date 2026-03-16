@@ -218,6 +218,7 @@ export default function HomePage() {
   const [inaccuratePage, setInaccuratePage] = useState(1);
 
   const [loading, setLoading] = useState(true);
+  const [pendingLoading, setPendingLoading] = useState(true);
   const [error, setError] = useState("");
 
   const [activeTasks, setActiveTasks] = useState<Record<string, TaskProgress>>({});
@@ -296,8 +297,10 @@ export default function HomePage() {
 
   const loadPending = useCallback(async (page: number) => {
     if (assignee === null) return;
+    setPendingLoading(true);
     try { const d = await fetchPendingIssues(assignee || undefined, page, PAGE_SIZE); setPendingData(d); }
     catch (e: any) { setError(e.message); }
+    finally { setPendingLoading(false); }
   }, [assignee]);
 
   const loadInProgress = useCallback(async (page: number) => {
@@ -315,8 +318,11 @@ export default function HomePage() {
   const loadAll = useCallback(async () => {
     if (assignee === null) return;
     setLoading(true); setError("");
-    await Promise.all([loadPending(pendingPage), loadInProgress(ipPage), loadDone(donePage), loadInaccurate(inaccuratePage)]);
+    // 先加载本地数据（快），加载完立即显示页面
+    await Promise.all([loadInProgress(ipPage), loadDone(donePage), loadInaccurate(inaccuratePage)]);
     setLoading(false);
+    // 再异步加载飞书数据（慢），完成后自动刷新待处理 tab
+    loadPending(pendingPage);
   }, [assignee, loadPending, loadInProgress, loadDone, loadInaccurate, pendingPage, ipPage, donePage, inaccuratePage]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -332,13 +338,21 @@ export default function HomePage() {
     try {
       const task = await createTask(issueId, undefined, username || "");
       setActiveTasks((p) => ({ ...p, [issueId]: task }));
+      // Remove from pending list (new analysis)
       setPendingData((prev) => {
         if (!prev) return prev;
         const exists = prev.issues.some((i) => i.record_id === issueId);
         if (!exists) return prev;
         return { ...prev, issues: prev.issues.filter((i) => i.record_id !== issueId), total: Math.max(0, prev.total - 1) };
       });
-      loadInProgress(1); setTab("in_progress");
+      // Remove from done list (retry of failed item)
+      setDoneData((prev) => {
+        if (!prev) return prev;
+        const exists = prev.issues.some((i) => i.record_id === issueId);
+        if (!exists) return prev;
+        return { ...prev, issues: prev.issues.filter((i) => i.record_id !== issueId), total: Math.max(0, prev.total - 1) };
+      });
+      await loadInProgress(1); setTab("in_progress");
       subscribeTaskProgress(task.task_id, (progress) => {
         setActiveTasks((p) => ({ ...p, [issueId]: progress }));
         if (progress.status === "done") {
@@ -562,18 +576,18 @@ export default function HomePage() {
 
       <div className="px-6 py-5">
         {/* Loading state */}
-        {loading && !pendingData && !ipData && !doneData && !inaccurateData && (
+        {loading && !ipData && !doneData && !inaccurateData && (
           <div className="flex flex-col items-center justify-center py-24">
             <div className="mb-4 h-8 w-8 animate-spin rounded-full border-4"
               style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
-            <p className="text-sm font-medium" style={{ color: S.text2 }}>{t("正在从飞书加载工单...")}</p>
+            <p className="text-sm font-medium" style={{ color: S.text2 }}>{t("正在加载工单...")}</p>
             <p className="mt-1 text-xs" style={{ color: S.text3 }}>{t("首次加载可能需要几秒钟")}</p>
           </div>
         )}
 
         {/* Stat cards */}
         <div className="mb-5 grid grid-cols-4 gap-3">
-          {loading && !pendingData ? (
+          {loading && !ipData && !doneData && !inaccurateData ? (
             [1, 2, 3, 4].map((i) => (
               <div key={i} className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
                 <div className="h-2.5 w-12 rounded animate-pulse" style={{ background: S.hover }} />
@@ -638,8 +652,13 @@ export default function HomePage() {
                   t("级别"), t("来源"), t("问题描述"), t("设备 SN"), t("Zendesk"), t("飞书"), t("操作")
                 ]} />
                 <tbody>
-                  {loading && !pendingData ? (
-                    <tr><td colSpan={8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("加载中...")}</td></tr>
+                  {pendingLoading ? (
+                    <tr><td colSpan={8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>
+                      <span className="inline-flex items-center gap-2">
+                        <span className="inline-block h-4 w-4 animate-spin rounded-full border-2" style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
+                        {t("正在从飞书同步...")}
+                      </span>
+                    </td></tr>
                   ) : !pendingData?.issues.length ? (
                     <tr><td colSpan={8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("暂无待处理工单")}</td></tr>
                   ) : pendingData.issues.map((issue, idx) => (

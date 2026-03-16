@@ -112,6 +112,21 @@ class CodexAgent(BaseAgent):
             if on_progress:
                 await _maybe_await(on_progress(90, "解析分析结果..."))
 
+            # Exit code 1 = OpenAI quota exhausted
+            if proc.returncode == 1:
+                logger.error("Codex exit code 1: OpenAI quota exhausted. stderr: %s", stderr[:300])
+                return AnalysisResult(
+                    task_id="", issue_id="",
+                    problem_type="OpenAI 额度不足",
+                    root_cause=(
+                        "OpenAI API 额度已耗尽，无法完成分析。\n\n"
+                        "请检查 OpenAI 账户余额或升级套餐后重试。\n\n"
+                        f"Codex 退出码: 1\n"
+                        f"stderr: {stderr[:300] if stderr else '(empty)'}"
+                    ),
+                    confidence="low", needs_engineer=True, agent_type="codex",
+                )
+
             # Filesystem sync: ensure result.json is visible before parsing
             result_path = workspace / "output" / "result.json"
             if not result_path.exists():
