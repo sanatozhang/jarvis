@@ -35,6 +35,10 @@ router = APIRouter()
 # Track in-flight analyses to avoid duplicate triggers
 _active_issues: set[str] = set()
 
+# Followup trigger keyword — must be checked BEFORE the main trigger
+# because "@ai-agent" is a prefix of "@ai-agent-followup"
+_FOLLOWUP_TRIGGER = "@ai-agent-followup"
+
 
 @router.post("/webhook")
 async def handle_linear_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -100,13 +104,9 @@ async def _handle_comment_create(
     user_name = comment_data.get("user", {}).get("name", "") if isinstance(comment_data.get("user"), dict) else ""
 
     logger.info(
-        "  [Comment] id=%s issueId=%s user=%s trigger='%s' body_preview='%s'",
-        comment_id, issue_id, user_name, trigger, body[:120],
+        "  [Comment] id=%s issueId=%s user=%s body_preview='%s'",
+        comment_id, issue_id, user_name, body[:120],
     )
-
-    if trigger not in body.lower():
-        logger.info("  → No trigger keyword found, skipping")
-        return
 
     if not issue_id:
         logger.warning("  → Comment missing issueId, skipping")
@@ -116,8 +116,31 @@ async def _handle_comment_create(
         logger.info("  → Analysis already in progress for issue %s, skipping", issue_id)
         return
 
+    # --- Check followup trigger FIRST (it starts with the main trigger keyword) ---
+    if _FOLLOWUP_TRIGGER in body.lower():
+        followup_question = _extract_followup_question(body)
+        _active_issues.add(issue_id)
+        logger.info(
+            "  → Followup trigger matched! issue=%s user=%s question='%s'",
+            issue_id, user_name or "unknown", followup_question[:80],
+        )
+        background_tasks.add_task(
+            _run_linear_analysis,
+            linear_issue_id=issue_id,
+            trigger_comment_id=comment_id,
+            trigger_body=body,
+            trigger_user=user_name,
+            followup_question=followup_question,
+        )
+        return
+
+    # --- Check main trigger ---
+    if trigger not in body.lower():
+        logger.info("  → No trigger keyword found, skipping")
+        return
+
     _active_issues.add(issue_id)
-    logger.info("  → Trigger matched! Launching analysis for issue %s", issue_id)
+    logger.info("  → Trigger matched! Launching analysis for issue %s by %s", issue_id, user_name or "unknown")
 
     # Launch analysis in background
     background_tasks.add_task(
@@ -125,6 +148,7 @@ async def _handle_comment_create(
         linear_issue_id=issue_id,
         trigger_comment_id=comment_id,
         trigger_body=body,
+        trigger_user=user_name,
     )
 
 
@@ -160,9 +184,13 @@ async def _handle_issue_create(
     trigger_keyword = settings.linear.trigger_keyword
     clean_description = description.replace(trigger_keyword, "").strip()
 
+    # Extract the issue creator as the trigger user
+    creator = issue_data.get("creator", {})
+    trigger_user = creator.get("name", "") if isinstance(creator, dict) else ""
+
     logger.info(
-        "Trigger detected in issue! issue=%s title='%s'",
-        issue_id, title[:80],
+        "Trigger detected in issue! issue=%s title='%s' creator='%s'",
+        issue_id, title[:80], trigger_user or "unknown",
     )
 
     background_tasks.add_task(
@@ -170,6 +198,7 @@ async def _handle_issue_create(
         linear_issue_id=issue_id,
         trigger_comment_id="",
         trigger_body=clean_description,
+        trigger_user=trigger_user,
     )
 
 
@@ -177,6 +206,8 @@ async def _run_linear_analysis(
     linear_issue_id: str,
     trigger_comment_id: str,
     trigger_body: str,
+    trigger_user: str = "",
+    followup_question: str = "",
 ):
     """
     Full analysis pipeline for a Linear issue:
@@ -227,10 +258,16 @@ async def _run_linear_analysis(
         )
 
         # Post acknowledgement comment
-        await client.create_comment(
-            linear_issue_id,
-            f"🤖 **AI analysis started** for {identifier}. This may take a few minutes...",
-        )
+        if followup_question:
+            await client.create_comment(
+                linear_issue_id,
+                f"🤖 **AI follow-up analysis started** for {identifier}.\n> {followup_question[:200]}",
+            )
+        else:
+            await client.create_comment(
+                linear_issue_id,
+                f"🤖 **AI analysis started** for {identifier}. This may take a few minutes...",
+            )
 
         # --- Step 2: Build internal Issue model ---
         task_id = f"linear_{uuid.uuid4().hex[:12]}"
@@ -263,10 +300,11 @@ async def _run_linear_analysis(
         )
 
         # Save to DB
+        author = trigger_user or "linear"
         await db.upsert_issue(issue.model_dump(), status="analyzing")
-        await db.set_issue_created_by(record_id, "linear")
+        await db.set_issue_created_by(record_id, author)
         await db.create_task(task_id=task_id, issue_id=record_id)
-        await db.log_event("analysis_start", issue_id=record_id, username="linear")
+        await db.log_event("analysis_start", issue_id=record_id, username=author)
         await db.update_task(task_id, status="analyzing", progress=10, message="获取 Linear 工单信息...")
 
         # --- Step 3: Download uploaded files ---
@@ -395,14 +433,41 @@ async def _run_linear_analysis(
         issue_language = _detect_language(title)
         logger.info("  Detected language from title: %s (title: '%s')", issue_language, title[:50])
 
+        # Load previous analysis for followup
+        previous_analysis = None
+        if followup_question:
+            import json as _json
+            prev = await db.get_analysis_by_issue(record_id)
+            if prev:
+                previous_analysis = {
+                    "problem_type": prev.problem_type or "",
+                    "root_cause": prev.root_cause or "",
+                    "confidence": prev.confidence or "",
+                    "key_evidence": _json.loads(prev.key_evidence_json) if prev.key_evidence_json else [],
+                    "user_reply": prev.user_reply or "",
+                    "fix_suggestion": prev.fix_suggestion or "",
+                }
+                logger.info("  Loaded previous analysis for followup (type=%s)", prev.problem_type)
+            else:
+                logger.warning("  No previous analysis found for followup, proceeding without context")
+
         # Run agent
-        prompt = BaseAgent.build_prompt(issue=issue, rules=rules, extraction=extraction, language=issue_language)
+        prompt = BaseAgent.build_prompt(
+            issue=issue,
+            rules=rules,
+            extraction=extraction,
+            language=issue_language,
+            previous_analysis=previous_analysis,
+            followup_question=followup_question,
+        )
         orchestrator = AgentOrchestrator()
         agent = orchestrator.select_agent(rule_type)
         result = await agent.analyze(workspace=workspace, prompt=prompt)
         result.task_id = task_id
         result.issue_id = record_id
         result.rule_type = rule_type
+        if followup_question:
+            result.followup_question = followup_question
 
         # --- Step 5: Save result and post comment ---
         is_failure = (
@@ -420,7 +485,7 @@ async def _run_linear_analysis(
         if is_failure:
             await db.update_task(task_id, status="failed", progress=100, message="分析失败", error=result.root_cause[:200])
             await db.update_issue_status(record_id, "failed")
-            await db.log_event("analysis_fail", issue_id=record_id, username="linear",
+            await db.log_event("analysis_fail", issue_id=record_id, username=author,
                                duration_ms=_duration_ms, detail={"reason": result.problem_type})
 
             # Post failure comment
@@ -433,11 +498,11 @@ async def _run_linear_analysis(
         else:
             await db.update_task(task_id, status="done", progress=100, message="分析完成")
             await db.update_issue_status(record_id, "done")
-            await db.log_event("analysis_done", issue_id=record_id, username="linear",
+            await db.log_event("analysis_done", issue_id=record_id, username=author,
                                duration_ms=_duration_ms, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
 
             # Post success comment with formatted result
-            comment_body = format_analysis_comment(result.model_dump(), identifier, primary_language=issue_language)
+            comment_body = format_analysis_comment(result.model_dump(), identifier, primary_language=issue_language, author=author)
             await client.create_comment(linear_issue_id, comment_body)
 
         logger.info(
@@ -484,3 +549,16 @@ def _detect_language(text: str) -> str:
         return "en"
     chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
     return "zh" if chinese_chars > 0 else "en"
+
+
+def _extract_followup_question(body: str) -> str:
+    """Extract the followup question from a comment body.
+
+    Strips the trigger keyword and any leading/trailing whitespace.
+    Returns a default message if nothing remains after the trigger.
+    """
+    idx = body.lower().find(_FOLLOWUP_TRIGGER)
+    if idx == -1:
+        return ""
+    question = body[idx + len(_FOLLOWUP_TRIGGER):].strip()
+    return question or "请进一步分析这个问题"

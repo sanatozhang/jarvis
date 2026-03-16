@@ -396,6 +396,7 @@ def format_analysis_comment(
     result: Dict[str, Any],
     issue_identifier: str = "",
     primary_language: str = "en",
+    author: str = "",
 ) -> str:
     """Format an AnalysisResult dict as a markdown comment for Linear.
 
@@ -413,12 +414,15 @@ def format_analysis_comment(
     user_reply_cn = result.get("user_reply", "")
 
     evidence = result.get("key_evidence", [])
+    followup_question = result.get("followup_question", "")
 
     if primary_language == "zh":
         # --- Chinese primary ---
-        lines = [
-            "## AI 分析结果",
-            "",
+        if followup_question:
+            lines = ["## 🔄 AI 追问分析结果", "", f"> **追问问题**: {followup_question}", ""]
+        else:
+            lines = ["## AI 分析结果", ""]
+        lines += [
             f"**问题分类**: {problem_type_cn}",
             f"**置信度**: {confidence} {confidence_emoji}",
             f"**根因分析**: {root_cause_cn}",
@@ -459,9 +463,11 @@ def format_analysis_comment(
             lines.append("</details>")
     else:
         # --- English primary ---
-        lines = [
-            "## AI Analysis Result",
-            "",
+        if followup_question:
+            lines = ["## 🔄 AI Follow-up Analysis", "", f"> **Follow-up question**: {followup_question}", ""]
+        else:
+            lines = ["## AI Analysis Result", ""]
+        lines += [
             f"**Problem Type**: {problem_type_en}",
             f"**Confidence**: {confidence} {confidence_emoji}",
             f"**Root Cause**: {root_cause_en}",
@@ -509,7 +515,8 @@ def format_analysis_comment(
         footer_parts.append(f"Agent: {agent}")
     if rule:
         footer_parts.append(f"Rule: {rule}")
-    footer_parts.append("Author: sanato.zhang")
+    if author:
+        footer_parts.append(f"Triggered by: {author}")
     lines.append("")
     lines.append(f"---\n*{' | '.join(footer_parts)}*")
 

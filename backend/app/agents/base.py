@@ -183,7 +183,7 @@ output/       ← 请将 result.json 写入此目录
 
 ## 输出要求
 
-分析完成后，请将结果以 JSON 格式写入 `output/result.json`。
+分析完成后，请将结果以 JSON 格式写入 `output/result.json`，并使用 `cat output/result.json` 将完整 JSON 内容打印到 stdout 作为备份。
 **重要：ALL fields with _en suffix MUST be provided. 每个字段都必须同时提供中文和英文版本，不能为空。**
 **主要语言（primary language）: {"English" if language == "en" else "中文"}** — 请确保主要语言的内容最详细、最完整。
 

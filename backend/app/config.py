@@ -75,7 +75,7 @@ class LinearSettings(BaseSettings):
 class AgentProviderConfig(BaseSettings):
     enabled: bool = False
     model: str = ""
-    timeout: int = 300
+    timeout: int = 600
     max_turns: int = 25
     allowed_tools: List[str] = Field(default_factory=list)
     approval_mode: str = "auto-edit"
@@ -83,7 +83,7 @@ class AgentProviderConfig(BaseSettings):
 
 class AgentSettings(BaseSettings):
     default: str = "claude_code"
-    timeout: int = 300
+    timeout: int = 600
     max_turns: int = 25
     providers: Dict[str, AgentProviderConfig] = Field(default_factory=dict)
     routing: Dict[str, str] = Field(default_factory=dict)
