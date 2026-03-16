@@ -231,7 +231,7 @@ export default function HomePage() {
   const [lang, setLang] = useState<"cn" | "en">(siteLang);
   const [detailTab, setDetailTab] = useState<Tab>("pending");
   const [toast, setToast] = useState("");
-  const [tab, setTab] = useState<Tab>("pending");
+  const [tab, setTab] = useState<Tab>("done");
 
   // Follow-up state
   const [issueAnalyses, setIssueAnalyses] = useState<Record<string, AnalysisResult[]>>({});

@@ -155,6 +155,13 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
     routing_cfg = ag.get("routing", {})
     settings.agent.routing = routing_cfg
 
+    # AGENT_DEFAULT env var overrides config.yaml default and all routing
+    _valid_agents = {"codex", "claude_code"}
+    env_agent = os.getenv("AGENT_DEFAULT", "").strip()
+    if env_agent in _valid_agents:
+        settings.agent.default = env_agent
+        settings.agent.routing = {k: env_agent for k in settings.agent.routing}
+
     # Concurrency
     cc = cfg.get("concurrency", {})
     for k, v in cc.items():

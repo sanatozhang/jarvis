@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import Column, DateTime, Integer, String, Text, Boolean, Float, func, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -326,7 +327,17 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
             updated_at=datetime.utcnow(),
         )
         session.add(record)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            existing = await session.get(IssueRecord, rid)
+            if existing:
+                existing.status = status
+                existing.updated_at = datetime.utcnow()
+                await session.commit()
+                return existing
+            raise
         return record
 
 

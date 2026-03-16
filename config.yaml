@@ -16,13 +16,13 @@ linear:
 
 # Agent 配置
 agent:
-  default: codex
+  default: claude_code
   timeout: 300           # 单次分析超时（秒）
   max_turns: 25          # Agent 最大交互轮数
 
   providers:
     claude_code:
-      enabled: false
+      enabled: true
       model: "claude-sonnet-4-20250514"
       allowed_tools:
         - "Read"
@@ -48,13 +48,13 @@ agent:
 
   # 按问题类型路由到不同 Agent
   routing:
-    flutter_crash: codex
-    recording_missing: codex
-    bluetooth: codex
-    cloud_sync: codex
-    speaker: codex
-    timestamp_drift: codex
-    general: codex
+    flutter_crash: claude_code
+    recording_missing: claude_code
+    bluetooth: claude_code
+    cloud_sync: claude_code
+    speaker: claude_code
+    timestamp_drift: claude_code
+    general: claude_code
 
 # 并发配置
 concurrency:

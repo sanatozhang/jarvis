@@ -304,7 +304,11 @@ export default function SettingsPage() {
                 <div>
                   <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("默认 Agent")}</label>
                   <select value={config.default}
-                    onChange={(e) => setConfig({ ...config, default: e.target.value })}
+                    onChange={(e) => {
+                      const newAgent = e.target.value;
+                      const newRouting = Object.fromEntries(Object.keys(config.routing).map((k) => [k, newAgent]));
+                      setConfig({ ...config, default: newAgent, routing: newRouting });
+                    }}
                     className="w-full rounded-lg px-3 py-2 text-sm outline-none font-sans"
                     style={inputStyle}>
                     {Object.keys(config.providers).map((p) => <option key={p} value={p}>{p}</option>)}
