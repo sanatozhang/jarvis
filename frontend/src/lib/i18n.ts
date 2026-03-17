@@ -393,6 +393,9 @@ const EN: Record<string, string> = {
   "管理员": "Admin",
   "用户": "User",
 
+  // Transfer to Feishu
+  "转飞书工单": "Transfer to Feishu",
+
   // Golden Samples
   "金样本": "Golden Samples",
   "金样本库": "Golden Samples",
