@@ -9,6 +9,8 @@ COPY next.config.ts tsconfig.json postcss.config.mjs ./
 COPY src/ ./src/
 
 # Build with standalone output for smaller Docker image
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV STANDALONE=1
 RUN npm run build
 

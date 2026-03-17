@@ -5,11 +5,17 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./data:/app/data                    # bind mount — shares DB with bare-metal deploy
-      - ./workspaces:/app/workspaces        # bind mount — shares workspaces with bare-metal deploy
-      - ./backend/rules:/app/rules:ro       # mount latest rules
+      # 注意：config.yaml 挂载到 /config.yaml（根目录），因为容器内 PROJECT_ROOT=/
+      # backend/app/config.py: Path(__file__).parent.parent.parent 在容器内解析为 /，而非 /app
+      - ./config.yaml:/config.yaml:ro
+      # 同理，data 和 workspaces 也挂载到根目录下
+      - ./data:/data                         # 数据库实际路径为 /data/appllo.db
+      - ./workspaces:/workspaces             # 工作区实际路径为 /workspaces/
+      - ./backend/rules:/app/rules:ro        # 规则文件热更新，无需重建镜像
       # - ./codex-auth.json:/root/.codex/auth.json:ro  # Codex OAuth auth (optional)
+      # claude 凭证用 named volume 持久化；首次部署执行：
+      # docker compose exec -it backend claude login
+      - claude-auth:/root/.claude
     env_file:
       - .env
     environment:
@@ -43,3 +49,4 @@ services:
 
 volumes:
   redis-data:
+  claude-auth:

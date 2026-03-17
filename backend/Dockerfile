@@ -28,6 +28,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # Install Codex CLI globally
 RUN npm install -g @openai/codex 2>/dev/null || echo "Codex install skipped (optional)"
 
+# Install Claude CLI globally
+RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || echo "Claude install skipped (optional)"
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

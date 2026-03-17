@@ -1,4 +1,5 @@
 # Python
+.claude/settings.local.json
 .pids/
 __pycache__/
 *.py[cod]

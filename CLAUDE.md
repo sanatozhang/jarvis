@@ -36,6 +36,31 @@ docker compose up -d
 docker compose logs -f backend
 ```
 
+#### macOS 首次部署前置要求
+
+macOS 没有内置 Docker daemon，需要先安装 colima：
+
+```bash
+brew install colima docker-compose
+colima start          # 启动 Docker daemon（每次重启 Mac 后需重新执行）
+brew services start colima  # 或设置开机自启
+```
+
+#### Claude CLI 登录（Docker 环境）
+
+容器内 claude 凭证通过 named volume `claude-auth` 持久化，**首次部署后执行一次登录**：
+
+```bash
+docker compose exec -it backend claude login
+# 复制输出的 URL 到浏览器完成授权，登录信息永久保存在 claude-auth volume 中
+```
+
+验证登录状态：
+
+```bash
+docker compose exec backend claude config list
+```
+
 ### Rule hot-reload (no restart needed)
 
 ```bash
@@ -126,6 +151,73 @@ API docs available at `http://localhost:8000/docs` when running locally.
 
 ### Database
 
-SQLite by default at `data/jarvis.db`. Switch to PostgreSQL by setting `DATABASE_URL=postgresql+asyncpg://...` and uncommenting `asyncpg` in `requirements.txt`.
+SQLite by default at `data/appllo.db`（宿主机路径）. Switch to PostgreSQL by setting `DATABASE_URL=postgresql+asyncpg://...` and uncommenting `asyncpg` in `requirements.txt`.
 
 Zombie task cleanup (tasks stuck in analyzing/queued states) runs automatically on startup.
+
+## Docker 部署已知问题与修复记录
+
+迁移到新服务器时必读，以下问题均已在配置文件中修复，但需要了解原因。
+
+### 1. PROJECT_ROOT 路径问题（最重要）
+
+**现象**：数据库、workspaces、config.yaml 找不到或不生效。
+
+**根因**：`backend/app/config.py` 中：
+```python
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+```
+在容器内 `__file__` 是 `/app/app/config.py`，三级向上得到 `/`（根目录），而非 `/app`。
+
+因此所有相对路径都基于 `/` 解析：
+| 路径用途 | 容器内实际路径 | 错误挂载 | 正确挂载 |
+|---------|-------------|---------|---------|
+| config.yaml | `/config.yaml` | `/app/config.yaml` | `/config.yaml` |
+| 数据库 | `/data/appllo.db` | `./data:/app/data` | `./data:/data` |
+| 工作区 | `/workspaces/` | `./workspaces:/app/workspaces` | `./workspaces:/workspaces` |
+
+**已修复**：`docker-compose.yml` 中挂载路径已按上表修正。
+
+### 2. Frontend 无法连接 Backend（ECONNREFUSED 500错误）
+
+**现象**：网页所有 API 请求返回 500，frontend 日志报 `ECONNREFUSED localhost:8000`。
+
+**根因**：`frontend/Dockerfile` 构建时未声明 `ARG NEXT_PUBLIC_API_URL`，导致 docker-compose 传入的 `http://backend:8000` 被忽略，Next.js rewrites 目标地址回退为默认值 `http://localhost:8000`。容器内 localhost 找不到 backend。
+
+**已修复**：`frontend/Dockerfile` 构建阶段加入：
+```dockerfile
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+```
+
+### 3. Claude CLI 不在容器内
+
+**现象**：health check 显示 `claude_code: not_installed`。
+
+**根因**：Claude CLI 是 npm 包，Dockerfile 原来只装了 codex，未装 claude。macOS 本机二进制是 Mach-O 格式，无法挂载到 Linux 容器直接使用。
+
+**已修复**：`backend/Dockerfile` 加入：
+```dockerfile
+RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || echo "Claude install skipped (optional)"
+```
+
+### 4. Claude 登录态不持久
+
+**现象**：容器重启后 claude 需要重新登录。
+
+**根因**：macOS 上 claude 凭证存储在系统 Keychain，不在 `~/.claude` 目录，无法通过挂载宿主机目录传递到容器。
+
+**已修复**：`docker-compose.yml` 使用 named volume 持久化：
+```yaml
+volumes:
+  - claude-auth:/root/.claude
+```
+首次部署执行一次 `docker compose exec -it backend claude login` 即可。
+
+### 5. Agent providers 为空（No enabled agent found）
+
+**现象**：分析任务报错 `No enabled agent found. Tried 'claude_code'. Available: []`。
+
+**根因**：同问题1，config.yaml 挂载路径错误导致文件未被读取，providers 配置为空 dict。
+
+**已修复**：修正 config.yaml 挂载路径后自动解决。
