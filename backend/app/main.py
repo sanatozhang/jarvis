@@ -5,6 +5,7 @@ FastAPI application entry point.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,47 @@ from app.config import get_settings
 from app.db.database import init_db, close_db
 
 logger = logging.getLogger("appllo")
+
+# Max time (seconds) a task can stay in analyzing/downloading/etc before considered zombie
+_ZOMBIE_TIMEOUT_SEC = 30 * 60  # 30 minutes
+
+
+async def _zombie_cleanup_loop():
+    """Periodically mark tasks stuck in active states as failed.
+
+    This handles cases where DB writes fail (e.g. disk full) and the task
+    status never gets updated, leaving tasks permanently in 'analyzing'.
+    """
+    from app.db.database import get_session
+    from sqlalchemy import text
+
+    while True:
+        await asyncio.sleep(300)  # check every 5 minutes
+        try:
+            async with get_session() as s:
+                # Mark tasks that have been in active states for too long
+                r1 = await s.execute(text(
+                    "UPDATE tasks SET status='failed', "
+                    "error='任务超时，可能因磁盘空间不足或其他外部原因导致' "
+                    "WHERE status IN ('analyzing','queued','downloading','decrypting','extracting') "
+                    f"AND updated_at < datetime('now', '-{_ZOMBIE_TIMEOUT_SEC} seconds')"
+                ))
+                r2 = await s.execute(text(
+                    "UPDATE issues SET status='failed' "
+                    "WHERE status='analyzing' "
+                    "AND id IN (SELECT issue_id FROM tasks WHERE status='failed' "
+                    f"AND updated_at < datetime('now', '-{_ZOMBIE_TIMEOUT_SEC} seconds'))"
+                ))
+                await s.commit()
+                if r1.rowcount or r2.rowcount:
+                    logger.warning(
+                        "Zombie cleanup: marked %d tasks and %d issues as failed",
+                        r1.rowcount, r2.rowcount,
+                    )
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning("Periodic zombie cleanup failed (will retry): %s", e)
 
 
 @asynccontextmanager
@@ -57,7 +99,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Rule sync failed (non-fatal): %s", e)
 
+    # Start periodic zombie task cleanup
+    zombie_task = asyncio.create_task(_zombie_cleanup_loop())
+
     yield
+
+    zombie_task.cancel()
     await close_db()
     logger.info("Appllo stopped.")
 

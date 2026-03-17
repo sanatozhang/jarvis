@@ -272,7 +272,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
         # Check if the result is a real success or a disguised failure
         is_real_failure = (
-            result.problem_type in ("分析超时", "日志解析失败", "Agent 不可用", "未知", "OpenAI 额度不足")
+            result.problem_type in ("分析超时", "日志解析失败", "Agent 不可用", "未知", "OpenAI 额度不足", "Claude 额度不足", "所有模型额度不足")
             or (result.confidence == "low" and result.needs_engineer and not result.user_reply)
             or "未产出结构化结果" in (result.root_cause or "")
         )
@@ -316,12 +316,9 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
     except Exception as e:
         logger.error("Task %s failed: %s", task_id, e, exc_info=True)
-        await db.update_task(task_id, status="failed", error=str(e))
-        await db.update_issue_status(issue_id, "failed")
+        error_str = str(e)[:500]
 
-        # Track: analysis exception
-        duration = int((_time.monotonic() - _start_time) * 1000)
-        await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": "exception", "error": str(e)[:200]})
+        # Always update in-memory progress first (this never fails)
         _update_progress(
             task_id,
             TaskProgress(
@@ -330,7 +327,17 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 status=TaskStatus.FAILED,
                 progress=0,
                 message="分析失败",
-                error=str(e),
+                error=error_str,
                 updated_at=datetime.utcnow(),
             ),
         )
+
+        # Try to persist failure to DB; if DB is unavailable (e.g. disk full),
+        # log the error — the zombie cleanup task will mark it failed later.
+        try:
+            await db.update_task(task_id, status="failed", error=error_str)
+            await db.update_issue_status(issue_id, "failed")
+            duration = int((_time.monotonic() - _start_time) * 1000)
+            await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": "exception", "error": error_str[:200]})
+        except Exception as db_err:
+            logger.error("Failed to persist task failure to DB (disk full?): %s", db_err)

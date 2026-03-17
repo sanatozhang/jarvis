@@ -60,6 +60,26 @@ class ClaudeCodeAgent(BaseAgent):
                     stderr[:500],
                 )
 
+                # Detect token quota / rate limit exhaustion
+                combined = (stderr + stdout).lower()
+                if any(kw in combined for kw in [
+                    "rate limit", "quota", "credit", "billing",
+                    "overloaded", "token limit", "usage limit",
+                    "exceeded your current", "insufficient_quota",
+                    "out of credits", "plan limit",
+                ]):
+                    logger.error("Claude Code token quota exhausted. stderr: %s", stderr[:300])
+                    return AnalysisResult(
+                        task_id="", issue_id="",
+                        problem_type="Claude 额度不足",
+                        root_cause=(
+                            "Anthropic API 额度已耗尽，无法完成分析。\n\n"
+                            f"Claude 退出码: {proc.returncode}\n"
+                            f"stderr: {stderr[:300] if stderr else '(empty)'}"
+                        ),
+                        confidence="low", needs_engineer=True, agent_type="claude_code",
+                    )
+
             if on_progress:
                 await _maybe_await(on_progress(90, "解析分析结果..."))
 

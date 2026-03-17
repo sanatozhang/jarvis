@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
 import {
   fetchPendingIssues,
@@ -196,6 +196,15 @@ function Pagination({ page, totalPages, onChange }: { page: number; totalPages: 
   );
 }
 
+function IndeterminateCheckbox({ checked, indeterminate, onChange }: {
+  checked: boolean; indeterminate: boolean;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (ref.current) ref.current.indeterminate = indeterminate; }, [indeterminate]);
+  return <input ref={ref} type="checkbox" className="rounded" style={{ accentColor: S.accent }} checked={checked} onChange={onChange} />;
+}
+
 // ── Btn helpers ───────────────────────────────────────────────
 const btnPrimary = "rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors";
 const btnGhost = "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors";
@@ -329,7 +338,7 @@ export default function HomePage() {
   useEffect(() => { setLang(siteLang); }, [siteLang]);
 
   const forceRefresh = async () => { await refreshIssuesCache(); await loadAll(); };
-  const onPendingPage = (p: number) => { setPendingPage(p); loadPending(p); };
+  const onPendingPage = (p: number) => { setPendingPage(p); loadPending(p); setSelected(new Set()); };
   const onIpPage = (p: number) => { setIpPage(p); loadInProgress(p); };
   const onDonePage = (p: number) => { setDonePage(p); loadDone(p); };
   const onInaccuratePage = (p: number) => { setInaccuratePage(p); loadInaccurate(p); };
@@ -643,12 +652,45 @@ export default function HomePage() {
         {/* ── PENDING TAB ── */}
         {tab === "pending" && (
           <>
+            {/* Batch action toolbar */}
+            {!!pendingData?.issues.length && (
+              <div className="mb-3 flex items-center gap-3 rounded-xl px-4 py-2.5"
+                style={{ background: selected.size > 0 ? "rgba(184,146,46,0.08)" : S.surface, border: `1px solid ${selected.size > 0 ? "rgba(184,146,46,0.25)" : S.border}`, transition: "all 0.2s" }}>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <IndeterminateCheckbox
+                    checked={selected.size > 0 && selected.size === (pendingData?.issues || []).length}
+                    indeterminate={selected.size > 0 && selected.size < (pendingData?.issues || []).length}
+                    onChange={(e) => setSelected(e.target.checked ? new Set((pendingData?.issues || []).map((i) => i.record_id)) : new Set())}
+                  />
+                  <span className="text-xs font-medium" style={{ color: S.text2 }}>{t("全选本页")}</span>
+                </label>
+                {selected.size > 0 && (
+                  <>
+                    <span className="text-xs" style={{ color: S.text3 }}>
+                      {t("已选择")} <span className="font-semibold tabular-nums" style={{ color: S.accent }}>{selected.size}</span> {t("个工单")}
+                    </span>
+                    <button onClick={batchStart}
+                      className="rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors"
+                      style={{ background: S.accent, color: "#0A0B0E" }}>
+                      {t("批量分析")} ({selected.size})
+                    </button>
+                    <button onClick={() => setSelected(new Set())}
+                      className="rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors"
+                      style={{ border: `1px solid ${S.border}`, color: S.text3 }}>
+                      {t("取消选择")}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             <div className="overflow-hidden rounded-xl" style={{ border: `1px solid ${S.border}`, background: S.surface }}>
               <table className="min-w-full">
                 <TableHeader cols={[
-                  <input key="chk" type="checkbox" className="rounded"
-                    style={{ accentColor: S.accent }}
-                    onChange={(e) => setSelected(e.target.checked ? new Set((pendingData?.issues || []).map((i) => i.record_id)) : new Set())} />,
+                  <IndeterminateCheckbox key="chk"
+                    checked={selected.size > 0 && selected.size === (pendingData?.issues || []).length}
+                    indeterminate={selected.size > 0 && selected.size < (pendingData?.issues || []).length}
+                    onChange={(e) => setSelected(e.target.checked ? new Set((pendingData?.issues || []).map((i) => i.record_id)) : new Set())}
+                  />,
                   t("级别"), t("来源"), t("问题描述"), t("设备 SN"), t("Zendesk"), t("飞书"), t("操作")
                 ]} />
                 <tbody>

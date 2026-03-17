@@ -957,6 +957,18 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
         ).order_by(func.count().desc()).limit(10)
         top_users = [{"username": row[0], "count": row[1]} for row in (await session.execute(top_users_stmt)).fetchall()]
 
+        # Separate external failures (token quota, disk space, etc.) from real service failures.
+        # External failures should not count against the success rate.
+        _EXTERNAL_FAIL_REASONS = {"OpenAI 额度不足", "Claude 额度不足", "所有模型额度不足", "磁盘空间不足", "token 额度不足", "API 额度不足"}
+        external_fail_count = 0
+        for fd in fail_details:
+            reason = fd.get("reason", "")
+            if reason in _EXTERNAL_FAIL_REASONS:
+                external_fail_count += 1
+
+        total_fail = type_counts.get("analysis_fail", 0)
+        real_fail = total_fail - external_fail_count
+
         return {
             "date_from": date_from,
             "date_to": date_to,
@@ -969,7 +981,8 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
             "top_users": top_users,
             "total_analyses": type_counts.get("analysis_start", 0),
             "successful_analyses": type_counts.get("analysis_done", 0),
-            "failed_analyses": type_counts.get("analysis_fail", 0),
+            "failed_analyses": real_fail,
+            "external_failures": external_fail_count,
             "feedback_submitted": type_counts.get("feedback_submit", 0),
             "escalations": type_counts.get("escalate", 0),
         }

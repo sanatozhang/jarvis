@@ -19,6 +19,7 @@ interface Analytics {
   unique_users: number;
   avg_analysis_duration_ms: number; avg_analysis_duration_min: number;
   total_analyses: number; successful_analyses: number; failed_analyses: number;
+  external_failures: number;
   feedback_submitted: number; escalations: number;
   fail_reasons: FailReasonItem[];
   daily: Record<string, Record<string, number>>;
@@ -193,10 +194,11 @@ export default function AnalyticsPage() {
           </section>
 
           {/* Key metrics */}
-          <div className="grid grid-cols-5 gap-3">
+          <div className="grid grid-cols-6 gap-3">
             <StatCard label={t("总分析次数")} value={data.total_analyses} />
             <StatCard label={t("分析成功")} value={data.successful_analyses} color="#16A34A" />
             <StatCard label={t("分析失败")} value={data.failed_analyses} color="#DC2626" />
+            <StatCard label={t("外部因素")} value={data.external_failures || 0} sub={t("额度/磁盘等")} color="#F59E0B" />
             <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="#2563EB" />
             <StatCard label={t("活跃用户")} value={data.unique_users} color="#7C3AED" />
           </div>

@@ -44,6 +44,10 @@ const EN: Record<string, string> = {
   "加载中...": "Loading...",
   "同步飞书": "Sync Feishu",
   "批量分析": "Batch Analyze",
+  "全选本页": "Select All",
+  "已选择": "Selected",
+  "个工单": "issues",
+  "取消选择": "Deselect",
   "设置用户名": "Set Username",
 
   // Tabs
@@ -76,6 +80,8 @@ const EN: Record<string, string> = {
   "成功": "Done",
   "分析成功": "Analysis Done",
   "分析失败": "Analysis Failed",
+  "外部因素": "External Factors",
+  "额度/磁盘等": "Quota / Disk etc.",
   "失败": "Failed",
   "命中规则": "Matched Rule",
   "已重新加载": "Reloaded",
@@ -258,7 +264,6 @@ const EN: Record<string, string> = {
   "加载失败": "Load failed",
 
   // Tracking extra
-  "个工单": "tickets",
   "共": "Total",
   "原因": "Cause",
   "结果": "Result",
