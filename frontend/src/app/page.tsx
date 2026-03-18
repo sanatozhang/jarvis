@@ -1132,6 +1132,17 @@ export default function HomePage() {
                               </span>
                             )}
                           </div>
+                          {/* Lost recording tool hint */}
+                          {r.problem_type && /录音.{0,8}找不到|找不到.{0,8}录音|recording.*lost|lost.*recording|missing.*recording/i.test(r.problem_type + " " + (r.problem_type_en || "")) && (
+                            <a href="/tools"
+                              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
+                              style={{ background: "rgba(96,165,250,0.08)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.2)", textDecoration: "none" }}>
+                              <svg className="h-3.5 w-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                              </svg>
+                              {lang === "cn" ? "录音找不到？试试录音丢失排查工具 →" : "Can't find the recording? Try the Lost Recording Finder →"}
+                            </a>
+                          )}
                           <div>
                             <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
                               {lang === "cn" ? "问题原因" : "Root Cause"}

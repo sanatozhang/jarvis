@@ -556,3 +556,34 @@ export const fetchEvalRuns = (datasetId?: number) => {
 };
 
 export const fetchEvalRun = (id: number) => request<EvalRun>(`/eval/runs/${id}`);
+
+// ---------------------------------------------------------------------------
+// Tools
+// ---------------------------------------------------------------------------
+export interface LostFileFinderResult {
+  markdown: string;
+  total_records: number;
+  anomaly_count: number;
+  problem_date_text: string;
+  timezone_label: string;
+}
+
+export async function analyzeLostFile(
+  file: File,
+  problemDate: string,
+  tzOffset: number,
+): Promise<LostFileFinderResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("problem_date", problemDate);
+  form.append("tz_offset", String(tzOffset));
+  const res = await fetch(`${BASE}/tools/lost-file-finder`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "分析失败");
+  }
+  return res.json();
+}

@@ -37,6 +37,27 @@ const EN: Record<string, string> = {
   "值班报告": "Reports",
   "系统设置": "Settings",
   "系统状态": "Status",
+  "工具箱": "Tools",
+
+  // Tools page
+  "常用工具": "Utilities",
+  "录音丢失排查": "Lost Recording Finder",
+  "录音丢失排查助手": "Lost Recording Finder",
+  "上传设备日志文件（.plaud 或 .log）": "Upload device log file (.plaud or .log)",
+  "拖拽文件到此处，或点击选择": "Drop file here or click to select",
+  "排查起始日期": "Problem date (start)",
+  "时区": "Timezone",
+  "开始排查": "Analyze",
+  "排查中...": "Analyzing...",
+  "复制结果": "Copy Result",
+  "清除结果": "Clear",
+  "共找到": "Found",
+  "条同步记录": "sync records",
+  "其中": "including",
+  "条时间戳异常": "with timestamp anomalies",
+  "请先上传日志文件": "Please upload a log file first",
+  "使用录音丢失排查工具": "Use the Lost Recording Finder tool",
+  "录音找不到？试试这个工具": "Can't find a recording? Try this tool",
 
   // Header
   "全部指派人": "All Assignees",
