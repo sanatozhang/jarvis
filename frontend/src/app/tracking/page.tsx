@@ -733,14 +733,14 @@ export default function TrackingPage() {
                 <button onClick={() => {
                     const base = "https://nicebuild.feishu.cn/share/base/form/shrcnGuYEnRrbbVw4Y6evkyUDCo";
                     const params = new URLSearchParams();
-                    if (detailItem.description) params.set("prefill_问题描述", detailItem.description);
+                    const appUrl = `${window.location.origin}/tracking?issue=${detailItem.record_id}`;
+                    const desc = `Appllo 工单: ${appUrl}\n\n${detailItem.description || ""}`;
+                    params.set("prefill_问题描述", desc);
                     if (detailItem.zendesk) params.set("prefill_Zendesk 工单链接", detailItem.zendesk);
                     if (detailItem.feishu_link) params.set("prefill_飞书工单链接", detailItem.feishu_link);
                     const latestAnalysis = issueAnalyses[detailItem.record_id]?.[0] || detailItem.analysis;
                     if (latestAnalysis?.root_cause) params.set("prefill_处理结果", latestAnalysis.root_cause);
                     if (detailItem.root_cause_summary) params.set("prefill_一句话归因", detailItem.root_cause_summary);
-                    const appUrl = `${window.location.origin}/tracking?issue=${detailItem.record_id}`;
-                    params.set("prefill_Appllo 工单链接", appUrl);
                     window.open(`${base}?${params.toString()}`, "_blank");
                   }}
                   className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
