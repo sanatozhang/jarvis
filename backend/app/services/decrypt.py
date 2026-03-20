@@ -181,6 +181,76 @@ def decrypt_plaud_file(plaud_path: Path, output_dir: Optional[Path] = None) -> O
         return None
 
 
+def process_log_file_for_platform(
+    file_path: Path,
+    work_dir: Path,
+    platform: str = "",
+) -> Tuple[Optional[Path], bool, Optional[str]]:
+    """Dispatch to the correct platform-specific decryption handler.
+
+    - app (or empty/unknown): full Plaud .plaud ChaCha20 decryption
+    - web: placeholder — currently passes through as plain log
+    - desktop: placeholder — currently passes through as plain log
+    """
+    plat = (platform or "").lower().strip()
+
+    if plat == "web":
+        return _process_log_web(file_path, work_dir)
+    elif plat == "desktop":
+        return _process_log_desktop(file_path, work_dir)
+    else:
+        # Default: app (original Plaud .plaud decryption)
+        return process_log_file(file_path, work_dir)
+
+
+def _process_log_web(
+    file_path: Path,
+    work_dir: Path,
+) -> Tuple[Optional[Path], bool, Optional[str]]:
+    """Web platform log processing — placeholder.
+
+    Web logs do not use .plaud encryption. Currently just passes the file
+    through with basic format detection. Extend with web-specific decryption
+    when the format is defined.
+    """
+    logger.info("=== process_log_web: %s ===", file_path.name)
+    name = file_path.name.lower()
+
+    # Handle ZIP
+    if name.endswith(".zip") or is_zip_file(file_path):
+        return _process_zip(file_path, work_dir)
+
+    # Plain log / unknown — pass through
+    if file_path.exists() and file_path.stat().st_size > 0:
+        return file_path, False, None
+
+    return None, True, f"Web 日志文件无法处理: {file_path.name}"
+
+
+def _process_log_desktop(
+    file_path: Path,
+    work_dir: Path,
+) -> Tuple[Optional[Path], bool, Optional[str]]:
+    """Desktop platform log processing — placeholder.
+
+    Desktop logs do not use .plaud encryption. Currently just passes the file
+    through with basic format detection. Extend with desktop-specific decryption
+    when the format is defined.
+    """
+    logger.info("=== process_log_desktop: %s ===", file_path.name)
+    name = file_path.name.lower()
+
+    # Handle ZIP
+    if name.endswith(".zip") or is_zip_file(file_path):
+        return _process_zip(file_path, work_dir)
+
+    # Plain log / unknown — pass through
+    if file_path.exists() and file_path.stat().st_size > 0:
+        return file_path, False, None
+
+    return None, True, f"Desktop 日志文件无法处理: {file_path.name}"
+
+
 def process_log_file(
     file_path: Path,
     work_dir: Path,

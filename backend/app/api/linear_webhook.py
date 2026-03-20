@@ -368,11 +368,11 @@ async def _run_linear_analysis(
             logger.warning("No downloadable files for issue %s, analyzing description only", identifier)
 
         # --- Step 4: Run analysis pipeline ---
+        from app.services.agent_orchestrator import AgentOrchestrator
         from app.services.decrypt import process_log_file
         from app.services.extractor import extract_for_rules
+        from app.services.issue_text import guess_problem_date, normalize_description_for_matching
         from app.services.rule_engine import RuleEngine
-        from app.services.agent_orchestrator import AgentOrchestrator
-        from app.agents.base import BaseAgent
 
         # Validate downloaded files
         logger.info("=== Processing downloaded files ===")
@@ -418,13 +418,15 @@ async def _run_linear_analysis(
             await engine.sync_files_to_db()
         except Exception:
             pass
-        rules = engine.match_rules(full_description)
-        rule_type = engine.classify(full_description)
+        routing_text = normalize_description_for_matching(full_description)
+        problem_date = guess_problem_date(routing_text)
+        rules = engine.match_rules(routing_text)
+        rule_type = engine.classify(routing_text)
 
         await db.update_task(task_id, status="analyzing", progress=50, message="AI 分析中...")
 
         # Pre-extract
-        extraction = extract_for_rules(rules, log_paths) if log_paths else {}
+        extraction = extract_for_rules(rules, log_paths, problem_date=problem_date) if log_paths else {}
 
         # Prepare workspace
         engine.prepare_workspace(workspace, rules, log_paths)
@@ -451,18 +453,19 @@ async def _run_linear_analysis(
             else:
                 logger.warning("  No previous analysis found for followup, proceeding without context")
 
-        # Run agent
-        prompt = BaseAgent.build_prompt(
+        orchestrator = AgentOrchestrator()
+        result = await orchestrator.run_analysis(
+            workspace=workspace,
             issue=issue,
             rules=rules,
             extraction=extraction,
+            rule_type=rule_type,
+            problem_date=problem_date,
+            has_logs=bool(log_paths),
             language=issue_language,
             previous_analysis=previous_analysis,
             followup_question=followup_question,
         )
-        orchestrator = AgentOrchestrator()
-        agent = orchestrator.select_agent(rule_type)
-        result = await agent.analyze(workspace=workspace, prompt=prompt)
         result.task_id = task_id
         result.issue_id = record_id
         result.rule_type = rule_type

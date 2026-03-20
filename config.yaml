@@ -17,8 +17,8 @@ linear:
 # Agent 配置
 agent:
   default: claude_code
-  timeout: 300           # 单次分析超时（秒）
-  max_turns: 25          # Agent 最大交互轮数
+  timeout: 600           # 单次分析超时（秒）— 探索式分析需要足够时间
+  max_turns: 30          # Agent 最大交互轮数 — 多轮 grep 需要更多轮次
 
   providers:
     claude_code:
@@ -67,3 +67,9 @@ concurrency:
 storage:
   workspace_dir: "./workspaces"    # 分析工作空间
   data_dir: "./data"               # 数据库等持久化数据
+
+# 源码仓库路径（通过 .env 配置，这里仅做说明）
+# CODE_REPO_APP=/path/to/plaud_ai          # APP (Flutter) 源码
+# CODE_REPO_WEB=/path/to/plaud_web         # Web 前端源码
+# CODE_REPO_DESKTOP=/path/to/plaud_desktop # Desktop (Electron) 源码
+# CODE_REPO_PATH=/path/to/plaud_ai         # 旧字段，兼容，等同于 CODE_REPO_APP

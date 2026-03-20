@@ -8,17 +8,17 @@ Orchestrates the full flow:
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
-from app.config import get_settings
+from app.config import get_settings, get_code_repo_for_platform
 from app.db import database as db
 from app.models.schemas import AnalysisResult, Issue
 from app.services.agent_orchestrator import AgentOrchestrator
-from app.services.decrypt import process_log_file
+from app.services.decrypt import process_log_file_for_platform
 from app.services.extractor import extract_for_rules
 from app.services.feishu import FeishuClient
+from app.services.issue_text import guess_problem_date, normalize_description_for_matching
 from app.services.rule_engine import RuleEngine
 
 logger = logging.getLogger("jarvis.worker")
@@ -88,10 +88,12 @@ async def run_analysis_pipeline(
             priority=rec.priority or "",
             zendesk=rec.zendesk or "",
             zendesk_id=rec.zendesk_id or "",
+            platform=rec.platform or "",
             source=rec.source or ("linear" if is_linear else "local"),
             feishu_link="",
             linear_issue_id=rec.linear_issue_id or "",
             linear_issue_url=rec.linear_issue_url or "",
+            occurred_at=rec.occurred_at,
             log_files=[],
         )
         logger.info("Processing %s issue %s: %s", issue.source, issue_id, issue.description[:80])
@@ -111,6 +113,8 @@ async def run_analysis_pipeline(
     workspace.mkdir(parents=True, exist_ok=True)
     raw_dir = workspace / "raw"
     raw_dir.mkdir(exist_ok=True)
+    images_dir = workspace / "images"
+    images_dir.mkdir(exist_ok=True)
 
     # Log cache: reuse previously downloaded logs for the same issue
     cache_dir = Path(settings.storage.workspace_dir) / "_cache" / issue_id / "raw"
@@ -126,6 +130,15 @@ async def run_analysis_pipeline(
                         import shutil
                         shutil.copy2(f, dest)
                     downloaded_files.append(dest)
+
+        local_images = Path(settings.storage.workspace_dir) / issue_id / "images"
+        if local_images.exists():
+            import shutil
+            for img in local_images.iterdir():
+                if img.is_file():
+                    dest = images_dir / img.name
+                    if not dest.exists():
+                        shutil.copy2(img, dest)
     elif cache_dir.exists() and any(cache_dir.iterdir()):
         # Reuse cached logs
         import shutil
@@ -178,8 +191,13 @@ async def run_analysis_pipeline(
     log_paths: list[Path] = []
     log_parse_issues: list[str] = []
 
+    platform = (getattr(issue, "platform", "") or "").strip().lower()
+    logger.info("Platform: %s (issue %s)", platform or "app (default)", issue_id)
+
     for fp in downloaded_files:
-        log_path, incorrect, reason = process_log_file(fp, workspace / "processed")
+        log_path, incorrect, reason = process_log_file_for_platform(
+            fp, workspace / "processed", platform=platform,
+        )
         if log_path:
             log_paths.append(log_path)
         if incorrect and reason:
@@ -203,8 +221,9 @@ async def run_analysis_pipeline(
         await on_progress(45, "匹配分析规则...")
 
     engine = _get_rule_engine()
-    rules = engine.match_rules(issue.description)
-    rule_type = engine.classify(issue.description)
+    routing_text = normalize_description_for_matching(issue.description)
+    rules = engine.match_rules(routing_text)
+    rule_type = engine.classify(routing_text)
 
     logger.info("Matched rules: %s (primary: %s), has_logs: %s", [r.meta.id for r in rules], rule_type, has_logs)
 
@@ -213,16 +232,16 @@ async def run_analysis_pipeline(
     if has_logs:
         if on_progress:
             await on_progress(50, "预提取关键日志...")
-        problem_date = _guess_problem_date(issue.description)
+        problem_date = guess_problem_date(routing_text, issue.occurred_at)
         extraction = extract_for_rules(rules, log_paths, problem_date=problem_date)
     else:
-        problem_date = _guess_problem_date(issue.description)
+        problem_date = guess_problem_date(routing_text, issue.occurred_at)
 
     if on_progress:
         await on_progress(55, "准备 Agent 工作空间..." if has_logs else "准备代码分析...")
 
     # --- Step 6: Prepare workspace ---
-    code_repo = settings.code_repo_path if settings.code_repo_path else None
+    code_repo = get_code_repo_for_platform(platform)
     engine.prepare_workspace(workspace, rules, log_paths, code_repo=code_repo)
 
     # --- Step 7: Run agent ---
@@ -284,17 +303,3 @@ def _cleanup_log_cache(cache_root: Path, max_issues: int = 200):
             logger.info("Cleaned up log cache: removed %d old entries", len(issue_dirs) - max_issues)
     except Exception as e:
         logger.warning("Log cache cleanup failed: %s", e)
-
-
-def _guess_problem_date(description: str) -> Optional[str]:
-    """Try to extract a date from the problem description."""
-    patterns = [
-        r"(\d{4}-\d{2}-\d{2})",
-        r"(\d{4}/\d{2}/\d{2})",
-        r"(\d{1,2}/\d{1,2}/\d{4})",
-    ]
-    for pat in patterns:
-        m = re.search(pat, description)
-        if m:
-            return m.group(1).replace("/", "-")
-    return None

@@ -29,10 +29,11 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.db import database as db
+from app.services.agent_orchestrator import AgentOrchestrator
 from app.services.decrypt import process_log_file
 from app.services.extractor import extract_for_rules
+from app.services.issue_text import guess_problem_date, normalize_description_for_matching
 from app.services.rule_engine import RuleEngine
-from app.services.agent_orchestrator import AgentOrchestrator
 from app.models.schemas import AnalysisResult, Issue
 
 logger = logging.getLogger("jarvis.api.v1")
@@ -244,23 +245,28 @@ async def _run_api_analysis(
             device_sn=device_sn, priority=priority,
         )
 
-        rules = engine.match_rules(description)
-        rule_type = engine.classify(description)
+        routing_text = normalize_description_for_matching(description)
+        problem_date = guess_problem_date(routing_text)
+        rules = engine.match_rules(routing_text)
+        rule_type = engine.classify(routing_text)
 
         await db.update_task(task_id, status="analyzing", progress=50, message="AI 分析中...")
 
-        extraction = extract_for_rules(rules, log_paths) if has_logs else {}
+        extraction = extract_for_rules(rules, log_paths, problem_date=problem_date) if has_logs else {}
 
         # Prepare workspace
         engine.prepare_workspace(workspace, rules, log_paths)
 
-        # Run agent
         orchestrator = AgentOrchestrator()
-        from app.agents.base import BaseAgent
-        prompt = BaseAgent.build_prompt(issue=issue, rules=rules, extraction=extraction, has_logs=has_logs)
-
-        agent = orchestrator.select_agent(rule_type)
-        result = await agent.analyze(workspace=workspace, prompt=prompt)
+        result = await orchestrator.run_analysis(
+            workspace=workspace,
+            issue=issue,
+            rules=rules,
+            extraction=extraction,
+            rule_type=rule_type,
+            problem_date=problem_date,
+            has_logs=has_logs,
+        )
         result.task_id = task_id
         result.issue_id = record_id
         result.rule_type = rule_type

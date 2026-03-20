@@ -105,7 +105,10 @@ class Settings(BaseSettings):
     # --- Env-based settings ---
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "sqlite+aiosqlite:///./data/appllo.db"
-    code_repo_path: str = ""
+    code_repo_path: str = ""              # Legacy: single repo (treated as app)
+    code_repo_app: str = ""               # APP (Flutter) source code path
+    code_repo_web: str = ""               # Web frontend source code path
+    code_repo_desktop: str = ""           # Desktop (Electron) source code path
     host: str = "0.0.0.0"
     port: int = 8000
     workers: int = 1
@@ -194,4 +197,36 @@ def get_settings() -> Settings:
     Path(settings.storage.workspace_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.storage.data_dir).mkdir(parents=True, exist_ok=True)
 
+    # Backfill: if legacy code_repo_path is set but code_repo_app is not, use it as app
+    if settings.code_repo_path and not settings.code_repo_app:
+        settings.code_repo_app = settings.code_repo_path
+
     return settings
+
+
+def get_code_repo_for_platform(platform: str) -> Optional[str]:
+    """Return the source code repo path for a given platform (app/web/desktop)."""
+    s = get_settings()
+    mapping = {
+        "app": s.code_repo_app,
+        "web": s.code_repo_web,
+        "desktop": s.code_repo_desktop,
+    }
+    path = mapping.get(platform.lower(), "") if platform else ""
+    # Fallback: if platform unknown or not configured, use app repo
+    if not path:
+        path = s.code_repo_app or s.code_repo_path
+    return path if path else None
+
+
+def get_all_code_repos() -> dict[str, str]:
+    """Return all configured code repo paths (non-empty only)."""
+    s = get_settings()
+    repos = {}
+    if s.code_repo_app:
+        repos["app"] = s.code_repo_app
+    if s.code_repo_web:
+        repos["web"] = s.code_repo_web
+    if s.code_repo_desktop:
+        repos["desktop"] = s.code_repo_desktop
+    return repos

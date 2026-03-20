@@ -587,3 +587,30 @@ export async function analyzeLostFile(
   }
   return res.json();
 }
+
+// ============================================================
+// Wishes (许愿池)
+// ============================================================
+export interface Wish {
+  id: number;
+  title: string;
+  description: string;
+  status: string;
+  votes: number;
+  created_by: string;
+  created_at: string;
+}
+
+export const fetchWishes = () => request<Wish[]>("/wishes");
+
+export const createWish = (data: { title: string; description?: string; created_by?: string }) =>
+  request<Wish>("/wishes", { method: "POST", body: JSON.stringify(data) });
+
+export const updateWish = (id: number, data: { title?: string; description?: string; status?: string }) =>
+  request<Wish>(`/wishes/${id}`, { method: "PUT", body: JSON.stringify(data) });
+
+export const voteWish = (id: number) =>
+  request<Wish>(`/wishes/${id}/vote`, { method: "POST" });
+
+export const deleteWish = (id: number) =>
+  request<{ deleted: number }>(`/wishes/${id}`, { method: "DELETE" });

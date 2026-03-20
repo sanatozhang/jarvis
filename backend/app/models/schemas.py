@@ -60,6 +60,7 @@ class Issue(BaseModel):
     priority: str = ""          # "H" or "L"
     zendesk: str = ""
     zendesk_id: str = ""        # Extracted ticket number e.g. "#378794"
+    platform: str = ""          # "app" | "web" | "desktop" (empty = app default)
     source: str = "feishu"      # "feishu" | "linear" | "api" | "local"
     feishu_link: str = ""       # Direct link to Feishu record
     feishu_status: IssueStatus = IssueStatus.PENDING
@@ -69,6 +70,7 @@ class Issue(BaseModel):
     result_summary: str = ""    # 处理结果 from Feishu
     root_cause_summary: str = ""  # 一句话归因 from Feishu
     created_at_ms: int = 0      # 创建日期 (Unix ms from Feishu)
+    occurred_at: Optional[datetime] = None
     log_files: List[LogFile] = Field(default_factory=list)
 
 

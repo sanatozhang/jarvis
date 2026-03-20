@@ -1209,13 +1209,13 @@ export default function HomePage() {
                     const params = new URLSearchParams();
                     const issue = detailData!.issue;
                     if (issue.description) params.set("prefill_问题描述", issue.description);
-                    if (issue.device_sn) params.set("prefill_设备 SN", issue.device_sn);
-                    if (issue.firmware) params.set("prefill_固件版本号", issue.firmware);
-                    if (issue.app_version) params.set("prefill_APP 版本", issue.app_version);
                     if (issue.zendesk) params.set("prefill_Zendesk 工单链接", issue.zendesk);
+                    if (issue.feishu_link) params.set("prefill_飞书工单链接", issue.feishu_link);
                     const latestAnalysis = issueAnalyses[detailId!]?.[0] || detailData!.result;
                     if (latestAnalysis?.root_cause) params.set("prefill_处理结果", latestAnalysis.root_cause);
                     if (issue.root_cause_summary) params.set("prefill_一句话归因", issue.root_cause_summary);
+                    const appUrl = `${window.location.origin}/tracking?issue=${detailId}`;
+                    params.set("prefill_Appllo 工单链接", appUrl);
                     window.open(`${base}?${params.toString()}`, "_blank");
                   }}
                   className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"

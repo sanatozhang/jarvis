@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.models.schemas import PreExtractPattern, Rule
+from app.services.cloud_sync_parser import parse_cloud_sync_summary
+from app.services.recording_missing_parser import parse_recording_missing_timeline
 
 logger = logging.getLogger("jarvis.extractor")
 
@@ -22,11 +24,12 @@ def grep_log(
     log_path: Path,
     pattern: str,
     date_filter: Optional[str] = None,
-    max_lines: int = 30,
+    max_lines: int = 200,
 ) -> List[str]:
     """
     Run grep on a log file with optional date prefix filter.
     Returns matching lines (up to max_lines).
+    If date_filter yields no results, automatically falls back to no date filter.
     """
     try:
         if date_filter:
@@ -41,7 +44,22 @@ def grep_log(
             cmd, shell=True, capture_output=True, text=True, timeout=30
         )
         lines = result.stdout.strip().split("\n") if result.stdout.strip() else []
-        return lines[:max_lines]
+        lines = lines[:max_lines]
+
+        # Fallback: if date_filter returned nothing, retry without it
+        if date_filter and not lines:
+            logger.debug(
+                "date_filter '%s' returned no results for pattern '%s', retrying without filter",
+                date_filter, pattern,
+            )
+            cmd_fallback = f'grep -E "{pattern}" "{log_path}" | head -n {max_lines}'
+            result2 = subprocess.run(
+                cmd_fallback, shell=True, capture_output=True, text=True, timeout=30
+            )
+            lines = result2.stdout.strip().split("\n") if result2.stdout.strip() else []
+            lines = lines[:max_lines]
+
+        return lines
     except subprocess.TimeoutExpired:
         logger.warning("grep timed out for pattern '%s' on %s", pattern, log_path)
         return [f"[TIMEOUT] grep timed out for pattern: {pattern}"]
@@ -115,6 +133,7 @@ def extract_for_rules(
         "log_info": [],
         "patterns": {},
         "error_summary": {},
+        "deterministic": {},
     }
 
     # Basic log info
@@ -134,7 +153,7 @@ def extract_for_rules(
                 "pattern": pat.pattern,
                 "date_filter": pat.date_filter,
                 "match_count": len(all_matches),
-                "matches": all_matches[:20],  # cap to keep prompt under 50KB
+                "matches": all_matches[:200],
             }
 
     # Always extract error summary
@@ -148,5 +167,15 @@ def extract_for_rules(
             "exceptions": exception_count,
             "failures": fail_count,
         }
+
+    rule_ids = {rule.meta.id for rule in rules}
+    if rule_ids & {"recording-missing", "timestamp-drift"}:
+        extraction["deterministic"]["recording_missing_timeline"] = (
+            parse_recording_missing_timeline(log_paths, problem_date=problem_date)
+        )
+    if rule_ids & {"cloud-sync", "file-transfer"}:
+        extraction["deterministic"]["cloud_sync_summary"] = (
+            parse_cloud_sync_summary(log_paths, problem_date=problem_date)
+        )
 
     return extraction

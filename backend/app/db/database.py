@@ -191,6 +191,19 @@ class EvalRunRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class WishRecord(Base):
+    """Feature wishes / requests from users."""
+    __tablename__ = "wishes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(256), default="")
+    description = Column(Text, default="")
+    status = Column(String(16), default="pending")  # pending / accepted / done / rejected
+    votes = Column(Integer, default=0)
+    created_by = Column(String(64), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Engine / Session
 # ---------------------------------------------------------------------------
@@ -640,6 +653,7 @@ def _issue_to_dict(
         "category": issue.category or "",
         "created_by": issue.created_by or "",
         "created_at": (issue.created_at.isoformat() + "Z") if issue.created_at else "",
+        "occurred_at": (issue.occurred_at.isoformat() + "Z") if issue.occurred_at else "",
         "analysis_count": analysis_count,
     }
 

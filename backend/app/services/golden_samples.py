@@ -9,6 +9,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.db import database as db
+from app.services.issue_text import normalize_description_for_matching
 
 logger = logging.getLogger("jarvis.golden_samples")
 
@@ -74,14 +75,16 @@ async def find_similar_samples(
     description: str,
     rule_type: Optional[str] = None,
     top_k: int = 3,
-    threshold: float = 0.15,
+    threshold: float = 0.3,
 ) -> List[Dict[str, Any]]:
     """Find golden samples most similar to the given description."""
     samples = await db.list_golden_samples(rule_type=rule_type, limit=200)
+    query = normalize_description_for_matching(description)
 
     scored = []
     for sample in samples:
-        sim = _jaccard_similarity(description, sample.get("description", ""))
+        sample_desc = normalize_description_for_matching(sample.get("description", ""))
+        sim = _jaccard_similarity(query, sample_desc)
         if sim >= threshold:
             scored.append((sim, sample))
 

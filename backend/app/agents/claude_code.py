@@ -30,23 +30,24 @@ class ClaudeCodeAgent(BaseAgent):
         if on_progress:
             await _maybe_await(on_progress(60, "Claude Code 分析中..."))
 
-        # Write prompt to file to avoid "Argument list too long" error
+        # Save prompt to file for debugging/audit, and pipe via stdin
         prompt_file = workspace / "prompt.md"
         prompt_file.write_text(prompt, encoding="utf-8")
 
-        cmd = self._build_command(prompt_file)
-        logger.info("Running Claude Code in %s (prompt: %d chars → %s)", workspace, len(prompt), prompt_file)
+        cmd = self._build_command()
+        logger.info("Running Claude Code in %s (prompt: %d chars, piped via stdin)", workspace, len(prompt))
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(workspace),
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(),
+                proc.communicate(input=prompt.encode("utf-8")),
                 timeout=self.config.timeout,
             )
 
@@ -113,11 +114,11 @@ class ClaudeCodeAgent(BaseAgent):
                 agent_type="claude_code",
             )
 
-    def _build_command(self, prompt_file: Path) -> list[str]:
-        """Build claude CLI command. Reads prompt from file to avoid arg length limit."""
+    def _build_command(self) -> list[str]:
+        """Build claude CLI command. Prompt is piped via stdin."""
         cmd = [
             "claude",
-            "-p", f"Read the file {prompt_file.name} and follow the instructions in it.",
+            "-p",
             "--output-format", "text",
         ]
 

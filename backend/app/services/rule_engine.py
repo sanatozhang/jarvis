@@ -15,6 +15,7 @@ import asyncio
 import logging
 import shutil
 from pathlib import Path
+import re
 from typing import Dict, List, Optional
 
 import frontmatter
@@ -26,6 +27,7 @@ from app.models.schemas import (
     RuleMeta,
     RuleTrigger,
 )
+from app.services.issue_text import normalize_description_for_matching
 
 logger = logging.getLogger("jarvis.rules")
 
@@ -87,31 +89,46 @@ class RuleEngine:
     # DB sync (called on startup after DB is initialized)
     # ------------------------------------------------------------------
     async def sync_files_to_db(self):
-        """Sync file-based rules into the database. DB records take precedence."""
+        """Sync file-based rules into the database.
+
+        Existing DB rules are updated only when the file version is newer, so
+        deliberate UI edits are not overwritten by older seed data.
+        """
         from app.db.database import get_all_rules_from_db, upsert_rule_to_db
 
         db_rules = await get_all_rules_from_db()
-        db_ids = {r["id"] for r in db_rules}
+        db_rule_map = {r["id"]: r for r in db_rules}
 
         synced = 0
         for rule_id, rule in self._rules.items():
-            if rule_id not in db_ids:
+            payload = {
+                "id": rule.meta.id,
+                "name": rule.meta.name,
+                "version": rule.meta.version,
+                "enabled": rule.meta.enabled,
+                "triggers": rule.meta.triggers.model_dump(),
+                "depends_on": rule.meta.depends_on,
+                "pre_extract": [p.model_dump() for p in rule.meta.pre_extract],
+                "needs_code": rule.meta.needs_code,
+                "content": rule.content,
+            }
+
+            db_rule = db_rule_map.get(rule_id)
+            if not db_rule:
                 # New rule from file → insert to DB
+                await upsert_rule_to_db(payload)
+                synced += 1
+                continue
+
+            db_version = int(db_rule.get("version", 0) or 0)
+            if int(rule.meta.version or 0) > db_version:
                 await upsert_rule_to_db({
-                    "id": rule.meta.id,
-                    "name": rule.meta.name,
-                    "version": rule.meta.version,
-                    "enabled": rule.meta.enabled,
-                    "triggers": rule.meta.triggers.model_dump(),
-                    "depends_on": rule.meta.depends_on,
-                    "pre_extract": [p.model_dump() for p in rule.meta.pre_extract],
-                    "needs_code": rule.meta.needs_code,
-                    "content": rule.content,
+                    **payload,
                 })
                 synced += 1
 
         if synced:
-            logger.info("Synced %d new file rules to DB", synced)
+            logger.info("Synced %d file rules to DB", synced)
 
         # Reload from DB to get the complete set
         await self.reload_from_db()
@@ -150,36 +167,85 @@ class RuleEngine:
     # ------------------------------------------------------------------
     # Matching
     # ------------------------------------------------------------------
-    def classify(self, description: str) -> str:
-        description_lower = description.lower()
-        matches: List[tuple] = []
+    @staticmethod
+    def _keyword_matches(description: str, keyword: str) -> bool:
+        desc = description.lower()
+        kw = keyword.lower().strip()
+        if not kw:
+            return False
+
+        # English/alphanumeric keywords should respect token boundaries so
+        # "connect" does not match "connection".
+        if re.fullmatch(r"[a-z0-9][a-z0-9 _./-]*", kw):
+            pattern = rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])"
+            return re.search(pattern, desc) is not None
+
+        return kw in desc
+
+    def _ranked_matches(self, description: str) -> List[tuple[int, int, int, str]]:
+        text = normalize_description_for_matching(description)
+        matches: List[tuple[int, int, int, str]] = []
 
         for rule_id, rule in self._rules.items():
             if not rule.meta.enabled:
                 continue
-            for kw in rule.meta.triggers.keywords:
-                if kw.lower() in description_lower:
-                    matches.append((rule.meta.triggers.priority, rule_id))
-                    break
 
+            hit_keywords = [
+                kw for kw in rule.meta.triggers.keywords
+                if self._keyword_matches(text, kw)
+            ]
+            if not hit_keywords:
+                continue
+
+            matches.append((
+                rule.meta.triggers.priority,
+                len(hit_keywords),
+                max(len(kw) for kw in hit_keywords),
+                rule_id,
+            ))
+
+        matches.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+        return matches
+
+    def classify(self, description: str) -> str:
+        matches = self._ranked_matches(description)
         if not matches:
             return "general"
 
-        matches.sort(key=lambda x: x[0], reverse=True)
-        return matches[0][1]
+        return matches[0][3]
 
-    def match_rules(self, description: str) -> List[Rule]:
-        primary_id = self.classify(description)
-        primary = self.get_rule(primary_id)
-        if not primary:
-            fallback = self.get_rule("general")
-            return [fallback] if fallback else []
+    def match_rules(self, description: str, max_rules: int = 3) -> List[Rule]:
+        """Return up to max_rules matching rules (sorted by priority) plus their dependencies.
 
-        result = [primary]
-        for dep_id in primary.meta.depends_on:
-            dep = self.get_rule(dep_id)
-            if dep and dep not in result:
-                result.append(dep)
+        Instead of only picking the single best match, we accumulate all keyword-matching
+        rules so that Claude receives richer context when a ticket spans multiple topics
+        (e.g. "录音丢失" + "蓝牙断连" would previously only trigger recording-missing).
+        """
+        matched = [
+            item for item in self._ranked_matches(description)
+            if item[3] != "general"
+        ]
+        top_ids = [rule_id for _, _, _, rule_id in matched[:max_rules]]
+
+        # Fallback to general if nothing matched
+        if not top_ids:
+            top_ids = ["general"]
+
+        result: List[Rule] = []
+        seen: set = set()
+
+        for rule_id in top_ids:
+            rule = self.get_rule(rule_id)
+            if rule and rule_id not in seen:
+                result.append(rule)
+                seen.add(rule_id)
+            # Pull in depends_on for each matched rule
+            if rule:
+                for dep_id in rule.meta.depends_on:
+                    dep = self.get_rule(dep_id)
+                    if dep and dep_id not in seen:
+                        result.append(dep)
+                        seen.add(dep_id)
 
         return result
 
@@ -231,10 +297,11 @@ class RuleEngine:
         code_repo: Optional[str] = None,
     ) -> Path:
         logs_dir = workspace / "logs"
+        images_dir = workspace / "images"
         rules_dir = workspace / "rules"
         output_dir = workspace / "output"
 
-        for d in (logs_dir, rules_dir, output_dir):
+        for d in (logs_dir, images_dir, rules_dir, output_dir):
             d.mkdir(parents=True, exist_ok=True)
 
         for lp in log_paths:
@@ -255,4 +322,44 @@ class RuleEngine:
             if not code_link.exists():
                 code_link.symlink_to(code_repo)
 
+        # Write CLAUDE.md for persistent behavioral instructions
+        # This is auto-loaded by the Claude CLI as system context,
+        # more reliable than embedding in prompt.md
+        self._write_workspace_claude_md(workspace)
+
         return workspace
+
+    @staticmethod
+    def _write_workspace_claude_md(workspace: Path) -> None:
+        """Write a CLAUDE.md in the workspace with core analysis behavior rules."""
+        claude_md = workspace / "CLAUDE.md"
+        claude_md.write_text(
+            """\
+# 日志分析行为规则
+
+你正在分析 Plaud 设备用户工单。以下规则在整个分析过程中始终有效。
+
+## 必须遵守
+
+1. **探索式分析**：你必须像有经验的工程师一样主动 grep 日志，至少执行 3 次独立 grep 命令，交叉印证后再下结论。
+2. **不信任预提取**：prompt.md 中的预提取摘要仅用于定方向，所有关键证据必须自己从 logs/ 目录 grep 验证。
+3. **查看上下文**：对关键日志行使用 `grep -A 5 -B 5` 查看前后上下文，不能只看单行。
+4. **诚实置信度**：证据不足时设 confidence: low 和 needs_engineer: true，禁止编造结论。
+5. **结果写文件**：最终 JSON 必须写入 output/result.json。
+
+## 禁止行为
+
+- 看完预提取摘要就直接输出 result.json（跳过 grep 验证）
+- 在没有日志证据支撑时给出 high confidence
+- user_reply 中使用技术术语（用户是普通消费者）
+
+## 工作空间
+
+- `logs/` — 解密后的完整日志，可直接 grep
+- `rules/` — 排查规则，按步骤执行
+- `images/` — 用户截图（如有），请查看
+- `code/` — 代码仓库（如有）
+- `output/` — 将 result.json 写到这里
+""",
+            encoding="utf-8",
+        )

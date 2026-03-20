@@ -102,8 +102,13 @@ async def lifespan(app: FastAPI):
     # Start periodic zombie task cleanup
     zombie_task = asyncio.create_task(_zombie_cleanup_loop())
 
+    # Start daily code repo updater (pulls main branch between 2-6 AM)
+    from app.services.repo_updater import repo_update_loop
+    repo_update_task = asyncio.create_task(repo_update_loop())
+
     yield
 
+    repo_update_task.cancel()
     zombie_task.cancel()
     await close_db()
     logger.info("Appllo stopped.")
@@ -145,6 +150,7 @@ from app.api.linear_webhook import router as linear_webhook_router
 from app.api.golden_samples import router as golden_samples_router
 from app.api.eval import router as eval_router
 from app.api.tools import router as tools_router
+from app.api.wishes import router as wishes_router
 
 app.include_router(issues_router, prefix="/api/issues", tags=["Issues"])
 app.include_router(tasks_router, prefix="/api/tasks", tags=["Tasks"])
@@ -163,6 +169,7 @@ app.include_router(linear_webhook_router, prefix="/api/linear", tags=["Linear"])
 app.include_router(golden_samples_router, prefix="/api/golden-samples", tags=["Golden Samples"])
 app.include_router(eval_router, prefix="/api/eval", tags=["Eval"])
 app.include_router(tools_router, prefix="/api/tools", tags=["Tools"])
+app.include_router(wishes_router, prefix="/api/wishes", tags=["Wishes"])
 
 
 # ---------------------------------------------------------------------------
