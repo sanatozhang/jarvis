@@ -635,7 +635,11 @@ async def _enrich_issues_batch(
     session: AsyncSession,
     issues: List[IssueRecord],
 ) -> List[Dict[str, Any]]:
-    """Batch-load analysis + task data for a list of issues (3 queries total instead of 3N)."""
+    """Batch-load analysis + task data for a list of issues.
+
+    Uses 2 batch queries (analysis + count) + per-issue task lookup
+    within the same session to avoid N+1 session overhead.
+    """
     from sqlalchemy import select, func
 
     if not issues:
@@ -643,8 +647,7 @@ async def _enrich_issues_batch(
 
     issue_ids = [issue.id for issue in issues]
 
-    # 1. Latest analysis per issue (one query)
-    # Use a subquery to get the max analysis id per issue, then fetch those records
+    # 1. Latest analysis per issue — AnalysisRecord.id is auto-increment Integer
     latest_a_sub = (
         select(func.max(AnalysisRecord.id).label("max_id"))
         .where(AnalysisRecord.issue_id.in_(issue_ids))
@@ -653,22 +656,26 @@ async def _enrich_issues_batch(
     a_stmt = select(AnalysisRecord).where(AnalysisRecord.id.in_(select(latest_a_sub.c.max_id)))
     analyses = {a.issue_id: a for a in (await session.execute(a_stmt)).scalars().all()}
 
-    # 2. Analysis count per issue (one query)
+    # 2. Analysis count per issue
     count_stmt = (
         select(AnalysisRecord.issue_id, func.count().label("cnt"))
         .where(AnalysisRecord.issue_id.in_(issue_ids))
         .group_by(AnalysisRecord.issue_id)
     )
-    a_counts = {row.issue_id: row.cnt for row in (await session.execute(count_stmt)).all()}
+    a_counts = dict((await session.execute(count_stmt)).all())
 
-    # 3. Latest task per issue (one query)
-    latest_t_sub = (
-        select(func.max(TaskRecord.id).label("max_id"))
+    # 3. All tasks for these issues, then pick latest per issue in Python
+    #    (TaskRecord.id is a String UUID — can't use max(id) for ordering)
+    all_tasks_stmt = (
+        select(TaskRecord)
         .where(TaskRecord.issue_id.in_(issue_ids))
-        .group_by(TaskRecord.issue_id)
-    ).subquery()
-    t_stmt = select(TaskRecord).where(TaskRecord.id.in_(select(latest_t_sub.c.max_id)))
-    tasks = {t.issue_id: t for t in (await session.execute(t_stmt)).scalars().all()}
+        .order_by(TaskRecord.created_at.desc())
+    )
+    all_tasks = (await session.execute(all_tasks_stmt)).scalars().all()
+    tasks: Dict[str, TaskRecord] = {}
+    for t in all_tasks:
+        if t.issue_id not in tasks:  # first one is latest (ordered by created_at desc)
+            tasks[t.issue_id] = t
 
     return [
         _issue_to_dict(
