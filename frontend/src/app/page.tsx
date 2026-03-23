@@ -361,7 +361,8 @@ export default function HomePage() {
         if (!exists) return prev;
         return { ...prev, issues: prev.issues.filter((i) => i.record_id !== issueId), total: Math.max(0, prev.total - 1) };
       });
-      await loadInProgress(1); setTab("in_progress");
+      await loadInProgress(1);
+      if (!isRetry) setTab("in_progress");
       subscribeTaskProgress(task.task_id, (progress) => {
         setActiveTasks((p) => ({ ...p, [issueId]: progress }));
         if (progress.status === "done") {
@@ -1191,8 +1192,8 @@ export default function HomePage() {
                 );
               })()}
 
-              {/* Retry for failed */}
-              {detailData.localItem?.local_status === "failed" && (
+              {/* Retry for failed — only show if the task-level retry button above isn't already visible */}
+              {detailData.localItem?.local_status === "failed" && !(detailData.task && typeof detailData.task === "object" && detailData.task.status === "failed") && (
                 <section>
                   <button onClick={() => { startAnalysis(detailId!, true); closeDetail(); }}
                     className="w-full rounded-lg py-2.5 text-sm font-semibold"
