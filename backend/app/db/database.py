@@ -42,7 +42,7 @@ class IssueRecord(Base):
     linear_issue_id = Column(String(64), default="")       # e.g. "ENG-123"
     linear_issue_url = Column(String(512), default="")
     log_files_json = Column(Text, default="[]")            # JSON array
-    status = Column(String(32), default="pending")         # pending / analyzing / done / failed / deleted
+    status = Column(String(32), default="pending", index=True)  # pending / analyzing / done / failed / deleted
     rule_type = Column(String(64), default="")
     platform = Column(String(16), default="")              # APP / Web / Desktop
     category = Column(String(128), default="")             # problem category
@@ -290,6 +290,18 @@ async def init_db():
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {coltype} DEFAULT {default}"))
+            except Exception:
+                pass
+
+        # Add indexes for frequently queried columns (safe to re-run)
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_issues_status_updated ON issues(status, updated_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_issues_deleted ON issues(deleted)",
+            "CREATE INDEX IF NOT EXISTS idx_analyses_issue_id_created ON analyses(issue_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_issue_id_created ON tasks(issue_id, created_at DESC)",
+        ]:
+            try:
+                await conn.execute(text(idx_sql))
             except Exception:
                 pass
 
@@ -567,25 +579,8 @@ async def get_local_issues_paginated(
         ).order_by(IssueRecord.updated_at.desc()).offset(offset).limit(page_size)
         issues = list((await session.execute(stmt)).scalars().all())
 
-        # Enrich with analysis/task data
-        items = []
-        for issue in issues:
-            # Always try to load both task and analysis for any status
-            a_stmt = select(AnalysisRecord).where(
-                AnalysisRecord.issue_id == issue.id
-            ).order_by(AnalysisRecord.created_at.desc()).limit(1)
-            analysis = (await session.execute(a_stmt)).scalar_one_or_none()
-
-            a_count_stmt = select(func.count()).select_from(AnalysisRecord).where(AnalysisRecord.issue_id == issue.id)
-            a_count = (await session.execute(a_count_stmt)).scalar() or 0
-
-            t_stmt = select(TaskRecord).where(
-                TaskRecord.issue_id == issue.id
-            ).order_by(TaskRecord.created_at.desc()).limit(1)
-            task = (await session.execute(t_stmt)).scalar_one_or_none()
-
-            items.append(_issue_to_dict(issue, analysis=analysis, task=task, analysis_count=a_count))
-
+        # Batch-load analyses, tasks, and counts for all issues in one go
+        items = await _enrich_issues_batch(session, issues)
         return items, total
 
 
@@ -632,17 +627,58 @@ async def get_tracked_issues_paginated(
         stmt = select(IssueRecord).where(where).order_by(IssueRecord.updated_at.desc()).offset(offset).limit(page_size)
         issues = list((await session.execute(stmt)).scalars().all())
 
-        items = []
-        for issue in issues:
-            a_stmt = select(AnalysisRecord).where(AnalysisRecord.issue_id == issue.id).order_by(AnalysisRecord.created_at.desc()).limit(1)
-            analysis = (await session.execute(a_stmt)).scalar_one_or_none()
-            a_count_stmt = select(func.count()).select_from(AnalysisRecord).where(AnalysisRecord.issue_id == issue.id)
-            a_count = (await session.execute(a_count_stmt)).scalar() or 0
-            t_stmt = select(TaskRecord).where(TaskRecord.issue_id == issue.id).order_by(TaskRecord.created_at.desc()).limit(1)
-            task = (await session.execute(t_stmt)).scalar_one_or_none()
-            items.append(_issue_to_dict(issue, analysis=analysis, task=task, analysis_count=a_count))
-
+        items = await _enrich_issues_batch(session, issues)
         return items, total
+
+
+async def _enrich_issues_batch(
+    session: AsyncSession,
+    issues: List[IssueRecord],
+) -> List[Dict[str, Any]]:
+    """Batch-load analysis + task data for a list of issues (3 queries total instead of 3N)."""
+    from sqlalchemy import select, func
+
+    if not issues:
+        return []
+
+    issue_ids = [issue.id for issue in issues]
+
+    # 1. Latest analysis per issue (one query)
+    # Use a subquery to get the max analysis id per issue, then fetch those records
+    latest_a_sub = (
+        select(func.max(AnalysisRecord.id).label("max_id"))
+        .where(AnalysisRecord.issue_id.in_(issue_ids))
+        .group_by(AnalysisRecord.issue_id)
+    ).subquery()
+    a_stmt = select(AnalysisRecord).where(AnalysisRecord.id.in_(select(latest_a_sub.c.max_id)))
+    analyses = {a.issue_id: a for a in (await session.execute(a_stmt)).scalars().all()}
+
+    # 2. Analysis count per issue (one query)
+    count_stmt = (
+        select(AnalysisRecord.issue_id, func.count().label("cnt"))
+        .where(AnalysisRecord.issue_id.in_(issue_ids))
+        .group_by(AnalysisRecord.issue_id)
+    )
+    a_counts = {row.issue_id: row.cnt for row in (await session.execute(count_stmt)).all()}
+
+    # 3. Latest task per issue (one query)
+    latest_t_sub = (
+        select(func.max(TaskRecord.id).label("max_id"))
+        .where(TaskRecord.issue_id.in_(issue_ids))
+        .group_by(TaskRecord.issue_id)
+    ).subquery()
+    t_stmt = select(TaskRecord).where(TaskRecord.id.in_(select(latest_t_sub.c.max_id)))
+    tasks = {t.issue_id: t for t in (await session.execute(t_stmt)).scalars().all()}
+
+    return [
+        _issue_to_dict(
+            issue,
+            analysis=analyses.get(issue.id),
+            task=tasks.get(issue.id),
+            analysis_count=a_counts.get(issue.id, 0),
+        )
+        for issue in issues
+    ]
 
 
 def _issue_to_dict(
