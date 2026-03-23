@@ -589,7 +589,7 @@ def _trim_extraction(extraction: dict, max_chars: int = _MAX_EXTRACTION_CHARS) -
     patterns = trimmed.get("patterns", {})
 
     # Step 1: drop zero-match patterns to save space
-    zero_keys = [k for k, v in patterns.items() if v.get("match_count", 0) == 0]
+    zero_keys = [k for k, v in patterns.items() if isinstance(v, dict) and v.get("match_count", 0) == 0]
     for k in zero_keys:
         del patterns[k]
     if zero_keys:
@@ -605,6 +605,8 @@ def _trim_extraction(extraction: dict, max_chars: int = _MAX_EXTRACTION_CHARS) -
         longest_key = None
         longest_len = 0
         for key, val in patterns.items():
+            if not isinstance(val, dict):
+                continue
             m = val.get("matches", [])
             if len(m) > longest_len:
                 longest_len = len(m)
