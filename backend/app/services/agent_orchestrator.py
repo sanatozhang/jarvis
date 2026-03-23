@@ -8,6 +8,7 @@ If both are exhausted, return a message asking the user to contact sanato.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -143,7 +144,19 @@ class AgentOrchestrator:
         except Exception as e:
             logger.warning("Failed to retrieve golden samples: %s", e)
 
-        prompt = BaseAgent.build_prompt(
+        context_files = _materialize_analysis_context(
+            workspace=workspace,
+            issue=issue,
+            extraction=extraction,
+            rules=rules,
+            problem_date=problem_date,
+            has_logs=has_logs,
+            previous_analysis=previous_analysis,
+            followup_question=followup_question,
+            few_shot_examples=few_shot_examples,
+        )
+
+        prompt, prompt_meta = BaseAgent.build_prompt_with_meta(
             issue=issue,
             rules=rules,
             extraction=extraction,
@@ -153,6 +166,17 @@ class AgentOrchestrator:
             previous_analysis=previous_analysis,
             followup_question=followup_question,
             few_shot_examples=few_shot_examples,
+            context_files=context_files,
+        )
+        _write_prompt_meta(workspace, prompt_meta)
+        logger.info(
+            "Prompt meta issue=%s rule_type=%s chars=%s compact=%s hard_trimmed=%s contexts=%s",
+            issue.record_id,
+            rule_type or "(none)",
+            prompt_meta.get("final_prompt_chars"),
+            prompt_meta.get("compact_mode"),
+            prompt_meta.get("hard_trimmed"),
+            ",".join(sorted(prompt_meta.get("context_files", {}).keys())),
         )
 
         result = await agent.analyze(
@@ -204,3 +228,73 @@ class AgentOrchestrator:
         result.issue_id = issue.record_id
         result.rule_type = rule_type
         return result
+
+
+def _write_json_file(path: Path, payload: Dict[str, Any] | List[Any]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path.relative_to(path.parent.parent))
+
+
+def _write_prompt_meta(workspace: Path, payload: Dict[str, Any]) -> None:
+    output_dir = workspace / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "prompt_meta.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _materialize_analysis_context(
+    workspace: Path,
+    issue: Issue,
+    extraction: Dict[str, Any],
+    rules: List[Rule],
+    problem_date: Optional[str],
+    has_logs: bool,
+    previous_analysis: Optional[Dict[str, Any]],
+    followup_question: str,
+    few_shot_examples: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    context_dir = workspace / "context"
+    context_dir.mkdir(parents=True, exist_ok=True)
+
+    context_files: Dict[str, str] = {}
+    context_files["issue"] = _write_json_file(
+        context_dir / "issue_context.json",
+        {
+            "record_id": issue.record_id,
+            "description": issue.description,
+            "device_sn": issue.device_sn,
+            "firmware": issue.firmware,
+            "app_version": issue.app_version,
+            "zendesk": issue.zendesk,
+            "problem_date": problem_date,
+            "has_logs": has_logs,
+            "matched_rules": [rule.meta.id for rule in rules],
+        },
+    )
+
+    context_files["extraction"] = _write_json_file(
+        context_dir / "extraction_full.json",
+        extraction,
+    )
+
+    if few_shot_examples:
+        context_files["few_shot"] = _write_json_file(
+            context_dir / "few_shot_examples.json",
+            few_shot_examples,
+        )
+
+    if previous_analysis:
+        context_files["previous_analysis"] = _write_json_file(
+            context_dir / "previous_analysis.json",
+            previous_analysis,
+        )
+
+    if followup_question:
+        question_path = context_dir / "followup_question.txt"
+        question_path.write_text(followup_question, encoding="utf-8")
+        context_files["followup_question"] = str(question_path.relative_to(workspace))
+
+    return context_files

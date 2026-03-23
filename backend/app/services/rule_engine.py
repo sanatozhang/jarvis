@@ -331,7 +331,12 @@ class RuleEngine:
 
     @staticmethod
     def _write_workspace_claude_md(workspace: Path) -> None:
-        """Write a CLAUDE.md in the workspace with core analysis behavior rules."""
+        """Write a CLAUDE.md in the workspace with core analysis behavior rules.
+
+        This is loaded by Claude CLI as persistent system context.
+        Stable instructions (output schema, reply format, confidence criteria)
+        live here instead of in the per-request prompt to save prompt space.
+        """
         claude_md = workspace / "CLAUDE.md"
         claude_md.write_text(
             """\
@@ -341,17 +346,16 @@ class RuleEngine:
 
 ## 必须遵守
 
-1. **探索式分析**：你必须像有经验的工程师一样主动 grep 日志，至少执行 3 次独立 grep 命令，交叉印证后再下结论。
-2. **不信任预提取**：prompt.md 中的预提取摘要仅用于定方向，所有关键证据必须自己从 logs/ 目录 grep 验证。
-3. **查看上下文**：对关键日志行使用 `grep -A 5 -B 5` 查看前后上下文，不能只看单行。
+1. **探索式分析**：主动 grep 日志，至少 3 次独立 grep 交叉印证后再下结论。
+2. **不信任预提取**：预提取摘要仅用于定方向，关键证据必须从 logs/ 目录 grep 验证。
+3. **查看上下文**：`grep -A 5 -B 5` 查看前后上下文，不能只看单行。
 4. **诚实置信度**：证据不足时设 confidence: low 和 needs_engineer: true，禁止编造结论。
-5. **结果写文件**：最终 JSON 必须写入 output/result.json。
 
 ## 禁止行为
 
-- 看完预提取摘要就直接输出 result.json（跳过 grep 验证）
-- 在没有日志证据支撑时给出 high confidence
-- user_reply 中使用技术术语（用户是普通消费者）
+- 看完预提取就直接输出 result.json（跳过 grep 验证）
+- 没有日志证据支撑时给 high confidence
+- user_reply 使用技术术语（用户是普通消费者）
 
 ## 工作空间
 
@@ -360,6 +364,50 @@ class RuleEngine:
 - `images/` — 用户截图（如有），请查看
 - `code/` — 代码仓库（如有）
 - `output/` — 将 result.json 写到这里
+
+## 输出 JSON Schema
+
+写入 `output/result.json`，同时 `cat output/result.json` 打印到 stdout。
+**每个字段都必须同时提供中文和英文版本（_en 后缀），不能为空。**
+
+```json
+{
+    "problem_type": "问题分类（中文）",
+    "problem_type_en": "Problem Type (English)",
+    "root_cause": "根本原因（中文，2-5 句话）",
+    "root_cause_en": "Root cause (English, 2-5 sentences)",
+    "confidence": "high / medium / low",
+    "confidence_reason": "置信度理由",
+    "key_evidence": ["关键日志行1", "关键日志行2（最多5条）"],
+    "user_reply": "完整中文客服回复模板",
+    "user_reply_en": "Complete English reply template",
+    "needs_engineer": false,
+    "fix_suggestion": ""
+}
+```
+
+## Confidence 标准
+
+- **high**: 日志有明确证据，root cause 确定，有 3 条以上 grep 佐证
+- **medium**: 有线索但不完全确定，或多种可能原因
+- **low**: 日志不足，需工程师介入
+
+证据不足时**必须** low + needs_engineer: true。错误分析比"不确定"更有害。
+
+## user_reply 格式要求
+
+客服直接复制发给用户，必须完整、礼貌、非技术化。
+
+好的示例:
+```
+您好，经过日志分析，您在 12月1日 的录音已成功传输到 APP。但由于设备时间偏移，该录音显示为 2023年9月24日。请在 APP 中查找该日期、时长约 39 分钟的录音。如需帮助请联系我们。
+```
+
+坏的示例（禁止）:
+```
+Timestamp drift caused keyId-sessionId mismatch.
+```
+（太技术化，用户看不懂）
 """,
             encoding="utf-8",
         )

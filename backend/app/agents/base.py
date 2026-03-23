@@ -69,53 +69,70 @@ class BaseAgent(ABC):
         previous_analysis: Optional[Dict[str, Any]] = None,
         followup_question: str = "",
         few_shot_examples: Optional[List[Dict[str, Any]]] = None,
+        context_files: Optional[Dict[str, str]] = None,
     ) -> str:
+        prompt, _meta = BaseAgent.build_prompt_with_meta(
+            issue=issue,
+            rules=rules,
+            extraction=extraction,
+            problem_date=problem_date,
+            has_logs=has_logs,
+            language=language,
+            previous_analysis=previous_analysis,
+            followup_question=followup_question,
+            few_shot_examples=few_shot_examples,
+            context_files=context_files,
+        )
+        return prompt
+
+    @staticmethod
+    def build_prompt_with_meta(
+        issue: Issue,
+        rules: List[Rule],
+        extraction: Dict[str, Any],
+        problem_date: Optional[str] = None,
+        has_logs: bool = True,
+        language: str = "zh",
+        previous_analysis: Optional[Dict[str, Any]] = None,
+        followup_question: str = "",
+        few_shot_examples: Optional[List[Dict[str, Any]]] = None,
+        context_files: Optional[Dict[str, str]] = None,
+    ) -> tuple[str, Dict[str, Any]]:
         """Build the master prompt for the agent.
 
         Args:
             language: "zh" for Chinese output, "en" for English output.
         """
-
-        rules_section = ""
-        for rule in rules:
-            rules_section += f"\n### 规则: {rule.meta.name or rule.meta.id}\n\n"
-            rules_section += rule.content + "\n"
-
-        extraction_json = json.dumps(extraction, ensure_ascii=False, indent=2)
+        issue_description = _trim_text(issue.description, _MAX_ISSUE_DESCRIPTION_CHARS)
+        rules_section = _render_rules_section(rules, max_chars=_MAX_RULE_SECTION_CHARS)
+        extraction_json = _trim_extraction(extraction, max_chars=_MAX_EXTRACTION_CHARS)
+        extraction_summary = _summarize_extraction(extraction)
+        context_files = context_files or {}
+        issue_context_ref = context_files.get("issue", "context/issue_context.json")
+        extraction_context_ref = context_files.get("extraction", "context/extraction_full.json")
+        few_shot_context_ref = context_files.get("few_shot", "context/few_shot_examples.json")
+        prev_analysis_context_ref = context_files.get("previous_analysis", "context/previous_analysis.json")
+        followup_context_ref = context_files.get("followup_question", "context/followup_question.txt")
 
         if has_logs:
-            role_and_principles = f"""你是 Plaud 设备日志分析专家，专门帮助客服团队分析用户工单。
-你的分析结果将直接展示给客服人员，他们会复制你生成的回复模板发送给用户。
+            role_and_principles = """你是 Plaud 设备日志分析专家。分析结果将展示给客服，他们会直接复制 user_reply 发给用户。
 
-## 分析方式（必须严格遵守）
+**行为规则见 CLAUDE.md**（探索式分析、grep 验证、置信度标准、输出 JSON Schema）。
 
-你必须像有经验的工程师一样进行**探索式排查**，禁止看完预提取摘要就直接下结论。
-
-### 第一步：读取预提取摘要
-了解日志整体情况和初步线索，形成排查假设。
-
-### 第二步：制定排查计划
-列出 3-5 个具体假设，明确每个假设需要验证哪些日志证据。
-
-### 第三步：主动 grep 日志（关键！）
-- 日志文件在 `logs/` 目录，**必须直接 grep 验证**，预提取只是起点
-- 对关键模式使用 `-A 5 -B 5` 查看上下文
-- 对重要时间段使用双重过滤：`grep "日期" logs/plaud.log | grep -E "模式"`
-- **至少执行 3 次以上独立 grep**，交叉印证后再下结论
-
-### 第四步：得出结论并写 JSON
-多轮 grep 确认后，将结果写入 `output/result.json`。
-
-⚠️ **严禁行为**：
-- 看完预提取就直接输出 JSON（无主动 grep 的分析视为无效）
-- 证据不足时编造结论（应设 confidence: low, needs_engineer: true）"""
+分析流程：读 prompt 摘要和 `context/` 文件 → 列 3-5 个假设 → 主动 grep logs/ 验证（至少 3 次） → 写 output/result.json"""
 
             extraction_section = f"""## 预提取结果（仅作排查起点，必须自行 grep 验证）
 
 以下是自动提取的初步日志摘要，**不能作为最终分析依据**，只用于帮助你快速定位方向。
+- 完整 issue 上下文：`{issue_context_ref}`
+- 完整 extraction：`{extraction_context_ref}`
 - match_count > 0：有初步匹配，但样本有限，必须去 logs/ 查完整上下文
 - match_count = 0：该模式无匹配，可能是模式不精确，请尝试其他关键词自行搜索
 - deterministic.*：程序根据日志对齐出的结构化时间线/表格，可信度高，应优先利用，再回到 logs/ 补上下文
+
+### 提取摘要
+
+{extraction_summary}
 
 ```json
 {extraction_json}
@@ -161,116 +178,51 @@ output/       ← 请将 result.json 写入此目录
         # Build few-shot section if examples are provided
         few_shot_section = ""
         if few_shot_examples:
-            examples_text = ""
-            for idx, ex in enumerate(few_shot_examples[:3], 1):
-                examples_text += f"""
-### 案例 {idx}
-- 问题描述: {ex.get('description', '')[:200]}
-- 问题分类: {ex.get('problem_type', '')}
-- 根因分析: {ex.get('root_cause', '')}
-- 用户回复: {ex.get('user_reply', '')[:300]}
-"""
-            few_shot_section = f"""
-## 参考案例（历史准确分析）
+            few_shot_section = _render_few_shot_section(
+                few_shot_examples,
+                max_chars=_MAX_FEW_SHOT_SECTION_CHARS,
+                context_file=few_shot_context_ref,
+            )
 
-以下是与当前工单相似的历史分析案例，仅供参考，请结合当前工单的实际日志进行独立分析。
-{examples_text}"""
-
-        prompt = f"""{role_and_principles}
-
-## 工单信息
-
-- **问题描述**: {issue.description}
-- **设备SN**: {issue.device_sn}
-- **固件版本**: {issue.firmware}
-- **APP版本**: {issue.app_version}
-- **Zendesk**: {issue.zendesk}
-{f"- **问题日期**: {problem_date}" if problem_date else ""}
-
-## 分析规则
-
-请先阅读 rules/ 目录下的规则文件，严格按照规则中的排查步骤执行分析。
-以下是规则摘要：
-
-{rules_section}
-{few_shot_section}
-{extraction_section}
-
-{workspace_section}
-
-## 输出要求
-
-分析完成后，请将结果以 JSON 格式写入 `output/result.json`，并使用 `cat output/result.json` 将完整 JSON 内容打印到 stdout 作为备份。
-**重要：ALL fields with _en suffix MUST be provided. 每个字段都必须同时提供中文和英文版本，不能为空。**
-**主要语言（primary language）: {"English" if language == "en" else "中文"}** — 请确保主要语言的内容最详细、最完整。
-
-```json
-{{
-    "problem_type": "问题分类（中文，不能为空）",
-    "problem_type_en": "Problem Type in English (REQUIRED, must not be empty)",
-    "root_cause": "根本原因详细分析（中文，2-5 句话，不能为空）",
-    "root_cause_en": "Root cause analysis in English (REQUIRED, 2-5 sentences, must not be empty)",
-    "confidence": "high / medium / low",
-    "confidence_reason": "Why this confidence level (in {'English' if language == 'en' else 'Chinese'})",
-    "key_evidence": ["key log line 1", "key log line 2 (max 5)"],
-    "user_reply": "完整的中文客服回复模板（不能为空）",
-    "user_reply_en": "Complete English customer reply template (REQUIRED, must not be empty)",
-    "needs_engineer": false,
-    "fix_suggestion": ""
-}}
-```
-
-## user_reply 格式要求（非常重要！）
-
-客服会直接复制 user_reply / user_reply_en 发给用户，必须完整、礼貌。
-
-### 中文 user_reply 示例
-
-```
-您好，经过日志分析，您在 12月1日 的录音已成功传输到 APP。但由于设备时间偏移，该录音在 APP 中显示为 2023年9月24日 10:13 的录音（时长约 39 分钟）。
-
-请在 APP 中按照以下步骤查找：
-1. 打开 APP 录音列表
-2. 向下滚动到 2023年9月 附近
-3. 查找时长约 39 分钟的录音
-
-如需进一步帮助，请随时联系我们。
-```
-
-### English user_reply_en example
-
-```
-Hello, based on our log analysis, your recording from December 1st was successfully transferred to the APP. However, due to a device clock offset, it appears as a recording from September 24, 2023 at 10:13 (approximately 39 minutes long).
-
-Please follow these steps to find it in the APP:
-1. Open the recording list
-2. Scroll down to around September 2023
-3. Look for a recording approximately 39 minutes long
-
-If you need further assistance, please don't hesitate to contact us.
-```
-
-### Bad user_reply example (forbidden)
-
-```
-Timestamp drift caused keyId-sessionId mismatch.
-```
-(Too technical, users cannot understand)
-
-## Confidence criteria
-
-- **high**: 日志中有明确证据，root cause 确定，解决方案清晰（必须有 3 条以上 grep 佐证）
-- **medium**: 有线索但不完全确定，或存在多种可能原因
-- **low**: 日志数据不足，需要更多信息或工程师介入
-
-**重要**：如果你没有从日志中找到充分证据，**必须**设 confidence 为 low，needs_engineer 为 true。
-宁可诚实说"证据不足，建议工程师人工排查"，也不要编造一个看似合理的结论。
-低质量的错误分析比"不确定"更有害——它会误导客服给用户发送错误信息。
-"""
+        prompt = _compose_prompt(
+            role_and_principles=role_and_principles,
+            issue_description=issue_description,
+            issue=issue,
+            problem_date=problem_date,
+            rules_section=rules_section,
+            few_shot_section=few_shot_section,
+            extraction_section=extraction_section,
+            workspace_section=workspace_section,
+            language=language,
+        )
+        prompt_meta: Dict[str, Any] = {
+            "budget_chars": _MAX_PROMPT_CHARS,
+            "compact_mode": False,
+            "hard_trimmed": False,
+            "has_logs": has_logs,
+            "rule_ids": [rule.meta.id for rule in rules],
+            "rule_count": len(rules),
+            "few_shot_count": len(few_shot_examples or []),
+            "has_previous_analysis": bool(previous_analysis),
+            "has_followup_question": bool(followup_question),
+            "context_files": context_files,
+            "sections": {
+                "issue_description_chars": len(issue_description),
+                "rules_section_chars": len(rules_section),
+                "extraction_summary_chars": len(extraction_summary),
+                "extraction_json_chars": len(extraction_json),
+                "few_shot_section_chars": len(few_shot_section),
+            },
+            "initial_prompt_chars": len(prompt),
+        }
 
         # Append follow-up analysis section if this is a follow-up
         if previous_analysis and followup_question:
-            prev_json = json.dumps(previous_analysis, ensure_ascii=False, indent=2)
+            prev_json = json.dumps(
+                _trim_json_like(previous_analysis, max_string_chars=_MAX_PREVIOUS_ANALYSIS_VALUE_CHARS),
+                ensure_ascii=False,
+                indent=2,
+            )
             prompt += f"""
 
 ## 追问分析
@@ -280,12 +232,16 @@ Timestamp drift caused keyId-sessionId mismatch.
 ### 之前的分析结果
 
 ```json
-{prev_json}
+{_trim_text(prev_json, _MAX_PREVIOUS_ANALYSIS_JSON_CHARS)}
 ```
+
+完整版本：`{prev_analysis_context_ref}`
 
 ### 用户追问
 
-{followup_question}
+{_trim_text(followup_question, _MAX_FOLLOWUP_QUESTION_CHARS)}
+
+完整追问：`{followup_context_ref}`
 
 ### 追问分析要求
 
@@ -295,8 +251,71 @@ Timestamp drift caused keyId-sessionId mismatch.
 4. **回复模板（user_reply / user_reply_en）必须直接回答用户的追问**，不要简单重复之前的回复
 5. 仍然按照上面要求的 JSON 格式输出到 output/result.json
 """
+            prompt_meta["sections"]["previous_analysis_json_chars"] = len(prev_json)
+            prompt_meta["sections"]["followup_question_chars"] = len(_trim_text(followup_question, _MAX_FOLLOWUP_QUESTION_CHARS))
+            prompt_meta["initial_prompt_chars"] = len(prompt)
 
-        return prompt
+        if len(prompt) > _MAX_PROMPT_CHARS:
+            logger.warning(
+                "Prompt exceeded budget (%d chars). Rebuilding in compact mode.",
+                len(prompt),
+            )
+            prompt_meta["compact_mode"] = True
+            compact_rules = _render_rules_section(rules, max_chars=_COMPACT_RULE_SECTION_CHARS)
+            compact_extraction = _trim_extraction(extraction, max_chars=_COMPACT_EXTRACTION_CHARS)
+            compact_extraction_section = extraction_section.replace(extraction_json, compact_extraction)
+            prompt = _compose_prompt(
+                role_and_principles=role_and_principles,
+                issue_description=_trim_text(issue_description, _COMPACT_ISSUE_DESCRIPTION_CHARS),
+                issue=issue,
+                problem_date=problem_date,
+                rules_section=compact_rules,
+                few_shot_section="",
+                extraction_section=compact_extraction_section,
+                workspace_section=workspace_section,
+                language=language,
+            )
+            prompt_meta["sections"]["compact_rules_section_chars"] = len(compact_rules)
+            prompt_meta["sections"]["compact_extraction_json_chars"] = len(compact_extraction)
+            if previous_analysis and followup_question:
+                prev_json = json.dumps(
+                    _trim_json_like(previous_analysis, max_string_chars=_COMPACT_PREVIOUS_ANALYSIS_VALUE_CHARS),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                prompt += f"""
+
+## 追问分析
+
+### 之前的分析结果
+
+```json
+{_trim_text(prev_json, _COMPACT_PREVIOUS_ANALYSIS_JSON_CHARS)}
+```
+
+完整版本：`{prev_analysis_context_ref}`
+
+### 用户追问
+
+{_trim_text(followup_question, _COMPACT_FOLLOWUP_QUESTION_CHARS)}
+
+完整追问：`{followup_context_ref}`
+"""
+                prompt_meta["sections"]["compact_previous_analysis_json_chars"] = len(prev_json)
+                prompt_meta["sections"]["compact_followup_question_chars"] = len(
+                    _trim_text(followup_question, _COMPACT_FOLLOWUP_QUESTION_CHARS)
+                )
+
+        if len(prompt) > _MAX_PROMPT_CHARS:
+            logger.warning(
+                "Prompt still exceeded budget after compact mode (%d chars). Applying hard trim.",
+                len(prompt),
+            )
+            prompt_meta["hard_trimmed"] = True
+            prompt = _trim_text(prompt, _MAX_PROMPT_CHARS)
+
+        prompt_meta["final_prompt_chars"] = len(prompt)
+        return prompt, prompt_meta
 
     # ------------------------------------------------------------------
     # Result parsing
@@ -361,6 +380,61 @@ Timestamp drift caused keyId-sessionId mismatch.
         )
 
 
+def _compose_prompt(
+    *,
+    role_and_principles: str,
+    issue_description: str,
+    issue: Issue,
+    problem_date: Optional[str],
+    rules_section: str,
+    few_shot_section: str,
+    extraction_section: str,
+    workspace_section: str,
+    language: str,
+) -> str:
+    return f"""{role_and_principles}
+
+## 工单信息
+
+- **问题描述**: {issue_description}
+- **设备SN**: {issue.device_sn}
+- **固件版本**: {issue.firmware}
+- **APP版本**: {issue.app_version}
+- **Zendesk**: {issue.zendesk}
+{f"- **问题日期**: {problem_date}" if problem_date else ""}
+
+## 分析规则
+
+请先阅读 rules/ 目录下的规则文件，严格按照规则中的排查步骤执行分析。
+以下是规则摘要：
+
+{rules_section}
+{few_shot_section}
+{extraction_section}
+
+{workspace_section}
+
+## 输出要求
+
+按 CLAUDE.md 中定义的 JSON Schema 写入 `output/result.json`，并 `cat output/result.json` 打印到 stdout。
+**主要语言: {"English" if language == "en" else "中文"}** — 确保主要语言的内容最详细。
+"""
+
+
+_MAX_PROMPT_CHARS = 36_000
+_MAX_ISSUE_DESCRIPTION_CHARS = 2_000
+_COMPACT_ISSUE_DESCRIPTION_CHARS = 1_000
+_MAX_RULE_SECTION_CHARS = 10_000
+_COMPACT_RULE_SECTION_CHARS = 4_000
+_MAX_FEW_SHOT_SECTION_CHARS = 4_000
+_MAX_PREVIOUS_ANALYSIS_JSON_CHARS = 4_000
+_COMPACT_PREVIOUS_ANALYSIS_JSON_CHARS = 2_000
+_MAX_PREVIOUS_ANALYSIS_VALUE_CHARS = 400
+_COMPACT_PREVIOUS_ANALYSIS_VALUE_CHARS = 180
+_MAX_FOLLOWUP_QUESTION_CHARS = 1_500
+_COMPACT_FOLLOWUP_QUESTION_CHARS = 500
+
+
 def _extract_json_from_text(text: str) -> Dict:
     """Try to extract a JSON object from text that may contain markdown."""
     import re
@@ -402,3 +476,151 @@ def _extract_json_from_text(text: str) -> Dict:
             continue
 
     return {}
+
+
+# Prompt budget. Keep well below common CLI/request limits.
+_MAX_EXTRACTION_CHARS = 20_000
+_COMPACT_EXTRACTION_CHARS = 8_000
+
+
+def _trim_text(text: str, max_chars: int) -> str:
+    value = text or ""
+    if len(value) <= max_chars:
+        return value
+    keep = max(max_chars - 32, 0)
+    return value[:keep] + "\n...[trimmed for prompt size]..."
+
+
+def _trim_json_like(value: Any, max_string_chars: int) -> Any:
+    if isinstance(value, dict):
+        return {k: _trim_json_like(v, max_string_chars=max_string_chars) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_trim_json_like(v, max_string_chars=max_string_chars) for v in value[:10]]
+    if isinstance(value, str):
+        return _trim_text(value, max_string_chars)
+    return value
+
+
+def _render_rules_section(rules: List[Rule], max_chars: int) -> str:
+    parts: List[str] = []
+    for rule in rules[:3]:
+        keywords = ", ".join(rule.meta.triggers.keywords[:8]) or "(none)"
+        pre_extract = ", ".join(p.name for p in rule.meta.pre_extract[:8]) or "(none)"
+        depends_on = ", ".join(rule.meta.depends_on[:6]) or "(none)"
+        required_output = ", ".join(rule.meta.required_output[:6]) or "(none)"
+        summary = f"""
+### 规则: {rule.meta.name or rule.meta.id}
+- rule_id: {rule.meta.id}
+- 触发词: {keywords}
+- pre_extract: {pre_extract}
+- depends_on: {depends_on}
+- required_output: {required_output}
+- needs_code: {"yes" if rule.meta.needs_code else "no"}
+- 详细排查步骤见 `rules/{rule.meta.id}.md`
+"""
+        candidate = "".join(parts) + summary
+        if len(candidate) > max_chars:
+            remaining = len(rules) - len(parts)
+            if not parts:
+                return _trim_text(summary, max_chars)
+            parts.append(f"\n...[{remaining} more rule summaries omitted for prompt size]...\n")
+            break
+        parts.append(summary)
+    return "".join(parts).strip()
+
+
+def _render_few_shot_section(examples: List[Dict[str, Any]], max_chars: int, context_file: str = "") -> str:
+    header = """
+## 参考案例（历史准确分析）
+
+以下是与当前工单相似的历史分析案例，仅供参考，请结合当前工单的实际日志进行独立分析。
+"""
+    if context_file:
+        header += f"完整案例集：`{context_file}`\n"
+    parts = [header]
+    for idx, ex in enumerate(examples[:3], 1):
+        block = f"""
+### 案例 {idx}
+- 问题描述: {_trim_text(ex.get("description", ""), 120)}
+- 问题分类: {_trim_text(ex.get("problem_type", ""), 80)}
+- 根因分析: {_trim_text(ex.get("root_cause", ""), 180)}
+- 用户回复: {_trim_text(ex.get("user_reply", ""), 160)}
+"""
+        candidate = "".join(parts) + block
+        if len(candidate) > max_chars:
+            break
+        parts.append(block)
+    return "".join(parts).strip() if len(parts) > 1 else ""
+
+
+def _summarize_extraction(extraction: Dict[str, Any]) -> str:
+    patterns = extraction.get("patterns", {}) if isinstance(extraction, dict) else {}
+    deterministic = extraction.get("deterministic", {}) if isinstance(extraction, dict) else {}
+
+    nonzero_patterns = []
+    for name, value in patterns.items():
+        if not isinstance(value, dict):
+            continue
+        match_count = value.get("match_count", 0)
+        if match_count:
+            nonzero_patterns.append((name, match_count))
+    nonzero_patterns.sort(key=lambda item: item[1], reverse=True)
+
+    lines = [
+        f"- nonzero_patterns: {len(nonzero_patterns)}",
+        f"- deterministic_blocks: {', '.join(sorted(deterministic.keys())) or '(none)'}",
+    ]
+    for name, match_count in nonzero_patterns[:5]:
+        lines.append(f"- {name}: match_count={match_count}")
+    return "\n".join(lines)
+
+
+def _trim_extraction(extraction: dict, max_chars: int = _MAX_EXTRACTION_CHARS) -> str:
+    """Serialize extraction dict to JSON, trimming matches if too large.
+
+    Strategy:
+    1. Drop patterns with match_count=0 (no information value).
+    2. If still too large, progressively halve the longest matches list.
+    The deterministic section is never trimmed as it is high-value structured data.
+    """
+    import copy
+
+    trimmed = copy.deepcopy(extraction)
+    patterns = trimmed.get("patterns", {})
+
+    # Step 1: drop zero-match patterns to save space
+    zero_keys = [k for k, v in patterns.items() if v.get("match_count", 0) == 0]
+    for k in zero_keys:
+        del patterns[k]
+    if zero_keys:
+        patterns["_note"] = f"{len(zero_keys)} patterns with 0 matches omitted"
+
+    full = json.dumps(trimmed, ensure_ascii=False, indent=2)
+    if len(full) <= max_chars:
+        return full
+
+    # Iteratively halve the longest matches list until under limit
+    for _round in range(10):
+        # Find the pattern with the most matches
+        longest_key = None
+        longest_len = 0
+        for key, val in patterns.items():
+            m = val.get("matches", [])
+            if len(m) > longest_len:
+                longest_len = len(m)
+                longest_key = key
+
+        if not longest_key or longest_len <= 5:
+            break
+
+        # Halve it
+        new_len = max(longest_len // 2, 5)
+        orig_count = patterns[longest_key].get("match_count", longest_len)
+        patterns[longest_key]["matches"] = patterns[longest_key]["matches"][:new_len]
+        patterns[longest_key]["_trimmed"] = f"showing {new_len}/{orig_count} matches"
+
+        result = json.dumps(trimmed, ensure_ascii=False, indent=2)
+        if len(result) <= max_chars:
+            return result
+
+    return json.dumps(trimmed, ensure_ascii=False, indent=2)

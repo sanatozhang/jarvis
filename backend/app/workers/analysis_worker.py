@@ -178,8 +178,10 @@ async def run_analysis_pipeline(
                     shutil.copy2(f, cache_dest)
             logger.info("Cached %d log files for issue %s", len(downloaded_files), issue_id)
 
-    # Cleanup: keep only the last 200 issues' cached logs
-    _cleanup_log_cache(Path(settings.storage.workspace_dir) / "_cache", max_issues=200)
+    # Cleanup: raw cache keeps many entries (files are small, compressed)
+    _cleanup_log_cache(Path(settings.storage.workspace_dir) / "_cache", max_issues=500)
+    # Cleanup: processed/logs dirs are large (decompressed); keep only recent 50
+    _cleanup_workspace_processed(Path(settings.storage.workspace_dir), max_tasks=50)
 
     if on_progress:
         await on_progress(25, f"已准备 {len(downloaded_files)} 个文件")
@@ -286,8 +288,11 @@ async def run_analysis_pipeline(
     return result
 
 
-def _cleanup_log_cache(cache_root: Path, max_issues: int = 200):
-    """Keep only the last N issues' cached logs, remove oldest."""
+def _cleanup_log_cache(cache_root: Path, max_issues: int = 500):
+    """Keep only the last N issues' cached raw logs, remove oldest.
+
+    Raw files are small (compressed .plaud/.zip), so we keep many.
+    """
     if not cache_root.exists():
         return
     try:
@@ -303,3 +308,39 @@ def _cleanup_log_cache(cache_root: Path, max_issues: int = 200):
             logger.info("Cleaned up log cache: removed %d old entries", len(issue_dirs) - max_issues)
     except Exception as e:
         logger.warning("Log cache cleanup failed: %s", e)
+
+
+def _cleanup_workspace_processed(workspace_root: Path, max_tasks: int = 50):
+    """Delete processed/ and logs/ dirs from old task workspaces to save disk.
+
+    These contain decompressed logs (tens of MB each) and are the main
+    disk consumers. We keep raw/ (small, compressed originals) and
+    output/ (analysis results) intact so re-analysis can rebuild from raw.
+    """
+    if not workspace_root.exists():
+        return
+    try:
+        task_dirs = sorted(
+            [d for d in workspace_root.iterdir()
+             if d.is_dir() and d.name.startswith("task_")],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+        if len(task_dirs) <= max_tasks:
+            return
+
+        import shutil
+        cleaned = 0
+        for old_dir in task_dirs[max_tasks:]:
+            for subdir_name in ("processed", "logs"):
+                subdir = old_dir / subdir_name
+                if subdir.exists():
+                    shutil.rmtree(subdir, ignore_errors=True)
+                    cleaned += 1
+        if cleaned:
+            logger.info(
+                "Cleaned up %d processed/logs dirs from %d old workspaces (kept raw/ and output/)",
+                cleaned, len(task_dirs) - max_tasks,
+            )
+    except Exception as e:
+        logger.warning("Workspace processed cleanup failed: %s", e)
