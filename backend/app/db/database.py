@@ -228,8 +228,30 @@ async def init_db():
                 db_url = f"sqlite+aiosqlite:///{abs_path}"
             Path(abs_path if not Path(db_path).is_absolute() else db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    _engine = create_async_engine(db_url, echo=False)
+    # SQLite needs WAL mode + busy_timeout to handle concurrent async writes
+    connect_args = {}
+    pool_kwargs = {}
+    if "sqlite" in db_url:
+        connect_args = {"timeout": 30}  # seconds to wait for lock
+        pool_kwargs = {
+            "pool_size": 1,       # SQLite only supports 1 writer
+            "max_overflow": 4,    # queue extra connections instead of failing
+            "pool_timeout": 30,   # wait up to 30s for a pool slot
+        }
+
+    _engine = create_async_engine(
+        db_url,
+        echo=False,
+        connect_args=connect_args,
+        **pool_kwargs,
+    )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+
+    # Enable WAL mode for SQLite (allows concurrent reads while writing)
+    if "sqlite" in db_url:
+        async with _engine.begin() as conn:
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA busy_timeout=30000"))
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

@@ -343,9 +343,9 @@ export default function HomePage() {
   const onDonePage = (p: number) => { setDonePage(p); loadDone(p); };
   const onInaccuratePage = (p: number) => { setInaccuratePage(p); loadInaccurate(p); };
 
-  const startAnalysis = async (issueId: string) => {
+  const startAnalysis = async (issueId: string, isRetry = false) => {
     try {
-      const task = await createTask(issueId, undefined, username || "");
+      const task = await createTask(issueId, undefined, isRetry ? "" : (username || ""));
       setActiveTasks((p) => ({ ...p, [issueId]: task }));
       // Remove from pending list (new analysis)
       setPendingData((prev) => {
@@ -821,7 +821,7 @@ export default function HomePage() {
                         <td className={`${tdBase} text-right`} style={{ width: "160px" }} onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1">
                             {item.local_status === "failed" && (
-                              <button onClick={() => startAnalysis(item.record_id)}
+                              <button onClick={() => startAnalysis(item.record_id, true)}
                                 className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
                                 style={{ background: S.accent, color: "#0A0B0E" }}>
                                 {t("重试")}
@@ -998,7 +998,7 @@ export default function HomePage() {
                     <p className="text-sm font-medium" style={{ color: "#DC2626" }}>{t("分析失败")}</p>
                     <p className="mt-1 text-xs" style={{ color: "#FCA5A5" }}>{detailData.task.error}</p>
                   </div>
-                  <button onClick={() => { startAnalysis(detailId!); closeDetail(); }}
+                  <button onClick={() => { startAnalysis(detailId!, true); closeDetail(); }}
                     className="w-full rounded-lg py-2.5 text-sm font-semibold"
                     style={{ background: S.accent, color: "#0A0B0E" }}>
                     {t("重新分析")}
@@ -1194,7 +1194,7 @@ export default function HomePage() {
               {/* Retry for failed */}
               {detailData.localItem?.local_status === "failed" && (
                 <section>
-                  <button onClick={() => { startAnalysis(detailId!); closeDetail(); }}
+                  <button onClick={() => { startAnalysis(detailId!, true); closeDetail(); }}
                     className="w-full rounded-lg py-2.5 text-sm font-semibold"
                     style={{ background: S.accent, color: "#0A0B0E" }}>
                     {t("重新分析")}
