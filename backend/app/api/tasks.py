@@ -232,6 +232,74 @@ async def list_tasks(limit: int = Query(50, le=200)):
     ]
 
 
+@router.post("/fix-false-failures")
+async def fix_false_failures():
+    """One-time fix: re-evaluate all 'failed' tasks and correct those that
+    actually have valid analysis content (misclassified by the old logic).
+
+    Safe to call multiple times — only changes tasks that match the criteria.
+    """
+    from app.db.database import get_session, TaskRecord, AnalysisRecord, IssueRecord
+    from sqlalchemy import select
+
+    _system_failure_types = {
+        "分析超时", "日志解析失败", "Agent 不可用",
+        "OpenAI 额度不足", "Claude 额度不足", "所有模型额度不足",
+    }
+
+    async with get_session() as session:
+        # Get all failed tasks with their analyses
+        stmt = (
+            select(TaskRecord, AnalysisRecord)
+            .outerjoin(AnalysisRecord, AnalysisRecord.task_id == TaskRecord.id)
+            .where(TaskRecord.status == "failed")
+        )
+        rows = (await session.execute(stmt)).all()
+
+        fixed_tasks = []
+        for task, analysis in rows:
+            if not analysis:
+                continue
+
+            pt = analysis.problem_type or ""
+            rc = (analysis.root_cause or "").strip()
+
+            # Apply the new is_real_failure logic
+            _error_markers = {"未产出结构化结果"}
+            is_only_error = any(m in rc for m in _error_markers) and len(rc) < 100
+            is_short_error = len(rc) < 120 and any(
+                kw in rc.lower() for kw in ["max turns", "reached max", "error:"]
+            )
+            has_substance = bool(rc) and not is_only_error and not is_short_error
+            has_real_type = bool(pt and pt not in _system_failure_types and pt != "未知")
+
+            is_fail = pt in _system_failure_types or (pt == "未知" and not has_substance)
+            if pt not in _system_failure_types and (has_substance or has_real_type):
+                is_fail = False
+
+            if not is_fail:
+                # This task was wrongly marked as failed → fix it
+                task.status = "done"
+                task.message = "分析完成（已修正）"
+                task.error = None
+
+                # Also fix the issue status
+                issue = await session.get(IssueRecord, task.issue_id)
+                if issue and issue.status == "failed":
+                    issue.status = "done"
+
+                fixed_tasks.append({
+                    "task_id": task.id,
+                    "issue_id": task.issue_id,
+                    "problem_type": pt,
+                })
+
+        await session.commit()
+
+    logger.info("fix-false-failures: corrected %d/%d failed tasks", len(fixed_tasks), len(rows))
+    return {"total_failed": len(rows), "fixed": len(fixed_tasks), "details": fixed_tasks}
+
+
 # ---------------------------------------------------------------------------
 # Background task runner
 # ---------------------------------------------------------------------------
