@@ -270,12 +270,46 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             followup_question=followup_question,
         )
 
-        # Check if the result is a real success or a disguised failure
-        is_real_failure = (
-            result.problem_type in ("分析超时", "日志解析失败", "Agent 不可用", "未知", "OpenAI 额度不足", "Claude 额度不足", "所有模型额度不足")
-            or (result.confidence == "low" and result.needs_engineer and not result.user_reply)
-            or "未产出结构化结果" in (result.root_cause or "")
+        # Determine if this is a system-level failure vs a completed analysis.
+        #
+        # Guiding principle: if the agent produced ANY analytical content
+        # (root_cause with real text, or a non-default problem_type),
+        # treat it as success — even if result.json wasn't written properly.
+        # Only infrastructure errors (timeout, quota, crash) are real failures.
+
+        _system_failure_types = {
+            "分析超时", "日志解析失败", "Agent 不可用",
+            "OpenAI 额度不足", "Claude 额度不足", "所有模型额度不足",
+        }
+
+        # Check if root_cause has real analytical content (not just error boilerplate)
+        rc = (result.root_cause or "").strip()
+        _error_markers = {"未产出结构化结果"}
+        # root_cause contains only error boilerplate (no real analysis)
+        is_only_error = any(m in rc for m in _error_markers) and len(rc) < 100
+        # Short error-like outputs (< 120 chars) with only error keywords and no analysis
+        is_short_error = len(rc) < 120 and any(kw in rc.lower() for kw in ["max turns", "reached max", "error:"])
+        has_substance = bool(rc) and not is_only_error and not is_short_error
+
+        # Check if problem_type is a real classification (not a default/system value)
+        has_real_type = bool(
+            result.problem_type
+            and result.problem_type not in _system_failure_types
+            and result.problem_type != "未知"
         )
+
+        is_real_failure = (
+            # Case 1: known system error type (always fail, no override)
+            result.problem_type in _system_failure_types
+            # Case 2: problem_type is "未知" AND no real analysis content
+            or (result.problem_type == "未知" and not has_substance)
+        )
+
+        # Override: if problem_type is NOT a system error, and we have
+        # substance or a real type, it's a successful analysis
+        if result.problem_type not in _system_failure_types:
+            if has_substance or has_real_type:
+                is_real_failure = False
 
         await db.save_analysis(result.model_dump())
 

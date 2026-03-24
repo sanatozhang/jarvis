@@ -61,8 +61,9 @@ class ClaudeCodeAgent(BaseAgent):
                     stderr[:500],
                 )
 
-                # Detect token quota / rate limit exhaustion
                 combined = (stderr + stdout).lower()
+
+                # Detect token quota / rate limit exhaustion
                 if any(kw in combined for kw in [
                     "rate limit", "quota", "credit", "billing",
                     "overloaded", "token limit", "usage limit",
@@ -81,12 +82,17 @@ class ClaudeCodeAgent(BaseAgent):
                         confidence="low", needs_engineer=True, agent_type="claude_code",
                     )
 
+                # Detect max turns exhaustion — but still try to parse result.json
+                # because Claude may have written it before hitting the limit
+                if "max turns" in combined or "reached max" in combined:
+                    logger.warning("Claude Code reached max turns limit")
+
             if on_progress:
                 await _maybe_await(on_progress(90, "解析分析结果..."))
 
-            # Try to parse structured output
+            # Always try to parse — even if returncode != 0, Claude may
+            # have written result.json or produced useful stdout before failing
             raw_output = stdout
-            # If --output-format json was used, stdout may contain JSON messages
             result = self._parse_claude_output(workspace, raw_output)
             result.agent_type = "claude_code"
             return result

@@ -18,7 +18,7 @@ linear:
 agent:
   default: claude_code
   timeout: 600           # 单次分析超时（秒）— 探索式分析需要足够时间
-  max_turns: 30          # Agent 最大交互轮数 — 多轮 grep 需要更多轮次
+  max_turns: 50          # Agent 最大交互轮数 — 留足余量避免 max turns 错误
 
   providers:
     claude_code:

@@ -361,7 +361,8 @@ export default function HomePage() {
         if (!exists) return prev;
         return { ...prev, issues: prev.issues.filter((i) => i.record_id !== issueId), total: Math.max(0, prev.total - 1) };
       });
-      await loadInProgress(1);
+      // Refresh both lists so the issue moves from done→in_progress
+      await Promise.all([loadInProgress(1), loadDone(donePage)]);
       if (!isRetry) setTab("in_progress");
       subscribeTaskProgress(task.task_id, (progress) => {
         setActiveTasks((p) => ({ ...p, [issueId]: progress }));
@@ -373,7 +374,7 @@ export default function HomePage() {
         }
         if (progress.status === "failed") {
           setToast(`${t("分析失败")}: ${progress.error || t("未知错误")}`);
-          loadInProgress(1); loadPending(pendingPage);
+          loadInProgress(1); loadDone(donePage); loadPending(pendingPage);
         }
       });
     } catch (e: any) { setError(e.message); }
@@ -754,7 +755,11 @@ export default function HomePage() {
         {/* ── IN_PROGRESS / DONE / INACCURATE TABS ── */}
         {(tab === "in_progress" || tab === "done" || tab === "inaccurate") && (() => {
           const data = tab === "in_progress" ? ipData : tab === "inaccurate" ? inaccurateData : doneData;
-          const items = data?.issues || [];
+          // Filter out items that have an active task (retry in progress) from the done/inaccurate tabs
+          const rawItems = data?.issues || [];
+          const items = (tab === "done" || tab === "inaccurate")
+            ? rawItems.filter(item => !activeTasks[item.record_id] || ["done", "failed"].includes(activeTasks[item.record_id]?.status))
+            : rawItems;
           const currentPage = tab === "in_progress" ? ipPage : tab === "inaccurate" ? inaccuratePage : donePage;
           const onPageChange = tab === "in_progress" ? onIpPage : tab === "inaccurate" ? onInaccuratePage : onDonePage;
           const emptyMsg = tab === "in_progress" ? t("暂无进行中工单") : tab === "inaccurate" ? t("暂无不准确工单") : t("暂无已完成工单");

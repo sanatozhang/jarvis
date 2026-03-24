@@ -322,40 +322,42 @@ class RuleEngine:
             if not code_link.exists():
                 code_link.symlink_to(code_repo)
 
-        # Write CLAUDE.md for persistent behavioral instructions
-        # This is auto-loaded by the Claude CLI as system context,
-        # more reliable than embedding in prompt.md
-        self._write_workspace_claude_md(workspace)
+        # Write behavioral instructions for both Claude CLI and Codex
+        self._write_workspace_instructions(workspace)
 
         return workspace
 
     @staticmethod
-    def _write_workspace_claude_md(workspace: Path) -> None:
-        """Write a CLAUDE.md in the workspace with core analysis behavior rules.
+    def _write_workspace_instructions(workspace: Path) -> None:
+        """Write behavioral instructions to the workspace.
 
-        This is loaded by Claude CLI as persistent system context.
-        Stable instructions (output schema, reply format, confidence criteria)
-        live here instead of in the per-request prompt to save prompt space.
+        - CLAUDE.md: auto-loaded by Claude CLI as persistent system context.
+        - AGENTS.md: read by Codex via prompt instruction.
+
+        Both files have the same content so the rules apply regardless
+        of which agent is selected.
         """
-        claude_md = workspace / "CLAUDE.md"
-        claude_md.write_text(
-            """\
+        content = """\
 # 日志分析行为规则
 
 你正在分析 Plaud 设备用户工单。以下规则在整个分析过程中始终有效。
 
 ## 必须遵守
 
-1. **探索式分析**：主动 grep 日志，至少 3 次独立 grep 交叉印证后再下结论。
+1. **探索式分析**：主动 grep 日志，交叉印证后再下结论。
 2. **不信任预提取**：预提取摘要仅用于定方向，关键证据必须从 logs/ 目录 grep 验证。
 3. **查看上下文**：`grep -A 5 -B 5` 查看前后上下文，不能只看单行。
 4. **诚实置信度**：证据不足时设 confidence: low 和 needs_engineer: true，禁止编造结论。
+5. **必须写 result.json**：分析完成后**必须**用 Write 工具写入 `output/result.json`。不要只在 stdout 输出文字总结——系统只从 result.json 读取结果。
+6. **效率优先**：不要做重复的 grep，不要浏览不相关的文件。聚焦于问题核心，尽量在 15 轮以内完成。
 
 ## 禁止行为
 
+- 不写 result.json（系统无法读取纯文本输出，分析会被标记为失败）
 - 看完预提取就直接输出 result.json（跳过 grep 验证）
 - 没有日志证据支撑时给 high confidence
 - user_reply 使用技术术语（用户是普通消费者）
+- 超过 20 轮 grep 仍未写 result.json（说明方向错了，应尽快输出当前最佳判断）
 
 ## 工作空间
 
@@ -408,6 +410,8 @@ class RuleEngine:
 Timestamp drift caused keyId-sessionId mismatch.
 ```
 （太技术化，用户看不懂）
-""",
-            encoding="utf-8",
-        )
+"""
+        # CLAUDE.md — auto-loaded by Claude CLI
+        (workspace / "CLAUDE.md").write_text(content, encoding="utf-8")
+        # AGENTS.md — referenced by Codex prompt
+        (workspace / "AGENTS.md").write_text(content, encoding="utf-8")

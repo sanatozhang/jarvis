@@ -180,7 +180,7 @@ class CodexAgent(BaseAgent):
         cmd = [
             "codex", "exec",
             "--full-auto",
-            f"Read the file {prompt_file.name} and follow all instructions in it.",
+            f"First read AGENTS.md for behavioral rules, then read {prompt_file.name} and follow all instructions in it.",
         ]
         return cmd
 

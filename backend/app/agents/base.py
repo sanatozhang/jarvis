@@ -359,6 +359,12 @@ output/       ← 请将 result.json 写入此目录
             if data:
                 logger.info("Extracted JSON from raw output (keys: %s)", list(data.keys()))
 
+        # Strategy 4: Claude output plain Markdown without JSON — salvage what we can
+        if not data and raw_output and len(raw_output.strip()) > 50:
+            data = _salvage_from_markdown(raw_output)
+            if data:
+                logger.info("Salvaged structured data from Markdown output (keys: %s)", list(data.keys()))
+
         if data:
             logger.info("Analysis result: problem_type=%s confidence=%s", data.get("problem_type"), data.get("confidence"))
 
@@ -476,6 +482,40 @@ def _extract_json_from_text(text: str) -> Dict:
             continue
 
     return {}
+
+
+def _salvage_from_markdown(text: str) -> Dict:
+    """Last-resort: extract structured fields from Markdown when Claude didn't write JSON.
+
+    Parses headings and bullet points to populate problem_type, root_cause, etc.
+    """
+    import re
+
+    result: Dict[str, Any] = {}
+
+    # Extract a problem type from headings or first bold text
+    heading_match = re.search(r"#{1,3}\s*(.+)", text)
+    if heading_match:
+        result["problem_type"] = heading_match.group(1).strip()[:128]
+
+    # Use the full text (trimmed) as root_cause
+    # Strip markdown headings for cleaner display
+    cleaned = re.sub(r"#{1,3}\s+", "", text).strip()
+    result["root_cause"] = cleaned[:2000]
+
+    # Try to extract a user reply section
+    reply_match = re.search(
+        r"(?:用户回复|user.?reply|回复模板|建议回复)[：:]\s*\n(.*?)(?:\n#{1,3}|\n\*\*|\Z)",
+        text, re.DOTALL | re.IGNORECASE,
+    )
+    if reply_match:
+        result["user_reply"] = reply_match.group(1).strip()[:1500]
+
+    result["confidence"] = "medium"
+    result["confidence_reason"] = "Agent 未生成 result.json，从 Markdown 输出中提取"
+    result["needs_engineer"] = True
+
+    return result if result.get("root_cause") else {}
 
 
 # Prompt budget. Keep well below common CLI/request limits.
