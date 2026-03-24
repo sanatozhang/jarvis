@@ -76,8 +76,7 @@ class ClaudeCodeAgent(BaseAgent):
                         problem_type="Claude 额度不足",
                         root_cause=(
                             "Anthropic API 额度已耗尽，无法完成分析。\n\n"
-                            f"Claude 退出码: {proc.returncode}\n"
-                            f"stderr: {stderr[:300] if stderr else '(empty)'}"
+                            "请检查 Anthropic 账户余额或升级套餐后重试。"
                         ),
                         confidence="low", needs_engineer=True, agent_type="claude_code",
                     )

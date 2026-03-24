@@ -120,9 +120,7 @@ class CodexAgent(BaseAgent):
                     problem_type="OpenAI 额度不足",
                     root_cause=(
                         "OpenAI API 额度已耗尽，无法完成分析。\n\n"
-                        "请检查 OpenAI 账户余额或升级套餐后重试。\n\n"
-                        f"Codex 退出码: 1\n"
-                        f"stderr: {stderr[:300] if stderr else '(empty)'}"
+                        "请检查 OpenAI 账户余额或升级套餐后重试。"
                     ),
                     confidence="low", needs_engineer=True, agent_type="codex",
                 )
@@ -141,7 +139,7 @@ class CodexAgent(BaseAgent):
             result = self.parse_result(workspace, stdout)
             result.agent_type = "codex"
 
-            # If parse failed, include diagnostics
+            # If parse failed, log diagnostics but don't expose internals to user
             if result.problem_type == "未知" and not result.user_reply:
                 diag = [f"Codex exit code: {proc.returncode}"]
                 diag.append(f"result.json exists: {result_path.exists()}")
@@ -154,8 +152,7 @@ class CodexAgent(BaseAgent):
                 diag.append(f"stdout (first 500): {stdout[:500] if stdout else '(empty)'}")
                 logger.error("Parse failed diagnostics:\n%s", "\n".join(diag))
 
-                hint = stdout[:1000] if stdout else "(empty stdout)"
-                result.root_cause = f"分析未产出结构化结果。\n\nCodex 退出码: {proc.returncode}\n原始输出:\n{hint}"
+                result.root_cause = "分析未产出结构化结果，请稍后重试或联系管理员查看日志。"
 
             return result
 
