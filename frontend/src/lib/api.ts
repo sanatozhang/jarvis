@@ -354,6 +354,7 @@ export interface TrackingFilters {
   category?: string;
   status?: string;
   source?: string;
+  zendesk_id?: string;
   date_from?: string;
   date_to?: string;
 }
@@ -366,6 +367,7 @@ export const fetchTracking = (page = 1, pageSize = 20, filters?: TrackingFilters
     if (filters.category) params.set("category", filters.category);
     if (filters.status) params.set("status", filters.status);
     if (filters.source) params.set("source", filters.source);
+    if (filters.zendesk_id) params.set("zendesk_id", filters.zendesk_id);
     if (filters.date_from) params.set("date_from", filters.date_from);
     if (filters.date_to) params.set("date_to", filters.date_to);
   }

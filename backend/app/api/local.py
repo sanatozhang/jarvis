@@ -79,6 +79,7 @@ async def list_all_tracked(
     category: Optional[str] = Query(None, description="Filter by problem category (partial match)"),
     status: Optional[str] = Query(None, alias="status", description="Filter by status: analyzing/done/failed"),
     source: str = Query("", description="来源: feishu / local / linear / api"),
+    zendesk_id: Optional[str] = Query(None, description="Filter by Zendesk ticket number (partial match)"),
     date_from: Optional[str] = Query(None, description="From date YYYY-MM-DD"),
     date_to: Optional[str] = Query(None, description="To date YYYY-MM-DD"),
 ):
@@ -86,7 +87,7 @@ async def list_all_tracked(
     items, total = await db.get_tracked_issues_paginated(
         page, page_size,
         created_by=created_by, platform=platform, category=category,
-        status_filter=status, source=source or None, date_from=date_from, date_to=date_to,
+        status_filter=status, source=source or None, zendesk_id=zendesk_id, date_from=date_from, date_to=date_to,
     )
     return {
         "issues": items,

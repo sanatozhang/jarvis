@@ -277,7 +277,7 @@ export default function TrackingPage() {
 
   const syncFiltersToUrl = (f: TrackingFilters) => {
     const url = new URL(window.location.href);
-    const filterKeys: (keyof TrackingFilters)[] = ["created_by", "platform", "category", "status", "source", "date_from", "date_to"];
+    const filterKeys: (keyof TrackingFilters)[] = ["created_by", "platform", "category", "status", "source", "zendesk_id", "date_from", "date_to"];
     for (const k of filterKeys) { f[k] ? url.searchParams.set(k, f[k]!) : url.searchParams.delete(k); }
     window.history.replaceState({}, "", url.toString());
   };
@@ -380,6 +380,11 @@ export default function TrackingPage() {
                   <option value="api">API</option>
                 </select>
               </div>
+              <div className="w-32">
+                <label style={labelStyle}>Zendesk</label>
+                <input value={filters.zendesk_id || ""} onChange={(e) => updateFilter("zendesk_id", e.target.value)}
+                  placeholder={t("工单号")} className="w-full rounded-lg px-2.5 py-1.5 font-sans" style={inputStyle} />
+              </div>
               <div className="w-44">
                 <label style={labelStyle}>{t("问题分类")}</label>
                 <select value={filters.category || ""} onChange={(e) => updateFilter("category", e.target.value)}
@@ -429,6 +434,7 @@ export default function TrackingPage() {
                 {filters.platform && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "rgba(96,165,250,0.1)", color: "#2563EB" }}>{filters.platform}</span>}
                 {filters.category && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: S.accentBg, color: S.accent }}>{catShort(filters.category)}</span>}
                 {filters.status && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: S.overlay, color: S.text2 }}>{filters.status}</span>}
+                {filters.zendesk_id && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "rgba(234,179,8,0.1)", color: "#B45309" }}>Zendesk: {filters.zendesk_id}</span>}
                 {filters.source && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "rgba(167,139,250,0.1)", color: "#7C3AED" }}>{filters.source}</span>}
               </span>
             )}

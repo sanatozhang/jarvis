@@ -592,6 +592,7 @@ async def get_tracked_issues_paginated(
     category: Optional[str] = None,
     status_filter: Optional[str] = None,
     source: Optional[str] = None,
+    zendesk_id: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> tuple:
@@ -613,6 +614,8 @@ async def get_tracked_issues_paginated(
             conditions.append(IssueRecord.status == status_filter)
         if source:
             conditions.append(IssueRecord.source == source)
+        if zendesk_id:
+            conditions.append(IssueRecord.zendesk_id.contains(zendesk_id.strip("#")))
         if date_from:
             conditions.append(IssueRecord.created_at >= datetime.fromisoformat(date_from))
         if date_to:
