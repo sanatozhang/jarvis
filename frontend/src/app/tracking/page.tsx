@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
+import MarkdownText from "@/components/MarkdownText";
 import { fetchTracking, markInaccurate, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
 const CATEGORIES_DATA = [
@@ -699,8 +700,8 @@ export default function TrackingPage() {
                           {/* Root cause */}
                           <div>
                             <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("问题原因")}</h3>
-                            <div className="whitespace-pre-wrap rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
-                              {r.root_cause}
+                            <div className="rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
+                              <MarkdownText>{r.root_cause}</MarkdownText>
                             </div>
                           </div>
 
@@ -715,9 +716,9 @@ export default function TrackingPage() {
                                   {t("一键复制")}
                                 </button>
                               </div>
-                              <div className="whitespace-pre-wrap rounded-lg p-3 text-sm"
+                              <div className="rounded-lg p-3 text-sm"
                                 style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
-                                {r.user_reply}
+                                <MarkdownText>{r.user_reply}</MarkdownText>
                               </div>
                             </div>
                           )}

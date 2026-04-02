@@ -373,7 +373,7 @@ output/       ← 请将 result.json 写入此目录
             issue_id="",
             problem_type=data.get("problem_type", "未知"),
             problem_type_en=data.get("problem_type_en", ""),
-            root_cause=data.get("root_cause", raw_output[:2000] if raw_output else "分析未产出结构化结果"),
+            root_cause=data.get("root_cause", _clean_system_lines(raw_output[:2000]) if raw_output else "分析未产出结构化结果"),
             root_cause_en=data.get("root_cause_en", ""),
             confidence=Confidence(data.get("confidence", "low")),
             confidence_reason=data.get("confidence_reason", ""),
@@ -441,6 +441,14 @@ _MAX_FOLLOWUP_QUESTION_CHARS = 1_500
 _COMPACT_FOLLOWUP_QUESTION_CHARS = 500
 
 
+def _clean_system_lines(text: str) -> str:
+    """Remove internal system instruction lines that shouldn't be shown to users."""
+    import re
+    return re.sub(
+        r"分析结果已保存至.*$", "", text, flags=re.MULTILINE
+    ).rstrip()
+
+
 def _extract_json_from_text(text: str) -> Dict:
     """Try to extract a JSON object from text that may contain markdown."""
     import re
@@ -501,6 +509,10 @@ def _salvage_from_markdown(text: str) -> Dict:
     # Use the full text (trimmed) as root_cause
     # Strip markdown headings for cleaner display
     cleaned = re.sub(r"#{1,3}\s+", "", text).strip()
+    # Remove internal system instructions that shouldn't be shown to users
+    cleaned = re.sub(
+        r"分析结果已保存至.*$", "", cleaned, flags=re.MULTILINE
+    ).rstrip()
     result["root_cause"] = cleaned[:2000]
 
     # Try to extract a user reply section

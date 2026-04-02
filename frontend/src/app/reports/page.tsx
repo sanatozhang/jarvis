@@ -3,6 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api";
+import MarkdownText from "@/components/MarkdownText";
 
 const S = {
   surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
@@ -156,7 +157,7 @@ export default function ReportsPage() {
                     </span>
                   </div>
 
-                  <p className="text-sm leading-relaxed" style={{ color: S.text2 }}>{a.root_cause}</p>
+                  <div className="text-sm leading-relaxed" style={{ color: S.text2 }}><MarkdownText>{a.root_cause}</MarkdownText></div>
 
                   {a.user_reply && (
                     <div className="mt-3 rounded-lg p-3"
@@ -176,7 +177,7 @@ export default function ReportsPage() {
                           {t("复制")}
                         </button>
                       </div>
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: S.text2 }}>{a.user_reply}</p>
+                      <div className="text-sm leading-relaxed" style={{ color: S.text2 }}><MarkdownText>{a.user_reply}</MarkdownText></div>
                     </div>
                   )}
                 </div>
