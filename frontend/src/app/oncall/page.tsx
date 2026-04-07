@@ -2,6 +2,7 @@
 
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
+import { Toast } from "@/components/Toast";
 import { getOncallSchedule, getOncallCurrent, updateOncallSchedule, type OncallGroup } from "@/lib/api";
 
 const S = {
@@ -10,19 +11,6 @@ const S = {
   text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
 };
 
-function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error"; onClose: () => void }) {
-  useEffect(() => { const id = setTimeout(onClose, 3000); return () => clearTimeout(id); }, [onClose]);
-  return (
-    <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
-      style={{
-        background: type === "success" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
-        color: type === "success" ? "#16A34A" : "#DC2626",
-        border: `1px solid ${type === "success" ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-      }}>
-      {msg}
-    </div>
-  );
-}
 
 const inputStyle = { background: S.overlay, border: `1px solid ${S.border}`, color: S.text1, outline: "none" };
 

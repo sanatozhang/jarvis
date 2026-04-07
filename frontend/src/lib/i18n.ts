@@ -73,6 +73,8 @@ const EN: Record<string, string> = {
 
   // Tabs
   "待处理": "Pending",
+  "未处理": "Pending",
+  "处理中": "In Progress",
   "进行中": "In Progress",
   "已完成": "Completed",
   "高优先级": "High Priority",
@@ -89,6 +91,23 @@ const EN: Record<string, string> = {
   "创建时间": "Created",
   "AI 状态": "AI Status",
   "平台": "Platform",
+
+  // Import from Feishu link
+  "导入工单": "Import",
+  "输入设备 SN、问题描述关键词或 record ID": "Enter device SN, description keyword, or record ID",
+  "搜索": "Search",
+  "搜索中...": "Searching...",
+  "搜索失败": "Search failed",
+  "未找到匹配的工单": "No matching issues found",
+  "搜索飞书工单并导入分析": "Search Feishu issues to import and analyze",
+  "飞书导入": "Feishu Import",
+  "一句话归因": "Root Cause",
+  "导入并分析": "Import & Analyze",
+  "正在导入...": "Importing...",
+  "正在启动分析...": "Starting analysis...",
+  "导入成功，已开始分析": "Imported, analysis started",
+  "同时显示最近 10 条处理中工单": "Also show 10 recent in-progress issues",
+  "导入成功": "Imported successfully",
 
   // Badges
   "高": "H",

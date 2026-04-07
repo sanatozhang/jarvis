@@ -2,6 +2,7 @@
 
 import { useT, useLang } from "@/lib/i18n";
 import { useState, useRef } from "react";
+import { Toast } from "@/components/Toast";
 
 function getBackendUrl(): string {
   if (typeof window === "undefined") return "http://localhost:8000";
@@ -21,19 +22,6 @@ const inputCls = "w-full rounded-lg px-3 py-2.5 text-sm font-sans outline-none t
 const inputStyle = { background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 };
 const labelCls = "mb-1.5 block text-sm font-medium";
 
-function Toast({ msg, type, onClose }: { msg: string; type: "success" | "error"; onClose: () => void }) {
-  return (
-    <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
-      style={{
-        background: type === "success" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
-        color: type === "success" ? "#16A34A" : "#DC2626",
-        border: `1px solid ${type === "success" ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-      }}>
-      {msg}
-      <button onClick={onClose} style={{ color: "inherit", opacity: 0.7 }}>✕</button>
-    </div>
-  );
-}
 
 export default function FeedbackPage() {
   const CATEGORIES_DATA: { value: string; cn: string; en: string }[] = [

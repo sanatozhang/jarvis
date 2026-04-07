@@ -2,6 +2,7 @@
 
 import { useT } from "@/lib/i18n";
 import { useEffect, useState, useCallback } from "react";
+import { Toast } from "@/components/Toast";
 import { fetchRules, reloadRules, updateRule, createRule, deleteRule, type Rule, type RuleMeta } from "@/lib/api";
 
 const S = {
@@ -12,16 +13,6 @@ const S = {
   danger: "#DC2626", dangerBg: "rgba(220,38,38,0.06)",
 };
 
-/* ─── Toast ─── */
-function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
-  useEffect(() => { const id = setTimeout(onClose, 2500); return () => clearTimeout(id); }, [onClose]);
-  return (
-    <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
-      style={{ background: S.surface, color: S.text1, border: `1px solid ${S.border}` }}>
-      {msg}
-    </div>
-  );
-}
 
 /* ─── Modal Shell ─── */
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {

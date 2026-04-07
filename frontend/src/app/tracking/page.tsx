@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
 import MarkdownText from "@/components/MarkdownText";
+import { Toast } from "@/components/Toast";
 import { fetchTracking, markInaccurate, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
 const CATEGORIES_DATA = [
@@ -54,10 +55,11 @@ function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }
 function SourceBadge({ source }: { source?: string }) {
   const t = useT();
   const config: Record<string, { bg: string; color: string; border: string; label: string }> = {
-    feishu: { bg: "rgba(96,165,250,0.12)",   color: "#2563EB", border: "rgba(96,165,250,0.25)",   label: t("飞书") },
-    local:  { bg: "rgba(251,146,60,0.12)",   color: "#EA580C", border: "rgba(251,146,60,0.25)",   label: t("网站提交") },
-    linear: { bg: "rgba(167,139,250,0.12)",  color: "#7C3AED", border: "rgba(167,139,250,0.25)",  label: "Linear" },
-    api:    { bg: "rgba(52,211,153,0.12)",   color: "#059669", border: "rgba(52,211,153,0.25)",   label: "API" },
+    feishu:        { bg: "rgba(96,165,250,0.12)",   color: "#2563EB", border: "rgba(96,165,250,0.25)",   label: t("飞书") },
+    feishu_import: { bg: "rgba(96,165,250,0.12)",   color: "#2563EB", border: "rgba(96,165,250,0.25)",   label: t("飞书导入") },
+    local:         { bg: "rgba(251,146,60,0.12)",   color: "#EA580C", border: "rgba(251,146,60,0.25)",   label: t("网站提交") },
+    linear:        { bg: "rgba(167,139,250,0.12)",  color: "#7C3AED", border: "rgba(167,139,250,0.25)",  label: "Linear" },
+    api:           { bg: "rgba(52,211,153,0.12)",   color: "#059669", border: "rgba(52,211,153,0.25)",   label: "API" },
   };
   const c = config[source || ""] || config.feishu;
   return (
@@ -83,15 +85,6 @@ function PriorityBadge({ p }: { p: string }) {
   );
 }
 
-function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
-  useEffect(() => { const id = setTimeout(onClose, 2500); return () => clearTimeout(id); }, [onClose]);
-  return (
-    <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
-      style={{ background: S.surface, color: S.text1, border: `1px solid ${S.border}` }}>
-      {msg}
-    </div>
-  );
-}
 
 function Pagination({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (p: number) => void }) {
   const t = useT();

@@ -2,9 +2,12 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
+import { Toast } from "@/components/Toast";
 import {
   fetchPendingIssues,
   refreshIssuesCache,
+  searchFeishuIssues,
+  importIssueById,
   fetchCompleted,
   fetchInProgress,
   fetchInaccurate,
@@ -68,10 +71,11 @@ function PriorityBadge({ p }: { p: string }) {
 function SourceBadge({ source, linearUrl }: { source?: string; linearUrl?: string }) {
   const t = useT();
   const cfg: Record<string, { label: string; bg: string; color: string; border: string }> = {
-    feishu:  { label: t("飞书"),     bg: "rgba(96,165,250,0.12)", color: "#2563EB", border: "rgba(96,165,250,0.25)" },
-    linear:  { label: "Linear",      bg: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "rgba(167,139,250,0.25)" },
-    api:     { label: "API",         bg: "rgba(52,211,153,0.12)", color: "#6EE7B7", border: "rgba(52,211,153,0.25)" },
-    local:   { label: t("手动提交"), bg: "rgba(251,146,60,0.12)",  color: "#FCA87A", border: "rgba(251,146,60,0.25)" },
+    feishu:         { label: t("飞书"),     bg: "rgba(96,165,250,0.12)", color: "#2563EB", border: "rgba(96,165,250,0.25)" },
+    feishu_import:  { label: t("飞书导入"), bg: "rgba(96,165,250,0.12)", color: "#2563EB", border: "rgba(96,165,250,0.25)" },
+    linear:         { label: "Linear",      bg: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "rgba(167,139,250,0.25)" },
+    api:            { label: "API",         bg: "rgba(52,211,153,0.12)", color: "#6EE7B7", border: "rgba(52,211,153,0.25)" },
+    local:          { label: t("手动提交"), bg: "rgba(251,146,60,0.12)",  color: "#FCA87A", border: "rgba(251,146,60,0.25)" },
   };
   const s = source || "feishu";
   const c = cfg[s] || cfg.feishu;
@@ -166,15 +170,6 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
   return <span style={{ color: S.text3, fontSize: "12px" }}>—</span>;
 }
 
-function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
-  useEffect(() => { const id = setTimeout(onClose, 2500); return () => clearTimeout(id); }, [onClose]);
-  return (
-    <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
-      style={{ background: S.surface, color: S.text1, border: `1px solid ${S.border}` }}>
-      {msg}
-    </div>
-  );
-}
 
 function Pagination({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (p: number) => void }) {
   if (totalPages <= 1) return null;
@@ -210,7 +205,7 @@ const btnPrimary = "rounded-lg px-3 py-1.5 text-sm font-semibold transition-colo
 const btnGhost = "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors";
 
 // ── Types ─────────────────────────────────────────────────────
-type Tab = "pending" | "in_progress" | "done" | "inaccurate";
+type Tab = "pending" | "in_progress" | "done" | "inaccurate" | "import";
 const PAGE_SIZE = 20;
 
 export default function HomePage() {
@@ -233,6 +228,7 @@ export default function HomePage() {
   const [activeTasks, setActiveTasks] = useState<Record<string, TaskProgress>>({});
   const [activeResults, setActiveResults] = useState<Record<string, AnalysisResult>>({});
 
+  const [includeInProgress, setIncludeInProgress] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detailId, setDetailId] = useState<string | null>(null);
   const [directDetail, setDirectDetail] = useState<LocalIssueItem | null>(null);
@@ -242,6 +238,12 @@ export default function HomePage() {
   const [toast, setToast] = useState("");
   const [tab, setTab] = useState<Tab>("done");
 
+  // Import state
+  const [importQuery, setImportQuery] = useState("");
+  const [importLoading, setImportLoading] = useState(false);
+  const [importResults, setImportResults] = useState<Issue[] | null>(null);
+  const [importProgress, setImportProgress] = useState<{ issueId: string; step: "importing" | "analyzing" | "done"; description: string } | null>(null);
+
   // Follow-up state
   const [issueAnalyses, setIssueAnalyses] = useState<Record<string, AnalysisResult[]>>({});
   const [followupText, setFollowupText] = useState("");
@@ -249,7 +251,7 @@ export default function HomePage() {
 
   useEffect(() => {
     const urlTab = new URLSearchParams(window.location.search).get("tab");
-    if (urlTab === "in_progress" || urlTab === "done" || urlTab === "inaccurate") setTab(urlTab);
+    if (urlTab === "import" || urlTab === "in_progress" || urlTab === "done" || urlTab === "inaccurate") setTab(urlTab);
     const urlDetail = getUrlParam("detail");
     if (urlDetail) {
       setDetailId(urlDetail);
@@ -304,13 +306,13 @@ export default function HomePage() {
     localStorage.removeItem("appllo_assignee"); setShowAssigneeEdit(false); setPendingPage(1);
   };
 
-  const loadPending = useCallback(async (page: number) => {
+  const loadPending = useCallback(async (page: number, withInProgress?: boolean) => {
     if (assignee === null) return;
     setPendingLoading(true);
-    try { const d = await fetchPendingIssues(assignee || undefined, page, PAGE_SIZE); setPendingData(d); }
+    try { const d = await fetchPendingIssues(assignee || undefined, page, PAGE_SIZE, withInProgress ?? includeInProgress); setPendingData(d); }
     catch (e: any) { setError(e.message); }
     finally { setPendingLoading(false); }
-  }, [assignee]);
+  }, [assignee, includeInProgress]);
 
   const loadInProgress = useCallback(async (page: number) => {
     try { setIpData(await fetchInProgress(page, PAGE_SIZE)); } catch (e: any) { setError(e.message); }
@@ -338,6 +340,49 @@ export default function HomePage() {
   useEffect(() => { setLang(siteLang); }, [siteLang]);
 
   const forceRefresh = async () => { await refreshIssuesCache(); await loadAll(); };
+  const handleImportSearch = async () => {
+    const q = importQuery.trim();
+    if (!q) return;
+    setImportLoading(true);
+    setImportResults(null);
+    try {
+      const res = await searchFeishuIssues(q);
+      setImportResults(res.issues || []);
+    } catch (e: any) { setToast(e.message || t("搜索失败")); }
+    finally { setImportLoading(false); }
+  };
+  const handleImportSelect = async (issue: Issue) => {
+    setImportLoading(true);
+    setImportProgress({ issueId: issue.record_id, step: "importing", description: issue.description || "" });
+    try {
+      await importIssueById(issue.record_id);
+      setImportProgress({ issueId: issue.record_id, step: "analyzing", description: issue.description || "" });
+      // Auto-start analysis
+      const task = await createTask(issue.record_id, undefined, username || "");
+      setActiveTasks((p) => ({ ...p, [issue.record_id]: task }));
+      await loadInProgress(1);
+      setTab("in_progress");
+      setImportProgress(null); setImportQuery(""); setImportResults(null);
+      setToast(t("导入成功，已开始分析"));
+      // Subscribe to progress
+      subscribeTaskProgress(task.task_id, (progress) => {
+        setActiveTasks((p) => ({ ...p, [issue.record_id]: progress }));
+        if (progress.status === "done") {
+          fetchTaskResult(task.task_id).then((r) => {
+            setActiveResults((p) => ({ ...p, [issue.record_id]: r }));
+            loadInProgress(1); loadDone(1);
+          }).catch(console.error);
+        }
+        if (progress.status === "failed") {
+          setToast(`${t("分析失败")}: ${progress.error || t("未知错误")}`);
+          loadInProgress(1); loadDone(donePage);
+        }
+      });
+    } catch (e: any) {
+      setToast(e.message || t("导入失败"));
+      setImportProgress(null);
+    } finally { setImportLoading(false); }
+  };
   const onPendingPage = (p: number) => { setPendingPage(p); loadPending(p); setSelected(new Set()); };
   const onIpPage = (p: number) => { setIpPage(p); loadInProgress(p); };
   const onDonePage = (p: number) => { setDonePage(p); loadDone(p); };
@@ -631,6 +676,7 @@ export default function HomePage() {
         <div className="mb-4 flex items-center gap-1 rounded-lg p-1 w-fit"
           style={{ background: S.overlay }}>
           {([
+            { key: "import" as Tab, label: t("导入工单"), count: 0 },
             { key: "pending" as Tab, label: t("待处理"), count: counts.pending },
             { key: "in_progress" as Tab, label: t("进行中"), count: counts.in_progress },
             { key: "done" as Tab, label: t("已完成"), count: counts.done },
@@ -651,9 +697,119 @@ export default function HomePage() {
           ))}
         </div>
 
+        {/* ── IMPORT TAB ── */}
+        {tab === "import" && (
+          <>
+            <div className="flex gap-2 mb-4">
+              <input
+                autoFocus value={importQuery} onChange={(e) => setImportQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleImportSearch(); }}
+                placeholder={t("输入设备 SN、问题描述关键词或 record ID")}
+                className="flex-1 rounded-lg px-3 py-2.5 text-sm outline-none font-sans"
+                style={{ background: S.surface, border: `1px solid ${S.border}`, color: S.text1 }} />
+              <button onClick={handleImportSearch} disabled={importLoading || !importQuery.trim()}
+                className="rounded-lg px-5 py-2.5 text-sm font-semibold disabled:opacity-50 shrink-0"
+                style={{ background: S.accent, color: "#0A0B0E" }}>
+                {importLoading ? t("搜索中...") : t("搜索")}
+              </button>
+            </div>
+
+            {/* Import progress */}
+            {importProgress && (
+              <div className="mb-4 rounded-xl px-5 py-4" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2" style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
+                  <span className="text-sm font-medium" style={{ color: S.text1 }}>
+                    {importProgress.step === "importing" ? t("正在导入...") : t("正在启动分析...")}
+                  </span>
+                </div>
+                <p className="text-xs truncate mb-3" style={{ color: S.text3 }}>{importProgress.description}</p>
+                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(0,0,0,0.06)" }}>
+                  <div className="h-full rounded-full transition-all duration-500"
+                    style={{ background: S.accent, width: importProgress.step === "importing" ? "40%" : "80%" }} />
+                </div>
+              </div>
+            )}
+
+            {/* Search results */}
+            {importResults !== null && !importProgress && (
+              <div className="overflow-hidden rounded-xl" style={{ border: `1px solid ${S.border}`, background: S.surface }}>
+                {importResults.length === 0 ? (
+                  <p className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("未找到匹配的工单")}</p>
+                ) : (
+                  <table className="min-w-full">
+                    <TableHeader cols={[t("问题描述"), t("一句话归因"), t("设备 SN"), t("创建时间"), t("状态"), t("操作")]} />
+                    <tbody>
+                      {importResults.map((issue, idx) => (
+                        <tr key={issue.record_id}
+                          style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}>
+                          <td className="px-3 py-3 max-w-xs">
+                            <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                              {issue.description || "—"}
+                            </p>
+                          </td>
+                          <td className="px-3 py-3 max-w-[180px]">
+                            <p className="text-xs leading-snug" style={{ color: S.text2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                              {issue.root_cause_summary || "—"}
+                            </p>
+                          </td>
+                          <td className={tdBase} style={{ width: "100px" }}>
+                            <span className="font-mono text-xs" style={{ color: S.text3 }}>{issue.device_sn || "—"}</span>
+                          </td>
+                          <td className={tdBase} style={{ width: "100px" }}>
+                            <span className="text-xs" style={{ color: S.text3 }}>
+                              {issue.created_at_ms ? formatLocalTime(new Date(issue.created_at_ms).toISOString(), "date") : "—"}
+                            </span>
+                          </td>
+                          <td className={tdBase} style={{ width: "72px" }}>
+                            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+                              style={issue.feishu_status === "in_progress"
+                                ? { background: "rgba(96,165,250,0.12)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }
+                                : issue.feishu_status === "done"
+                                  ? { background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }
+                                  : { background: "rgba(0,0,0,0.04)", color: "#6B7280", border: "1px solid rgba(0,0,0,0.08)" }}>
+                              {issue.feishu_status === "in_progress" ? t("处理中") : issue.feishu_status === "done" ? t("已完成") : t("未处理")}
+                            </span>
+                          </td>
+                          <td className={`${tdBase} text-right`} style={{ width: "110px" }}>
+                            <button onClick={() => handleImportSelect(issue)} disabled={importLoading}
+                              className="rounded-lg px-3 py-1 text-xs font-semibold transition-colors disabled:opacity-50"
+                              style={{ background: S.accent, color: "#0A0B0E" }}>
+                              {t("导入并分析")}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+
+            {/* Empty state */}
+            {importResults === null && !importProgress && (
+              <div className="flex flex-col items-center justify-center py-20" style={{ color: S.text3 }}>
+                <svg className="h-12 w-12 mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                </svg>
+                <p className="text-sm">{t("搜索飞书工单并导入分析")}</p>
+              </div>
+            )}
+          </>
+        )}
+
         {/* ── PENDING TAB ── */}
         {tab === "pending" && (
           <>
+            {/* Include in_progress toggle */}
+            <div className="mb-3 flex items-center gap-2">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" className="rounded" style={{ accentColor: S.accent }}
+                  checked={includeInProgress}
+                  onChange={(e) => { setIncludeInProgress(e.target.checked); setPendingPage(1); setSelected(new Set()); loadPending(1, e.target.checked); }} />
+                <span className="text-xs" style={{ color: S.text2 }}>{t("同时显示最近 10 条处理中工单")}</span>
+              </label>
+            </div>
             {/* Batch action toolbar */}
             {!!pendingData?.issues.length && (
               <div className="mb-3 flex items-center gap-3 rounded-xl px-4 py-2.5"
@@ -693,18 +849,18 @@ export default function HomePage() {
                     indeterminate={selected.size > 0 && selected.size < (pendingData?.issues || []).length}
                     onChange={(e) => setSelected(e.target.checked ? new Set((pendingData?.issues || []).map((i) => i.record_id)) : new Set())}
                   />,
-                  t("级别"), t("来源"), t("问题描述"), t("设备 SN"), t("Zendesk"), t("飞书"), t("操作")
+                  t("级别"), ...(includeInProgress ? [t("状态")] : []), t("来源"), t("问题描述"), t("设备 SN"), t("Zendesk"), t("飞书"), t("操作")
                 ]} />
                 <tbody>
                   {pendingLoading ? (
-                    <tr><td colSpan={8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>
+                    <tr><td colSpan={includeInProgress ? 9 : 8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>
                       <span className="inline-flex items-center gap-2">
                         <span className="inline-block h-4 w-4 animate-spin rounded-full border-2" style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
                         {t("正在从飞书同步...")}
                       </span>
                     </td></tr>
                   ) : !pendingData?.issues.length ? (
-                    <tr><td colSpan={8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("暂无待处理工单")}</td></tr>
+                    <tr><td colSpan={includeInProgress ? 9 : 8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("暂无待处理工单")}</td></tr>
                   ) : pendingData.issues.map((issue, idx) => (
                     <tr key={issue.record_id}
                       className="cursor-pointer transition-colors"
@@ -717,6 +873,16 @@ export default function HomePage() {
                           checked={selected.has(issue.record_id)} onChange={() => toggle(issue.record_id)} />
                       </td>
                       <td className={tdBase} style={{ width: "56px" }}><PriorityBadge p={issue.priority} /></td>
+                      {includeInProgress && (
+                        <td className={tdBase} style={{ width: "72px" }}>
+                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+                            style={issue.feishu_status === "in_progress"
+                              ? { background: "rgba(96,165,250,0.12)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }
+                              : { background: "rgba(0,0,0,0.04)", color: "#6B7280", border: "1px solid rgba(0,0,0,0.08)" }}>
+                            {issue.feishu_status === "in_progress" ? t("处理中") : t("未处理")}
+                          </span>
+                        </td>
+                      )}
                       <td className={tdBase} style={{ width: "64px" }}><SourceBadge source={issue.source} linearUrl={issue.linear_issue_url} /></td>
                       <td className="px-3 py-3 max-w-md">
                         <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>

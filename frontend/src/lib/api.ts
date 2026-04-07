@@ -155,15 +155,26 @@ export interface PaginatedResponse<T> {
   high_priority?: number;
 }
 
-export const fetchPendingIssues = (assignee?: string, page = 1, pageSize = 20) => {
+export const fetchPendingIssues = (assignee?: string, page = 1, pageSize = 20, includeInProgress = false) => {
   const params = new URLSearchParams();
   if (assignee) params.set("assignee", assignee);
+  if (includeInProgress) params.set("include_in_progress", "true");
   params.set("page", String(page));
   params.set("page_size", String(pageSize));
-  return request<PaginatedResponse<Issue>>(`/issues?${params}`);
+  return request<PaginatedResponse<Issue> & { in_progress_count?: number }>(`/issues?${params}`);
 };
 export const fetchIssue = (id: string) => request<Issue>(`/issues/${id}`);
 export const refreshIssuesCache = () => request<{ status: string }>("/issues/refresh", { method: "POST" });
+export const searchFeishuIssues = (keyword: string) =>
+  request<{ issues: Issue[] }>("/issues/import/search", {
+    method: "POST",
+    body: JSON.stringify({ url: keyword }),
+  });
+export const importIssueById = (recordId: string) =>
+  request<{ status: string; issue: Issue }>("/issues/import", {
+    method: "POST",
+    body: JSON.stringify({ record_id: recordId }),
+  });
 
 // ============================================================
 // Tasks

@@ -2,6 +2,7 @@
 
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
+import { Toast } from "@/components/Toast";
 import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api";
 import MarkdownText from "@/components/MarkdownText";
 
@@ -12,15 +13,6 @@ const S = {
   text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
 };
 
-function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
-  useEffect(() => { const id = setTimeout(onClose, 2500); return () => clearTimeout(id); }, [onClose]);
-  return (
-    <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
-      style={{ background: S.surface, color: S.text1, border: `1px solid ${S.border}` }}>
-      {msg}
-    </div>
-  );
-}
 
 function ConfBadge({ conf }: { conf: string }) {
   const styles: Record<string, { bg: string; color: string; border: string }> = {

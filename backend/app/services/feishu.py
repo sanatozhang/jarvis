@@ -255,6 +255,11 @@ class FeishuClient:
     def is_pending(record: Dict) -> bool:
         return not record.get("fields", {}).get("开始处理", False)
 
+    @staticmethod
+    def is_unfinished(record: Dict) -> bool:
+        """未完成 = 确认提交 != true（包括 pending 和 in_progress）"""
+        return not record.get("fields", {}).get("确认提交", False)
+
     def filter_by_assignee(self, records: List[Dict], assignee: str) -> List[Dict]:
         if not assignee:
             return records
@@ -280,6 +285,17 @@ class FeishuClient:
             pending = self.filter_by_assignee(pending, assignee)
         issues = [self.parse_record(r) for r in pending]
         # Sort: H first, then by created_at desc
+        priority_order = {"H": 0, "L": 1, "": 2}
+        issues.sort(key=lambda i: (priority_order.get(i.priority, 2), -i.created_at_ms))
+        return issues
+
+    async def list_unfinished_issues(self, assignee: str = "") -> List[Issue]:
+        """未完成工单 = pending + in_progress（确认提交=false）"""
+        records = await self.list_records()
+        unfinished = [r for r in records if self.is_unfinished(r)]
+        if assignee:
+            unfinished = self.filter_by_assignee(unfinished, assignee)
+        issues = [self.parse_record(r) for r in unfinished]
         priority_order = {"H": 0, "L": 1, "": 2}
         issues.sort(key=lambda i: (priority_order.get(i.priority, 2), -i.created_at_ms))
         return issues

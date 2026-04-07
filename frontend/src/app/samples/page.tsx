@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useT } from "@/lib/i18n";
+import { Toast } from "@/components/Toast";
 import {
   fetchGoldenSamples,
   fetchGoldenSamplesStats,
@@ -32,15 +33,6 @@ function ConfBadge({ c }: { c: string }) {
   );
 }
 
-function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
-  useEffect(() => { const id = setTimeout(onClose, 2500); return () => clearTimeout(id); }, [onClose]);
-  return (
-    <div className="fixed bottom-6 right-6 z-50 rounded-xl px-4 py-2.5 text-sm font-medium shadow-2xl"
-      style={{ background: S.surface, color: S.text1, border: `1px solid ${S.border}` }}>
-      {msg}
-    </div>
-  );
-}
 
 export default function SamplesPage() {
   const t = useT();
