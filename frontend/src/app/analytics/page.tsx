@@ -2,7 +2,7 @@
 
 import { useT } from "@/lib/i18n";
 import { useEffect, useState, useCallback } from "react";
-import { fetchRuleAccuracy, fetchIssueDetail, formatLocalTime, type RuleAccuracyStat, type LocalIssueItem } from "@/lib/api";
+import { fetchRuleAccuracy, fetchProblemTypeStats, fetchIssueDetail, formatLocalTime, type RuleAccuracyStat, type ProblemTypeStats, type LocalIssueItem } from "@/lib/api";
 
 interface FailReasonItem {
   issue_id?: string;
@@ -62,6 +62,9 @@ export default function AnalyticsPage() {
   const [customDays, setCustomDays] = useState("");
   const [loading, setLoading] = useState(true);
   const [ruleAccuracy, setRuleAccuracy] = useState<RuleAccuracyStat[]>([]);
+  const [ptStats, setPtStats] = useState<ProblemTypeStats | null>(null);
+  const [trendDays, setTrendDays] = useState(7);
+  const [trendData, setTrendData] = useState<ProblemTypeStats | null>(null);
   const [expandedReason, setExpandedReason] = useState<string | null>(null);
   const [issueDetails, setIssueDetails] = useState<Record<string, LocalIssueItem | "loading" | "error">>({});
 
@@ -79,16 +82,23 @@ export default function AnalyticsPage() {
   const load = async (d: number) => {
     setLoading(true);
     try {
-      const [res, ra] = await Promise.all([
+      const [res, ra, pt] = await Promise.all([
         fetch(`/api/analytics/dashboard?days=${d}`),
         fetchRuleAccuracy(d).catch(() => []),
+        fetchProblemTypeStats(d).catch(() => null),
       ]);
       if (res.ok) setData(await res.json());
       setRuleAccuracy(ra);
+      setPtStats(pt);
     } catch {} finally { setLoading(false); }
   };
 
   useEffect(() => { load(days); }, [days]);
+
+  // Separate loader for trend chart so its time range is independent
+  useEffect(() => {
+    fetchProblemTypeStats(trendDays).then(setTrendData).catch(() => setTrendData(null));
+  }, [trendDays]);
 
   const dailyDates = data ? Object.keys(data.daily).sort() : [];
   const maxDaily = data ? Math.max(1, ...dailyDates.map((d) => {
@@ -239,6 +249,181 @@ export default function AnalyticsPage() {
               </div>
             )}
           </section>
+
+          {/* Problem type distribution + trend */}
+          {ptStats && ptStats.top10.length > 0 && (() => {
+            const top10 = ptStats.top10;
+            const maxCount = top10[0]?.count || 1;
+            const trendDates = Object.keys(ptStats.trend).sort();
+            const COLORS = ["#B8922E","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C","#0891B2","#DB2777","#4F46E5","#65A30D"];
+            return (
+              <div className="grid grid-cols-2 gap-4">
+                {/* Top 10 bar chart */}
+                <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("问题分类 Top 10")}</h2>
+                    <span className="text-[11px] font-mono" style={{ color: S.text3 }}>
+                      {t("共")} {ptStats.distribution.length} {t("类")} / {ptStats.total} {t("单")}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {top10.map((item, i) => {
+                      const pct = Math.max(4, (item.count / maxCount) * 100);
+                      return (
+                        <div key={item.problem_type} className="flex items-center gap-2">
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold flex-shrink-0"
+                            style={{ background: `${COLORS[i]}15`, color: COLORS[i] }}>
+                            {i + 1}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-0.5">
+                              <span className="text-xs truncate" style={{ color: S.text2 }}>{item.problem_type}</span>
+                              <span className="text-xs tabular-nums font-mono flex-shrink-0 ml-2" style={{ color: S.text1 }}>
+                                {item.count}
+                              </span>
+                            </div>
+                            <div className="h-3 w-full overflow-hidden rounded-full" style={{ background: S.hover }}>
+                              <div className="h-full rounded-full transition-all duration-700"
+                                style={{ width: `${pct}%`, background: COLORS[i], opacity: 0.75 }} />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                {/* Trend line chart */}
+                <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("问题分类趋势")}</h2>
+                    <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: S.overlay }}>
+                      {[7, 30].map((d) => (
+                        <button key={d} onClick={() => setTrendDays(d)}
+                          className="rounded-md px-2.5 py-1 text-[11px] font-medium transition-all"
+                          style={trendDays === d
+                            ? { background: S.surface, color: S.text1, boxShadow: "0 1px 2px rgba(0,0,0,0.08)" }
+                            : { color: S.text3 }}>
+                          {d}{t("天")}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {(() => {
+                    const src = trendData || ptStats;
+                    const dates = Object.keys(src.trend).sort();
+                    if (dates.length < 2) return <p className="py-8 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>;
+
+                    // Use top10 from the trend source for line series
+                    const series = (trendData?.top10 || top10).slice(0, 6);
+                    // Compute max Y across all series
+                    let maxY = 1;
+                    for (const d of dates) {
+                      for (const s of series) {
+                        const v = src.trend[d]?.[s.problem_type] || 0;
+                        if (v > maxY) maxY = v;
+                      }
+                    }
+                    // Round maxY up for nicer grid
+                    const gridStep = maxY <= 5 ? 1 : maxY <= 20 ? 5 : Math.ceil(maxY / 4 / 5) * 5;
+                    maxY = Math.ceil(maxY / gridStep) * gridStep;
+
+                    const W = 400, H = 200;
+                    const pad = { top: 8, right: 12, bottom: 22, left: 28 };
+                    const cw = W - pad.left - pad.right;
+                    const ch = H - pad.top - pad.bottom;
+
+                    const xStep = dates.length > 1 ? cw / (dates.length - 1) : 0;
+                    const toX = (i: number) => pad.left + i * xStep;
+                    const toY = (v: number) => pad.top + ch - (v / maxY) * ch;
+
+                    // Build smooth paths using catmull-rom → cubic bezier approximation
+                    const buildPath = (pts: [number, number][]) => {
+                      if (pts.length < 2) return "";
+                      let d = `M${pts[0][0]},${pts[0][1]}`;
+                      for (let i = 0; i < pts.length - 1; i++) {
+                        const p0 = pts[Math.max(0, i - 1)];
+                        const p1 = pts[i];
+                        const p2 = pts[i + 1];
+                        const p3 = pts[Math.min(pts.length - 1, i + 2)];
+                        const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+                        const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+                        const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+                        const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+                        d += ` C${cp1x},${cp1y} ${cp2x},${cp2y} ${p2[0]},${p2[1]}`;
+                      }
+                      return d;
+                    };
+
+                    // X-axis labels: show ~5-7 evenly spaced labels
+                    const labelInterval = Math.max(1, Math.floor(dates.length / 6));
+
+                    return (
+                      <div>
+                        {/* Legend */}
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 mb-2">
+                          {series.map((item, i) => (
+                            <div key={item.problem_type} className="flex items-center gap-1">
+                              <span className="inline-block h-2 w-2 rounded-full" style={{ background: COLORS[i] }} />
+                              <span className="text-[10px]" style={{ color: S.text3 }}>{item.problem_type}</span>
+                            </div>
+                          ))}
+                        </div>
+                        {/* SVG chart */}
+                        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ overflow: "visible" }}>
+                          {/* Y grid lines + labels */}
+                          {Array.from({ length: Math.floor(maxY / gridStep) + 1 }, (_, i) => {
+                            const v = i * gridStep;
+                            const y = toY(v);
+                            return (
+                              <g key={v}>
+                                <line x1={pad.left} x2={W - pad.right} y1={y} y2={y}
+                                  stroke={S.border} strokeWidth={0.5} />
+                                <text x={pad.left - 4} y={y + 3} textAnchor="end"
+                                  style={{ fontSize: 8, fill: S.text3, fontFamily: "monospace" }}>{v}</text>
+                              </g>
+                            );
+                          })}
+                          {/* Lines */}
+                          {series.map((item, si) => {
+                            const pts: [number, number][] = dates.map((d, di) => [
+                              toX(di), toY(src.trend[d]?.[item.problem_type] || 0),
+                            ]);
+                            return (
+                              <path key={item.problem_type} d={buildPath(pts)}
+                                fill="none" stroke={COLORS[si]} strokeWidth={1.8}
+                                strokeLinecap="round" strokeLinejoin="round" opacity={0.85} />
+                            );
+                          })}
+                          {/* Dots */}
+                          {series.map((item, si) =>
+                            dates.map((d, di) => {
+                              const v = src.trend[d]?.[item.problem_type] || 0;
+                              if (v === 0) return null;
+                              return (
+                                <circle key={`${si}-${di}`} cx={toX(di)} cy={toY(v)} r={2.5}
+                                  fill="#fff" stroke={COLORS[si]} strokeWidth={1.5}>
+                                  <title>{`${d} ${item.problem_type}: ${v}`}</title>
+                                </circle>
+                              );
+                            })
+                          )}
+                          {/* X labels */}
+                          {dates.map((d, i) => {
+                            if (i % labelInterval !== 0 && i !== dates.length - 1) return null;
+                            return (
+                              <text key={d} x={toX(i)} y={H - 2} textAnchor="middle"
+                                style={{ fontSize: 8, fill: S.text3, fontFamily: "monospace" }}>{d.slice(5)}</text>
+                            );
+                          })}
+                        </svg>
+                      </div>
+                    );
+                  })()}
+                </section>
+              </div>
+            );
+          })()}
 
           {/* Top users + fail reasons */}
           <div className="grid grid-cols-2 gap-4">

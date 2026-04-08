@@ -1071,6 +1071,66 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Problem Type Statistics
+# ---------------------------------------------------------------------------
+async def get_problem_type_stats(date_from: str, date_to: str) -> Dict[str, Any]:
+    """Get problem type distribution, trend, and top 10 for a date range."""
+    async with get_session() as session:
+        from sqlalchemy import select, func, and_
+
+        start = datetime.fromisoformat(date_from)
+        end = datetime.fromisoformat(date_to + "T23:59:59")
+        date_filter = and_(
+            AnalysisRecord.created_at >= start,
+            AnalysisRecord.created_at <= end,
+            AnalysisRecord.problem_type != "",
+            AnalysisRecord.problem_type != "未知",
+        )
+
+        # 1) Count per problem_type
+        dist_stmt = select(
+            AnalysisRecord.problem_type,
+            AnalysisRecord.problem_type_en,
+            func.count().label("count"),
+        ).where(date_filter).group_by(
+            AnalysisRecord.problem_type, AnalysisRecord.problem_type_en,
+        ).order_by(func.count().desc())
+        dist_rows = (await session.execute(dist_stmt)).fetchall()
+
+        distribution = [
+            {"problem_type": r.problem_type, "problem_type_en": r.problem_type_en or r.problem_type, "count": r.count}
+            for r in dist_rows
+        ]
+        total = sum(d["count"] for d in distribution)
+
+        # 2) Daily trend for top 10 categories
+        top_types = [d["problem_type"] for d in distribution[:10]]
+        trend: Dict[str, Dict[str, int]] = {}
+        if top_types:
+            trend_stmt = select(
+                func.date(AnalysisRecord.created_at).label("day"),
+                AnalysisRecord.problem_type,
+                func.count().label("count"),
+            ).where(
+                and_(date_filter, AnalysisRecord.problem_type.in_(top_types))
+            ).group_by("day", AnalysisRecord.problem_type).order_by("day")
+            for row in (await session.execute(trend_stmt)).fetchall():
+                d = str(row.day)
+                if d not in trend:
+                    trend[d] = {}
+                trend[d][row.problem_type] = row.count
+
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "total": total,
+            "distribution": distribution,
+            "top10": distribution[:10],
+            "trend": trend,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Golden Samples CRUD
 # ---------------------------------------------------------------------------
 async def add_golden_sample(data: Dict[str, Any]) -> GoldenSampleRecord:

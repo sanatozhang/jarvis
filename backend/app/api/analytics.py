@@ -67,6 +67,16 @@ async def get_dashboard(
     return data
 
 
+@router.get("/problem-types")
+async def get_problem_type_stats(
+    days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),
+):
+    """Get problem type distribution, daily trend, and top 10."""
+    date_to = datetime.utcnow().strftime("%Y-%m-%d")
+    date_from = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    return await db.get_problem_type_stats(date_from, date_to)
+
+
 @router.get("/rule-accuracy")
 async def get_rule_accuracy(
     days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),

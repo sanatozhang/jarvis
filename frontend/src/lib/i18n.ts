@@ -454,6 +454,12 @@ const EN: Record<string, string> = {
   "样本统计": "Sample Stats",
   "管理已验证的准确分析样本": "Manage verified analysis samples",
 
+  // Problem Type Stats
+  "问题分类 Top 10": "Top 10 Problem Types",
+  "问题分类趋势": "Problem Type Trend",
+  "类": "types",
+  "单": "tickets",
+
   // Rule Accuracy
   "规则准确率": "Rule Accuracy",
   "准确率": "Accuracy",

@@ -368,13 +368,17 @@ output/       ← 请将 result.json 写入此目录
         if data:
             logger.info("Analysis result: problem_type=%s confidence=%s", data.get("problem_type"), data.get("confidence"))
 
+        # Clean system meta-commentary from root_cause regardless of source
+        _raw_rc = data.get("root_cause") or (_clean_system_lines(raw_output[:2000]) if raw_output else "分析未产出结构化结果")
+        _raw_rc_en = data.get("root_cause_en", "")
+
         return AnalysisResult(
             task_id="",
             issue_id="",
             problem_type=data.get("problem_type", "未知"),
             problem_type_en=data.get("problem_type_en", ""),
-            root_cause=data.get("root_cause", _clean_system_lines(raw_output[:2000]) if raw_output else "分析未产出结构化结果"),
-            root_cause_en=data.get("root_cause_en", ""),
+            root_cause=_clean_system_lines(_raw_rc),
+            root_cause_en=_clean_system_lines(_raw_rc_en) if _raw_rc_en else "",
             confidence=Confidence(data.get("confidence", "low")),
             confidence_reason=data.get("confidence_reason", ""),
             key_evidence=data.get("key_evidence", []),
@@ -444,9 +448,23 @@ _COMPACT_FOLLOWUP_QUESTION_CHARS = 500
 def _clean_system_lines(text: str) -> str:
     """Remove internal system instruction lines that shouldn't be shown to users."""
     import re
-    return re.sub(
-        r"分析结果已保存至.*$", "", text, flags=re.MULTILINE
-    ).rstrip()
+
+    # Patterns that are agent-internal meta-commentary, not analysis content
+    _SYSTEM_PATTERNS = [
+        r"分析结果已保存至.*$",
+        r"已将.*(?:写入|保存|输出).*result\.json.*$",
+        r".*可供客服直接使用.*$",
+        r"^✅\s*问题定位完成[：:].*$",
+        r"^分析总结\s*$",
+    ]
+
+    cleaned = text
+    for pat in _SYSTEM_PATTERNS:
+        cleaned = re.sub(pat, "", cleaned, flags=re.MULTILINE)
+
+    # Collapse multiple blank lines left by removals
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def _extract_json_from_text(text: str) -> Dict:
@@ -510,9 +528,7 @@ def _salvage_from_markdown(text: str) -> Dict:
     # Strip markdown headings for cleaner display
     cleaned = re.sub(r"#{1,3}\s+", "", text).strip()
     # Remove internal system instructions that shouldn't be shown to users
-    cleaned = re.sub(
-        r"分析结果已保存至.*$", "", cleaned, flags=re.MULTILINE
-    ).rstrip()
+    cleaned = _clean_system_lines(cleaned)
     result["root_cause"] = cleaned[:2000]
 
     # Try to extract a user reply section

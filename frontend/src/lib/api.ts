@@ -511,6 +511,28 @@ export const fetchRuleAccuracy = (days: number = 30) =>
   request<RuleAccuracyStat[]>(`/analytics/rule-accuracy?days=${days}`);
 
 // ============================================================
+// Problem Type Statistics
+// ============================================================
+
+export interface ProblemTypeItem {
+  problem_type: string;
+  problem_type_en: string;
+  count: number;
+}
+
+export interface ProblemTypeStats {
+  date_from: string;
+  date_to: string;
+  total: number;
+  distribution: ProblemTypeItem[];
+  top10: ProblemTypeItem[];
+  trend: Record<string, Record<string, number>>; // { "2026-04-01": { "蓝牙连接": 3, ... } }
+}
+
+export const fetchProblemTypeStats = (days: number = 30) =>
+  request<ProblemTypeStats>(`/analytics/problem-types?days=${days}`);
+
+// ============================================================
 // Eval Pipeline
 // ============================================================
 
