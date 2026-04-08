@@ -1080,11 +1080,13 @@ async def get_problem_type_stats(date_from: str, date_to: str) -> Dict[str, Any]
 
         start = datetime.fromisoformat(date_from)
         end = datetime.fromisoformat(date_to + "T23:59:59")
+        # Exclude agent meta-commentary that leaked into problem_type
+        _INVALID_TYPES = ["", "未知", "Analysis Complete", "分析完成", "分析总结",
+                          "Unknown", "问题定位完成", "分析结果", "Completed", "Done", "N/A"]
         date_filter = and_(
             AnalysisRecord.created_at >= start,
             AnalysisRecord.created_at <= end,
-            AnalysisRecord.problem_type != "",
-            AnalysisRecord.problem_type != "未知",
+            AnalysisRecord.problem_type.notin_(_INVALID_TYPES),
         )
 
         # 1) Count per problem_type

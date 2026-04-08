@@ -375,8 +375,8 @@ output/       ← 请将 result.json 写入此目录
         return AnalysisResult(
             task_id="",
             issue_id="",
-            problem_type=data.get("problem_type", "未知"),
-            problem_type_en=data.get("problem_type_en", ""),
+            problem_type=_clean_problem_type(data.get("problem_type", "未知")),
+            problem_type_en=_clean_problem_type(data.get("problem_type_en", "")),
             root_cause=_clean_system_lines(_raw_rc),
             root_cause_en=_clean_system_lines(_raw_rc_en) if _raw_rc_en else "",
             confidence=Confidence(data.get("confidence", "low")),
@@ -465,6 +465,21 @@ def _clean_system_lines(text: str) -> str:
     # Collapse multiple blank lines left by removals
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+# Values that agents sometimes write as problem_type but are not real categories
+_INVALID_PROBLEM_TYPES = {
+    "analysis complete", "分析完成", "分析总结", "未知", "unknown",
+    "问题定位完成", "分析结果", "completed", "done", "n/a",
+}
+
+
+def _clean_problem_type(value: str) -> str:
+    """Return the value if it looks like a real problem category, else '未知'."""
+    v = (value or "").strip()
+    if not v or v.lower() in _INVALID_PROBLEM_TYPES:
+        return "未知"
+    return v
 
 
 def _extract_json_from_text(text: str) -> Dict:
