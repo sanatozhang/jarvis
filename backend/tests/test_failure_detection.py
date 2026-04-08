@@ -253,7 +253,7 @@ Some text after'''
     def test_markdown_only_output(self, tmp_path: Path):
         """Strategy 4: Pure Markdown output, no JSON anywhere."""
         (tmp_path / "output").mkdir()
-        stdout = """## 分析完成
+        stdout = """## 网络连接异常
 
 通过日志分析，确定根本原因：
 
@@ -263,7 +263,7 @@ Some text after'''
 您好，请检查网络连接后重试。"""
 
         result = BaseAgent.parse_result(tmp_path, stdout)
-        assert result.problem_type != "未知"
+        assert result.problem_type == "网络连接异常"
         assert "网络连接不稳定" in result.root_cause
 
     def test_empty_output(self, tmp_path: Path):
