@@ -63,8 +63,6 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [ruleAccuracy, setRuleAccuracy] = useState<RuleAccuracyStat[]>([]);
   const [ptStats, setPtStats] = useState<ProblemTypeStats | null>(null);
-  const [trendDays, setTrendDays] = useState(7);
-  const [trendData, setTrendData] = useState<ProblemTypeStats | null>(null);
   const [expandedReason, setExpandedReason] = useState<string | null>(null);
   const [issueDetails, setIssueDetails] = useState<Record<string, LocalIssueItem | "loading" | "error">>({});
 
@@ -94,11 +92,6 @@ export default function AnalyticsPage() {
   };
 
   useEffect(() => { load(days); }, [days]);
-
-  // Separate loader for trend chart so its time range is independent
-  useEffect(() => {
-    fetchProblemTypeStats(trendDays).then(setTrendData).catch(() => setTrendData(null));
-  }, [trendDays]);
 
   const dailyDates = data ? Object.keys(data.daily).sort() : [];
   const maxDaily = data ? Math.max(1, ...dailyDates.map((d) => {
@@ -295,32 +288,17 @@ export default function AnalyticsPage() {
 
                 {/* Trend line chart */}
                 <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("问题分类趋势")}</h2>
-                    <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: S.overlay }}>
-                      {[7, 30].map((d) => (
-                        <button key={d} onClick={() => setTrendDays(d)}
-                          className="rounded-md px-2.5 py-1 text-[11px] font-medium transition-all"
-                          style={trendDays === d
-                            ? { background: S.surface, color: S.text1, boxShadow: "0 1px 2px rgba(0,0,0,0.08)" }
-                            : { color: S.text3 }}>
-                          {d}{t("天")}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  <h2 className="mb-4 text-sm font-semibold" style={{ color: S.text1 }}>{t("问题分类趋势")}</h2>
                   {(() => {
-                    const src = trendData || ptStats;
-                    const dates = Object.keys(src.trend).sort();
+                    const dates = Object.keys(ptStats.trend).sort();
                     if (dates.length < 2) return <p className="py-8 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>;
 
-                    // Use top10 from the trend source for line series
-                    const series = (trendData?.top10 || top10).slice(0, 6);
+                    const series = top10.slice(0, 6);
                     // Compute max Y across all series
                     let maxY = 1;
                     for (const d of dates) {
                       for (const s of series) {
-                        const v = src.trend[d]?.[s.problem_type] || 0;
+                        const v = ptStats.trend[d]?.[s.problem_type] || 0;
                         if (v > maxY) maxY = v;
                       }
                     }
@@ -387,7 +365,7 @@ export default function AnalyticsPage() {
                           {/* Lines */}
                           {series.map((item, si) => {
                             const pts: [number, number][] = dates.map((d, di) => [
-                              toX(di), toY(src.trend[d]?.[item.problem_type] || 0),
+                              toX(di), toY(ptStats.trend[d]?.[item.problem_type] || 0),
                             ]);
                             return (
                               <path key={item.problem_type} d={buildPath(pts)}
@@ -398,7 +376,7 @@ export default function AnalyticsPage() {
                           {/* Dots */}
                           {series.map((item, si) =>
                             dates.map((d, di) => {
-                              const v = src.trend[d]?.[item.problem_type] || 0;
+                              const v = ptStats.trend[d]?.[item.problem_type] || 0;
                               if (v === 0) return null;
                               return (
                                 <circle key={`${si}-${di}`} cx={toX(di)} cy={toY(v)} r={2.5}
