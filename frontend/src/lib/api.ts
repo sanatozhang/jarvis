@@ -336,6 +336,9 @@ export interface LocalIssueItem {
   source?: string;
   log_files: any[];
   local_status: string;
+  escalated_at?: string;
+  escalated_by?: string;
+  escalation_note?: string;
   analysis_count?: number;
   analysis?: AnalysisResult;
   task?: { task_id: string; status: string; progress: number; message: string; error?: string };
@@ -432,6 +435,12 @@ export const updateOncallSchedule = (groups: string[][], startDate: string, user
 // ============================================================
 // Inaccurate
 // ============================================================
+
+export const escalateIssue = (issueId: string, note: string = "", escalatedBy: string = "") =>
+  request<{ status: string }>(`/local/${issueId}/escalate`, {
+    method: "POST",
+    body: JSON.stringify({ note, escalated_by: escalatedBy }),
+  });
 
 export const markInaccurate = (issueId: string) =>
   request<{ status: string }>(`/local/${issueId}/inaccurate`, { method: "POST" });

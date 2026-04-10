@@ -49,6 +49,9 @@ class IssueRecord(Base):
     created_by = Column(String(64), default="")            # username who triggered analysis
     occurred_at = Column(DateTime, nullable=True)            # when the bug occurred (user-reported)
     deleted = Column(Boolean, default=False)
+    escalated_at = Column(DateTime, nullable=True)
+    escalated_by = Column(String(64), default="")
+    escalation_note = Column(Text, default="")
     created_at_ms = Column(Integer, default=0)             # creation time (Unix ms)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -266,6 +269,9 @@ async def init_db():
             ("linear_issue_id", "VARCHAR(64)", "''"),
             ("linear_issue_url", "VARCHAR(512)", "''"),
             ("occurred_at", "DATETIME", "NULL"),
+            ("escalated_at", "DATETIME", "NULL"),
+            ("escalated_by", "VARCHAR(64)", "''"),
+            ("escalation_note", "TEXT", "''"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -395,6 +401,20 @@ async def update_issue_status(issue_id: str, status: str):
             record.status = status
             record.updated_at = datetime.utcnow()
             await session.commit()
+
+
+async def escalate_issue(issue_id: str, escalated_by: str = "", note: str = "") -> bool:
+    async with get_session() as session:
+        record = await session.get(IssueRecord, issue_id)
+        if not record:
+            return False
+        record.status = "escalated"
+        record.escalated_at = datetime.utcnow()
+        record.escalated_by = escalated_by
+        record.escalation_note = note
+        record.updated_at = datetime.utcnow()
+        await session.commit()
+        return True
 
 
 async def soft_delete_issue(issue_id: str) -> bool:
@@ -723,6 +743,9 @@ def _issue_to_dict(
         "created_at": (issue.created_at.isoformat() + "Z") if issue.created_at else "",
         "occurred_at": (issue.occurred_at.isoformat() + "Z") if issue.occurred_at else "",
         "analysis_count": analysis_count,
+        "escalated_at": (issue.escalated_at.isoformat() + "Z") if issue.escalated_at else "",
+        "escalated_by": issue.escalated_by or "",
+        "escalation_note": issue.escalation_note or "",
     }
 
     if analysis:

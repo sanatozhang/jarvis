@@ -433,6 +433,18 @@ const EN: Record<string, string> = {
   "管理员": "Admin",
   "用户": "User",
 
+  // Escalation
+  "转交工程师": "Escalate to Engineer",
+  "已转交": "Escalated",
+  "转交备注": "Escalation Note",
+  "请输入转交备注（可选）...": "Enter escalation note (optional)...",
+  "已转交工程师": "Escalated to engineer",
+  "转交失败": "Escalation failed",
+  "转交人": "Escalated by",
+  "转交时间": "Escalated at",
+  "确认转交": "Confirm Escalation",
+  "确定要将此工单转交给工程师处理吗？": "Escalate this ticket to an engineer?",
+
   // Transfer to Feishu
   "转飞书工单": "Transfer to Feishu",
 

@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
 import MarkdownText from "@/components/MarkdownText";
 import { Toast } from "@/components/Toast";
-import { fetchTracking, markInaccurate, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
+import { fetchTracking, markInaccurate, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
 const CATEGORIES_DATA = [
   { value: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", cn: "硬件交互", en: "Hardware" },
@@ -25,14 +25,16 @@ const S = {
   border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
   accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
   text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  orange: "#EA580C", orangeBg: "rgba(251,146,60,0.12)", orangeBorder: "rgba(251,146,60,0.25)",
 };
 
 function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }) {
   const t = useT();
   const cfg: Record<string, { bg: string; color: string; border: string; label: string }> = {
-    analyzing: { bg: "rgba(96,165,250,0.12)", color: "#2563EB", border: "rgba(96,165,250,0.25)", label: t("分析中") },
-    done:       { bg: "rgba(34,197,94,0.12)",  color: "#16A34A", border: "rgba(34,197,94,0.25)",  label: t("成功") },
-    failed:     { bg: "rgba(239,68,68,0.12)",  color: "#DC2626", border: "rgba(239,68,68,0.25)",  label: t("失败") },
+    analyzing:  { bg: "rgba(96,165,250,0.12)",  color: "#2563EB", border: "rgba(96,165,250,0.25)",  label: t("分析中") },
+    done:       { bg: "rgba(34,197,94,0.12)",   color: "#16A34A", border: "rgba(34,197,94,0.25)",   label: t("成功") },
+    failed:     { bg: "rgba(239,68,68,0.12)",   color: "#DC2626", border: "rgba(239,68,68,0.25)",   label: t("失败") },
+    escalated:  { bg: S.orangeBg,  color: S.orange, border: S.orangeBorder,  label: t("已转交") },
   };
   const s = cfg[status] || { bg: "rgba(0,0,0,0.04)", color: S.text3, border: S.border, label: status };
   const ruleMatched = status === "done" && ruleType && ruleType !== "general";
@@ -123,6 +125,10 @@ export default function TrackingPage() {
   const [toast, setToast] = useState("");
   const [detailItem, setDetailItem] = useState<LocalIssueItem | null>(null);
 
+  // Escalation state
+  const [showEscalateDialog, setShowEscalateDialog] = useState(false);
+  const [escalateNote, setEscalateNote] = useState("");
+
   // Follow-up state
   const [followupText, setFollowupText] = useState("");
   const [followupSubmitting, setFollowupSubmitting] = useState(false);
@@ -177,6 +183,8 @@ export default function TrackingPage() {
     setDetailItem(null);
     setFollowupText("");
     setFollowupSubmitting(false);
+    setShowEscalateDialog(false);
+    setEscalateNote("");
     const url = new URL(window.location.href);
     url.searchParams.delete("detail");
     window.history.replaceState({}, "", url.toString());
@@ -311,6 +319,17 @@ export default function TrackingPage() {
     } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
   };
 
+  const handleEscalate = async (issueId: string) => {
+    try {
+      await escalateIssue(issueId, escalateNote, username);
+      setToast(t("已转交工程师"));
+      setShowEscalateDialog(false);
+      setEscalateNote("");
+      closeDetail();
+      setTimeout(() => load(page), 500);
+    } catch (e: any) { setToast(`${t("转交失败")}: ${e.message}`); }
+  };
+
   const thStyle = { color: S.text3, fontSize: "10px", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.08em", padding: "10px 12px" };
   const tdBase = "px-3 py-3 align-top";
 
@@ -395,6 +414,7 @@ export default function TrackingPage() {
                   <option value="analyzing">{t("分析中")}</option>
                   <option value="done">{t("成功")}</option>
                   <option value="failed">{t("失败")}</option>
+                  <option value="escalated">{t("已转交")}</option>
                 </select>
               </div>
               <div className="w-32">
@@ -729,7 +749,64 @@ export default function TrackingPage() {
                   </div>
                 </section>
               )}
+              {/* Escalation info */}
+              {detailItem.local_status === "escalated" && (
+                <section className="rounded-lg p-3" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                      {t("已转交")}
+                    </span>
+                    {detailItem.escalated_by && (
+                      <span className="text-xs" style={{ color: S.text2 }}>{t("转交人")}: {detailItem.escalated_by}</span>
+                    )}
+                    {detailItem.escalated_at && (
+                      <span className="text-[10px] ml-auto" style={{ color: S.text3 }}>{formatLocalTime(detailItem.escalated_at)}</span>
+                    )}
+                  </div>
+                  {detailItem.escalation_note && (
+                    <p className="text-xs mt-1" style={{ color: S.orange }}>{t("转交备注")}: {detailItem.escalation_note}</p>
+                  )}
+                </section>
+              )}
               <section className="pt-4 space-y-2" style={{ borderTop: `1px solid ${S.border}` }}>
+                {/* Escalate button — show for done/failed (not already escalated) */}
+                {(detailItem.local_status === "done" || detailItem.local_status === "failed") && (
+                  showEscalateDialog ? (
+                    <div className="rounded-lg p-3 space-y-2" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
+                      <p className="text-xs font-medium" style={{ color: S.orange }}>{t("确定要将此工单转交给工程师处理吗？")}</p>
+                      <textarea
+                        value={escalateNote}
+                        onChange={(e) => setEscalateNote(e.target.value)}
+                        placeholder={t("请输入转交备注（可选）...")}
+                        rows={2}
+                        className="w-full resize-none rounded-md px-3 py-2 text-sm outline-none"
+                        style={{ background: S.overlay, border: `1px solid ${S.borderSm}`, color: S.text1 }}
+                      />
+                      <div className="flex gap-2">
+                        <button onClick={() => handleEscalate(detailItem.record_id)}
+                          className="flex-1 rounded-lg py-2 text-sm font-semibold"
+                          style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                          {t("确认转交")}
+                        </button>
+                        <button onClick={() => { setShowEscalateDialog(false); setEscalateNote(""); }}
+                          className="rounded-lg px-4 py-2 text-sm font-medium"
+                          style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
+                          {t("取消")}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowEscalateDialog(true)}
+                      className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+                      style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                      </svg>
+                      {t("转交工程师")}
+                    </button>
+                  )
+                )}
                 <button onClick={() => {
                     const base = "https://nicebuild.feishu.cn/share/base/form/shrcnGuYEnRrbbVw4Y6evkyUDCo";
                     const params = new URLSearchParams();

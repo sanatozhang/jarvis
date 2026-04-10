@@ -14,6 +14,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from app.config import get_settings
 from app.db import database as db
@@ -205,6 +206,22 @@ async def delete_issue(issue_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Issue not found")
     return {"status": "deleted", "issue_id": issue_id}
+
+
+class EscalateRequest(BaseModel):
+    note: str = ""
+    escalated_by: str = ""
+
+
+@router.post("/{issue_id}/escalate")
+async def escalate_issue(issue_id: str, body: EscalateRequest):
+    """Escalate an issue to engineering team."""
+    ok = await db.escalate_issue(issue_id, escalated_by=body.escalated_by, note=body.note)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    await db.log_event("escalate", issue_id=issue_id, username=body.escalated_by,
+                       detail={"note": body.note})
+    return {"status": "escalated", "issue_id": issue_id}
 
 
 @router.post("/{issue_id}/inaccurate")
