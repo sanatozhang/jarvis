@@ -348,7 +348,7 @@ class RuleEngine:
 2. **不信任预提取**：预提取摘要仅用于定方向，关键证据必须从 logs/ 目录 grep 验证。
 3. **查看上下文**：`grep -A 5 -B 5` 查看前后上下文，不能只看单行。
 4. **诚实置信度**：证据不足时设 confidence: low 和 needs_engineer: true，禁止编造结论。
-5. **必须写 result.json**：分析完成后**必须**用 Write 工具写入 `output/result.json`。不要只在 stdout 输出文字总结——系统只从 result.json 读取结果。
+5. **必须写 result.json**：分析完成后**必须**用 Write 工具写入 `output/result.json`。不要只在 stdout 输出文字总结——系统**只从 result.json 读取结果**，不写此文件=分析失败。写完后立即 `cat output/result.json` 验证。
 6. **效率优先**：不要做重复的 grep，不要浏览不相关的文件。聚焦于问题核心，尽量在 15 轮以内完成。
 
 ## 禁止行为

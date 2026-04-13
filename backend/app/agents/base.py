@@ -367,9 +367,23 @@ output/       ← 请将 result.json 写入此目录
 
         if data:
             logger.info("Analysis result: problem_type=%s confidence=%s", data.get("problem_type"), data.get("confidence"))
+        else:
+            logger.warning("All 4 parsing strategies failed. raw_output length=%d", len(raw_output) if raw_output else 0)
 
-        # Clean system meta-commentary from root_cause regardless of source
-        _raw_rc = data.get("root_cause") or (_clean_system_lines(raw_output[:2000]) if raw_output else "分析未产出结构化结果")
+        # When model produced text analysis but didn't write valid JSON,
+        # use the cleaned raw output as root_cause so the frontend can
+        # display meaningful content instead of an error message.
+        if not data.get("root_cause") and raw_output:
+            cleaned_output = _clean_system_lines(raw_output[:3000])
+            if len(cleaned_output.strip()) > 50:
+                # Model produced meaningful analysis text — use it as root_cause
+                data.setdefault("root_cause", cleaned_output)
+                data.setdefault("confidence", "medium")
+                data.setdefault("confidence_reason", "从 Agent 文本输出中提取，未生成标准 result.json")
+                data.setdefault("needs_engineer", True)
+                logger.info("Using cleaned raw_output (%d chars) as fallback root_cause", len(cleaned_output))
+
+        _raw_rc = data.get("root_cause") or "分析未产出结构化结果"
         _raw_rc_en = data.get("root_cause_en", "")
 
         return AnalysisResult(
@@ -379,9 +393,9 @@ output/       ← 请将 result.json 写入此目录
             problem_type_en=_clean_problem_type(data.get("problem_type_en", "")),
             root_cause=_clean_system_lines(_raw_rc),
             root_cause_en=_clean_system_lines(_raw_rc_en) if _raw_rc_en else "",
-            confidence=Confidence(data.get("confidence", "low")),
+            confidence=_safe_confidence(data.get("confidence", "low")),
             confidence_reason=data.get("confidence_reason", ""),
-            key_evidence=data.get("key_evidence", []),
+            key_evidence=_safe_key_evidence(data.get("key_evidence", [])),
             user_reply=data.get("user_reply", ""),
             user_reply_en=data.get("user_reply_en", ""),
             needs_engineer=data.get("needs_engineer", True),
@@ -424,10 +438,29 @@ def _compose_prompt(
 
 {workspace_section}
 
-## 输出要求
+## 输出要求（最重要！）
 
-按 CLAUDE.md 中定义的 JSON Schema 写入 `output/result.json`，并 `cat output/result.json` 打印到 stdout。
+**必须**使用 Write 工具将以下格式的 JSON 写入 `output/result.json`，然后 `cat output/result.json` 打印到 stdout。
+不写 result.json 等同于分析失败。
+
+```json
+{{
+    "problem_type": "问题分类（中文，如：蓝牙连接异常、录音丢失、固件升级失败）",
+    "problem_type_en": "Problem Type (English)",
+    "root_cause": "根本原因分析（中文，2-5 句话，含具体日志证据）",
+    "root_cause_en": "Root cause analysis (English, 2-5 sentences)",
+    "confidence": "high / medium / low",
+    "confidence_reason": "置信度理由（为什么是这个级别）",
+    "key_evidence": ["关键日志行1", "关键日志行2（最多5条）"],
+    "user_reply": "完整的中文客服回复模板（礼貌、非技术化、可直接发给用户）",
+    "user_reply_en": "Complete English reply template for customer",
+    "needs_engineer": false,
+    "fix_suggestion": "工程师修复建议（如有）"
+}}
+```
+
 **主要语言: {"English" if language == "en" else "中文"}** — 确保主要语言的内容最详细。
+每个字段都必须填写，不能为空。problem_type 必须是具体的问题分类，不能写"分析完成"之类的。
 """
 
 
@@ -456,6 +489,13 @@ def _clean_system_lines(text: str) -> str:
         r".*可供客服直接使用.*$",
         r"^✅\s*问题定位完成[：:].*$",
         r"^分析总结\s*$",
+        # "结果保存在某个文件下" 类废话
+        r".*result\.json.*(?:已写入|已保存|已输出|已生成).*$",
+        r".*(?:客服|用户).*(?:可以|可直接).*(?:使用|复制|发送).*user_reply.*$",
+        r"^根据\s*CLAUDE\.md\s*规则.*$",
+        r"^分析结果已按要求.*$",
+        r".*output/result\.json.*$",
+        r"^以上分析.*已完成.*$",
     ]
 
     cleaned = text
@@ -482,24 +522,49 @@ def _clean_problem_type(value: str) -> str:
     return v
 
 
+def _safe_confidence(value: Any) -> Confidence:
+    """Convert confidence value to Confidence enum, tolerating case/format variations."""
+    if isinstance(value, Confidence):
+        return value
+    raw = str(value).strip().lower()
+    mapping = {"high": Confidence.HIGH, "medium": Confidence.MEDIUM, "low": Confidence.LOW}
+    # Also handle Chinese or partial matches
+    if "高" in raw or "high" in raw:
+        return Confidence.HIGH
+    if "中" in raw or "med" in raw:
+        return Confidence.MEDIUM
+    return mapping.get(raw, Confidence.LOW)
+
+
+def _safe_key_evidence(value: Any) -> list:
+    """Ensure key_evidence is always a list of strings."""
+    if isinstance(value, list):
+        return [str(item) for item in value[:10]]
+    if isinstance(value, str):
+        # Model sometimes writes a single string instead of a list
+        return [line.strip() for line in value.split("\n") if line.strip()][:10]
+    return []
+
+
 def _extract_json_from_text(text: str) -> Dict:
     """Try to extract a JSON object from text that may contain markdown."""
     import re
 
-    # Strategy A: look for ```json ... ``` blocks
+    # Strategy A: look for ```json ... ``` blocks (including with trailing content)
     patterns = [
-        r"```json\s*\n(.*?)\n```",
-        r"```\s*\n(\{.*?\})\n```",
+        r"```json\s*\n(.*?)\n\s*```",
+        r"```\s*\n(\{.*?\})\s*\n\s*```",
     ]
     for pat in patterns:
-        match = re.search(pat, text, re.DOTALL)
-        if match:
+        for match in re.finditer(pat, text, re.DOTALL):
             try:
-                return json.loads(match.group(1))
+                candidate = json.loads(match.group(1).strip())
+                if "problem_type" in candidate or "root_cause" in candidate:
+                    return candidate
             except Exception:
                 continue
 
-    # Strategy B: find the largest { ... } block containing "problem_type"
+    # Strategy B: find the largest { ... } block containing key fields
     brace_depth = 0
     start = -1
     candidates = []
@@ -512,15 +577,20 @@ def _extract_json_from_text(text: str) -> Dict:
             brace_depth -= 1
             if brace_depth == 0 and start >= 0:
                 block = text[start : i + 1]
-                if "problem_type" in block:
+                if "problem_type" in block or "root_cause" in block:
                     candidates.append(block)
                 start = -1
 
     for block in sorted(candidates, key=len, reverse=True):
         try:
             return json.loads(block)
-        except Exception:
-            continue
+        except json.JSONDecodeError:
+            # Try fixing common JSON issues: trailing commas, single quotes
+            try:
+                fixed = re.sub(r",\s*([}\]])", r"\1", block)  # trailing commas
+                return json.loads(fixed)
+            except Exception:
+                continue
 
     return {}
 
@@ -528,31 +598,64 @@ def _extract_json_from_text(text: str) -> Dict:
 def _salvage_from_markdown(text: str) -> Dict:
     """Last-resort: extract structured fields from Markdown when Claude didn't write JSON.
 
-    Parses headings and bullet points to populate problem_type, root_cause, etc.
+    Parses headings, bold labels, and bullet points to populate problem_type, root_cause, etc.
     """
     import re
 
     result: Dict[str, Any] = {}
 
-    # Extract a problem type from headings or first bold text
-    heading_match = re.search(r"#{1,3}\s*(.+)", text)
-    if heading_match:
-        result["problem_type"] = heading_match.group(1).strip()[:128]
+    # --- problem_type: try multiple patterns ---
+    # Pattern 1: **问题类型**: xxx or **Problem Type**: xxx
+    type_match = re.search(
+        r"\*\*(?:问题[类分]型|problem.?type)[：:\s*]*\*\*[：:\s]*(.+)",
+        text, re.IGNORECASE,
+    )
+    if not type_match:
+        # Pattern 2: heading
+        type_match = re.search(r"#{1,3}\s*(.+)", text)
+    if not type_match:
+        # Pattern 3: 问题确定/问题定位: xxx
+        type_match = re.search(r"(?:问题[确定|定位]+|关键发现)[：:]\s*(.+)", text)
+    if type_match:
+        result["problem_type"] = type_match.group(1).strip().strip("*")[:128]
 
-    # Use the full text (trimmed) as root_cause
-    # Strip markdown headings for cleaner display
-    cleaned = re.sub(r"#{1,3}\s+", "", text).strip()
-    # Remove internal system instructions that shouldn't be shown to users
-    cleaned = _clean_system_lines(cleaned)
-    result["root_cause"] = cleaned[:2000]
-
-    # Try to extract a user reply section
-    reply_match = re.search(
-        r"(?:用户回复|user.?reply|回复模板|建议回复)[：:]\s*\n(.*?)(?:\n#{1,3}|\n\*\*|\Z)",
+    # --- root_cause: try labeled section first, then full text ---
+    rc_match = re.search(
+        r"(?:\*\*)?(?:根[本因]原因|root.?cause|根因分析|原因分析)[：:\s*]*(?:\*\*)?[：:\s]*\n?(.*?)(?=\n\*\*|\n#{1,3}|\Z)",
         text, re.DOTALL | re.IGNORECASE,
     )
-    if reply_match:
-        result["user_reply"] = reply_match.group(1).strip()[:1500]
+    if rc_match and len(rc_match.group(1).strip()) > 20:
+        result["root_cause"] = _clean_system_lines(rc_match.group(1).strip())[:2000]
+    else:
+        # Fall back to cleaned full text
+        cleaned = re.sub(r"#{1,3}\s+", "", text).strip()
+        cleaned = _clean_system_lines(cleaned)
+        result["root_cause"] = cleaned[:2000]
+
+    # --- user_reply: try multiple label patterns ---
+    reply_patterns = [
+        r"(?:\*\*)?(?:用户回复|user.?reply|回复模板|建议回复|客服回复)[：:\s*]*(?:\*\*)?[：:\s]*\n(.*?)(?=\n\*\*|\n#{1,3}|\Z)",
+        r"(?:用户回复|user.?reply|回复模板|建议回复)[：:]\s*\n(.*?)(?:\n#{1,3}|\n\*\*|\Z)",
+    ]
+    for pat in reply_patterns:
+        reply_match = re.search(pat, text, re.DOTALL | re.IGNORECASE)
+        if reply_match and len(reply_match.group(1).strip()) > 10:
+            result["user_reply"] = reply_match.group(1).strip()[:1500]
+            break
+
+    # --- key_evidence: extract log lines (monospace/code blocks or bullet points with log-like content) ---
+    evidence = []
+    code_blocks = re.findall(r"```[^\n]*\n(.*?)```", text, re.DOTALL)
+    for block in code_blocks:
+        for line in block.strip().split("\n"):
+            line = line.strip()
+            if line and len(line) > 20:
+                evidence.append(line)
+    # Also look for bullet points with timestamps or log-like patterns
+    log_bullets = re.findall(r"[-*]\s+(`[^`]+`|.*?\d{2}:\d{2}.*)", text)
+    evidence.extend(b.strip("`") for b in log_bullets)
+    if evidence:
+        result["key_evidence"] = evidence[:5]
 
     result["confidence"] = "medium"
     result["confidence_reason"] = "Agent 未生成 result.json，从 Markdown 输出中提取"
