@@ -665,8 +665,8 @@ def _salvage_from_markdown(text: str) -> Dict:
 
 
 # Prompt budget. Keep well below common CLI/request limits.
-_MAX_EXTRACTION_CHARS = 20_000
-_COMPACT_EXTRACTION_CHARS = 8_000
+_MAX_EXTRACTION_CHARS = 12_000
+_COMPACT_EXTRACTION_CHARS = 6_000
 
 
 def _trim_text(text: str, max_chars: int) -> str:
@@ -761,12 +761,31 @@ def _summarize_extraction(extraction: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _dedup_matches(matches: list) -> list:
+    """Remove duplicate/near-duplicate log lines and collapse repetitive patterns."""
+    if not matches:
+        return matches
+    seen = set()
+    unique = []
+    for line in matches:
+        # Normalize: strip timestamps and whitespace for dedup comparison
+        normalized = line.strip()
+        # Skip very short lines (noise)
+        if len(normalized) < 10:
+            continue
+        if normalized not in seen:
+            seen.add(normalized)
+            unique.append(line)
+    return unique
+
+
 def _trim_extraction(extraction: dict, max_chars: int = _MAX_EXTRACTION_CHARS) -> str:
     """Serialize extraction dict to JSON, trimming matches if too large.
 
     Strategy:
     1. Drop patterns with match_count=0 (no information value).
-    2. If still too large, progressively halve the longest matches list.
+    2. Deduplicate matches within each pattern.
+    3. If still too large, progressively halve the longest matches list.
     The deterministic section is never trimmed as it is high-value structured data.
     """
     import copy
@@ -781,11 +800,23 @@ def _trim_extraction(extraction: dict, max_chars: int = _MAX_EXTRACTION_CHARS) -
     if zero_keys:
         patterns["_note"] = f"{len(zero_keys)} patterns with 0 matches omitted"
 
+    # Step 2: deduplicate matches within each pattern
+    for key, val in patterns.items():
+        if not isinstance(val, dict):
+            continue
+        matches = val.get("matches", [])
+        if matches:
+            orig_len = len(matches)
+            deduped = _dedup_matches(matches)
+            if len(deduped) < orig_len:
+                val["matches"] = deduped
+                val["_deduped"] = f"{orig_len} → {len(deduped)} unique"
+
     full = json.dumps(trimmed, ensure_ascii=False, indent=2)
     if len(full) <= max_chars:
         return full
 
-    # Iteratively halve the longest matches list until under limit
+    # Step 3: iteratively halve the longest matches list until under limit
     for _round in range(10):
         # Find the pattern with the most matches
         longest_key = None

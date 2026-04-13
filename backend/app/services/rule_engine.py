@@ -410,6 +410,17 @@ class RuleEngine:
 Timestamp drift caused keyId-sessionId mismatch.
 ```
 （太技术化，用户看不懂）
+
+---
+
+**⚠️ 最终检查（每次分析结束前必读）**
+
+分析完成后，在输出任何总结文字之前，先执行：
+1. `cat output/result.json` — 确认文件存在且内容是合法 JSON
+2. 检查 JSON 包含所有必填字段：problem_type, root_cause, confidence, user_reply
+3. 确认 problem_type 是具体分类（如"蓝牙连接异常"），不是"分析完成"/"问题定位完成"
+
+如果你还没写 result.json，**现在就写**。不写 = 分析失败。
 """
         # CLAUDE.md — auto-loaded by Claude CLI
         (workspace / "CLAUDE.md").write_text(content, encoding="utf-8")
