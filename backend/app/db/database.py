@@ -482,13 +482,22 @@ async def get_task(task_id: str) -> Optional[TaskRecord]:
 
 
 async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
+    # Auto-classify if AI didn't provide categories (backend-side, zero AI cost)
+    categories = data.get("problem_categories", [])
+    if not categories:
+        from app.classification_taxonomy import classify_problem
+        categories = classify_problem(
+            data.get("problem_type", ""),
+            data.get("root_cause", ""),
+        )
+
     async with get_session() as session:
         record = AnalysisRecord(
             task_id=data.get("task_id", ""),
             issue_id=data.get("issue_id", ""),
             problem_type=data.get("problem_type", ""),
             problem_type_en=data.get("problem_type_en", ""),
-            problem_categories_json=json.dumps(data.get("problem_categories", []), ensure_ascii=False),
+            problem_categories_json=json.dumps(categories, ensure_ascii=False),
             device_type=data.get("device_type", ""),
             root_cause=data.get("root_cause", ""),
             root_cause_en=data.get("root_cause_en", ""),

@@ -274,7 +274,7 @@ output/       ← 请将 result.json 写入此目录
                 extraction_section=compact_extraction_section,
                 workspace_section=workspace_section,
                 language=language,
-            )
+                )
             prompt_meta["sections"]["compact_rules_section_chars"] = len(compact_rules)
             prompt_meta["sections"]["compact_extraction_json_chars"] = len(compact_extraction)
             if previous_analysis and followup_question:
@@ -450,10 +450,9 @@ def _compose_prompt(
     "problem_type": "问题分类（中文，如：蓝牙连接异常、录音丢失、固件升级失败）",
     "problem_type_en": "Problem Type (English)",
     "problem_categories": [
-        {{"category": "一级分类", "subcategory": "二级细分"}},
-        {{"category": "一级分类2", "subcategory": "二级细分2"}}
+        {{"category": "一级分类", "subcategory": "二级细分"}}
     ],
-    "device_type": "设备型号（从日志中 device/bind 等 API 提取，如：Note / Note Pin / Note Pro / NotePin 2 / iZYREC）",
+    "device_type": "设备型号（从日志 device/bind 或 device/info API 提取，无法确认填空串）",
     "root_cause": "根本原因分析（中文，2-5 句话，含具体日志证据）",
     "root_cause_en": "Root cause analysis (English, 2-5 sentences)",
     "confidence": "high / medium / low",
@@ -466,30 +465,7 @@ def _compose_prompt(
 }}
 ```
 
-### problem_categories 填写说明
-
-一个问题可能属于多个分类，请全部列出。一级分类（category）参考以下预定义列表，二级分类（subcategory）根据具体问题自行细化：
-
-| 一级分类 category | 典型二级分类 subcategory 示例 |
-|---|---|
-| 蓝牙连接 | 搜索不到设备、Token不匹配、设备连接无响应、本地Token未清空、配对失败 |
-| 固件升级 | 升级失败、升级后搜索不到设备、OTA传输中断、版本回退 |
-| 时间戳问题 | 时钟偏移、文件名时间不一致、时区错误 |
-| 录音问题 | 录音空白、录音丢失、录音文件损坏、录音时长异常 |
-| 设备故障 | 硬件故障、无法开机、按键无响应、充电异常、WiFi故障 |
-| 文件传输 | 传输失败、传输中断、文件损坏、USB传输异常 |
-| 云同步 | 同步失败、声纹上云失败、数据不一致 |
-| 转写问题 | 语言识别错误、转写失败、转写结果不准确 |
-| 软件bug | 前端接口异常、App崩溃、LLM输出不稳定、iOS兼容问题、Android兼容问题 |
-| 用户操作 | 用户误操作、功能使用疑问、产品交互优化 |
-| 会员与支付 | 购买失败、会员状态异常、支付未到账 |
-| 其他 | 无法归类的问题 |
-
-如果问题不属于以上任何一级分类，可以自行新建分类。
-
-### device_type 填写说明
-
-从日志中查找 device/bind、device/info 等 API 请求，或从设备 SN、固件版本推断设备型号。常见型号：Note、Note Pin、Note Pro、NotePin 2、iZYREC。如果无法确认，填空字符串。注意一个用户可能有多台设备，请填写与本次问题相关的设备型号。
+problem_categories 和 device_type 的完整分类体系见 `context/classification_taxonomy.json`，**分析前必须先读取**。一个问题可属于多个分类。
 
 **主要语言: {"English" if language == "en" else "中文"}** — 确保主要语言的内容最详细。
 每个字段都必须填写，不能为空。problem_type 必须是具体的问题分类，不能写"分析完成"之类的。

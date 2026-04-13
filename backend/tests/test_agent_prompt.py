@@ -82,6 +82,7 @@ def test_build_prompt_enforces_budget_with_large_inputs(tmp_path: Path):
     assert prompt_meta["final_prompt_chars"] == len(prompt)
     assert prompt_meta["compact_mode"] is False
     assert sorted(prompt_meta["context_files"].keys()) == [
+        "classification",
         "extraction",
         "few_shot",
         "followup_question",

@@ -96,115 +96,17 @@ async def backfill_classifications(
     if not records:
         return {"status": "ok", "updated": 0, "message": "No records need backfill"}
 
+    from app.classification_taxonomy import classify_problem
+
     updated = 0
     for rec in records:
-        categories = _map_problem_type_to_categories(rec["problem_type"], rec.get("root_cause", ""))
+        categories = classify_problem(rec["problem_type"], rec.get("root_cause", ""))
         device_type = rec.get("device_type", "") or ""
         if categories:
             await db.update_analysis_classification(rec["id"], categories, device_type)
             updated += 1
 
     return {"status": "ok", "updated": updated, "total_candidates": len(records)}
-
-
-def _map_problem_type_to_categories(problem_type: str, root_cause: str = "") -> list:
-    """Map a free-text problem_type to structured categories using keyword matching."""
-    text = f"{problem_type} {root_cause}".lower()
-    categories = []
-
-    _MAPPING = [
-        ("蓝牙连接", [
-            ("搜索不到设备", ["搜索不到", "搜不到", "找不到设备", "scan", "没有搜索", "nrf.*没有搜索"]),
-            ("Token不匹配", ["token", "token不匹配", "token未清空"]),
-            ("设备连接无响应", ["连接无响应", "连接超时", "connect.*timeout"]),
-            ("配对失败", ["配对失败", "pair", "bonding"]),
-            ("蓝牙不连接", ["蓝牙不连接", "蓝牙连接", "bluetooth", "ble"]),
-        ]),
-        ("固件升级", [
-            ("升级失败", ["升级失败", "ota.*fail", "firmware.*fail"]),
-            ("升级后搜索不到设备", ["升级.*搜索不到", "升级.*搜不到", "升级后找不到"]),
-            ("OTA传输中断", ["ota.*中断", "ota.*断开"]),
-            ("固件升级故障", ["固件升级", "固件", "firmware", "ota"]),
-        ]),
-        ("时间戳问题", [
-            ("时钟偏移", ["时钟偏移", "clock.*drift", "时钟问题"]),
-            ("文件名时间不一致", ["时间不一致", "文件名.*时间", "timestamp"]),
-            ("时间戳问题", ["时间戳", "时间戳问题"]),
-        ]),
-        ("录音问题", [
-            ("录音空白", ["录音空白", "录音为空", "empty.*recording"]),
-            ("录音丢失", ["录音丢失", "录音缺失", "recording.*missing", "recording.*lost"]),
-            ("录音文件损坏", ["录音.*损坏", "文件损坏", "corrupt"]),
-            ("录音故障", ["录音故障", "录音", "recording"]),
-        ]),
-        ("设备故障", [
-            ("硬件故障", ["硬件故障", "hardware"]),
-            ("无法开机", ["无法开机", "不开机", "power"]),
-            ("WiFi故障", ["wifi", "wi-fi"]),
-            ("设备故障", ["设备故障", "设备异常", "device.*fault"]),
-        ]),
-        ("文件传输", [
-            ("传输失败", ["传输失败", "transfer.*fail"]),
-            ("USB传输异常", ["usb", "usb传输"]),
-            ("文件传输", ["文件传输", "传输", "transfer"]),
-        ]),
-        ("云同步", [
-            ("同步失败", ["同步失败", "sync.*fail"]),
-            ("声纹上云失败", ["声纹上云", "voiceprint", "speaker.*cloud"]),
-            ("云同步", ["云同步", "cloud.*sync", "同步"]),
-        ]),
-        ("转写问题", [
-            ("语言识别错误", ["语言识别", "language.*recognition"]),
-            ("转写失败", ["转写失败", "transcri.*fail"]),
-            ("转写问题", ["转写", "transcri"]),
-        ]),
-        ("软件bug", [
-            ("App崩溃", ["崩溃", "crash", "flutter.*crash"]),
-            ("iOS兼容问题", ["ios", "iphone"]),
-            ("Android兼容问题", ["android"]),
-            ("前端接口异常", ["前端接口", "api.*error", "接口"]),
-            ("LLM输出不稳定", ["llm", "输出不稳定"]),
-            ("软件bug", ["软件bug", "bug"]),
-        ]),
-        ("用户操作", [
-            ("用户误操作", ["用户误操作", "误操作"]),
-            ("功能使用疑问", ["使用疑问", "怎么用", "如何"]),
-            ("产品交互优化", ["产品交互", "交互优化", "体验"]),
-            ("用户操作", ["用户操作", "操作问题"]),
-        ]),
-        ("会员与支付", [
-            ("购买失败", ["购买失败", "purchase.*fail"]),
-            ("会员状态异常", ["会员.*异常", "会员.*状态"]),
-            ("会员与支付", ["会员", "支付", "payment", "membership"]),
-        ]),
-    ]
-
-    import re
-    matched_cats = set()
-    for category, subcats in _MAPPING:
-        for subcat_name, keywords in subcats:
-            for kw in keywords:
-                if re.search(kw, text):
-                    key = f"{category}|{subcat_name}"
-                    if key not in matched_cats:
-                        matched_cats.add(key)
-                        categories.append({"category": category, "subcategory": subcat_name})
-                    break
-
-    # Deduplicate: keep only the most specific subcategory per category
-    seen_categories = {}
-    for c in categories:
-        cat = c["category"]
-        if cat not in seen_categories:
-            seen_categories[cat] = c
-        elif c["subcategory"] != cat:  # prefer specific subcategory over generic
-            seen_categories[cat] = c
-
-    result = list(seen_categories.values())
-    if not result and problem_type:
-        result = [{"category": "其他", "subcategory": problem_type}]
-
-    return result
 
 
 @router.get("/rule-accuracy")

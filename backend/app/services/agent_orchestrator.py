@@ -297,4 +297,11 @@ def _materialize_analysis_context(
         question_path.write_text(followup_question, encoding="utf-8")
         context_files["followup_question"] = str(question_path.relative_to(workspace))
 
+    # Classification taxonomy — AI reads this file to fill problem_categories + device_type
+    from app.classification_taxonomy import CLASSIFICATION_TAXONOMY
+    context_files["classification"] = _write_json_file(
+        context_dir / "classification_taxonomy.json",
+        CLASSIFICATION_TAXONOMY,
+    )
+
     return context_files
