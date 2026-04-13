@@ -109,11 +109,18 @@ class BatchAnalyzeRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Analysis Result
 # ---------------------------------------------------------------------------
+class ProblemCategory(BaseModel):
+    category: str = ""
+    subcategory: str = ""
+
+
 class AnalysisResult(BaseModel):
     task_id: str
     issue_id: str
     problem_type: str = ""
     problem_type_en: str = ""
+    problem_categories: List[ProblemCategory] = Field(default_factory=list)
+    device_type: str = ""  # e.g. "Note", "Note Pin", "Note Pro", "NotePin 2", "iZYREC"
     root_cause: str = ""
     root_cause_en: str = ""
     confidence: Confidence = Confidence.MEDIUM

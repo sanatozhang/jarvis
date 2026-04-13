@@ -1380,7 +1380,7 @@ export default function HomePage() {
                     const base = "https://nicebuild.feishu.cn/share/base/form/shrcnGuYEnRrbbVw4Y6evkyUDCo";
                     const params = new URLSearchParams();
                     const issue = detailData!.issue;
-                    const appUrl = `${window.location.origin}/tracking?issue=${detailId}`;
+                    const appUrl = `${window.location.origin}/tracking?detail=${detailId}`;
                     const desc = `Appllo 工单: ${appUrl}\n\n${issue.description || ""}`;
                     params.set("prefill_问题描述", desc);
                     if (issue.zendesk) params.set("prefill_Zendesk 工单链接", issue.zendesk);

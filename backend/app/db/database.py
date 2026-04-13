@@ -88,6 +88,8 @@ class AnalysisRecord(Base):
     user_reply_en = Column(Text, default="")
     needs_engineer = Column(Boolean, default=False)
     fix_suggestion = Column(Text, default="")
+    problem_categories_json = Column(Text, default="[]")  # JSON: [{"category":"蓝牙连接","subcategory":"搜索不到设备"},...]
+    device_type = Column(String(64), default="")           # "Note" / "Note Pin" / "Note Pro" / "NotePin 2" / "iZYREC"
     rule_type = Column(String(64), default="")
     agent_type = Column(String(32), default="")
     raw_output = Column(Text, default="")
@@ -284,6 +286,8 @@ async def init_db():
             ("root_cause_en", "TEXT", "''"),
             ("user_reply_en", "TEXT", "''"),
             ("followup_question", "TEXT", "''"),
+            ("problem_categories_json", "TEXT", "'[]'"),
+            ("device_type", "VARCHAR(64)", "''"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -484,6 +488,8 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             issue_id=data.get("issue_id", ""),
             problem_type=data.get("problem_type", ""),
             problem_type_en=data.get("problem_type_en", ""),
+            problem_categories_json=json.dumps(data.get("problem_categories", []), ensure_ascii=False),
+            device_type=data.get("device_type", ""),
             root_cause=data.get("root_cause", ""),
             root_cause_en=data.get("root_cause_en", ""),
             confidence=data.get("confidence", "medium"),
@@ -1153,6 +1159,145 @@ async def get_problem_type_stats(date_from: str, date_to: str) -> Dict[str, Any]
             "top10": distribution[:10],
             "trend": trend,
         }
+
+
+async def get_classification_stats(date_from: str, date_to: str) -> Dict[str, Any]:
+    """Get problem category + device_type classification statistics."""
+    async with get_session() as session:
+        from sqlalchemy import select, and_
+
+        start = datetime.fromisoformat(date_from)
+        end = datetime.fromisoformat(date_to + "T23:59:59")
+
+        _INVALID_TYPES = ["", "未知", "Analysis Complete", "分析完成", "分析总结",
+                          "Unknown", "问题定位完成", "分析结果", "Completed", "Done", "N/A"]
+
+        stmt = select(
+            AnalysisRecord.problem_categories_json,
+            AnalysisRecord.device_type,
+            AnalysisRecord.problem_type,
+        ).where(and_(
+            AnalysisRecord.created_at >= start,
+            AnalysisRecord.created_at <= end,
+            AnalysisRecord.problem_type.notin_(_INVALID_TYPES),
+        ))
+        rows = (await session.execute(stmt)).fetchall()
+
+        # Aggregate by category, subcategory, and device_type
+        cat_counts: Dict[str, int] = {}        # category -> count
+        subcat_counts: Dict[str, Dict[str, int]] = {}  # category -> {subcategory -> count}
+        device_counts: Dict[str, int] = {}     # device_type -> count
+        device_cat_counts: Dict[str, Dict[str, int]] = {}  # device_type -> {category -> count}
+        total_with_categories = 0
+
+        for row in rows:
+            categories = []
+            try:
+                categories = json.loads(row.problem_categories_json or "[]")
+            except Exception:
+                pass
+
+            device = (row.device_type or "").strip() or "未知"
+            device_counts[device] = device_counts.get(device, 0) + 1
+
+            if not categories:
+                # Fallback: use problem_type as single category
+                pt = row.problem_type or "其他"
+                cat_counts[pt] = cat_counts.get(pt, 0) + 1
+                if device not in device_cat_counts:
+                    device_cat_counts[device] = {}
+                device_cat_counts[device][pt] = device_cat_counts[device].get(pt, 0) + 1
+                continue
+
+            total_with_categories += 1
+            seen_cats = set()
+            for c in categories:
+                cat = c.get("category", "其他") or "其他"
+                subcat = c.get("subcategory", "") or ""
+
+                if cat not in seen_cats:
+                    cat_counts[cat] = cat_counts.get(cat, 0) + 1
+                    seen_cats.add(cat)
+
+                    if device not in device_cat_counts:
+                        device_cat_counts[device] = {}
+                    device_cat_counts[device][cat] = device_cat_counts[device].get(cat, 0) + 1
+
+                if subcat:
+                    if cat not in subcat_counts:
+                        subcat_counts[cat] = {}
+                    subcat_counts[cat][subcat] = subcat_counts[cat].get(subcat, 0) + 1
+
+        # Sort everything
+        sorted_cats = sorted(cat_counts.items(), key=lambda x: x[1], reverse=True)
+        sorted_devices = sorted(device_counts.items(), key=lambda x: x[1], reverse=True)
+
+        category_distribution = []
+        for cat, count in sorted_cats:
+            subcats = subcat_counts.get(cat, {})
+            sorted_subcats = sorted(subcats.items(), key=lambda x: x[1], reverse=True)
+            category_distribution.append({
+                "category": cat,
+                "count": count,
+                "subcategories": [{"subcategory": s, "count": c} for s, c in sorted_subcats],
+            })
+
+        device_distribution = []
+        for dev, count in sorted_devices:
+            cats = device_cat_counts.get(dev, {})
+            sorted_dev_cats = sorted(cats.items(), key=lambda x: x[1], reverse=True)
+            device_distribution.append({
+                "device_type": dev,
+                "count": count,
+                "categories": [{"category": c, "count": n} for c, n in sorted_dev_cats],
+            })
+
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "total": len(rows),
+            "total_with_categories": total_with_categories,
+            "category_distribution": category_distribution,
+            "device_distribution": device_distribution,
+        }
+
+
+async def get_analyses_for_backfill(limit: int = 500) -> List[Dict[str, Any]]:
+    """Get analyses that need classification backfill (empty problem_categories_json)."""
+    async with get_session() as session:
+        from sqlalchemy import select, or_
+
+        _INVALID_TYPES = ["", "未知", "Analysis Complete", "分析完成", "分析总结",
+                          "Unknown", "问题定位完成", "分析结果", "Completed", "Done", "N/A"]
+
+        stmt = select(
+            AnalysisRecord.id,
+            AnalysisRecord.problem_type,
+            AnalysisRecord.root_cause,
+            AnalysisRecord.device_type,
+            AnalysisRecord.problem_categories_json,
+        ).where(
+            AnalysisRecord.problem_type.notin_(_INVALID_TYPES),
+            or_(
+                AnalysisRecord.problem_categories_json == "[]",
+                AnalysisRecord.problem_categories_json == "",
+                AnalysisRecord.problem_categories_json.is_(None),
+            ),
+        ).order_by(AnalysisRecord.created_at.desc()).limit(limit)
+        rows = (await session.execute(stmt)).fetchall()
+        return [{"id": r.id, "problem_type": r.problem_type, "root_cause": r.root_cause,
+                 "device_type": r.device_type} for r in rows]
+
+
+async def update_analysis_classification(analysis_id: int, categories: list, device_type: str = ""):
+    """Update classification fields on an existing analysis record."""
+    async with get_session() as session:
+        record = await session.get(AnalysisRecord, analysis_id)
+        if record:
+            record.problem_categories_json = json.dumps(categories, ensure_ascii=False)
+            if device_type:
+                record.device_type = device_type
+            await session.commit()
 
 
 # ---------------------------------------------------------------------------

@@ -68,6 +68,8 @@ class AnalyzeResult(BaseModel):
     task_id: str
     status: str
     problem_type: str = ""
+    problem_categories: list = []
+    device_type: str = ""
     root_cause: str = ""
     confidence: str = ""
     key_evidence: list = []
@@ -184,6 +186,8 @@ async def get_analysis_result(
         if analysis:
             import json
             result.problem_type = analysis.problem_type or ""
+            result.problem_categories = json.loads(analysis.problem_categories_json) if analysis.problem_categories_json else []
+            result.device_type = analysis.device_type or ""
             result.root_cause = analysis.root_cause or ""
             result.confidence = analysis.confidence or ""
             result.key_evidence = json.loads(analysis.key_evidence_json) if analysis.key_evidence_json else []

@@ -142,6 +142,8 @@ async def get_task_result(task_id: str):
         task_id=analysis.task_id,
         issue_id=analysis.issue_id,
         problem_type=analysis.problem_type,
+        problem_categories=json.loads(analysis.problem_categories_json) if analysis.problem_categories_json else [],
+        device_type=analysis.device_type or "",
         root_cause=analysis.root_cause,
         confidence=analysis.confidence,
         confidence_reason=analysis.confidence_reason,

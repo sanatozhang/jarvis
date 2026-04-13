@@ -126,6 +126,8 @@ async def get_issue_analyses(issue_id: str):
             "issue_id": a.issue_id,
             "problem_type": a.problem_type or "",
             "problem_type_en": a.problem_type_en or "",
+            "problem_categories": _json.loads(a.problem_categories_json) if a.problem_categories_json else [],
+            "device_type": a.device_type or "",
             "root_cause": a.root_cause or "",
             "root_cause_en": a.root_cause_en or "",
             "confidence": a.confidence or "medium",

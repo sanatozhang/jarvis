@@ -2,7 +2,7 @@
 
 import { useT } from "@/lib/i18n";
 import { useEffect, useState, useCallback } from "react";
-import { fetchRuleAccuracy, fetchProblemTypeStats, fetchIssueDetail, formatLocalTime, type RuleAccuracyStat, type ProblemTypeStats, type LocalIssueItem } from "@/lib/api";
+import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem } from "@/lib/api";
 
 interface FailReasonItem {
   issue_id?: string;
@@ -63,6 +63,10 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [ruleAccuracy, setRuleAccuracy] = useState<RuleAccuracyStat[]>([]);
   const [ptStats, setPtStats] = useState<ProblemTypeStats | null>(null);
+  const [clsStats, setClsStats] = useState<ClassificationStats | null>(null);
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const [selectedDevice, setSelectedDevice] = useState<string>("all");
+  const [backfilling, setBackfilling] = useState(false);
   const [expandedReason, setExpandedReason] = useState<string | null>(null);
   const [issueDetails, setIssueDetails] = useState<Record<string, LocalIssueItem | "loading" | "error">>({});
 
@@ -80,14 +84,16 @@ export default function AnalyticsPage() {
   const load = async (d: number) => {
     setLoading(true);
     try {
-      const [res, ra, pt] = await Promise.all([
+      const [res, ra, pt, cls] = await Promise.all([
         fetch(`/api/analytics/dashboard?days=${d}`),
         fetchRuleAccuracy(d).catch(() => []),
         fetchProblemTypeStats(d).catch(() => null),
+        fetchClassificationStats(d).catch(() => null),
       ]);
       if (res.ok) setData(await res.json());
       setRuleAccuracy(ra);
       setPtStats(pt);
+      setClsStats(cls);
     } catch {} finally { setLoading(false); }
   };
 
@@ -400,6 +406,196 @@ export default function AnalyticsPage() {
                   })()}
                 </section>
               </div>
+            );
+          })()}
+
+          {/* Classification: Pie chart + Device breakdown */}
+          {clsStats && clsStats.category_distribution.length > 0 && (() => {
+            const PIE_COLORS = [
+              "#B8922E","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C",
+              "#0891B2","#DB2777","#4F46E5","#65A30D","#D97706","#059669",
+              "#6366F1","#E11D48","#0284C7","#7C2D12","#4338CA","#BE185D",
+            ];
+            const cats = clsStats.category_distribution;
+            const totalCat = cats.reduce((s, c) => s + c.count, 0);
+            const devices = clsStats.device_distribution.filter(d => d.device_type !== "未知" || clsStats.device_distribution.length === 1);
+            const deviceTabs = [{ device_type: "all", count: clsStats.total, categories: [] as { category: string; count: number }[] }, ...devices];
+
+            // Build pie chart SVG
+            const R = 100, cx = 120, cy = 120;
+            let angle = 0;
+            const slices = cats.map((c, i) => {
+              const pct = totalCat > 0 ? c.count / totalCat : 0;
+              const startAngle = angle;
+              angle += pct * 360;
+              const endAngle = angle;
+              const large = pct > 0.5 ? 1 : 0;
+              const rad1 = (startAngle - 90) * Math.PI / 180;
+              const rad2 = (endAngle - 90) * Math.PI / 180;
+              const x1 = cx + R * Math.cos(rad1);
+              const y1 = cy + R * Math.sin(rad1);
+              const x2 = cx + R * Math.cos(rad2);
+              const y2 = cy + R * Math.sin(rad2);
+              const d = pct >= 1
+                ? `M${cx},${cy - R} A${R},${R} 0 1,1 ${cx},${cy + R} A${R},${R} 0 1,1 ${cx},${cy - R}Z`
+                : `M${cx},${cy} L${x1},${y1} A${R},${R} 0 ${large},1 ${x2},${y2} Z`;
+              return { d, color: PIE_COLORS[i % PIE_COLORS.length], category: c.category, count: c.count, pct };
+            });
+
+            // Filter categories by device
+            const filteredCats = selectedDevice === "all"
+              ? cats
+              : (() => {
+                  const dev = devices.find(d => d.device_type === selectedDevice);
+                  if (!dev) return cats;
+                  const devCatMap = new Map(dev.categories.map(c => [c.category, c.count]));
+                  return cats
+                    .map(c => ({ ...c, count: devCatMap.get(c.category) || 0 }))
+                    .filter(c => c.count > 0)
+                    .sort((a, b) => b.count - a.count);
+                })();
+            const filteredTotal = filteredCats.reduce((s, c) => s + c.count, 0);
+
+            return (
+              <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("问题分类分布")}</h2>
+                    <span className="text-[11px] font-mono" style={{ color: S.text3 }}>
+                      {t("共")} {cats.length} {t("类")} / {totalCat} {t("单")}
+                      {clsStats.total_with_categories > 0 && (
+                        <> · {clsStats.total_with_categories} {t("条已分类")}</>
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {clsStats.total_with_categories < clsStats.total && (
+                      <button
+                        onClick={async () => {
+                          setBackfilling(true);
+                          try {
+                            const res = await backfillClassifications(1000);
+                            if (res.updated > 0) load(days);
+                          } catch {} finally { setBackfilling(false); }
+                        }}
+                        disabled={backfilling}
+                        className="rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all"
+                        style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)", opacity: backfilling ? 0.5 : 1 }}>
+                        {backfilling ? t("回溯中...") : t("回溯分类")}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Device type tabs */}
+                {devices.length > 1 && (
+                  <div className="flex items-center gap-1 mb-4 rounded-lg p-1" style={{ background: S.overlay }}>
+                    {deviceTabs.map((d) => (
+                      <button key={d.device_type}
+                        onClick={() => setSelectedDevice(d.device_type)}
+                        className="rounded-md px-3 py-1.5 text-xs font-medium transition-all"
+                        style={selectedDevice === d.device_type
+                          ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
+                          : { color: S.text3 }}>
+                        {d.device_type === "all" ? t("全部设备") : d.device_type}
+                        <span className="ml-1 font-mono text-[10px]" style={{ color: S.text3 }}>({d.count})</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Pie chart */}
+                  <div className="flex items-center justify-center">
+                    <svg viewBox="0 0 240 240" className="w-full max-w-[240px]">
+                      {slices.map((s, i) => (
+                        <path key={i} d={s.d} fill={s.color} opacity={0.85}
+                          className="transition-opacity hover:opacity-100 cursor-pointer"
+                          onClick={() => setExpandedCat(expandedCat === s.category ? null : s.category)}>
+                          <title>{`${s.category}: ${s.count} (${(s.pct * 100).toFixed(1)}%)`}</title>
+                        </path>
+                      ))}
+                      {/* Center hole for donut */}
+                      <circle cx={cx} cy={cy} r={50} fill="white" />
+                      <text x={cx} y={cy - 6} textAnchor="middle" style={{ fontSize: 18, fontWeight: 700, fill: S.text1 }}>
+                        {filteredTotal}
+                      </text>
+                      <text x={cx} y={cy + 12} textAnchor="middle" style={{ fontSize: 9, fill: S.text3 }}>
+                        {t("问题总数")}
+                      </text>
+                    </svg>
+                  </div>
+
+                  {/* Legend + expandable subcategories */}
+                  <div className="space-y-1 max-h-[320px] overflow-y-auto pr-1">
+                    {filteredCats.map((c, i) => {
+                      const pct = filteredTotal > 0 ? (c.count / filteredTotal * 100).toFixed(1) : "0";
+                      const isExpanded = expandedCat === c.category;
+                      const origCat = cats.find(oc => oc.category === c.category);
+                      const subcats = origCat?.subcategories || [];
+                      return (
+                        <div key={c.category}>
+                          <button
+                            onClick={() => setExpandedCat(isExpanded ? null : c.category)}
+                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 transition-colors text-left"
+                            onMouseEnter={(e) => (e.currentTarget.style.background = S.overlay)}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                            <span className="inline-block h-2.5 w-2.5 rounded-sm flex-shrink-0"
+                              style={{ background: PIE_COLORS[cats.findIndex(oc => oc.category === c.category) % PIE_COLORS.length] }} />
+                            <span className="text-xs flex-1 truncate" style={{ color: S.text2 }}>{c.category}</span>
+                            <span className="text-[11px] font-mono tabular-nums flex-shrink-0" style={{ color: S.text1 }}>
+                              {c.count}
+                            </span>
+                            <span className="text-[10px] font-mono flex-shrink-0 w-12 text-right" style={{ color: S.text3 }}>
+                              {pct}%
+                            </span>
+                            {subcats.length > 0 && (
+                              <span className="text-[9px] flex-shrink-0" style={{ color: S.text3 }}>
+                                {isExpanded ? "▼" : "▶"}
+                              </span>
+                            )}
+                          </button>
+                          {isExpanded && subcats.length > 0 && (
+                            <div className="ml-6 mt-0.5 mb-1 space-y-0.5">
+                              {subcats.map((sc) => (
+                                <div key={sc.subcategory} className="flex items-center justify-between px-2 py-1 rounded"
+                                  style={{ background: "rgba(0,0,0,0.02)" }}>
+                                  <span className="text-[11px]" style={{ color: S.text3 }}>{sc.subcategory}</span>
+                                  <span className="text-[11px] font-mono tabular-nums" style={{ color: S.text2 }}>{sc.count}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Device breakdown summary */}
+                {devices.length > 1 && selectedDevice === "all" && (
+                  <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${S.border}` }}>
+                    <h3 className="text-xs font-semibold mb-3" style={{ color: S.text2 }}>{t("设备类型分布")}</h3>
+                    <div className="grid grid-cols-4 gap-2">
+                      {devices.slice(0, 8).map((d) => {
+                        const devPct = clsStats.total > 0 ? (d.count / clsStats.total * 100).toFixed(1) : "0";
+                        return (
+                          <button key={d.device_type}
+                            onClick={() => setSelectedDevice(d.device_type)}
+                            className="rounded-lg px-3 py-2 text-left transition-colors"
+                            style={{ background: S.overlay, border: `1px solid ${S.border}` }}
+                            onMouseEnter={(e) => (e.currentTarget.style.borderColor = S.accent)}
+                            onMouseLeave={(e) => (e.currentTarget.style.borderColor = S.border)}>
+                            <p className="text-xs font-medium truncate" style={{ color: S.text1 }}>{d.device_type}</p>
+                            <p className="text-lg font-bold tabular-nums mt-0.5" style={{ color: S.accent }}>{d.count}</p>
+                            <p className="text-[10px] font-mono" style={{ color: S.text3 }}>{devPct}%</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </section>
             );
           })()}
 

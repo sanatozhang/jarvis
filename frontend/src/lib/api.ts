@@ -78,11 +78,18 @@ export interface TaskProgress {
   updated_at?: string;
 }
 
+export interface ProblemCategoryItem {
+  category: string;
+  subcategory: string;
+}
+
 export interface AnalysisResult {
   task_id: string;
   issue_id: string;
   problem_type: string;
   problem_type_en?: string;
+  problem_categories?: ProblemCategoryItem[];
+  device_type?: string;
   root_cause: string;
   root_cause_en?: string;
   confidence: string;
@@ -540,6 +547,50 @@ export interface ProblemTypeStats {
 
 export const fetchProblemTypeStats = (days: number = 30) =>
   request<ProblemTypeStats>(`/analytics/problem-types?days=${days}`);
+
+// ============================================================
+// Classification Statistics (category + device breakdown)
+// ============================================================
+
+export interface SubcategoryItem {
+  subcategory: string;
+  count: number;
+}
+
+export interface CategoryDistItem {
+  category: string;
+  count: number;
+  subcategories: SubcategoryItem[];
+}
+
+export interface DeviceCategoryItem {
+  category: string;
+  count: number;
+}
+
+export interface DeviceDistItem {
+  device_type: string;
+  count: number;
+  categories: DeviceCategoryItem[];
+}
+
+export interface ClassificationStats {
+  date_from: string;
+  date_to: string;
+  total: number;
+  total_with_categories: number;
+  category_distribution: CategoryDistItem[];
+  device_distribution: DeviceDistItem[];
+}
+
+export const fetchClassificationStats = (days: number = 30) =>
+  request<ClassificationStats>(`/analytics/classification-stats?days=${days}`);
+
+export const backfillClassifications = (limit: number = 500) =>
+  request<{ status: string; updated: number; total_candidates: number }>(
+    `/analytics/backfill-classifications?limit=${limit}`,
+    { method: "POST" },
+  );
 
 // ============================================================
 // Eval Pipeline

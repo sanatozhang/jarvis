@@ -250,7 +250,8 @@ export default function TrackingPage() {
   const urlDetailHandled = useRef(false);
   useEffect(() => {
     if (urlDetailHandled.current) return;
-    const urlDetail = new URLSearchParams(window.location.search).get("detail");
+    const params = new URLSearchParams(window.location.search);
+    const urlDetail = params.get("detail") || params.get("issue");
     if (!urlDetail) return;
     // Wait for data to load before trying to find in current page
     if (!data) return;
