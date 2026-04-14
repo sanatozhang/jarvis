@@ -1,9 +1,29 @@
 services:
+  # ---- Reverse Proxy (TLS termination) ----
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - BACKEND_UPSTREAM=backend:8000
+      - FRONTEND_UPSTREAM=frontend:3000
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
   # ---- Backend API ----
   backend:
     build: ./backend
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+    # Port exposed only within Docker network; Caddy handles external access
+    expose:
+      - "8000"
     volumes:
       # 注意：config.yaml 挂载到 /config.yaml（根目录），因为容器内 PROJECT_ROOT=/
       # backend/app/config.py: Path(__file__).parent.parent.parent 在容器内解析为 /，而非 /app
@@ -32,8 +52,9 @@ services:
       args:
         - STANDALONE=1
         - NEXT_PUBLIC_API_URL=http://backend:8000
-    ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+    # Port exposed only within Docker network; Caddy handles external access
+    expose:
+      - "3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://backend:8000
     depends_on:
@@ -50,3 +71,5 @@ services:
 volumes:
   redis-data:
   claude-auth:
+  caddy_data:
+  caddy_config:

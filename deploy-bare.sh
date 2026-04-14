@@ -46,6 +46,12 @@ check_deps() {
     fi
     log "python3: $(python3 --version 2>&1)"
     log "node: $(node --version 2>&1)"
+    if command -v caddy >/dev/null 2>&1; then
+        log "caddy: $(caddy version 2>&1)"
+    else
+        warn "caddy not found — HTTPS reverse proxy will not be available"
+        warn "Install: https://caddyserver.com/docs/install"
+    fi
 }
 
 # ---- Setup (first time) ----
@@ -146,6 +152,20 @@ cmd_start() {
         log "✅ Frontend started (PID $(cat "$PID_DIR/frontend.pid"))"
     fi
 
+    # Start Caddy reverse proxy (HTTPS) if available and DOMAIN is set
+    if command -v caddy >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/Caddyfile" ]; then
+        if [ -f "$PID_DIR/caddy.pid" ] && kill -0 "$(cat "$PID_DIR/caddy.pid")" 2>/dev/null; then
+            warn "Caddy already running (PID $(cat "$PID_DIR/caddy.pid"))"
+        else
+            local domain="${DOMAIN:-localhost}"
+            log "Starting Caddy reverse proxy (DOMAIN=$domain)..."
+            DOMAIN="$domain" nohup caddy run --config "$SCRIPT_DIR/Caddyfile" --adapter caddyfile \
+                > "$LOG_DIR/caddy.log" 2>&1 &
+            echo $! > "$PID_DIR/caddy.pid"
+            log "✅ Caddy started (PID $(cat "$PID_DIR/caddy.pid"))"
+        fi
+    fi
+
     sleep 2
 
     log ""
@@ -153,6 +173,10 @@ cmd_start() {
     log "  Jarvis is running!"
     log "=========================================="
     log ""
+    if [ -f "$PID_DIR/caddy.pid" ] && kill -0 "$(cat "$PID_DIR/caddy.pid")" 2>/dev/null; then
+        local domain="${DOMAIN:-localhost}"
+        log "  HTTPS:     https://$domain"
+    fi
     log "  Frontend:  http://localhost:$FRONTEND_PORT"
     log "  Backend:   http://localhost:$BACKEND_PORT"
     log "  API Docs:  http://localhost:$BACKEND_PORT/docs"
@@ -166,7 +190,7 @@ cmd_start() {
 cmd_stop() {
     log "Stopping Jarvis..."
 
-    for svc in backend frontend; do
+    for svc in caddy backend frontend; do
         if [ -f "$PID_DIR/$svc.pid" ]; then
             pid=$(cat "$PID_DIR/$svc.pid")
             if kill -0 "$pid" 2>/dev/null; then
@@ -241,7 +265,7 @@ cmd_logs() {
 # ---- Status ----
 cmd_status() {
     log "Service status:"
-    for svc in backend frontend; do
+    for svc in caddy backend frontend; do
         if [ -f "$PID_DIR/$svc.pid" ] && kill -0 "$(cat "$PID_DIR/$svc.pid")" 2>/dev/null; then
             echo -e "  ${GREEN}●${NC} $svc  PID $(cat "$PID_DIR/$svc.pid")"
         else

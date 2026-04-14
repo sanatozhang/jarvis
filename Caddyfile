@@ -1,0 +1,11 @@
+{$DOMAIN:localhost} {
+    # API requests -> backend
+    handle /api/* {
+        reverse_proxy {$BACKEND_UPSTREAM:localhost:8000}
+    }
+
+    # Everything else -> frontend
+    handle {
+        reverse_proxy {$FRONTEND_UPSTREAM:localhost:3000}
+    }
+}
