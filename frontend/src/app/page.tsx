@@ -248,6 +248,7 @@ export default function HomePage() {
   const [issueAnalyses, setIssueAnalyses] = useState<Record<string, AnalysisResult[]>>({});
   const [followupText, setFollowupText] = useState("");
   const [followupSubmitting, setFollowupSubmitting] = useState(false);
+  const [collapsedEvidence, setCollapsedEvidence] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const urlTab = new URLSearchParams(window.location.search).get("tab");
@@ -1207,32 +1208,141 @@ export default function HomePage() {
                       </div>
                     </section>
 
-                    {/* Follow-up input */}
-                    <section className="rounded-lg p-3" style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
-                      <textarea
-                        value={followupText}
-                        onChange={(e) => setFollowupText(e.target.value)}
-                        placeholder={t("请输入追问内容...")}
-                        rows={2}
-                        disabled={followupSubmitting}
-                        className="w-full resize-none rounded-md px-3 py-2 text-sm outline-none"
-                        style={{ background: S.surface, border: `1px solid ${S.borderSm}`, color: S.text1 }}
-                      />
-                      <div className="mt-2 flex items-center justify-between">
-                        <span className="text-[10px]" style={{ color: S.text3 }}>
-                          {followupSubmitting ? t("追问分析中...") : t("追问")}
-                        </span>
-                        <button
-                          onClick={() => startFollowup(detailId!, followupText)}
-                          disabled={!followupText.trim() || followupSubmitting}
-                          className="rounded-lg px-3 py-1 text-[11px] font-semibold transition-colors disabled:opacity-30"
-                          style={{ background: S.accent, color: "#0A0B0E" }}>
-                          {followupSubmitting ? t("追问分析中...") : t("提交追问")}
-                        </button>
-                      </div>
-                    </section>
+                    {/* Chat-style conversation flow (chronological: oldest first) */}
+                    {[...analyses].reverse().map((r, idx) => {
+                      const chronoIdx = analyses.length - 1 - idx;
+                      const isLatest = chronoIdx === 0;
+                      const problemType = lang === "en" ? (r.problem_type_en || r.problem_type) : r.problem_type;
+                      const rootCause = lang === "en" ? (r.root_cause_en || r.root_cause) : r.root_cause;
+                      const userReply = lang === "en" ? (r.user_reply_en || r.user_reply) : r.user_reply;
+                      const hasEnTranslation = !!(r.problem_type_en && r.root_cause_en);
+                      const isFollowup = !!(r as any).followup_question;
+                      const evidenceKey = r.task_id || `ev-${idx}`;
+                      const evidenceCollapsed = collapsedEvidence[evidenceKey] !== false; // default collapsed
+                      return (
+                        <div key={r.task_id || idx} className="space-y-3">
+                          {/* User's follow-up question — right-aligned bubble */}
+                          {isFollowup && (
+                            <div className="flex justify-end">
+                              <div className="max-w-[85%] space-y-1">
+                                <div className="rounded-2xl rounded-br-sm px-4 py-2.5 text-sm"
+                                  style={{ background: "rgba(167,139,250,0.10)", color: S.text1, border: "1px solid rgba(167,139,250,0.18)" }}>
+                                  {(r as any).followup_question}
+                                </div>
+                                {(r as any).created_at && (
+                                  <div className="text-right text-[10px]" style={{ color: S.text3 }}>{formatLocalTime((r as any).created_at)}</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
 
-                    {/* Follow-up progress */}
+                          {/* AI analysis card — left-aligned */}
+                          <div className="space-y-3 rounded-lg p-4"
+                            style={{
+                              background: S.surface,
+                              border: `1px solid ${S.border}`,
+                              borderLeft: isLatest ? `3px solid ${S.accent}` : `3px solid ${S.border}`,
+                            }}>
+                            {/* Badge row */}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                                style={isFollowup
+                                  ? { background: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "1px solid rgba(167,139,250,0.25)" }
+                                  : { background: "rgba(184,146,46,0.08)", color: S.accent, border: "1px solid rgba(184,146,46,0.2)" }
+                                }>
+                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714a2.25 2.25 0 0 0 .659 1.591L19 14.5M14.25 3.104c.251.023.501.05.75.082M19 14.5l-2.47 2.47a2.25 2.25 0 0 1-1.591.659H9.061a2.25 2.25 0 0 1-1.591-.659L5 14.5m14 0H5" />
+                                </svg>
+                                {isFollowup ? t("追问分析") : t("初次分析")}
+                              </span>
+                              {!isFollowup && (r as any).created_at && (
+                                <span className="text-[10px]" style={{ color: S.text3 }}>{formatLocalTime((r as any).created_at)}</span>
+                              )}
+                            </div>
+
+                            {lang === "en" && !hasEnTranslation && (
+                              <p className="text-[10px]" style={{ color: S.accent }}>English translation not available. Showing Chinese.</p>
+                            )}
+                            <div className="flex flex-wrap gap-2">
+                              <span className="rounded-lg px-2.5 py-1 text-xs font-semibold" style={{ background: S.overlay, color: S.text1 }}>
+                                {problemType}
+                              </span>
+                              <ConfBadge c={r.confidence} />
+                              {r.needs_engineer && (
+                                <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
+                                  style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(184,146,46,0.25)` }}>
+                                  {lang === "cn" ? "需工程师" : "Engineer needed"}
+                                </span>
+                              )}
+                            </div>
+                            {/* Lost recording tool hint */}
+                            {r.problem_type && /录音.{0,8}找不到|找不到.{0,8}录音|recording.*lost|lost.*recording|missing.*recording/i.test(r.problem_type + " " + (r.problem_type_en || "")) && (
+                              <a href="/tools"
+                                className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
+                                style={{ background: "rgba(96,165,250,0.08)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.2)", textDecoration: "none" }}>
+                                <svg className="h-3.5 w-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                                {lang === "cn" ? "录音找不到？试试录音丢失排查工具 →" : "Can't find the recording? Try the Lost Recording Finder →"}
+                              </a>
+                            )}
+                            <div>
+                              <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                                {lang === "cn" ? "问题原因" : "Root Cause"}
+                              </h3>
+                              <div className="whitespace-pre-wrap rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
+                                {rootCause}
+                              </div>
+                            </div>
+                            {/* Collapsible evidence */}
+                            {r.key_evidence && r.key_evidence.length > 0 && (
+                              <div>
+                                <button
+                                  onClick={() => setCollapsedEvidence(prev => ({ ...prev, [evidenceKey]: !evidenceCollapsed }))}
+                                  className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider"
+                                  style={{ color: S.text3, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                                  <svg className={`h-3 w-3 transition-transform ${evidenceCollapsed ? "" : "rotate-90"}`}
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                  </svg>
+                                  {lang === "cn" ? "关键证据" : "Key Evidence"} ({r.key_evidence.length})
+                                </button>
+                                {!evidenceCollapsed && (
+                                  <div className="space-y-1">
+                                    {r.key_evidence.map((ev, i) => (
+                                      <div key={i} className="rounded font-mono px-3 py-1.5 text-[11px]"
+                                        style={{ background: S.overlay, color: S.text2, border: `1px solid ${S.borderSm}` }}>
+                                        {ev}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            {userReply && (
+                              <div>
+                                <div className="mb-1.5 flex items-center justify-between">
+                                  <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                                    {lang === "cn" ? "建议回复" : "Suggested Reply"}
+                                  </h3>
+                                  <button onClick={() => copy(userReply)}
+                                    className="rounded-lg px-3 py-1 text-[11px] font-medium"
+                                    style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
+                                    {lang === "cn" ? "一键复制" : "Copy"}
+                                  </button>
+                                </div>
+                                <div className="whitespace-pre-wrap rounded-lg p-3 text-sm"
+                                  style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
+                                  {userReply}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* Follow-up progress — above input */}
                     {followupSubmitting && activeTasks[detailId!] && !["done", "failed"].includes(activeTasks[detailId!].status) && (
                       <div className="rounded-lg p-3" style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
                         <div className="mb-2 flex justify-between text-xs" style={{ color: S.text2 }}>
@@ -1246,119 +1356,35 @@ export default function HomePage() {
                       </div>
                     )}
 
-                    {/* Stacked analyses */}
-                    {analyses.map((r, idx) => {
-                      const isLatest = idx === 0;
-                      const problemType = lang === "en" ? (r.problem_type_en || r.problem_type) : r.problem_type;
-                      const rootCause = lang === "en" ? (r.root_cause_en || r.root_cause) : r.root_cause;
-                      const userReply = lang === "en" ? (r.user_reply_en || r.user_reply) : r.user_reply;
-                      const hasEnTranslation = !!(r.problem_type_en && r.root_cause_en);
-                      const isFollowup = !!(r as any).followup_question;
-                      return (
-                        <div key={r.task_id || idx}
-                          className="space-y-4 rounded-lg p-4"
-                          style={{
-                            background: S.surface,
-                            border: `1px solid ${S.border}`,
-                            borderLeft: isLatest ? `3px solid ${S.accent}` : `3px solid ${S.border}`,
-                            opacity: isLatest ? 1 : 0.75,
-                          }}>
-                          {/* Follow-up question badge or Initial analysis label */}
-                          <div className="flex items-center gap-2 flex-wrap">
-                            {isFollowup ? (
-                              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                                style={{ background: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "1px solid rgba(167,139,250,0.25)" }}>
-                                {t("追问分析")}
-                              </span>
-                            ) : analyses.length > 1 ? (
-                              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-                                style={{ background: "rgba(0,0,0,0.04)", color: S.text3, border: `1px solid ${S.borderSm}` }}>
-                                {t("初次分析")}
-                              </span>
-                            ) : null}
-                            {(r as any).created_at && (
-                              <span className="text-[10px]" style={{ color: S.text3 }}>{formatLocalTime((r as any).created_at)}</span>
-                            )}
-                          </div>
-
-                          {/* Follow-up question */}
-                          {isFollowup && (
-                            <div className="rounded-md px-3 py-2 text-xs"
-                              style={{ background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)", color: "#C4B5FD" }}>
-                              <span className="font-semibold">{t("追问问题")}:</span> {(r as any).followup_question}
-                            </div>
+                    {/* Follow-up input — anchored at bottom of conversation */}
+                    <section className="rounded-lg p-3" style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                      <div className="flex gap-2 items-end">
+                        <textarea
+                          value={followupText}
+                          onChange={(e) => setFollowupText(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && followupText.trim() && !followupSubmitting) { e.preventDefault(); startFollowup(detailId!, followupText); } }}
+                          placeholder={t("请输入追问内容...")}
+                          rows={1}
+                          disabled={followupSubmitting}
+                          className="flex-1 resize-none rounded-xl px-3 py-2 text-sm outline-none"
+                          style={{ background: S.surface, border: `1px solid ${S.borderSm}`, color: S.text1, minHeight: "38px", maxHeight: "120px" }}
+                        />
+                        <button
+                          onClick={() => startFollowup(detailId!, followupText)}
+                          disabled={!followupText.trim() || followupSubmitting}
+                          className="flex-shrink-0 rounded-xl p-2 transition-colors disabled:opacity-30"
+                          style={{ background: S.accent, color: "#0A0B0E" }}>
+                          {followupSubmitting ? (
+                            <div className="h-4 w-4 animate-spin rounded-full border-2"
+                              style={{ borderColor: "rgba(0,0,0,0.2)", borderTopColor: "#0A0B0E" }} />
+                          ) : (
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                            </svg>
                           )}
-
-                          {lang === "en" && !hasEnTranslation && (
-                            <p className="text-[10px]" style={{ color: S.accent }}>English translation not available. Showing Chinese.</p>
-                          )}
-                          <div className="flex flex-wrap gap-2">
-                            <span className="rounded-lg px-2.5 py-1 text-xs font-semibold" style={{ background: S.overlay, color: S.text1 }}>
-                              {problemType}
-                            </span>
-                            <ConfBadge c={r.confidence} />
-                            {r.needs_engineer && (
-                              <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
-                                style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(184,146,46,0.25)` }}>
-                                {lang === "cn" ? "需工程师" : "Engineer needed"}
-                              </span>
-                            )}
-                          </div>
-                          {/* Lost recording tool hint */}
-                          {r.problem_type && /录音.{0,8}找不到|找不到.{0,8}录音|recording.*lost|lost.*recording|missing.*recording/i.test(r.problem_type + " " + (r.problem_type_en || "")) && (
-                            <a href="/tools"
-                              className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors"
-                              style={{ background: "rgba(96,165,250,0.08)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.2)", textDecoration: "none" }}>
-                              <svg className="h-3.5 w-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                              </svg>
-                              {lang === "cn" ? "录音找不到？试试录音丢失排查工具 →" : "Can't find the recording? Try the Lost Recording Finder →"}
-                            </a>
-                          )}
-                          <div>
-                            <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                              {lang === "cn" ? "问题原因" : "Root Cause"}
-                            </h3>
-                            <div className="whitespace-pre-wrap rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
-                              {rootCause}
-                            </div>
-                          </div>
-                          {r.key_evidence && r.key_evidence.length > 0 && (
-                            <div>
-                              <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                                {lang === "cn" ? "关键证据" : "Key Evidence"}
-                              </h3>
-                              <div className="space-y-1">
-                                {r.key_evidence.map((ev, i) => (
-                                  <div key={i} className="rounded font-mono px-3 py-1.5 text-[11px]"
-                                    style={{ background: S.overlay, color: S.text2, border: `1px solid ${S.borderSm}` }}>
-                                    {ev}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {userReply && (
-                            <div>
-                              <div className="mb-1.5 flex items-center justify-between">
-                                <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                                  {lang === "cn" ? "建议回复" : "Suggested Reply"}
-                                </h3>
-                                <button onClick={() => copy(userReply)}
-                                  className="rounded-lg px-3 py-1 text-[11px] font-medium"
-                                  style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
-                                  {lang === "cn" ? "一键复制" : "Copy"}
-                                </button>
-                              </div>
-                              <div className="whitespace-pre-wrap rounded-lg p-3 text-sm"
-                                style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
-                                {userReply}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                        </button>
+                      </div>
+                    </section>
                   </>
                 );
               })()}
