@@ -16,6 +16,7 @@ services:
       # claude 凭证用 named volume 持久化；首次部署执行：
       # docker compose exec -it backend claude login
       - claude-auth:/root/.claude
+      - lark-cli-auth:/root/.lark-cli        # 飞书 CLI 凭证持久化
     env_file:
       - .env
     environment:
@@ -50,3 +51,4 @@ services:
 volumes:
   redis-data:
   claude-auth:
+  lark-cli-auth:

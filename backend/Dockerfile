@@ -31,6 +31,9 @@ RUN npm install -g @openai/codex 2>/dev/null || echo "Codex install skipped (opt
 # Install Claude CLI globally
 RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || echo "Claude install skipped (optional)"
 
+# Install Feishu CLI (for Bitable read/write)
+RUN npm install -g @larksuite/cli 2>/dev/null || echo "Feishu CLI install skipped (optional)"
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

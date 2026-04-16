@@ -66,7 +66,7 @@ _cli_initialized = False
 
 
 async def _ensure_cli_profile():
-    """Create the 'jarvis' CLI profile from .env credentials if it doesn't exist."""
+    """Auto-configure lark-cli from .env credentials if not already set up."""
     global _cli_initialized
     if _cli_initialized:
         return
@@ -74,40 +74,40 @@ async def _ensure_cli_profile():
 
     import shutil
     if not shutil.which("lark-cli"):
-        logger.warning("lark-cli not found — Bitable operations will fail. Run: npm install -g @larksuite/cli")
+        logger.warning("lark-cli not found. Run: npm install -g @larksuite/cli")
         return
 
-    # Check if profile already configured
+    settings = get_settings()
+    if not settings.feishu.app_id or not settings.feishu.app_secret:
+        logger.warning("FEISHU_APP_ID/SECRET not set — cannot init CLI")
+        return
+
+    # Check if already configured with the right app
     proc = await asyncio.create_subprocess_exec(
-        "lark-cli", "profile", "list",
+        "lark-cli", "auth", "status",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     stdout, _ = await proc.communicate()
-    if b"jarvis" in stdout:
+    if settings.feishu.app_id in stdout.decode("utf-8", errors="replace"):
         return
 
-    # Create profile from .env credentials
-    settings = get_settings()
-    if not settings.feishu.app_id or not settings.feishu.app_secret:
-        logger.warning("FEISHU_APP_ID/SECRET not set — cannot init CLI profile")
-        return
-
+    # Use `config init` — works across all lark-cli versions
     proc = await asyncio.create_subprocess_exec(
-        "lark-cli", "profile", "add",
-        "--name", "jarvis",
+        "lark-cli", "config", "init",
         "--app-id", settings.feishu.app_id,
         "--app-secret-stdin",
         "--brand", "feishu",
-        "--use",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    await proc.communicate(input=settings.feishu.app_secret.encode())
+    out, err = await proc.communicate(input=settings.feishu.app_secret.encode())
     if proc.returncode == 0:
-        logger.info("Auto-created lark-cli profile 'jarvis'")
+        logger.info("Auto-configured lark-cli with app %s", settings.feishu.app_id)
     else:
-        logger.warning("Failed to auto-create lark-cli profile (may already exist)")
+        err_str = (err or out).decode("utf-8", errors="replace").strip()
+        logger.error("Failed to configure lark-cli: %s", err_str)
+        _cli_initialized = False
 
 
 # ---------------------------------------------------------------------------
