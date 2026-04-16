@@ -23,6 +23,9 @@ class AgentConfig:
     """Configuration for an agent session."""
     agent_type: str                  # "claude_code" or "codex"
     model: str = ""
+    effort: str = ""                 # "low", "medium", "high", "max"
+    fallback_model: str = ""         # auto-fallback when primary overloaded
+    betas: List[str] = field(default_factory=list)  # beta headers
     timeout: int = 300
     max_turns: int = 25
     allowed_tools: List[str] = field(default_factory=list)
@@ -453,13 +456,15 @@ def _compose_prompt(
         {{"category": "一级分类", "subcategory": "二级细分"}}
     ],
     "device_type": "设备型号（从日志 device/bind 或 device/info API 提取，无法确认填空串）",
-    "root_cause": "根本原因分析（中文，2-5 句话，含具体日志证据）",
-    "root_cause_en": "Root cause analysis (English, 2-5 sentences)",
+    "root_cause": "根本原因分析（中文，5-10 句话，包含：1. 问题现象总结 2. 具体根因 3. 关键日志证据引用 4. 影响范围）",
+    "root_cause_en": "Root cause analysis (English, 5-10 sentences with same structure)",
     "confidence": "high / medium / low",
     "confidence_reason": "置信度理由（为什么是这个级别）",
-    "key_evidence": ["关键日志行1", "关键日志行2（最多5条）"],
-    "user_reply": "完整的中文客服回复模板（礼貌、非技术化、可直接发给用户）",
-    "user_reply_en": "Complete English reply template for customer",
+    "key_evidence": [
+        "[说明] 具体日志行或证据内容（每条证据格式：先用一句话解释这条证据说明了什么问题，然后引用原始日志行或数据。最多5条，每条100-200字）"
+    ],
+    "user_reply": "完整的中文客服回复模板（200-500字，包含：1. 问题确认和共情 2. 原因解释（用用户能理解的语言，避免技术术语）3. 解决方案或操作步骤 4. 如果无法解决，说明后续计划。语气礼貌专业，可直接复制发给用户）",
+    "user_reply_en": "Complete English reply template (200-500 words, same structure as Chinese version)",
     "needs_engineer": false,
     "fix_suggestion": "工程师修复建议（如有）"
 }}
@@ -469,21 +474,27 @@ problem_categories 和 device_type 的完整分类体系见 `context/classificat
 
 **主要语言: {"English" if language == "en" else "中文"}** — 确保主要语言的内容最详细。
 每个字段都必须填写，不能为空。problem_type 必须是具体的问题分类，不能写"分析完成"之类的。
+
+**质量要求**：
+- user_reply 是客服直接发给用户的内容，必须完整、有用、可直接解决或解释用户的问题。不能只写一两句话敷衍。
+- root_cause 需要有足够的技术深度和日志证据支撑，让工程师能理解问题全貌。
+- key_evidence 每条必须包含两部分：**分析说明**（这条证据说明了什么）+ **原始日志/数据**（引用具体内容）。不要只贴裸日志行，必须解释每条证据的意义。示例：`"蓝牙连接在配对阶段超时断开，说明设备端 BLE 栈未正确响应 —— 日志: [2025-04-10 14:32:05] BLE GATT connection timeout after 30s, peer=XX:XX:XX:XX"`
+- 如果问题复杂，宁可写得更详细，也不要遗漏关键信息。
 """
 
 
-_MAX_PROMPT_CHARS = 36_000
-_MAX_ISSUE_DESCRIPTION_CHARS = 2_000
-_COMPACT_ISSUE_DESCRIPTION_CHARS = 1_000
-_MAX_RULE_SECTION_CHARS = 10_000
-_COMPACT_RULE_SECTION_CHARS = 4_000
+_MAX_PROMPT_CHARS = 80_000
+_MAX_ISSUE_DESCRIPTION_CHARS = 4_000
+_COMPACT_ISSUE_DESCRIPTION_CHARS = 2_000
+_MAX_RULE_SECTION_CHARS = 20_000
+_COMPACT_RULE_SECTION_CHARS = 10_000
 _MAX_FEW_SHOT_SECTION_CHARS = 4_000
-_MAX_PREVIOUS_ANALYSIS_JSON_CHARS = 4_000
-_COMPACT_PREVIOUS_ANALYSIS_JSON_CHARS = 2_000
-_MAX_PREVIOUS_ANALYSIS_VALUE_CHARS = 400
-_COMPACT_PREVIOUS_ANALYSIS_VALUE_CHARS = 180
-_MAX_FOLLOWUP_QUESTION_CHARS = 1_500
-_COMPACT_FOLLOWUP_QUESTION_CHARS = 500
+_MAX_PREVIOUS_ANALYSIS_JSON_CHARS = 6_000
+_COMPACT_PREVIOUS_ANALYSIS_JSON_CHARS = 3_000
+_MAX_PREVIOUS_ANALYSIS_VALUE_CHARS = 800
+_COMPACT_PREVIOUS_ANALYSIS_VALUE_CHARS = 400
+_MAX_FOLLOWUP_QUESTION_CHARS = 3_000
+_COMPACT_FOLLOWUP_QUESTION_CHARS = 1_500
 
 
 def _clean_system_lines(text: str) -> str:
@@ -559,14 +570,32 @@ def _safe_problem_categories(value: Any) -> list:
     return result
 
 
+def _is_file_path_not_evidence(s: str) -> bool:
+    """Return True if the string looks like a file path rather than log evidence."""
+    import re
+    s = s.strip()
+    if not s:
+        return True
+    # Pure file paths: "output/result.json", "backend/app/api/local.py", etc.
+    if re.match(r'^[\w./_\\-]+\.\w{1,5}$', s):
+        return True
+    # Paths with common code extensions at the end
+    if re.search(r'\.(py|js|ts|tsx|json|md|yaml|yml|toml|cfg|sh)$', s) and ' ' not in s:
+        return True
+    return False
+
+
 def _safe_key_evidence(value: Any) -> list:
-    """Ensure key_evidence is always a list of strings."""
+    """Ensure key_evidence is always a list of strings, filtering out file paths."""
+    items: list[str] = []
     if isinstance(value, list):
-        return [str(item) for item in value[:10]]
-    if isinstance(value, str):
+        items = [str(item) for item in value[:10]]
+    elif isinstance(value, str):
         # Model sometimes writes a single string instead of a list
-        return [line.strip() for line in value.split("\n") if line.strip()][:10]
-    return []
+        items = [line.strip() for line in value.split("\n") if line.strip()][:10]
+
+    # Filter out entries that are just file paths (not actual log evidence)
+    return [item for item in items if not _is_file_path_not_evidence(item)]
 
 
 def _extract_json_from_text(text: str) -> Dict:
@@ -628,17 +657,21 @@ def _salvage_from_markdown(text: str) -> Dict:
     result: Dict[str, Any] = {}
 
     # --- problem_type: try multiple patterns ---
-    # Pattern 1: **问题类型**: xxx or **Problem Type**: xxx
+    # Pattern 1: **问题类型/诊断**: xxx or **Problem Type**: xxx
     type_match = re.search(
-        r"\*\*(?:问题[类分]型|problem.?type)[：:\s*]*\*\*[：:\s]*(.+)",
+        r"\*\*(?:问题[类分]型|问题诊断|problem.?type)[：:\s*]*\*\*[：:\s]*(.+)",
         text, re.IGNORECASE,
     )
     if not type_match:
-        # Pattern 2: heading
-        type_match = re.search(r"#{1,3}\s*(.+)", text)
+        # Pattern 2: heading (skip generic headings like "分析完成")
+        for m in re.finditer(r"#{1,3}\s*(.+)", text):
+            heading = m.group(1).strip()
+            if heading.lower() not in _INVALID_PROBLEM_TYPES and len(heading) > 2:
+                type_match = m
+                break
     if not type_match:
-        # Pattern 3: 问题确定/问题定位: xxx
-        type_match = re.search(r"(?:问题[确定|定位]+|关键发现)[：:]\s*(.+)", text)
+        # Pattern 3: 问题确定/问题定位/问题诊断: xxx
+        type_match = re.search(r"(?:问题(?:确定|定位|诊断)|关键发现)[：:]\s*(.+)", text)
     if type_match:
         result["problem_type"] = type_match.group(1).strip().strip("*")[:128]
 
@@ -672,11 +705,14 @@ def _salvage_from_markdown(text: str) -> Dict:
     for block in code_blocks:
         for line in block.strip().split("\n"):
             line = line.strip()
-            if line and len(line) > 20:
+            if line and len(line) > 20 and not _is_file_path_not_evidence(line):
                 evidence.append(line)
     # Also look for bullet points with timestamps or log-like patterns
     log_bullets = re.findall(r"[-*]\s+(`[^`]+`|.*?\d{2}:\d{2}.*)", text)
-    evidence.extend(b.strip("`") for b in log_bullets)
+    for b in log_bullets:
+        cleaned = b.strip("`")
+        if not _is_file_path_not_evidence(cleaned):
+            evidence.append(cleaned)
     if evidence:
         result["key_evidence"] = evidence[:5]
 
@@ -687,9 +723,9 @@ def _salvage_from_markdown(text: str) -> Dict:
     return result if result.get("root_cause") else {}
 
 
-# Prompt budget. Keep well below common CLI/request limits.
-_MAX_EXTRACTION_CHARS = 12_000
-_COMPACT_EXTRACTION_CHARS = 6_000
+# Prompt budget. Sonnet-4 supports 200K tokens; 80K chars ≈ 20K tokens is safe.
+_MAX_EXTRACTION_CHARS = 25_000
+_COMPACT_EXTRACTION_CHARS = 12_000
 
 
 def _trim_text(text: str, max_chars: int) -> str:

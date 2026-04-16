@@ -8,6 +8,8 @@ API routes for locally-tracked issues (analyzed by Jarvis).
 
 from __future__ import annotations
 
+import functools
+import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -15,21 +17,34 @@ from typing import Optional
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import select, func
 
 from app.config import get_settings
 from app.db import database as db
+from app.services.feishu_cli import FeishuCLI, create_escalation_group, is_feishu_source
 
 logger = logging.getLogger("jarvis.api.local")
 router = APIRouter()
 
 
-@router.get("/in-progress")
-async def list_in_progress(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-):
-    """Get issues currently being analyzed (only 'analyzing' status)."""
-    items, total = await db.get_local_issues_paginated("analyzing", page, page_size)
+def _handle_exceptions(label: str):
+    """Decorator that catches non-HTTP exceptions, logs them, and raises HTTP 500."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("%s: %s", label, e)
+                raise HTTPException(status_code=500, detail=str(e))
+        return wrapper
+    return decorator
+
+
+def _paginated_response(items: list, total: int, page: int, page_size: int) -> dict:
+    """Build the standard paginated response envelope."""
     return {
         "issues": items,
         "total": total,
@@ -39,39 +54,41 @@ async def list_in_progress(
     }
 
 
+@router.get("/in-progress")
+@_handle_exceptions("Failed to list in-progress issues")
+async def list_in_progress(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """Get issues currently being analyzed (only 'analyzing' status)."""
+    items, total = await db.get_local_issues_paginated("analyzing", page, page_size)
+    return _paginated_response(items, total, page, page_size)
+
+
 @router.get("/completed")
+@_handle_exceptions("Failed to list completed issues")
 async def list_completed(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
     """Get issues where AI analysis finished (success or failure)."""
     items, total = await db.get_local_issues_paginated("done,failed", page, page_size)
-    return {
-        "issues": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": (total + page_size - 1) // page_size,
-    }
+    return _paginated_response(items, total, page, page_size)
 
 
 @router.get("/failed")
+@_handle_exceptions("Failed to list failed issues")
 async def list_failed(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
     """Get issues where analysis failed (from local DB)."""
     items, total = await db.get_local_issues_paginated("failed", page, page_size)
-    return {
-        "issues": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": (total + page_size - 1) // page_size,
-    }
+    return _paginated_response(items, total, page, page_size)
 
 
 @router.get("/tracking")
+@_handle_exceptions("Failed to list tracked issues")
 async def list_all_tracked(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -90,35 +107,24 @@ async def list_all_tracked(
         created_by=created_by, platform=platform, category=category,
         status_filter=status, source=source or None, zendesk_id=zendesk_id, date_from=date_from, date_to=date_to,
     )
-    return {
-        "issues": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": max(1, (total + page_size - 1) // page_size),
-    }
+    return _paginated_response(items, total, page, page_size)
 
 
 @router.get("/inaccurate")
+@_handle_exceptions("Failed to list inaccurate issues")
 async def list_inaccurate(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
     """Get issues marked as inaccurate."""
     items, total = await db.get_local_issues_paginated("inaccurate", page, page_size)
-    return {
-        "issues": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": max(1, (total + page_size - 1) // page_size),
-    }
+    return _paginated_response(items, total, page, page_size)
 
 
 @router.get("/{issue_id}/analyses")
+@_handle_exceptions("Failed to get analyses")
 async def get_issue_analyses(issue_id: str):
     """Get ALL analyses for an issue, ordered newest first."""
-    import json as _json
     analyses = await db.get_all_analyses_by_issue(issue_id)
     return [
         {
@@ -126,19 +132,20 @@ async def get_issue_analyses(issue_id: str):
             "issue_id": a.issue_id,
             "problem_type": a.problem_type or "",
             "problem_type_en": a.problem_type_en or "",
-            "problem_categories": _json.loads(a.problem_categories_json) if a.problem_categories_json else [],
+            "problem_categories": json.loads(a.problem_categories_json) if a.problem_categories_json else [],
             "device_type": a.device_type or "",
             "root_cause": a.root_cause or "",
             "root_cause_en": a.root_cause_en or "",
             "confidence": a.confidence or "medium",
             "confidence_reason": a.confidence_reason or "",
-            "key_evidence": _json.loads(a.key_evidence_json) if a.key_evidence_json else [],
+            "key_evidence": json.loads(a.key_evidence_json) if a.key_evidence_json else [],
             "user_reply": a.user_reply or "",
             "user_reply_en": a.user_reply_en or "",
             "needs_engineer": a.needs_engineer,
             "fix_suggestion": a.fix_suggestion or "",
             "rule_type": a.rule_type or "",
             "agent_type": a.agent_type or "",
+            "agent_model": getattr(a, "agent_model", "") or "",
             "followup_question": a.followup_question or "",
             "created_at": (a.created_at.isoformat() + "Z") if a.created_at else "",
         }
@@ -147,15 +154,14 @@ async def get_issue_analyses(issue_id: str):
 
 
 @router.get("/{issue_id}/detail")
+@_handle_exceptions("Failed to get issue detail")
 async def get_issue_detail(issue_id: str):
     """Get a single issue with its analysis and task data by ID."""
-    import json as _json
     async with db.get_session() as session:
         issue = await session.get(db.IssueRecord, issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
 
-        from sqlalchemy import select, func
         a_stmt = select(db.AnalysisRecord).where(
             db.AnalysisRecord.issue_id == issue_id
         ).order_by(db.AnalysisRecord.created_at.desc()).limit(1)
@@ -173,19 +179,17 @@ async def get_issue_detail(issue_id: str):
 
 
 @router.get("/{issue_id}/files/{filename:path}")
+@_handle_exceptions("Failed to serve issue file")
 async def serve_issue_file(issue_id: str, filename: str):
-    """Serve a file (image/log) from an issue's workspace."""
+    """Serve a file from workspace, or download from Feishu on demand."""
     settings = get_settings()
 
-    # Look in multiple possible locations
     search_dirs = [
         Path(settings.storage.workspace_dir) / issue_id / "raw",
         Path(settings.storage.workspace_dir) / issue_id / "processed",
     ]
 
-    # Also check task workspaces that reference this issue
     async with db.get_session() as session:
-        from sqlalchemy import select
         stmt = select(db.TaskRecord).where(db.TaskRecord.issue_id == issue_id).order_by(db.TaskRecord.created_at.desc()).limit(1)
         result = await session.execute(stmt)
         task = result.scalar_one_or_none()
@@ -198,10 +202,29 @@ async def serve_issue_file(issue_id: str, filename: str):
         if file_path.exists() and file_path.is_file():
             return FileResponse(file_path)
 
+    # Not found locally — try downloading from Feishu if this is a feishu-sourced issue
+    if is_feishu_source(issue_id):
+        try:
+            cli = FeishuCLI()
+            rec = await cli.get_record(issue_id)
+            fields = rec.get("fields", {})
+            # Search both 日志文件 and 其他附件 for matching filename
+            for field_name in ("日志文件", "其他附件"):
+                for f in (fields.get(field_name) or []):
+                    if isinstance(f, dict) and f.get("name") == filename and f.get("file_token"):
+                        cache_dir = Path(settings.storage.workspace_dir) / "_cache" / issue_id / "raw"
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        save_path = str(cache_dir / filename)
+                        await cli.download_file(f["file_token"], save_path)
+                        return FileResponse(save_path)
+        except Exception as e:
+            logger.warning("Failed to download %s from Feishu for %s: %s", filename, issue_id, e)
+
     raise HTTPException(status_code=404, detail="File not found")
 
 
 @router.delete("/{issue_id}")
+@_handle_exceptions("Failed to delete issue")
 async def delete_issue(issue_id: str):
     """Soft-delete an issue (mark as deleted, hide from UI)."""
     ok = await db.soft_delete_issue(issue_id)
@@ -216,17 +239,55 @@ class EscalateRequest(BaseModel):
 
 
 @router.post("/{issue_id}/escalate")
+@_handle_exceptions("Failed to escalate issue")
 async def escalate_issue(issue_id: str, body: EscalateRequest):
-    """Escalate an issue to engineering team."""
+    """Escalate an issue to engineering team — creates a Feishu group chat."""
     ok = await db.escalate_issue(issue_id, escalated_by=body.escalated_by, note=body.note)
     if not ok:
         raise HTTPException(status_code=404, detail="Issue not found")
     await db.log_event("escalate", issue_id=issue_id, username=body.escalated_by,
                        detail={"note": body.note})
-    return {"status": "escalated", "issue_id": issue_id}
+
+    async with db.get_session() as session:
+        issue_rec = await session.get(db.IssueRecord, issue_id)
+
+    chat_result = None
+    try:
+        description = issue_rec.description if issue_rec else issue_id
+        problem_type = ""
+        analysis = await db.get_analysis_by_issue(issue_id)
+        if analysis:
+            problem_type = analysis.problem_type or ""
+
+        issue_link = ""
+        if issue_rec and is_feishu_source(issue_id):
+            issue_link = FeishuCLI().get_feishu_link(issue_id)
+
+        user = await db.get_user(body.escalated_by) if body.escalated_by else None
+        user_email = (user or {}).get("feishu_email", "")
+
+        chat_result = await create_escalation_group(
+            user_email=user_email,
+            issue_id=issue_id,
+            description=description or "",
+            problem_type=problem_type,
+            issue_link=issue_link,
+            zendesk_id=issue_rec.zendesk_id if issue_rec else "",
+        )
+        logger.info("Escalation group created: %s", chat_result)
+    except Exception as e:
+        logger.error("Failed to create escalation group (escalation still recorded): %s", e)
+
+    result = {"status": "escalated", "issue_id": issue_id}
+    if chat_result:
+        result["chat_id"] = chat_result.get("chat_id", "")
+        result["group_name"] = chat_result.get("group_name", "")
+        result["share_link"] = chat_result.get("share_link", "")
+    return result
 
 
 @router.post("/{issue_id}/inaccurate")
+@_handle_exceptions("Failed to mark inaccurate")
 async def mark_inaccurate(issue_id: str):
     """Mark an issue's analysis as inaccurate."""
     async with db.get_session() as session:
@@ -237,3 +298,32 @@ async def mark_inaccurate(issue_id: str):
     await db.update_issue_status(issue_id, "inaccurate")
     await db.log_event("mark_inaccurate", issue_id=issue_id)
     return {"status": "ok"}
+
+
+class MarkCompleteRequest(BaseModel):
+    username: str = ""
+
+
+@router.post("/{issue_id}/complete")
+@_handle_exceptions("Failed to mark complete")
+async def mark_complete(issue_id: str, body: MarkCompleteRequest):
+    """Mark issue as completed — syncs to Feishu if feishu-sourced."""
+    async with db.get_session() as session:
+        issue = await session.get(db.IssueRecord, issue_id)
+        if not issue:
+            raise HTTPException(status_code=404, detail="Issue not found")
+
+    await db.update_issue_status(issue_id, "done")
+    await db.log_event("mark_complete", issue_id=issue_id, username=body.username)
+
+    # Sync to Feishu: only set 确认提交=true (don't touch other fields)
+    feishu_synced = False
+    if is_feishu_source(issue_id):
+        try:
+            await FeishuCLI().update_record(issue_id, {"确认提交": True})
+            feishu_synced = True
+            logger.info("Feishu issue %s marked as completed", issue_id)
+        except Exception as e:
+            logger.error("Failed to sync completion to Feishu for %s: %s", issue_id, e)
+
+    return {"status": "done", "issue_id": issue_id, "feishu_synced": feishu_synced}

@@ -22,6 +22,7 @@ from app.models.schemas import (
     TaskProgress,
     TaskStatus,
 )
+from app.services.feishu_cli import FeishuCLI, is_feishu_source
 from app.workers.analysis_worker import run_analysis_pipeline
 
 logger = logging.getLogger("jarvis.api.tasks")
@@ -50,6 +51,7 @@ async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
         await db.set_issue_created_by(req.issue_id, req.username)
 
     # Track: analysis started
+    # NOTE: Feishu mark_started is done inside _run_task to avoid blocking the response
     await db.log_event("analysis_start", issue_id=req.issue_id, username=req.username)
 
     progress = TaskProgress(
@@ -153,6 +155,7 @@ async def get_task_result(task_id: str):
         fix_suggestion=analysis.fix_suggestion,
         rule_type=analysis.rule_type,
         agent_type=analysis.agent_type,
+        agent_model=getattr(analysis, "agent_model", "") or "",
         raw_output=analysis.raw_output[:2000],
         created_at=analysis.created_at,
     )
@@ -309,6 +312,15 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
     """Run the full analysis pipeline as a background task."""
     import time as _time
     _start_time = _time.monotonic()
+
+    # Sync to Feishu: mark "开始处理" = true (feishu-sourced issues only)
+    # Done here in background to avoid blocking the create_task HTTP response.
+    if is_feishu_source(issue_id):
+        try:
+            await FeishuCLI().mark_started(issue_id)
+        except Exception as e:
+            logger.warning("Failed to sync 开始处理 to Feishu for %s: %s", issue_id, e)
+
     try:
         async def on_progress(pct: int, msg: str):
             status = TaskStatus.ANALYZING

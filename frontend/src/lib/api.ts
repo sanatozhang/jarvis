@@ -106,6 +106,7 @@ export interface AnalysisResult {
   fix_suggestion: string;
   rule_type: string;
   agent_type: string;
+  agent_model: string;
   followup_question?: string;
   created_at?: string;
 }
@@ -444,13 +445,19 @@ export const updateOncallSchedule = (groups: string[][], startDate: string, user
 // ============================================================
 
 export const escalateIssue = (issueId: string, note: string = "", escalatedBy: string = "") =>
-  request<{ status: string }>(`/local/${issueId}/escalate`, {
+  request<{ status: string; chat_id?: string; group_name?: string; share_link?: string }>(`/local/${issueId}/escalate`, {
     method: "POST",
     body: JSON.stringify({ note, escalated_by: escalatedBy }),
   });
 
 export const markInaccurate = (issueId: string) =>
   request<{ status: string }>(`/local/${issueId}/inaccurate`, { method: "POST" });
+
+export const markComplete = (issueId: string, username: string = "") =>
+  request<{ status: string; feishu_synced: boolean }>(`/local/${issueId}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ username }),
+  });
 
 export const fetchInaccurate = (page = 1, pageSize = 20) =>
   request<PaginatedResponse<LocalIssueItem>>(`/local/inaccurate?page=${page}&page_size=${pageSize}`);

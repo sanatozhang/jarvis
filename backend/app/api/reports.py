@@ -64,6 +64,7 @@ async def get_daily_report(date_str: str):
             "needs_engineer": a.needs_engineer,
             "rule_type": a.rule_type,
             "agent_type": a.agent_type,
+            "agent_model": getattr(a, "agent_model", "") or "",
             "created_at": a.created_at.isoformat() if a.created_at else "",
         })
 

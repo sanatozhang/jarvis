@@ -71,6 +71,9 @@ class AgentOrchestrator:
         config = AgentConfig(
             agent_type=agent_name,
             model=provider.model,
+            effort=provider.effort,
+            fallback_model=provider.fallback_model,
+            betas=provider.betas,
             timeout=provider.timeout or agent_cfg.timeout,
             max_turns=agent_cfg.max_turns,
             allowed_tools=provider.allowed_tools,
@@ -100,6 +103,9 @@ class AgentOrchestrator:
         config = AgentConfig(
             agent_type=agent_name,
             model=provider.model,
+            effort=provider.effort,
+            fallback_model=provider.fallback_model,
+            betas=provider.betas,
             timeout=provider.timeout or agent_cfg.timeout,
             max_turns=agent_cfg.max_turns,
             allowed_tools=provider.allowed_tools,
@@ -208,6 +214,7 @@ class AgentOrchestrator:
                         prompt=prompt,
                         on_progress=on_progress,
                     )
+                    result.agent_model = fallback_agent.config.model
 
                     # If fallback also exhausted → both models down
                     if result.problem_type in _QUOTA_EXHAUSTED_TYPES:
@@ -227,6 +234,7 @@ class AgentOrchestrator:
 
         result.issue_id = issue.record_id
         result.rule_type = rule_type
+        result.agent_model = result.agent_model or agent.config.model
         return result
 
 

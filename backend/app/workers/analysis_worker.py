@@ -52,7 +52,7 @@ async def run_analysis_pipeline(
     """
     Run the complete analysis pipeline for a single issue.
 
-    Steps:
+    Steps (full analysis):
     1. Fetch issue from Feishu
     2. Download log files
     3. Decrypt / process logs
@@ -61,6 +61,10 @@ async def run_analysis_pipeline(
     6. Prepare workspace
     7. Run agent
     8. Parse result
+
+    For follow-up questions: reuse the previous task's workspace (logs, rules,
+    code, extraction) and skip steps 2-6.  Falls back to full pipeline if the
+    previous workspace is unavailable.
     """
     settings = get_settings()
     is_local = issue_id.startswith("fb_")    # locally submitted via feedback form
@@ -104,6 +108,26 @@ async def run_analysis_pipeline(
         log_files_raw = [lf.model_dump() for lf in issue.log_files]
         logger.info("Processing issue %s: %s", issue_id, issue.description[:80])
         await db.upsert_issue(issue.model_dump(), status="analyzing")
+
+    # ── Follow-up fast path: reuse previous workspace ──
+    if followup_question:
+        result = await _try_followup_fast_path(
+            issue_id=issue_id,
+            task_id=task_id,
+            issue=issue,
+            agent_override=agent_override,
+            followup_question=followup_question,
+            on_progress=on_progress,
+        )
+        if result is not None:
+            result.task_id = task_id
+            result.issue = issue
+            result.followup_question = followup_question
+            if on_progress:
+                await on_progress(100, "分析完成")
+            return result
+        # Fast path unavailable — fall through to full pipeline
+        logger.info("Follow-up fast path unavailable for %s, running full pipeline", issue_id)
 
     # --- Step 2: Download / locate logs ---
     if on_progress:
@@ -247,7 +271,7 @@ async def run_analysis_pipeline(
     engine.prepare_workspace(workspace, rules, log_paths, code_repo=code_repo)
 
     # --- Step 7: Run agent ---
-    # For follow-ups, load the previous analysis to provide context
+    # For follow-ups that fell through from fast path, still load previous analysis
     previous_analysis = None
     if followup_question:
         prev = await db.get_analysis_by_issue(issue_id)
@@ -284,6 +308,120 @@ async def run_analysis_pipeline(
 
     if on_progress:
         await on_progress(100, "分析完成")
+
+    return result
+
+
+async def _try_followup_fast_path(
+    issue_id: str,
+    task_id: str,
+    issue: Issue,
+    agent_override: Optional[str],
+    followup_question: str,
+    on_progress: Optional[Callable[[int, str], Any]],
+) -> Optional[AnalysisResult]:
+    """Attempt incremental follow-up: reuse previous workspace, skip heavy steps.
+
+    Returns AnalysisResult on success, or None to fall back to full pipeline.
+    """
+    import json as _json
+    import shutil
+
+    settings = get_settings()
+
+    # 1. Find the previous successful task for this issue
+    prev_task = await db.get_latest_done_task_for_issue(issue_id)
+    if not prev_task:
+        logger.info("No previous done task for %s — cannot use fast path", issue_id)
+        return None
+
+    prev_workspace = Path(settings.storage.workspace_dir) / prev_task.id
+    prev_logs_dir = prev_workspace / "logs"
+
+    # Require that the previous workspace still has logs/ (not cleaned up)
+    if not prev_logs_dir.exists() or not any(prev_logs_dir.iterdir()):
+        logger.info("Previous workspace %s has no logs/ — cannot use fast path", prev_task.id)
+        return None
+
+    if on_progress:
+        await on_progress(10, "追问模式：复用上次分析工作区...")
+
+    # 2. Create new workspace and symlink/copy heavy dirs from previous workspace
+    workspace = Path(settings.storage.workspace_dir) / task_id
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "output").mkdir(exist_ok=True)
+
+    reused_dirs = []
+    for dirname in ("logs", "rules", "code", "images", "raw"):
+        src = prev_workspace / dirname
+        dst = workspace / dirname
+        if src.exists() and not dst.exists():
+            try:
+                # Use symlink for speed — these are read-only for the agent
+                dst.symlink_to(src.resolve())
+                reused_dirs.append(dirname)
+            except OSError:
+                # Fallback: copy if symlinks not supported (e.g. cross-device)
+                shutil.copytree(src, dst)
+                reused_dirs.append(dirname)
+
+    logger.info(
+        "Follow-up fast path: reusing %s from workspace %s",
+        reused_dirs, prev_task.id,
+    )
+
+    if on_progress:
+        await on_progress(30, f"已复用上次工作区（{', '.join(reused_dirs)}）")
+
+    # 3. Load previous analysis result
+    prev_analysis_rec = await db.get_analysis_by_issue(issue_id)
+    previous_analysis = None
+    if prev_analysis_rec:
+        previous_analysis = {
+            "problem_type": prev_analysis_rec.problem_type or "",
+            "root_cause": prev_analysis_rec.root_cause or "",
+            "confidence": prev_analysis_rec.confidence or "",
+            "key_evidence": _json.loads(prev_analysis_rec.key_evidence_json) if prev_analysis_rec.key_evidence_json else [],
+            "user_reply": prev_analysis_rec.user_reply or "",
+            "fix_suggestion": prev_analysis_rec.fix_suggestion or "",
+        }
+
+    # 4. Load previous extraction from context (avoid re-running grep)
+    extraction = {}
+    prev_extraction_file = prev_workspace / "context" / "extraction_full.json"
+    if prev_extraction_file.exists():
+        try:
+            extraction = _json.loads(prev_extraction_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Failed to load previous extraction: %s", e)
+
+    # 5. Load rules & metadata from previous workspace
+    engine = _get_rule_engine()
+    routing_text = normalize_description_for_matching(issue.description)
+    rules = engine.match_rules(routing_text)
+    rule_type = engine.classify(routing_text)
+    problem_date = guess_problem_date(routing_text, issue.occurred_at)
+
+    has_logs = any((workspace / "logs").iterdir()) if (workspace / "logs").exists() else False
+
+    if on_progress:
+        await on_progress(50, "追问模式：构建分析 prompt...")
+
+    # 6. Run agent (the only expensive step)
+    orchestrator = _get_orchestrator()
+    result = await orchestrator.run_analysis(
+        workspace=workspace,
+        issue=issue,
+        rules=rules,
+        extraction=extraction,
+        rule_type=rule_type,
+        agent_override=agent_override,
+        problem_date=problem_date,
+        has_logs=has_logs,
+        on_progress=on_progress,
+        previous_analysis=previous_analysis,
+        followup_question=followup_question,
+    )
 
     return result
 

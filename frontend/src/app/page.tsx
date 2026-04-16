@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
 import { Toast } from "@/components/Toast";
+import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
+import MarkdownText from "@/components/MarkdownText";
 import {
   fetchPendingIssues,
   refreshIssuesCache,
@@ -12,6 +14,9 @@ import {
   fetchInProgress,
   fetchInaccurate,
   markInaccurate,
+  markComplete,
+  escalateIssue,
+  promoteToGoldenSample,
   createTask,
   deleteIssue,
   fetchIssueDetail,
@@ -38,59 +43,7 @@ function setUrlParam(key: string, val: string) {
   window.history.replaceState({}, "", url.toString());
 }
 
-// ── Shared design tokens ─────────────────────────────────────
-const S = {
-  surface:  "#F8F9FA",
-  overlay:  "#FFFFFF",
-  hover:    "#EEF0F2",
-  border:   "rgba(0,0,0,0.08)",
-  borderSm: "rgba(0,0,0,0.04)",
-  accent:   "#B8922E",
-  accentBg: "rgba(184,146,46,0.06)",
-  text1:    "#111827",
-  text2:    "#6B7280",
-  text3:    "#9CA3AF",
-};
-
 // ── Small components ─────────────────────────────────────────
-function PriorityBadge({ p }: { p: string }) {
-  const t = useT();
-  return p === "H" ? (
-    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
-      style={{ background: "rgba(239,68,68,0.15)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
-      {t("高")}
-    </span>
-  ) : (
-    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-      style={{ background: "rgba(0,0,0,0.04)", color: "#6B7280", border: "1px solid rgba(0,0,0,0.08)" }}>
-      {t("低")}
-    </span>
-  );
-}
-
-function SourceBadge({ source, linearUrl }: { source?: string; linearUrl?: string }) {
-  const t = useT();
-  const cfg: Record<string, { label: string; bg: string; color: string; border: string }> = {
-    feishu:         { label: t("飞书"),     bg: "rgba(96,165,250,0.12)", color: "#2563EB", border: "rgba(96,165,250,0.25)" },
-    feishu_import:  { label: t("飞书导入"), bg: "rgba(96,165,250,0.12)", color: "#2563EB", border: "rgba(96,165,250,0.25)" },
-    linear:         { label: "Linear",      bg: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "rgba(167,139,250,0.25)" },
-    api:            { label: "API",         bg: "rgba(52,211,153,0.12)", color: "#6EE7B7", border: "rgba(52,211,153,0.25)" },
-    local:          { label: t("手动提交"), bg: "rgba(251,146,60,0.12)",  color: "#FCA87A", border: "rgba(251,146,60,0.25)" },
-  };
-  const s = source || "feishu";
-  const c = cfg[s] || cfg.feishu;
-  const badge = (
-    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-      style={{ background: c.bg, color: c.color, border: `1px solid ${c.border}` }}>
-      {c.label}
-    </span>
-  );
-  if (s === "linear" && linearUrl) {
-    return <a href={linearUrl} target="_blank" onClick={(e) => e.stopPropagation()} className="hover:opacity-80">{badge}</a>;
-  }
-  return badge;
-}
-
 function ConfBadge({ c }: { c: string }) {
   const m: Record<string, { bg: string; color: string; border: string }> = {
     high:   { bg: "rgba(34,197,94,0.12)",   color: "#16A34A", border: "rgba(34,197,94,0.25)" },
@@ -243,6 +196,12 @@ export default function HomePage() {
   const [importLoading, setImportLoading] = useState(false);
   const [importResults, setImportResults] = useState<Issue[] | null>(null);
   const [importProgress, setImportProgress] = useState<{ issueId: string; step: "importing" | "analyzing" | "done"; description: string } | null>(null);
+
+  // Escalation state
+  const [showEscalateDialog, setShowEscalateDialog] = useState(false);
+  const [escalateNote, setEscalateNote] = useState("");
+  const [escalateLoading, setEscalateLoading] = useState(false);
+  const [escalateLinks, setEscalateLinks] = useState<Record<string, string>>({});
 
   // Follow-up state
   const [issueAnalyses, setIssueAnalyses] = useState<Record<string, AnalysisResult[]>>({});
@@ -448,6 +407,47 @@ export default function HomePage() {
     } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
   };
 
+  const handleEscalate = async (issueId: string) => {
+    if (escalateLoading) return;
+    setEscalateLoading(true);
+    try {
+      const res = await escalateIssue(issueId, escalateNote, username || "");
+      setToast(t("已转交工程师"));
+      setShowEscalateDialog(false);
+      setEscalateNote("");
+      // Store share_link for this issue so "已转交" section can show "打开飞书群"
+      if (res.share_link) {
+        setEscalateLinks(prev => ({ ...prev, [issueId]: res.share_link! }));
+      }
+      // Reload but don't close detail — let user see the updated state
+      loadDone(donePage);
+      loadInProgress(ipPage);
+    } catch (e: any) { setToast(`${t("转交失败")}: ${e.message}`); }
+    finally { setEscalateLoading(false); }
+  };
+
+  const handlePromoteToGolden = async (item: any) => {
+    const analysis = item.analysis || item.result;
+    if (!analysis) return;
+    try {
+      const analysisId = analysis.id;
+      if (!analysisId) { setToast(t("失败")); return; }
+      await promoteToGoldenSample(analysisId, username || "");
+      setToast(t("已标记为金样本"));
+    } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
+  };
+
+  const handleMarkComplete = async (issueId: string) => {
+    try {
+      const res = await markComplete(issueId, username || "");
+      const msg = res.feishu_synced ? t("已标记完成（飞书已同步）") : t("已标记完成");
+      setToast(msg);
+      closeDetail();
+      loadDone(donePage);
+      loadInProgress(ipPage);
+    } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
+  };
+
   const startFollowup = async (issueId: string, question: string) => {
     if (!question.trim()) return;
     setFollowupSubmitting(true);
@@ -482,7 +482,7 @@ export default function HomePage() {
   const counts = { pending: pendingData?.total ?? 0, in_progress: ipData?.total ?? 0, done: doneData?.total ?? 0, inaccurate: inaccurateData?.total ?? 0 };
 
   const openDetail = (id: string, t: Tab) => { setDetailId(id); setDirectDetail(null); setDetailTab(t); setUrlParam("detail", id); setUrlParam("dtab", t); };
-  const closeDetail = () => { setDetailId(null); setDirectDetail(null); setFollowupText(""); setFollowupSubmitting(false); setUrlParam("detail", ""); setUrlParam("dtab", ""); };
+  const closeDetail = () => { setDetailId(null); setDirectDetail(null); setFollowupText(""); setFollowupSubmitting(false); setShowEscalateDialog(false); setEscalateNote(""); setUrlParam("detail", ""); setUrlParam("dtab", ""); };
 
   const detailData = (() => {
     if (!detailId) return null;
@@ -1065,7 +1065,7 @@ export default function HomePage() {
                     </a>
                   )}
                   {detailData.issue.feishu_link
-                    ? <a href={detailData.issue.feishu_link} target="_blank" className="text-xs hover:underline" style={{ color: "#2563EB" }}>{t("飞书")}</a>
+                    ? <FeishuLinkBadge href={detailData.issue.feishu_link} />
                     : detailData.issue.source !== "linear"
                       ? <span className="text-xs" style={{ color: S.text3 }}>{t("本地上传")}</span>
                       : null}
@@ -1268,6 +1268,12 @@ export default function HomePage() {
                                 {problemType}
                               </span>
                               <ConfBadge c={r.confidence} />
+                              {r.agent_model && (
+                                <span className="rounded-lg px-2.5 py-1 text-[10px] font-medium"
+                                  style={{ background: "rgba(96,165,250,0.1)", color: "rgba(96,165,250,0.8)", border: "1px solid rgba(96,165,250,0.2)" }}>
+                                  {r.agent_model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}
+                                </span>
+                              )}
                               {r.needs_engineer && (
                                 <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
                                   style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(184,146,46,0.25)` }}>
@@ -1290,8 +1296,8 @@ export default function HomePage() {
                               <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
                                 {lang === "cn" ? "问题原因" : "Root Cause"}
                               </h3>
-                              <div className="whitespace-pre-wrap rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
-                                {rootCause}
+                              <div className="rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
+                                <MarkdownText>{rootCause}</MarkdownText>
                               </div>
                             </div>
                             {/* Collapsible evidence */}
@@ -1308,13 +1314,24 @@ export default function HomePage() {
                                   {lang === "cn" ? "关键证据" : "Key Evidence"} ({r.key_evidence.length})
                                 </button>
                                 {!evidenceCollapsed && (
-                                  <div className="space-y-1">
-                                    {r.key_evidence.map((ev, i) => (
-                                      <div key={i} className="rounded font-mono px-3 py-1.5 text-[11px]"
-                                        style={{ background: S.overlay, color: S.text2, border: `1px solid ${S.borderSm}` }}>
-                                        {ev}
-                                      </div>
-                                    ))}
+                                  <div className="space-y-2">
+                                    {r.key_evidence.map((ev, i) => {
+                                      // Split evidence into explanation + log line if pattern matches
+                                      const logSep = ev.match(/^(.+?)\s*(?:——|--|→|=>|日志[:：])\s*([\s\S]+)$/);
+                                      return (
+                                        <div key={i} className="rounded-lg px-3 py-2 text-[11px]"
+                                          style={{ background: S.overlay, border: `1px solid ${S.borderSm}` }}>
+                                          {logSep ? (
+                                            <>
+                                              <div className="mb-1 text-xs" style={{ color: S.text2 }}>{logSep[1].trim()}</div>
+                                              <div className="font-mono text-[10px] rounded px-2 py-1" style={{ background: S.surface, color: S.text3 }}>{logSep[2].trim()}</div>
+                                            </>
+                                          ) : (
+                                            <div className="whitespace-pre-wrap" style={{ color: S.text2 }}>{ev}</div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
                                   </div>
                                 )}
                               </div>
@@ -1331,9 +1348,9 @@ export default function HomePage() {
                                     {lang === "cn" ? "一键复制" : "Copy"}
                                   </button>
                                 </div>
-                                <div className="whitespace-pre-wrap rounded-lg p-3 text-sm"
+                                <div className="rounded-lg p-3 text-sm"
                                   style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
-                                  {userReply}
+                                  <MarkdownText>{userReply}</MarkdownText>
                                 </div>
                               </div>
                             )}
@@ -1389,19 +1406,90 @@ export default function HomePage() {
                 );
               })()}
 
-              {/* Retry for failed — only show if the task-level retry button above isn't already visible */}
-              {detailData.localItem?.local_status === "failed" && !(detailData.task && typeof detailData.task === "object" && detailData.task.status === "failed") && (
-                <section>
-                  <button onClick={() => { startAnalysis(detailId!, true); closeDetail(); }}
-                    className="w-full rounded-lg py-2.5 text-sm font-semibold"
-                    style={{ background: S.accent, color: "#0A0B0E" }}>
-                    {t("重新分析")}
-                  </button>
+              {/* Escalation info + open group button */}
+              {(detailData.localItem?.escalated_at || escalateLinks[detailId!]) && (
+                <section className="rounded-lg p-3 space-y-2" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                      {t("已转交")}
+                    </span>
+                    {detailData.localItem?.escalated_by && (
+                      <span className="text-xs" style={{ color: S.text2 }}>{t("转交人")}: {detailData.localItem.escalated_by}</span>
+                    )}
+                    {detailData.localItem?.escalated_at && (
+                      <span className="text-[10px] ml-auto" style={{ color: S.text3 }}>{formatLocalTime(detailData.localItem.escalated_at)}</span>
+                    )}
+                  </div>
+                  {detailData.localItem?.escalation_note && (
+                    <p className="text-xs mt-1" style={{ color: S.orange }}>{t("转交备注")}: {detailData.localItem.escalation_note}</p>
+                  )}
+                  {escalateLinks[detailId!] && (
+                    <a href={escalateLinks[detailId!]} target="_blank"
+                      className="flex items-center justify-center gap-2 w-full rounded-lg py-2 text-sm font-semibold transition-colors hover:opacity-80"
+                      style={{ background: S.orange, color: "#FFFFFF", textDecoration: "none" }}>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                      </svg>
+                      {t("打开飞书群")}
+                    </a>
+                  )}
                 </section>
               )}
 
-              {/* Transfer to Feishu + Mark inaccurate */}
+              {/* Actions */}
               <section className="pt-4 space-y-2" style={{ borderTop: `1px solid ${S.border}` }}>
+                {/* Mark complete — for done/failed, syncs to Feishu */}
+                {(detailData.localItem?.local_status === "done" || detailData.localItem?.local_status === "failed") && (
+                  <button onClick={() => handleMarkComplete(detailId!)}
+                    className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+                    style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {t("标记完成")}
+                  </button>
+                )}
+                {/* Escalate button — show for done/failed (not already escalated) */}
+                {(detailData.localItem?.local_status === "done" || detailData.localItem?.local_status === "failed") && !detailData.localItem?.escalated_at && (
+                  showEscalateDialog ? (
+                    <div className="rounded-lg p-3 space-y-2" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
+                      <p className="text-xs font-medium" style={{ color: S.orange }}>{t("确定要将此工单转交给工程师处理吗？")}</p>
+                      <textarea
+                        value={escalateNote}
+                        onChange={(e) => setEscalateNote(e.target.value)}
+                        placeholder={t("请输入转交备注（可选）...")}
+                        rows={2}
+                        className="w-full resize-none rounded-md px-3 py-2 text-sm outline-none"
+                        style={{ background: S.overlay, border: `1px solid ${S.borderSm}`, color: S.text1 }}
+                      />
+                      <div className="flex gap-2">
+                        <button onClick={() => handleEscalate(detailId!)}
+                          disabled={escalateLoading}
+                          className="flex-1 rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
+                          style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                          {escalateLoading && <div className="h-3.5 w-3.5 animate-spin rounded-full border-2" style={{ borderColor: "rgba(234,88,12,0.3)", borderTopColor: S.orange }} />}
+                          {escalateLoading ? t("转交中...") : t("确认转交")}
+                        </button>
+                        <button onClick={() => { setShowEscalateDialog(false); setEscalateNote(""); }}
+                          disabled={escalateLoading}
+                          className="rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-30"
+                          style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
+                          {t("取消")}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowEscalateDialog(true)}
+                      className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+                      style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                      </svg>
+                      {t("转交工程师")}
+                    </button>
+                  )
+                )}
                 <button onClick={() => {
                     const base = "https://nicebuild.feishu.cn/share/base/form/shrcnGuYEnRrbbVw4Y6evkyUDCo";
                     const params = new URLSearchParams();
@@ -1423,13 +1511,27 @@ export default function HomePage() {
                   </svg>
                   {t("转飞书工单")}
                 </button>
-                {detailData.localItem?.local_status === "done" && (
-                  <button
-                    onClick={() => handleMarkInaccurate(detailId!)}
-                    className="w-full rounded-lg py-2.5 text-sm font-medium transition-colors"
-                    style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
-                    {t("标记为不准确")}
+                {detailData.localItem?.local_status === "failed" && (
+                  <button onClick={() => { startAnalysis(detailId!, true); closeDetail(); }}
+                    className="w-full rounded-lg py-2.5 text-sm font-semibold"
+                    style={{ background: S.accent, color: "#0A0B0E" }}>
+                    {t("重新分析")}
                   </button>
+                )}
+                {detailData.localItem?.local_status === "done" && (
+                  <div className="space-y-2">
+                    <button onClick={() => { handlePromoteToGolden(detailData.localItem || detailData); }}
+                      className="w-full rounded-lg py-2.5 text-sm font-semibold"
+                      style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
+                      {t("标记为金样本")}
+                    </button>
+                    <button
+                      onClick={() => handleMarkInaccurate(detailId!)}
+                      className="w-full rounded-lg py-2.5 text-sm font-medium transition-colors"
+                      style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
+                      {t("标记为不准确")}
+                    </button>
+                  </div>
                 )}
               </section>
             </div>

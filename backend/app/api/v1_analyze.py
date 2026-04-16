@@ -195,6 +195,7 @@ async def get_analysis_result(
             result.needs_engineer = analysis.needs_engineer
             result.rule_type = analysis.rule_type or ""
             result.agent_type = analysis.agent_type or ""
+            result.agent_model = getattr(analysis, "agent_model", "") or ""
             result.created_at = analysis.created_at.isoformat() if analysis.created_at else ""
 
     return result

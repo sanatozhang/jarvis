@@ -132,6 +132,7 @@ class AnalysisResult(BaseModel):
     fix_suggestion: str = ""
     rule_type: str = ""
     agent_type: str = ""
+    agent_model: str = ""
     raw_output: str = ""
     followup_question: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)

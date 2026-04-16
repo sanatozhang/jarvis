@@ -92,6 +92,7 @@ class AnalysisRecord(Base):
     device_type = Column(String(64), default="")           # "Note" / "Note Pin" / "Note Pro" / "NotePin 2" / "iZYREC"
     rule_type = Column(String(64), default="")
     agent_type = Column(String(32), default="")
+    agent_model = Column(String(128), default="")
     raw_output = Column(Text, default="")
     followup_question = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -239,8 +240,8 @@ async def init_db():
     if "sqlite" in db_url:
         connect_args = {"timeout": 30}  # seconds to wait for lock
         pool_kwargs = {
-            "pool_size": 1,       # SQLite only supports 1 writer
-            "max_overflow": 4,    # queue extra connections instead of failing
+            "pool_size": 5,       # concurrent readers via WAL mode
+            "max_overflow": 10,   # burst capacity for parallel analysis tasks
             "pool_timeout": 30,   # wait up to 30s for a pool slot
         }
 
@@ -288,6 +289,7 @@ async def init_db():
             ("followup_question", "TEXT", "''"),
             ("problem_categories_json", "TEXT", "'[]'"),
             ("device_type", "VARCHAR(64)", "''"),
+            ("agent_model", "VARCHAR(128)", "''"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -412,7 +414,8 @@ async def escalate_issue(issue_id: str, escalated_by: str = "", note: str = "") 
         record = await session.get(IssueRecord, issue_id)
         if not record:
             return False
-        record.status = "escalated"
+        # Don't change status — keep the issue in its current tab (done/failed)
+        # Only record escalation metadata so UI can show the badge
         record.escalated_at = datetime.utcnow()
         record.escalated_by = escalated_by
         record.escalation_note = note
@@ -481,6 +484,20 @@ async def get_task(task_id: str) -> Optional[TaskRecord]:
         return await session.get(TaskRecord, task_id)
 
 
+async def get_latest_done_task_for_issue(issue_id: str) -> Optional[TaskRecord]:
+    """Get the most recent successful task for an issue (for follow-up workspace reuse)."""
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = (
+            select(TaskRecord)
+            .where(TaskRecord.issue_id == issue_id, TaskRecord.status == "done")
+            .order_by(TaskRecord.created_at.desc())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
 async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
     # Auto-classify if AI didn't provide categories (backend-side, zero AI cost)
     categories = data.get("problem_categories", [])
@@ -510,6 +527,7 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             fix_suggestion=data.get("fix_suggestion", ""),
             rule_type=data.get("rule_type", ""),
             agent_type=data.get("agent_type", ""),
+            agent_model=data.get("agent_model", ""),
             raw_output=data.get("raw_output", ""),
             followup_question=data.get("followup_question", ""),
         )
@@ -781,6 +799,7 @@ def _issue_to_dict(
             "fix_suggestion": analysis.fix_suggestion or "",
             "rule_type": analysis.rule_type or "",
             "agent_type": analysis.agent_type or "",
+            "agent_model": getattr(analysis, "agent_model", "") or "",
             "followup_question": analysis.followup_question or "",
             "created_at": (analysis.created_at.isoformat() + "Z") if analysis.created_at else "",
         }

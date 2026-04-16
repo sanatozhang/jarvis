@@ -23,7 +23,9 @@ agent:
   providers:
     claude_code:
       enabled: true
-      model: "claude-sonnet-4-20250514"
+      model: "claude-sonnet-4-6[1m]"    # Sonnet 4.6 with 1M context window
+      effort: "high"                    # low / medium / high / max — 思考深度
+      fallback_model: "claude-sonnet-4-6"  # 主模型过载时自动降级（200K context）
       allowed_tools:
         - "Read"
         - "Write"

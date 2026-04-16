@@ -130,6 +130,16 @@ class ClaudeCodeAgent(BaseAgent):
         if self.config.model:
             cmd.extend(["--model", self.config.model])
 
+        if self.config.effort:
+            cmd.extend(["--effort", self.config.effort])
+
+        if self.config.fallback_model:
+            cmd.extend(["--fallback-model", self.config.fallback_model])
+
+        if self.config.betas:
+            cmd.append("--betas")
+            cmd.extend(self.config.betas)
+
         if self.config.max_turns:
             cmd.extend(["--max-turns", str(self.config.max_turns)])
 

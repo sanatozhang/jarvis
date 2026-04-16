@@ -4,7 +4,8 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
 import MarkdownText from "@/components/MarkdownText";
 import { Toast } from "@/components/Toast";
-import { fetchTracking, markInaccurate, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
+import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
+import { fetchTracking, markInaccurate, markComplete, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
 const CATEGORIES_DATA = [
   { value: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", cn: "硬件交互", en: "Hardware" },
@@ -19,14 +20,6 @@ const CATEGORIES = CATEGORIES_DATA.map((c) => c.value);
 const CATEGORY_SHORT: Record<string, string> = {};
 const CATEGORY_SHORT_EN: Record<string, string> = {};
 CATEGORIES_DATA.forEach((c) => { CATEGORY_SHORT[c.value] = c.cn; CATEGORY_SHORT_EN[c.value] = c.en; });
-
-const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
-  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
-  orange: "#EA580C", orangeBg: "rgba(251,146,60,0.12)", orangeBorder: "rgba(251,146,60,0.25)",
-};
 
 function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }) {
   const t = useT();
@@ -53,40 +46,6 @@ function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }
     </span>
   );
 }
-
-function SourceBadge({ source }: { source?: string }) {
-  const t = useT();
-  const config: Record<string, { bg: string; color: string; border: string; label: string }> = {
-    feishu:        { bg: "rgba(96,165,250,0.12)",   color: "#2563EB", border: "rgba(96,165,250,0.25)",   label: t("飞书") },
-    feishu_import: { bg: "rgba(96,165,250,0.12)",   color: "#2563EB", border: "rgba(96,165,250,0.25)",   label: t("飞书导入") },
-    local:         { bg: "rgba(251,146,60,0.12)",   color: "#EA580C", border: "rgba(251,146,60,0.25)",   label: t("网站提交") },
-    linear:        { bg: "rgba(167,139,250,0.12)",  color: "#7C3AED", border: "rgba(167,139,250,0.25)",  label: "Linear" },
-    api:           { bg: "rgba(52,211,153,0.12)",   color: "#059669", border: "rgba(52,211,153,0.25)",   label: "API" },
-  };
-  const c = config[source || ""] || config.feishu;
-  return (
-    <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
-      style={{ background: c.bg, color: c.color, border: `1px solid ${c.border}` }}>
-      {c.label}
-    </span>
-  );
-}
-
-function PriorityBadge({ p }: { p: string }) {
-  const t = useT();
-  return p === "H" ? (
-    <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold"
-      style={{ background: "rgba(239,68,68,0.15)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>
-      {t("高")}
-    </span>
-  ) : (
-    <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
-      style={{ background: "rgba(0,0,0,0.04)", color: S.text3, border: `1px solid ${S.border}` }}>
-      {t("低")}
-    </span>
-  );
-}
-
 
 function Pagination({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (p: number) => void }) {
   const t = useT();
@@ -128,6 +87,8 @@ export default function TrackingPage() {
   // Escalation state
   const [showEscalateDialog, setShowEscalateDialog] = useState(false);
   const [escalateNote, setEscalateNote] = useState("");
+  const [escalateLoading, setEscalateLoading] = useState(false);
+  const [escalateLinks, setEscalateLinks] = useState<Record<string, string>>({});
 
   // Follow-up state
   const [followupText, setFollowupText] = useState("");
@@ -322,14 +283,29 @@ export default function TrackingPage() {
   };
 
   const handleEscalate = async (issueId: string) => {
+    if (escalateLoading) return;
+    setEscalateLoading(true);
     try {
-      await escalateIssue(issueId, escalateNote, username);
+      const res = await escalateIssue(issueId, escalateNote, username);
       setToast(t("已转交工程师"));
       setShowEscalateDialog(false);
       setEscalateNote("");
-      closeDetail();
+      if (res.share_link) {
+        setEscalateLinks(prev => ({ ...prev, [issueId]: res.share_link! }));
+      }
       setTimeout(() => load(page), 500);
     } catch (e: any) { setToast(`${t("转交失败")}: ${e.message}`); }
+    finally { setEscalateLoading(false); }
+  };
+
+  const handleMarkComplete = async (issueId: string) => {
+    try {
+      const res = await markComplete(issueId, username);
+      const msg = res.feishu_synced ? t("已标记完成（飞书已同步）") : t("已标记完成");
+      setToast(msg);
+      closeDetail();
+      setTimeout(() => load(page), 500);
+    } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
   };
 
   const thStyle = { color: S.text3, fontSize: "10px", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.08em", padding: "10px 12px" };
@@ -416,7 +392,7 @@ export default function TrackingPage() {
                   <option value="analyzing">{t("分析中")}</option>
                   <option value="done">{t("成功")}</option>
                   <option value="failed">{t("失败")}</option>
-                  <option value="escalated">{t("已转交")}</option>
+                  <option value="inaccurate">{t("不准确")}</option>
                 </select>
               </div>
               <div className="w-32">
@@ -497,6 +473,12 @@ export default function TrackingPage() {
                   <td className={tdBase} style={{ width: "96px" }}>
                     <div className="flex flex-col gap-1">
                       <StatusBadge status={item.local_status} ruleType={item.analysis?.rule_type} />
+                      {item.escalated_at && (
+                        <span className="inline-flex w-fit rounded-full px-1.5 py-0.5 text-[9px] font-semibold"
+                          style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                          {t("已转交")}
+                        </span>
+                      )}
                       {(item.analysis_count ?? 0) > 1 && (
                         <span className="inline-flex w-fit items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-semibold"
                           style={{ background: "rgba(167,139,250,0.12)", color: "#7C3AED", border: "1px solid rgba(167,139,250,0.25)" }}>
@@ -585,6 +567,14 @@ export default function TrackingPage() {
                     <span className="rounded-full px-2 py-0.5 text-[10px]"
                       style={{ background: S.overlay, color: S.text2 }}>{detailItem.created_by}</span>
                   )}
+                  {detailItem.feishu_link && <FeishuLinkBadge href={detailItem.feishu_link} />}
+                  {detailItem.zendesk_id && (
+                    <a href={detailItem.zendesk} target="_blank"
+                      className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold hover:opacity-80"
+                      style={{ background: "rgba(0,0,0,0.04)", color: S.text1, border: `1px solid ${S.border}`, textDecoration: "none" }}>
+                      Zendesk {detailItem.zendesk_id}
+                    </a>
+                  )}
                 </div>
                 {detailItem.category && (
                   <p className="mb-2 text-xs" style={{ color: S.text2 }}>
@@ -665,6 +655,12 @@ export default function TrackingPage() {
                               {!isFollowup && r.created_at && (
                                 <span className="text-[10px]" style={{ color: S.text3 }}>{formatLocalTime(r.created_at)}</span>
                               )}
+                              {r.agent_model && (
+                                <span className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                                  style={{ background: "rgba(96,165,250,0.1)", color: "rgba(96,165,250,0.8)", border: "1px solid rgba(96,165,250,0.2)" }}>
+                                  {r.agent_model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}
+                                </span>
+                              )}
                             </div>
 
                             {/* Root cause */}
@@ -689,13 +685,23 @@ export default function TrackingPage() {
                                   {t("关键证据")} ({r.key_evidence.length})
                                 </button>
                                 {!evidenceCollapsed && (
-                                  <div className="space-y-1">
-                                    {r.key_evidence.map((ev: string, i: number) => (
-                                      <div key={i} className="rounded font-mono px-3 py-1.5 text-[11px]"
-                                        style={{ background: S.overlay, color: S.text2, border: `1px solid ${S.borderSm}` }}>
-                                        {ev}
-                                      </div>
-                                    ))}
+                                  <div className="space-y-2">
+                                    {r.key_evidence.map((ev: string, i: number) => {
+                                      const logSep = ev.match(/^(.+?)\s*(?:——|--|→|=>|日志[:：])\s*([\s\S]+)$/);
+                                      return (
+                                        <div key={i} className="rounded-lg px-3 py-2 text-[11px]"
+                                          style={{ background: S.overlay, border: `1px solid ${S.borderSm}` }}>
+                                          {logSep ? (
+                                            <>
+                                              <div className="mb-1 text-xs" style={{ color: S.text2 }}>{logSep[1].trim()}</div>
+                                              <div className="font-mono text-[10px] rounded px-2 py-1" style={{ background: S.surface, color: S.text3 }}>{logSep[2].trim()}</div>
+                                            </>
+                                          ) : (
+                                            <div className="whitespace-pre-wrap" style={{ color: S.text2 }}>{ev}</div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
                                   </div>
                                 )}
                               </div>
@@ -792,8 +798,8 @@ export default function TrackingPage() {
                 </section>
               )}
               {/* Escalation info */}
-              {detailItem.local_status === "escalated" && (
-                <section className="rounded-lg p-3" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
+              {(detailItem.escalated_at || escalateLinks[detailItem.record_id]) && (
+                <section className="rounded-lg p-3 space-y-2" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
                   <div className="flex items-center gap-2 mb-1">
                     <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
                       style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
@@ -809,11 +815,32 @@ export default function TrackingPage() {
                   {detailItem.escalation_note && (
                     <p className="text-xs mt-1" style={{ color: S.orange }}>{t("转交备注")}: {detailItem.escalation_note}</p>
                   )}
+                  {escalateLinks[detailItem.record_id] && (
+                    <a href={escalateLinks[detailItem.record_id]} target="_blank"
+                      className="flex items-center justify-center gap-2 w-full rounded-lg py-2 text-sm font-semibold transition-colors hover:opacity-80"
+                      style={{ background: S.orange, color: "#FFFFFF", textDecoration: "none" }}>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                      </svg>
+                      {t("打开飞书群")}
+                    </a>
+                  )}
                 </section>
               )}
               <section className="pt-4 space-y-2" style={{ borderTop: `1px solid ${S.border}` }}>
-                {/* Escalate button — show for done/failed (not already escalated) */}
+                {/* Mark complete — for done/failed, syncs to Feishu */}
                 {(detailItem.local_status === "done" || detailItem.local_status === "failed") && (
+                  <button onClick={() => handleMarkComplete(detailItem.record_id)}
+                    className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+                    style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {t("标记完成")}
+                  </button>
+                )}
+                {/* Escalate button — show for done/failed (not already escalated) */}
+                {(detailItem.local_status === "done" || detailItem.local_status === "failed") && !detailItem.escalated_at && (
                   showEscalateDialog ? (
                     <div className="rounded-lg p-3 space-y-2" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
                       <p className="text-xs font-medium" style={{ color: S.orange }}>{t("确定要将此工单转交给工程师处理吗？")}</p>
@@ -827,12 +854,15 @@ export default function TrackingPage() {
                       />
                       <div className="flex gap-2">
                         <button onClick={() => handleEscalate(detailItem.record_id)}
-                          className="flex-1 rounded-lg py-2 text-sm font-semibold"
+                          disabled={escalateLoading}
+                          className="flex-1 rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
                           style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
-                          {t("确认转交")}
+                          {escalateLoading && <div className="h-3.5 w-3.5 animate-spin rounded-full border-2" style={{ borderColor: "rgba(234,88,12,0.3)", borderTopColor: S.orange }} />}
+                          {escalateLoading ? t("转交中...") : t("确认转交")}
                         </button>
                         <button onClick={() => { setShowEscalateDialog(false); setEscalateNote(""); }}
-                          className="rounded-lg px-4 py-2 text-sm font-medium"
+                          disabled={escalateLoading}
+                          className="rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-30"
                           style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
                           {t("取消")}
                         </button>

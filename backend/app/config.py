@@ -49,6 +49,9 @@ class FeishuSettings(BaseSettings):
     table_id: str = "tblWQRIvZq74MhRT"
     view_id: str = "vewu36X0Gx"
     base_url: str = "https://nicebuild.feishu.cn/base/BmjmbSpxxabP2dsuxbtcUTYAn4g"
+    # Separate IM app for group chat / messaging (can be same or different app)
+    im_app_id: str = ""
+    im_app_secret: str = ""
 
     model_config = {
         "env_prefix": "FEISHU_",
@@ -56,6 +59,13 @@ class FeishuSettings(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    @property
+    def im_credentials(self) -> tuple:
+        """Return (app_id, app_secret) for IM operations. Falls back to main app."""
+        aid = self.im_app_id or self.app_id
+        asecret = self.im_app_secret or self.app_secret
+        return aid, asecret
 
 
 class LinearSettings(BaseSettings):
@@ -75,6 +85,9 @@ class LinearSettings(BaseSettings):
 class AgentProviderConfig(BaseSettings):
     enabled: bool = False
     model: str = ""
+    effort: str = ""               # "low", "medium", "high", "max" (empty = CLI default)
+    fallback_model: str = ""       # auto-fallback when primary model is overloaded
+    betas: List[str] = Field(default_factory=list)  # beta headers for API requests
     timeout: int = 600
     max_turns: int = 25
     allowed_tools: List[str] = Field(default_factory=list)
