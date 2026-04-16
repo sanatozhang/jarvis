@@ -761,7 +761,7 @@ export default function TrackingPage() {
                             <textarea
                               value={followupText}
                               onChange={(e) => setFollowupText(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && followupText.trim() && !disabled) { e.preventDefault(); startFollowup(detailItem.record_id, followupText); } }}
+                              onKeyDown={undefined}
                               placeholder={isAnalyzing ? t("请等待当前分析完成...") : t("请输入追问内容...")}
                               rows={1}
                               disabled={disabled}

@@ -1379,7 +1379,7 @@ export default function HomePage() {
                         <textarea
                           value={followupText}
                           onChange={(e) => setFollowupText(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && followupText.trim() && !followupSubmitting) { e.preventDefault(); startFollowup(detailId!, followupText); } }}
+                          onKeyDown={undefined}
                           placeholder={t("请输入追问内容...")}
                           rows={1}
                           disabled={followupSubmitting}
