@@ -312,9 +312,9 @@ class TestExtractJson:
 class TestSalvageFromMarkdown:
 
     def test_heading_becomes_problem_type(self):
-        text = "## 分析完成\n\n根本原因是网络问题"
+        text = "## 蓝牙连接断开\n\n根本原因是网络问题"
         data = _salvage_from_markdown(text)
-        assert data["problem_type"] == "分析完成"
+        assert data["problem_type"] == "蓝牙连接断开"
         assert "网络问题" in data["root_cause"]
 
     def test_user_reply_extraction(self):

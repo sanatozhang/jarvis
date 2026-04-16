@@ -77,6 +77,7 @@ class AnalyzeResult(BaseModel):
     needs_engineer: bool = False
     rule_type: str = ""
     agent_type: str = ""
+    agent_model: str = ""
     created_at: str = ""
     error: str = ""
 
