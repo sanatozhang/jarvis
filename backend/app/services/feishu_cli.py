@@ -171,11 +171,13 @@ async def _run_cli(*args: str, timeout: int = 120, retries: int = 2) -> Dict:
                 continue
             raise last_error
 
-        if not result.get("ok", False):
+        # lark-cli shortcut commands return {"ok": true/false, ...}
+        # lark-cli api commands return {"code": 0, "msg": "success", "data": ...}
+        is_ok = result.get("ok", False) or result.get("code") == 0
+        if not is_ok:
             error = result.get("error", {})
-            raise RuntimeError(
-                f"lark-cli error: {error.get('message', output[:300])}"
-            )
+            msg = error.get("message", "") or result.get("msg", "") or output[:300]
+            raise RuntimeError(f"lark-cli error: {msg}")
 
         return result
 
@@ -215,35 +217,23 @@ class FeishuCLI:
 
             logger.info("Fetching records from Feishu via CLI (cache miss)...")
             try:
+                url = (
+                    f"/open-apis/bitable/v1/apps/{self._app_token}"
+                    f"/tables/{self._table_id}/records"
+                    f"?view_id={self._view_id}&page_size={page_size}"
+                )
+                result = await _run_cli(
+                    "api", "GET", url,
+                    "--page-all", "--page-limit", "0",
+                    timeout=300,
+                )
+
                 all_records: List[Dict] = []
-                offset = 0
-
-                while True:
-                    result = await _run_cli(
-                        "base", "+record-list",
-                        "--base-token", self._app_token,
-                        "--table-id", self._table_id,
-                        "--view-id", self._view_id,
-                        "--limit", str(page_size),
-                        "--offset", str(offset),
-                        timeout=180,
-                    )
-
-                    data = result.get("data", {})
-                    fields = data.get("fields", [])
-                    rows = data.get("data", [])
-                    record_ids = data.get("record_id_list", [])
-
-                    for i, row in enumerate(rows):
-                        record = {"fields": {}, "record_id": record_ids[i] if i < len(record_ids) else ""}
-                        for j, val in enumerate(row):
-                            if j < len(fields):
-                                record["fields"][fields[j]] = val
-                        all_records.append(record)
-
-                    if not data.get("has_more", False):
-                        break
-                    offset += len(rows)
+                for item in result.get("data", {}).get("items", []):
+                    all_records.append({
+                        "fields": item.get("fields", {}),
+                        "record_id": item.get("record_id", ""),
+                    })
 
                 _records_cache = all_records
                 _cache_ts = time.monotonic()
@@ -267,63 +257,47 @@ class FeishuCLI:
         logger.info("Feishu records cache invalidated")
 
     async def get_record(self, record_id: str) -> Dict:
-        result = await _run_cli(
-            "base", "+record-get",
-            "--base-token", self._app_token,
-            "--table-id", self._table_id,
-            "--record-id", record_id,
+        url = (
+            f"/open-apis/bitable/v1/apps/{self._app_token}"
+            f"/tables/{self._table_id}/records/{record_id}"
         )
-        data = result.get("data", {})
-        # +record-get returns {"record": {"field": value, ...}} format
-        raw_record = data.get("record", {})
-        if raw_record:
-            return {"fields": raw_record, "record_id": record_id}
-        # Fallback: columnar format (shouldn't happen for +record-get)
-        fields_names = data.get("fields", [])
-        row = data.get("data", [[]])[0] if data.get("data") else []
-        record = {"fields": {}, "record_id": record_id}
-        for j, val in enumerate(row):
-            if j < len(fields_names):
-                record["fields"][fields_names[j]] = val
-        return record
+        result = await _run_cli("api", "GET", url)
+        record = result.get("data", {}).get("record", {})
+        return {
+            "fields": record.get("fields", {}),
+            "record_id": record.get("record_id", record_id),
+        }
 
     # ------------------------------------------------------------------
     # Bitable records — WRITE (new capabilities!)
     # ------------------------------------------------------------------
     async def create_record(self, fields: Dict[str, Any]) -> str:
         """Create a single record in Bitable. Returns the new record_id."""
-        field_names = list(fields.keys())
-        field_values = [fields[k] for k in field_names]
-        payload = json.dumps({"fields": field_names, "rows": [field_values]}, ensure_ascii=False)
-
-        result = await _run_cli(
-            "base", "+record-batch-create",
-            "--base-token", self._app_token,
-            "--table-id", self._table_id,
-            "--json", payload,
+        url = (
+            f"/open-apis/bitable/v1/apps/{self._app_token}"
+            f"/tables/{self._table_id}/records"
         )
-        record_ids = result.get("data", {}).get("record_id_list", [])
-        if not record_ids:
+        result = await _run_cli(
+            "api", "POST", url,
+            "--data", json.dumps({"fields": fields}, ensure_ascii=False),
+        )
+        record_id = result.get("data", {}).get("record", {}).get("record_id", "")
+        if not record_id:
             raise RuntimeError("Create record returned no record_id")
-        # New records can't be patched in-memory — invalidate the full cache
-        # so the next list_records picks them up.
         self.invalidate_cache()
-        return record_ids[0]
+        return record_id
 
     async def update_record(self, record_id: str, fields: Dict[str, Any]) -> bool:
         """Update an existing record's fields."""
-        payload = json.dumps({
-            "record_id_list": [record_id],
-            "patch": fields,
-        }, ensure_ascii=False)
-
-        result = await _run_cli(
-            "base", "+record-batch-update",
-            "--base-token", self._app_token,
-            "--table-id", self._table_id,
-            "--json", payload,
+        url = (
+            f"/open-apis/bitable/v1/apps/{self._app_token}"
+            f"/tables/{self._table_id}/records/{record_id}"
         )
-        ok = result.get("ok", False)
+        result = await _run_cli(
+            "api", "PUT", url,
+            "--data", json.dumps({"fields": fields}, ensure_ascii=False),
+        )
+        ok = result.get("code") == 0 or result.get("ok", False)
         if ok:
             _patch_cached_record(record_id, fields)
         return ok
