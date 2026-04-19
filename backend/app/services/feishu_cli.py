@@ -161,6 +161,12 @@ async def _run_cli(*args: str, timeout: int = 120, retries: int = 2) -> Dict:
                 continue
             raise last_error
 
+        # lark-cli may prefix stdout with progress text like "[page 1] fetching..."
+        # Strip everything before the first '{' to get the JSON payload.
+        json_start = output.find("{")
+        if json_start > 0:
+            output = output[json_start:]
+
         try:
             result = json.loads(output)
         except json.JSONDecodeError:
@@ -224,7 +230,7 @@ class FeishuCLI:
                 )
                 result = await _run_cli(
                     "api", "GET", url,
-                    "--page-all", "--page-limit", "0",
+                    "--page-all",
                     timeout=300,
                 )
 
