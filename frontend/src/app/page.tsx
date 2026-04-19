@@ -412,7 +412,8 @@ export default function HomePage() {
     setEscalateLoading(true);
     try {
       const res = await escalateIssue(issueId, escalateNote, username || "");
-      setToast(t("已转交工程师"));
+      const groupExists = (res as any).group_exists;
+      setToast(groupExists ? t("已通知值周工程师（飞书群已存在）") : t("已转交工程师"));
       setShowEscalateDialog(false);
       setEscalateNote("");
       // Store share_link for this issue so "已转交" section can show "打开飞书群"

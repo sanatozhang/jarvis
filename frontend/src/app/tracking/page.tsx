@@ -287,7 +287,8 @@ export default function TrackingPage() {
     setEscalateLoading(true);
     try {
       const res = await escalateIssue(issueId, escalateNote, username);
-      setToast(t("已转交工程师"));
+      const groupExists = (res as any).group_exists;
+      setToast(groupExists ? t("已通知值周工程师（飞书群已存在）") : t("已转交工程师"));
       setShowEscalateDialog(false);
       setEscalateNote("");
       if (res.share_link) {

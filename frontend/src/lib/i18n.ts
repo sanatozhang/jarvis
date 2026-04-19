@@ -439,6 +439,7 @@ const EN: Record<string, string> = {
   "转交备注": "Escalation Note",
   "请输入转交备注（可选）...": "Enter escalation note (optional)...",
   "已转交工程师": "Escalated to engineer",
+  "已通知值周工程师（飞书群已存在）": "Oncall engineers notified (Feishu group already exists)",
   "转交失败": "Escalation failed",
   "转交人": "Escalated by",
   "转交时间": "Escalated at",

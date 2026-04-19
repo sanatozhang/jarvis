@@ -251,21 +251,40 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
     async with db.get_session() as session:
         issue_rec = await session.get(db.IssueRecord, issue_id)
 
+    description = issue_rec.description if issue_rec else issue_id
+    problem_type = ""
+    analysis = await db.get_analysis_by_issue(issue_id)
+    if analysis:
+        problem_type = analysis.problem_type or ""
+
+    issue_link = ""
+    if issue_rec and is_feishu_source(issue_id):
+        issue_link = FeishuCLI().get_feishu_link(issue_id)
+
+    user = await db.get_user(body.escalated_by) if body.escalated_by else None
+    user_email = (user or {}).get("feishu_email", "")
+
     chat_result = None
+
+    if is_feishu_source(issue_id):
+        # Feishu issues: group already created by Bitable automation on "开始处理",
+        # just notify oncall engineers via DM.
+        try:
+            from app.services.notify import notify_oncall
+            await notify_oncall(
+                issue_id=issue_id,
+                description=description or "",
+                reason=f"工单转交工程师: {problem_type}" if problem_type else "工单转交工程师",
+                link=issue_link,
+            )
+        except Exception as ne:
+            logger.error("Failed to notify oncall for feishu escalation: %s", ne)
+
+        result = {"status": "escalated", "issue_id": issue_id, "group_exists": True}
+        return result
+
+    # Non-Feishu issues (fb_, lin_): create a new group + add members + notify
     try:
-        description = issue_rec.description if issue_rec else issue_id
-        problem_type = ""
-        analysis = await db.get_analysis_by_issue(issue_id)
-        if analysis:
-            problem_type = analysis.problem_type or ""
-
-        issue_link = ""
-        if issue_rec and is_feishu_source(issue_id):
-            issue_link = FeishuCLI().get_feishu_link(issue_id)
-
-        user = await db.get_user(body.escalated_by) if body.escalated_by else None
-        user_email = (user or {}).get("feishu_email", "")
-
         chat_result = await create_escalation_group(
             user_email=user_email,
             issue_id=issue_id,
@@ -274,9 +293,19 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
             issue_link=issue_link,
             zendesk_id=issue_rec.zendesk_id if issue_rec else "",
         )
-        logger.info("Escalation group created: %s", chat_result)
+        logger.info("Escalation completed: %s", chat_result)
     except Exception as e:
-        logger.error("Failed to create escalation group (escalation still recorded): %s", e)
+        logger.error("Failed to create escalation group, sending direct notification: %s", e)
+        try:
+            from app.services.notify import notify_oncall
+            await notify_oncall(
+                issue_id=issue_id,
+                description=description or "",
+                reason=f"工单转交工程师: {problem_type}" if problem_type else "工单转交工程师",
+                link=issue_link,
+            )
+        except Exception as ne:
+            logger.error("Fallback notify_oncall also failed: %s", ne)
 
     result = {"status": "escalated", "issue_id": issue_id}
     if chat_result:

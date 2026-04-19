@@ -643,6 +643,33 @@ async def send_message(
         return False
 
 
+async def _emails_to_open_ids(emails: List[str]) -> List[str]:
+    """Convert a list of emails to Feishu open_ids.
+
+    Requires contact:user.id:readonly permission on the IM app.
+    Returns open_ids for emails that were successfully resolved (may be partial).
+    """
+    if not emails:
+        return []
+    try:
+        result = await _feishu_api(
+            "POST", "/contact/v3/users/batch_get_id",
+            params={"user_id_type": "open_id"},
+            body={"emails": emails, "mobiles": []},
+        )
+        user_list = result.get("data", {}).get("user_list", [])
+        open_ids = [u["user_id"] for u in user_list if u.get("user_id")]
+        if len(open_ids) < len(emails):
+            resolved = [u.get("email", "") for u in user_list if u.get("user_id")]
+            failed = set(emails) - set(resolved)
+            if failed:
+                logger.warning("Could not resolve emails to open_id: %s", failed)
+        return open_ids
+    except Exception as e:
+        logger.warning("Failed to resolve emails to open_ids: %s", e)
+        return []
+
+
 async def create_escalation_group(
     user_email: str,
     issue_id: str,
@@ -653,8 +680,7 @@ async def create_escalation_group(
 ) -> Dict[str, Any]:
     """Create a Feishu group chat for issue escalation.
 
-    Flow: create group → get invite link → post issue info → notify members via email.
-    No contact:user.id permission needed.
+    Flow: create group → add oncall members to group → post issue info → notify via DM as fallback.
     """
     from app.db import database as db_mod
 
@@ -662,47 +688,74 @@ async def create_escalation_group(
     category = problem_type or description[:20].replace(" ", "")
     group_name = f"工单处理--{category}--{now}"
 
-    # 1. Create group (bot-only initially)
-    result = await _feishu_api(
-        "POST", "/im/v1/chats",
-        params={"set_bot_manager": "true"},
-        body={"name": group_name, "chat_type": "group"},
-    )
-    chat_id = result["data"]["chat_id"]
-    logger.info("Created Feishu group: %s (chat_id: %s)", group_name, chat_id)
-
-    # 2. Get invite link
-    share_link = ""
-    try:
-        link_result = await _feishu_api(
-            "POST", f"/im/v1/chats/{chat_id}/link",
-            body={"is_external": False},
-        )
-        share_link = link_result.get("data", {}).get("share_link", "")
-    except Exception as e:
-        logger.warning("Failed to get group invite link: %s", e)
-
-    # 3. Post issue info to group
-    msg_lines = ["🔔 工单转交工程师处理"]
-    msg_lines.append(f"工单ID: {issue_id}")
-    msg_lines.append(f"问题描述: {description[:300]}")
-    if problem_type:
-        msg_lines.append(f"问题分类: {problem_type}")
-    if zendesk_id:
-        msg_lines.append(f"Zendesk: {zendesk_id}")
-    if issue_link:
-        msg_lines.append(f"链接: {issue_link}")
-    await send_message(chat_id=chat_id, text="\n".join(msg_lines))
-
-    # 4. Notify members via email with invite link
     oncall_emails = await db_mod.get_current_oncall()
     all_emails = list(set(([user_email] if user_email else []) + oncall_emails))
 
-    notify_lines = [f"🔔 工单已转交工程师处理"]
+    # 1. Create group (bot-only initially) — non-fatal
+    chat_id = ""
+    share_link = ""
+    try:
+        result = await _feishu_api(
+            "POST", "/im/v1/chats",
+            params={"set_bot_manager": "true"},
+            body={"name": group_name, "chat_type": "group"},
+        )
+        chat_id = result["data"]["chat_id"]
+        logger.info("Created Feishu group: %s (chat_id: %s)", group_name, chat_id)
+    except Exception as e:
+        logger.warning("Failed to create Feishu group (will still notify oncall via DM): %s", e)
+
+    # 2. Resolve emails → open_ids, then add members to group
+    added_members: List[str] = []
+    if chat_id and all_emails:
+        open_ids = await _emails_to_open_ids(all_emails)
+        if open_ids:
+            try:
+                await _feishu_api(
+                    "POST", f"/im/v1/chats/{chat_id}/members",
+                    params={"member_id_type": "open_id"},
+                    body={"id_list": open_ids},
+                )
+                added_members = all_emails
+                logger.info("Added %d members to group %s", len(open_ids), chat_id)
+            except Exception as e:
+                logger.warning("Failed to add members to group (will use invite link + DM): %s", e)
+        else:
+            logger.warning("Could not resolve any emails to open_ids (missing contact:user.id:readonly?)")
+
+    # 3. Get invite link as fallback for members who couldn't be added
+    if chat_id:
+        try:
+            link_result = await _feishu_api(
+                "POST", f"/im/v1/chats/{chat_id}/link",
+                body={"is_external": False},
+            )
+            share_link = link_result.get("data", {}).get("share_link", "")
+        except Exception as e:
+            logger.warning("Failed to get group invite link: %s", e)
+
+    # 4. Post issue info to group
+    if chat_id:
+        msg_lines = ["🔔 工单转交工程师处理"]
+        msg_lines.append(f"工单ID: {issue_id}")
+        msg_lines.append(f"问题描述: {description[:300]}")
+        if problem_type:
+            msg_lines.append(f"问题分类: {problem_type}")
+        if zendesk_id:
+            msg_lines.append(f"Zendesk: {zendesk_id}")
+        if issue_link:
+            msg_lines.append(f"链接: {issue_link}")
+        try:
+            await send_message(chat_id=chat_id, text="\n".join(msg_lines))
+        except Exception as e:
+            logger.warning("Failed to post issue info to group: %s", e)
+
+    # 5. Send individual DM notifications (always runs as fallback)
+    notify_lines = ["🔔 工单已转交工程师处理"]
     notify_lines.append(f"工单: {issue_id}")
     notify_lines.append(f"问题: {description[:100]}")
     if share_link:
-        notify_lines.append(f"请加入处理群: {share_link}")
+        notify_lines.append(f"处理群: {share_link}")
     if issue_link:
         notify_lines.append(f"飞书工单: {issue_link}")
     notify_text = "\n".join(notify_lines)
@@ -710,7 +763,7 @@ async def create_escalation_group(
     for email in all_emails:
         try:
             await send_message(email=email, text=notify_text)
-            logger.info("Notified %s to join escalation group", email)
+            logger.info("Notified %s about escalation", email)
         except Exception as e:
             logger.warning("Failed to notify %s: %s", email, e)
 
@@ -719,6 +772,7 @@ async def create_escalation_group(
         "group_name": group_name,
         "share_link": share_link,
         "members": all_emails,
+        "added_to_group": added_members,
     }
 
 
