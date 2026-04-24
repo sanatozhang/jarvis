@@ -483,8 +483,8 @@ export default function HomePage() {
 
   const counts = { pending: pendingData?.total ?? 0, in_progress: ipData?.total ?? 0, done: doneData?.total ?? 0, inaccurate: inaccurateData?.total ?? 0 };
 
-  const openDetail = (id: string, t: Tab) => { setDetailId(id); setDirectDetail(null); setDetailTab(t); setUrlParam("detail", id); setUrlParam("dtab", t); };
-  const closeDetail = () => { setDetailId(null); setDirectDetail(null); setFollowupText(""); setFollowupSubmitting(false); setShowEscalateDialog(false); setEscalateNote(""); setUrlParam("detail", ""); setUrlParam("dtab", ""); };
+  const openDetail = (id: string, t: Tab) => { setDetailId(id); setDirectDetail(null); setDetailTab(t); setShowEscalateDialog(false); setShowFeishuTransferDialog(false); setEscalateNote(""); setUrlParam("detail", id); setUrlParam("dtab", t); };
+  const closeDetail = () => { setDetailId(null); setDirectDetail(null); setFollowupText(""); setFollowupSubmitting(false); setShowEscalateDialog(false); setShowFeishuTransferDialog(false); setEscalateNote(""); setUrlParam("detail", ""); setUrlParam("dtab", ""); };
 
   const detailData = (() => {
     if (!detailId) return null;
@@ -1551,11 +1551,6 @@ export default function HomePage() {
                 )}
                 {detailData.localItem?.local_status === "done" && (
                   <div className="space-y-2">
-                    <button onClick={() => { handlePromoteToGolden(detailData.localItem || detailData); }}
-                      className="w-full rounded-lg py-2.5 text-sm font-semibold"
-                      style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
-                      {t("标记为金样本")}
-                    </button>
                     <button
                       onClick={() => handleMarkInaccurate(detailId!)}
                       className="w-full rounded-lg py-2.5 text-sm font-medium transition-colors"

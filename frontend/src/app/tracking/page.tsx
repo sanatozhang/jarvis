@@ -132,6 +132,9 @@ export default function TrackingPage() {
 
   const openDetail = (item: LocalIssueItem) => {
     setDetailItem(item);
+    setShowEscalateDialog(false);
+    setShowFeishuTransferDialog(false);
+    setEscalateNote("");
     const url = new URL(window.location.href);
     url.searchParams.set("detail", item.record_id);
     window.history.replaceState({}, "", url.toString());
@@ -147,6 +150,7 @@ export default function TrackingPage() {
     setFollowupText("");
     setFollowupSubmitting(false);
     setShowEscalateDialog(false);
+    setShowFeishuTransferDialog(false);
     setEscalateNote("");
     const url = new URL(window.location.href);
     url.searchParams.delete("detail");
@@ -890,11 +894,6 @@ export default function TrackingPage() {
                 )}
                 {detailItem.local_status === "done" && (
                   <div className="space-y-2">
-                    <button onClick={() => { handlePromoteToGolden(detailItem); }}
-                      className="w-full rounded-lg py-2.5 text-sm font-semibold"
-                      style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
-                      {t("标记为金样本")}
-                    </button>
                     <button onClick={() => { handleMarkInaccurate(detailItem.record_id); closeDetail(); }}
                       className="w-full rounded-lg py-2.5 text-sm font-medium"
                       style={{ background: "rgba(239,68,68,0.10)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.25)" }}>

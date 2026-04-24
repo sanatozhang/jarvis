@@ -655,8 +655,14 @@ async def _emails_to_open_ids(emails: List[str]) -> List[str]:
     Requires contact:user.id:readonly permission on the IM app.
     Returns open_ids for emails that were successfully resolved (may be partial).
     """
+    mapping = await _emails_to_open_id_map(emails)
+    return list(mapping.values())
+
+
+async def _emails_to_open_id_map(emails: List[str]) -> Dict[str, str]:
+    """Convert emails to {email: open_id} dict."""
     if not emails:
-        return []
+        return {}
     try:
         result = await _feishu_api(
             "POST", "/contact/v3/users/batch_get_id",
@@ -664,16 +670,18 @@ async def _emails_to_open_ids(emails: List[str]) -> List[str]:
             body={"emails": emails, "mobiles": []},
         )
         user_list = result.get("data", {}).get("user_list", [])
-        open_ids = [u["user_id"] for u in user_list if u.get("user_id")]
-        if len(open_ids) < len(emails):
-            resolved = [u.get("email", "") for u in user_list if u.get("user_id")]
-            failed = set(emails) - set(resolved)
+        mapping = {}
+        for u in user_list:
+            if u.get("user_id") and u.get("email"):
+                mapping[u["email"]] = u["user_id"]
+        if len(mapping) < len(emails):
+            failed = set(emails) - set(mapping.keys())
             if failed:
                 logger.warning("Could not resolve emails to open_id: %s", failed)
-        return open_ids
+        return mapping
     except Exception as e:
         logger.warning("Failed to resolve emails to open_ids: %s", e)
-        return []
+        return {}
 
 
 async def create_escalation_group(
@@ -757,8 +765,11 @@ async def create_escalation_group(
         except Exception as e:
             logger.warning("Failed to get group invite link: %s", e)
 
-    # 4. Post issue info to group
+    # 4. Post issue info to group (with @mentions for oncall members)
     if chat_id:
+        # Resolve oncall emails to open_ids for @mentions
+        oncall_id_map = await _emails_to_open_id_map(oncall_emails) if oncall_emails else {}
+
         msg_lines = ["🔔 工单转交工程师处理"]
         if appllo_url:
             msg_lines.append(f"工单链接: {appllo_url}")
@@ -771,6 +782,25 @@ async def create_escalation_group(
             msg_lines.append(f"Zendesk: {zendesk_id}")
         if issue_link:
             msg_lines.append(f"飞书工单: {issue_link}")
+
+        # @mention oncall members
+        if oncall_id_map:
+            at_tags = " ".join(
+                f'<at user_id="{oid}">{email.split("@")[0]}</at>'
+                for email, oid in oncall_id_map.items()
+            )
+            msg_lines.append(f"\n{at_tags} 辛苦关注并持续跟进解决问题")
+
+        # Problem routing guide
+        msg_lines.append(
+            "\n📋 问题对接人:\n"
+            "• BE问题 → jacky.yang@plaud.ai\n"
+            "• 语音识别不准确 → ruixin@plaud.ai\n"
+            "• Summary/Ask 相关 → luke@plaud.ai\n"
+            "• 支付会员相关 → walker.li@plaud.ai\n"
+            "• 总结内容与转写/录音不一致 → pillar@plaud.ai"
+        )
+
         try:
             await send_message(chat_id=chat_id, text="\n".join(msg_lines))
         except Exception as e:
