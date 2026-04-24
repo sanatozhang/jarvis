@@ -86,6 +86,7 @@ export default function TrackingPage() {
 
   // Escalation state
   const [showEscalateDialog, setShowEscalateDialog] = useState(false);
+  const [showFeishuTransferDialog, setShowFeishuTransferDialog] = useState(false);
   const [escalateNote, setEscalateNote] = useState("");
   const [escalateLoading, setEscalateLoading] = useState(false);
   const [escalateLinks, setEscalateLinks] = useState<Record<string, string>>({});
@@ -900,6 +901,60 @@ export default function TrackingPage() {
                       {t("标记为不准确")}
                     </button>
                   </div>
+                )}
+                {/* Transfer to Feishu — with intercept dialog */}
+                {(detailItem.local_status === "done" || detailItem.local_status === "failed") && (
+                  showFeishuTransferDialog ? (
+                    <div className="rounded-lg p-4 space-y-3" style={{ background: "rgba(96,165,250,0.06)", border: "1px solid rgba(96,165,250,0.2)" }}>
+                      <div className="flex items-start gap-2">
+                        <svg className="h-4 w-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="#2563EB" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <div>
+                          <p className="text-sm font-medium" style={{ color: "#1D4ED8" }}>{t("建议使用群聊跟进")}</p>
+                          <p className="mt-1 text-xs" style={{ color: "#6B7280" }}>
+                            {t("飞书工单即将停用，建议直接点击「转交工程师」创建群聊跟进，更高效便捷。")}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => { setShowFeishuTransferDialog(false); setShowEscalateDialog(true); }}
+                          className="flex-1 rounded-lg py-2 text-sm font-semibold"
+                          style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                          {t("转交工程师（推荐）")}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowFeishuTransferDialog(false);
+                            const base = "https://nicebuild.feishu.cn/share/base/form/shrcnGuYEnRrbbVw4Y6evkyUDCo";
+                            const params = new URLSearchParams();
+                            const appUrl = `${window.location.origin}/tracking?detail=${detailItem.record_id}`;
+                            const desc = `Appllo 工单: ${appUrl}\n\n${detailItem.description || ""}`;
+                            params.set("prefill_问题描述", desc);
+                            if (detailItem.zendesk) params.set("prefill_Zendesk 工单链接", detailItem.zendesk);
+                            if (detailItem.feishu_link) params.set("prefill_飞书工单链接", detailItem.feishu_link);
+                            const latestAnalysis = issueAnalyses[detailItem.record_id]?.[0] || detailItem.analysis;
+                            if (latestAnalysis?.root_cause) params.set("prefill_处理结果", latestAnalysis.root_cause);
+                            if (detailItem.root_cause_summary) params.set("prefill_一句话归因", detailItem.root_cause_summary);
+                            window.open(`${base}?${params.toString()}`, "_blank");
+                          }}
+                          className="rounded-lg px-4 py-2 text-xs font-medium"
+                          style={{ border: `1px solid ${S.border}`, color: S.text3 }}>
+                          {t("仍然创建飞书工单")}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowFeishuTransferDialog(true)}
+                      className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+                      style={{ background: "rgba(96,165,250,0.12)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }}>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                      </svg>
+                      {t("转飞书工单")}
+                    </button>
+                  )
                 )}
               </section>
             </div>

@@ -463,6 +463,10 @@ const EN: Record<string, string> = {
 
   // Transfer to Feishu
   "转飞书工单": "Transfer to Feishu",
+  "建议使用群聊跟进": "We recommend using group chat",
+  "飞书工单即将停用，建议直接点击「转交工程师」创建群聊跟进，更高效便捷。": "Feishu tickets will be deprecated soon. We recommend clicking \"Escalate to Engineer\" to create a group chat for faster collaboration.",
+  "转交工程师（推荐）": "Escalate to Engineer (Recommended)",
+  "仍然创建飞书工单": "Create Feishu Ticket Anyway",
 
   // Golden Samples
   "金样本": "Golden Samples",
