@@ -154,6 +154,15 @@ const EN: Record<string, string> = {
   "固件": "Firmware",
   "APP": "APP",
   "日志": "Logs",
+  "日志信息": "Log Info",
+  "系统版本": "OS Version",
+  "设备型号": "Device Model",
+  "用户 UID": "User UID",
+  "语言/地区": "Locale",
+  "API 区域": "API Region",
+  "关联文件": "File IDs",
+  "下载日志": "Download Logs",
+  "构建信息": "Build Info",
 
   // Feedback page
   "手动上传用户问题和日志文件": "Upload user issues and log files",
@@ -424,6 +433,12 @@ const EN: Record<string, string> = {
   "追问分析": "Follow-up Analysis",
   "分析结果": "Analysis Results",
 
+  // Escalation settings
+  "转交群固定成员": "Escalation Group Fixed Members",
+  "每次创建转交群时，这些人会被自动邀请": "These people are automatically invited when creating escalation groups",
+  "每行一个邮箱地址": "One email address per line",
+  "保存成员列表": "Save Members",
+
   // User management
   "用户管理": "User Management",
   "角色": "Role",
@@ -523,4 +538,31 @@ const EN: Record<string, string> = {
   "确定要删除这个许愿吗？": "Delete this wish?",
   "许愿已删除": "Wish deleted",
   "全部状态": "All Status",
+
+  // Missing translations (batch fix)
+  "标记完成": "Mark Complete",
+  "已标记完成": "Marked as complete",
+  "已标记完成（飞书已同步）": "Marked complete (synced to Feishu)",
+  "打开飞书群": "Open Feishu Group",
+  "转交中...": "Escalating...",
+  "飞书工单": "Feishu Issue",
+  "正在加载工单...": "Loading tickets...",
+  "正在从飞书同步...": "Syncing from Feishu...",
+  "Agent 配置、环境变量与系统状态": "Agent Config, Environment Variables & System Status",
+  "已配置": "Configured",
+  "工单号": "Ticket #",
+  "每日分析汇总与用户回复模板": "Daily analysis summary & reply templates",
+  "问题分类分布": "Problem Category Distribution",
+  "条已分类": "classified",
+  "回溯分类": "Backfill Classifications",
+  "回溯中...": "Backfilling...",
+  "全部设备": "All Devices",
+  "设备类型分布": "Device Type Distribution",
+  "问题总数": "Total Issues",
+  "分析规则": "Analysis Rules",
+  "规则系统概述": "Rules System Overview",
+  "字段说明": "Field Reference",
+  "规则内容编写指南": "Rule Content Guide",
+  "完整示例": "Full Example",
+  "已选": "selected",
 };

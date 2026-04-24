@@ -4,15 +4,29 @@ API routes for system settings / agent configuration.
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import List
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from app.config import get_settings
+from app.db import database as db
 from app.models.schemas import AgentConfigUpdate
 
 logger = logging.getLogger("jarvis.api.settings")
 router = APIRouter()
+
+# Default fixed members for escalation groups
+DEFAULT_ESCALATION_MEMBERS = [
+    "sanato.zhang@plaud.ai",
+    "leon@plaud.ai",
+    "yang@plaud.ai",
+    "will.wu@plaud.ai",
+    "david.liu@plaud.ai",
+    "lucy.ding@plaud.ai",
+]
 
 
 @router.get("/agent")
@@ -67,3 +81,33 @@ async def get_concurrency_config():
         "max_downloads": settings.concurrency.max_downloads,
         "task_timeout": settings.concurrency.task_timeout,
     }
+
+
+# ---------------------------------------------------------------------------
+# Escalation fixed members
+# ---------------------------------------------------------------------------
+
+ESCALATION_MEMBERS_KEY = "escalation_fixed_members"
+
+
+@router.get("/escalation-members")
+async def get_escalation_members():
+    """Get fixed members that are always added to escalation groups."""
+    raw = await db.get_oncall_config(ESCALATION_MEMBERS_KEY, "")
+    if raw:
+        members = json.loads(raw)
+    else:
+        members = DEFAULT_ESCALATION_MEMBERS
+    return {"members": members}
+
+
+class EscalationMembersUpdate(BaseModel):
+    members: List[str]
+
+
+@router.put("/escalation-members")
+async def update_escalation_members(req: EscalationMembersUpdate):
+    """Update the fixed members list for escalation groups."""
+    cleaned = [e.strip() for e in req.members if e.strip()]
+    await db.set_oncall_config(ESCALATION_MEMBERS_KEY, json.dumps(cleaned, ensure_ascii=False))
+    return {"status": "updated", "members": cleaned}

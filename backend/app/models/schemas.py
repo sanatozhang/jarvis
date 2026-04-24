@@ -135,6 +135,7 @@ class AnalysisResult(BaseModel):
     agent_model: str = ""
     raw_output: str = ""
     followup_question: str = ""
+    log_metadata: Dict[str, Any] = Field(default_factory=dict)  # Extracted from logs: uid, version, device, etc.
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Issue context (denormalized for convenience)

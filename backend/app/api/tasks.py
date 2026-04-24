@@ -157,6 +157,7 @@ async def get_task_result(task_id: str):
         agent_type=analysis.agent_type,
         agent_model=getattr(analysis, "agent_model", "") or "",
         raw_output=analysis.raw_output[:2000],
+        log_metadata=json.loads(analysis.log_metadata_json) if getattr(analysis, "log_metadata_json", None) else {},
         created_at=analysis.created_at,
     )
 

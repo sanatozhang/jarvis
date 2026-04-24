@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, type AgentConfig, type HealthCheck, type UserListItem } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, type AgentConfig, type HealthCheck, type UserListItem } from "@/lib/api";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
 interface EnvGroup { key: string; label: string; fields: EnvField[]; }
@@ -84,6 +84,9 @@ export default function SettingsPage() {
   const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
   const [envSaving, setEnvSaving] = useState(false);
 
+  const [escalationMembers, setEscalationMembers] = useState("");
+  const [escalationSaving, setEscalationSaving] = useState(false);
+
   const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   const isAdmin = username === "sanato";
 
@@ -91,6 +94,9 @@ export default function SettingsPage() {
     fetchAgentConfig().then(setConfig).catch(console.error);
     fetchHealth().then(setHealth).catch(console.error);
     checkAgents().then(setAgents).catch(console.error);
+    fetchEscalationMembers()
+      .then((data) => setEscalationMembers(data.members.join("\n")))
+      .catch(console.error);
     if (isAdmin) loadEnv();
   }, []);
 
@@ -136,6 +142,16 @@ export default function SettingsPage() {
       }
     } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
     finally { setEnvSaving(false); }
+  };
+
+  const saveEscalationMembers = async () => {
+    setEscalationSaving(true);
+    try {
+      const members = escalationMembers.split("\n").map((s) => s.trim()).filter(Boolean);
+      await updateEscalationMembers(members);
+      setToast(t("已保存"));
+    } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
+    finally { setEscalationSaving(false); }
   };
 
   const ruleTypes = ["recording_missing", "timestamp_drift", "bluetooth", "cloud_sync", "speaker", "flutter_crash", "file_transfer", "membership_payment", "hardware_firmware", "general"];
@@ -347,6 +363,33 @@ export default function SettingsPage() {
             </section>
           </>
         )}
+
+        {/* ESCALATION FIXED MEMBERS */}
+        <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                {t("转交群固定成员")}
+              </h2>
+              <p className="mt-0.5 text-xs" style={{ color: S.text3 }}>
+                {t("每次创建转交群时，这些人会被自动邀请")}
+              </p>
+            </div>
+            <button onClick={saveEscalationMembers} disabled={escalationSaving}
+              className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50 transition-opacity"
+              style={{ background: S.overlay, color: S.text1, border: `1px solid ${S.border}` }}>
+              {escalationSaving ? t("保存中...") : t("保存成员列表")}
+            </button>
+          </div>
+          <textarea
+            value={escalationMembers}
+            onChange={(e) => setEscalationMembers(e.target.value)}
+            placeholder={t("每行一个邮箱地址")}
+            rows={8}
+            className="w-full resize-none rounded-lg px-3 py-2 font-mono text-sm transition-colors"
+            style={inputStyle}
+          />
+        </section>
 
         {/* USER MANAGEMENT (Admin only) */}
         {isAdmin && (

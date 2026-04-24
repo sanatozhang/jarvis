@@ -120,6 +120,119 @@ def get_log_info(log_path: Path) -> Dict[str, Any]:
     return info
 
 
+def extract_log_metadata(log_paths: List[Path]) -> Dict[str, Any]:
+    """
+    Extract basic device/user metadata from log files.
+
+    Parses the first ~200 lines of each log for structured fields like
+    app version, OS version, device model, UID, file IDs, etc.
+    """
+    meta: Dict[str, Any] = {
+        "app_version": "",
+        "build_info": "",
+        "os_version": "",
+        "platform": "",
+        "device_model": "",
+        "uid": "",
+        "locale": "",
+        "api_region": "",
+        "file_ids": [],
+    }
+
+    # Patterns (compiled once)
+    re_user_agent = re.compile(
+        r"User-Agent:\s*PLAUD/[\d.]+\(build:\d+;([^;]+);([^;]+);([^)]+)\)"
+    )
+    re_app_version = re.compile(r"app-version:\s*(.+)")
+    re_build_info = re.compile(r"buildInfo:\s*(.+)")
+    re_platform = re.compile(r"app-platform:\s*(\w+)")
+    re_uid = re.compile(r'"uid"\s*:\s*"([a-f0-9]{20,})"')
+    re_locale = re.compile(r"deviceLocale:\s*\[([^\]]+)\]")
+    re_region = re.compile(r"RegionManager:.*api\s*=\s*(https?://[^\s]+)")
+    re_file_id = re.compile(r'"file_id"\s*:\s*"([a-f0-9]{16,})"')
+
+    seen_file_ids: set[str] = set()
+
+    for lp in log_paths:
+        try:
+            result = subprocess.run(
+                f'head -n 500 "{lp}"',
+                shell=True, capture_output=True, text=True, timeout=10,
+            )
+            head_text = result.stdout or ""
+        except Exception:
+            continue
+
+        for line in head_text.split("\n"):
+            if not meta["build_info"]:
+                m = re_build_info.search(line)
+                if m:
+                    meta["build_info"] = m.group(1).strip()
+
+            if not meta["app_version"]:
+                m = re_app_version.search(line)
+                if m:
+                    meta["app_version"] = m.group(1).strip()
+
+            if not meta["platform"]:
+                m = re_platform.search(line)
+                if m:
+                    meta["platform"] = m.group(1).strip().lower()
+
+            if not meta["os_version"] or not meta["device_model"]:
+                m = re_user_agent.search(line)
+                if m:
+                    meta["os_version"] = m.group(1).strip()
+                    meta["device_model"] = f"{m.group(2).strip()} {m.group(3).strip()}"
+
+            if not meta["uid"]:
+                m = re_uid.search(line)
+                if m:
+                    meta["uid"] = m.group(1)
+
+            if not meta["locale"]:
+                m = re_locale.search(line)
+                if m:
+                    meta["locale"] = m.group(1).strip()
+
+            if not meta["api_region"]:
+                m = re_region.search(line)
+                if m:
+                    meta["api_region"] = m.group(1).strip()
+
+        # uid: may appear beyond head 500 — grep the whole file
+        if not meta["uid"]:
+            try:
+                uid_result = subprocess.run(
+                    f'grep -oE \'"uid"\\s*:\\s*"[a-f0-9]{{20,}}"\' "{lp}" | head -1',
+                    shell=True, capture_output=True, text=True, timeout=10,
+                )
+                uid_line = (uid_result.stdout or "").strip()
+                if uid_line:
+                    m = re_uid.search(uid_line)
+                    if m:
+                        meta["uid"] = m.group(1)
+            except Exception:
+                pass
+
+        # file_ids: scan entire file (they can appear anywhere)
+        try:
+            result2 = subprocess.run(
+                f'grep -oE \'"file_id"\\s*:\\s*"[a-f0-9]{{16,}}"\' "{lp}" | head -n 50',
+                shell=True, capture_output=True, text=True, timeout=15,
+            )
+            for line in (result2.stdout or "").split("\n"):
+                m = re_file_id.search(line)
+                if m and m.group(1) not in seen_file_ids:
+                    seen_file_ids.add(m.group(1))
+        except Exception:
+            pass
+
+    meta["file_ids"] = sorted(seen_file_ids)
+    # Strip empty values for cleaner output
+    return {k: v for k, v in meta.items() if v}
+
+
 def extract_for_rules(
     rules: List[Rule],
     log_paths: List[Path],

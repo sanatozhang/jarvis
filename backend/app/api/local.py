@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func
 
@@ -147,6 +147,7 @@ async def get_issue_analyses(issue_id: str):
             "agent_type": a.agent_type or "",
             "agent_model": getattr(a, "agent_model", "") or "",
             "followup_question": a.followup_question or "",
+            "log_metadata": json.loads(a.log_metadata_json) if getattr(a, "log_metadata_json", None) else {},
             "created_at": (a.created_at.isoformat() + "Z") if a.created_at else "",
         }
         for a in analyses
@@ -223,6 +224,65 @@ async def serve_issue_file(issue_id: str, filename: str):
     raise HTTPException(status_code=404, detail="File not found")
 
 
+@router.get("/{issue_id}/download-logs")
+@_handle_exceptions("Failed to download logs")
+async def download_logs(issue_id: str):
+    """Download decrypted log files for an issue.
+
+    Prioritizes the processed logs/ directory (decrypted).
+    Returns the file directly if only one log; otherwise ZIPs them.
+    """
+    import io
+    import zipfile
+
+    settings = get_settings()
+
+    # Prefer decrypted logs (logs/ dir), fall back to processed/ dir
+    search_dirs: list[Path] = []
+
+    async with db.get_session() as session:
+        stmt = select(db.TaskRecord).where(
+            db.TaskRecord.issue_id == issue_id
+        ).order_by(db.TaskRecord.created_at.desc()).limit(1)
+        result = await session.execute(stmt)
+        task = result.scalar_one_or_none()
+        if task:
+            search_dirs.append(Path(settings.storage.workspace_dir) / task.id / "logs")
+
+    search_dirs.append(Path(settings.storage.workspace_dir) / issue_id / "processed")
+
+    log_files: list[Path] = []
+    seen_names: set[str] = set()
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        for f in sorted(d.iterdir()):
+            if f.is_file() and f.name not in seen_names and f.suffix.lower() in (".log", ".txt"):
+                log_files.append(f)
+                seen_names.add(f.name)
+
+    if not log_files:
+        raise HTTPException(status_code=404, detail="No decrypted log files found")
+
+    # Single file — return directly (no ZIP overhead)
+    if len(log_files) == 1:
+        return FileResponse(log_files[0], filename=log_files[0].name)
+
+    # Multiple files — ZIP them
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in log_files:
+            zf.write(f, f.name)
+    buf.seek(0)
+
+    filename = f"logs_{issue_id}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.delete("/{issue_id}")
 @_handle_exceptions("Failed to delete issue")
 async def delete_issue(issue_id: str):
@@ -236,6 +296,7 @@ async def delete_issue(issue_id: str):
 class EscalateRequest(BaseModel):
     note: str = ""
     escalated_by: str = ""
+    appllo_url: str = ""  # Frontend passes the full issue URL
 
 
 @router.post("/{issue_id}/escalate")
@@ -261,29 +322,14 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
     if issue_rec and is_feishu_source(issue_id):
         issue_link = FeishuCLI().get_feishu_link(issue_id)
 
+    appllo_url = body.appllo_url or ""
+
     user = await db.get_user(body.escalated_by) if body.escalated_by else None
     user_email = (user or {}).get("feishu_email", "")
 
     chat_result = None
 
-    if is_feishu_source(issue_id):
-        # Feishu issues: group already created by Bitable automation on "开始处理",
-        # just notify oncall engineers via DM.
-        try:
-            from app.services.notify import notify_oncall
-            await notify_oncall(
-                issue_id=issue_id,
-                description=description or "",
-                reason=f"工单转交工程师: {problem_type}" if problem_type else "工单转交工程师",
-                link=issue_link,
-            )
-        except Exception as ne:
-            logger.error("Failed to notify oncall for feishu escalation: %s", ne)
-
-        result = {"status": "escalated", "issue_id": issue_id, "group_exists": True}
-        return result
-
-    # Non-Feishu issues (fb_, lin_): create a new group + add members + notify
+    # All sources: create a new escalation group + add members + notify
     try:
         chat_result = await create_escalation_group(
             user_email=user_email,
@@ -292,6 +338,7 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
             problem_type=problem_type,
             issue_link=issue_link,
             zendesk_id=issue_rec.zendesk_id if issue_rec else "",
+            appllo_url=appllo_url,
         )
         logger.info("Escalation completed: %s", chat_result)
     except Exception as e:

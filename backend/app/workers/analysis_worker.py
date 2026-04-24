@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.config import get_settings, get_code_repo_for_platform
 from app.db import database as db
 from app.models.schemas import AnalysisResult, Issue
 from app.services.agent_orchestrator import AgentOrchestrator
 from app.services.decrypt import process_log_file_for_platform
-from app.services.extractor import extract_for_rules
+from app.services.extractor import extract_for_rules, extract_log_metadata
 from app.services.feishu import FeishuClient
 from app.services.issue_text import guess_problem_date, normalize_description_for_matching
 from app.services.rule_engine import RuleEngine
@@ -123,6 +123,11 @@ async def run_analysis_pipeline(
             result.task_id = task_id
             result.issue = issue
             result.followup_question = followup_question
+            # Carry forward log_metadata from the previous analysis
+            prev_analysis = await db.get_analysis_by_issue(issue_id)
+            if prev_analysis and getattr(prev_analysis, "log_metadata_json", None):
+                import json as _jm
+                result.log_metadata = _jm.loads(prev_analysis.log_metadata_json)
             if on_progress:
                 await on_progress(100, "分析完成")
             return result
@@ -231,6 +236,12 @@ async def run_analysis_pipeline(
 
     has_logs = len(log_paths) > 0
 
+    # Extract log metadata (app version, OS, UID, device model, etc.)
+    log_metadata: Dict[str, Any] = {}
+    if has_logs:
+        log_metadata = extract_log_metadata(log_paths)
+        logger.info("Extracted log metadata: %s", {k: v for k, v in log_metadata.items() if k != "file_ids"})
+
     if has_logs:
         if on_progress:
             await on_progress(40, f"解密完成，{len(log_paths)} 个日志文件")
@@ -303,6 +314,7 @@ async def run_analysis_pipeline(
 
     result.task_id = task_id
     result.issue = issue
+    result.log_metadata = log_metadata
     if followup_question:
         result.followup_question = followup_question
 

@@ -880,26 +880,6 @@ export default function TrackingPage() {
                     </button>
                   )
                 )}
-                <button onClick={() => {
-                    const base = "https://nicebuild.feishu.cn/share/base/form/shrcnGuYEnRrbbVw4Y6evkyUDCo";
-                    const params = new URLSearchParams();
-                    const appUrl = `${window.location.origin}/tracking?detail=${detailItem.record_id}`;
-                    const desc = `Appllo 工单: ${appUrl}\n\n${detailItem.description || ""}`;
-                    params.set("prefill_问题描述", desc);
-                    if (detailItem.zendesk) params.set("prefill_Zendesk 工单链接", detailItem.zendesk);
-                    if (detailItem.feishu_link) params.set("prefill_飞书工单链接", detailItem.feishu_link);
-                    const latestAnalysis = issueAnalyses[detailItem.record_id]?.[0] || detailItem.analysis;
-                    if (latestAnalysis?.root_cause) params.set("prefill_处理结果", latestAnalysis.root_cause);
-                    if (detailItem.root_cause_summary) params.set("prefill_一句话归因", detailItem.root_cause_summary);
-                    window.open(`${base}?${params.toString()}`, "_blank");
-                  }}
-                  className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
-                  style={{ background: "rgba(96,165,250,0.12)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }}>
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                  </svg>
-                  {t("转飞书工单")}
-                </button>
                 {detailItem.local_status === "failed" && (
                   <button onClick={() => { handleRetry(detailItem.record_id); closeDetail(); }}
                     className="w-full rounded-lg py-2.5 text-sm font-semibold"

@@ -98,6 +98,28 @@ class ClaudeCodeAgent(BaseAgent):
 
         except asyncio.TimeoutError:
             logger.error("Claude Code timed out after %ds", self.config.timeout)
+
+            # Kill the timed-out process
+            try:
+                proc.kill()  # type: ignore[possibly-undefined]
+            except Exception:
+                pass
+
+            # Check if Claude already wrote result.json before timing out
+            result_file = workspace / "output" / "result.json"
+            if result_file.exists():
+                try:
+                    result = self.parse_result(workspace, "")
+                    if result.root_cause and result.root_cause != "分析超时":
+                        logger.info(
+                            "Claude Code timed out but result.json exists — salvaging result (type: %s)",
+                            result.problem_type,
+                        )
+                        result.agent_type = "claude_code"
+                        return result
+                except Exception as e:
+                    logger.warning("Failed to parse result.json after timeout: %s", e)
+
             return AnalysisResult(
                 task_id="",
                 issue_id="",

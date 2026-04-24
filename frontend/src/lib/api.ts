@@ -51,6 +51,7 @@ export interface Issue {
   zendesk: string;
   zendesk_id: string;
   source?: string;
+  platform?: string;
   feishu_link: string;
   feishu_status: "pending" | "in_progress" | "done";
   linear_issue_id?: string;
@@ -83,6 +84,18 @@ export interface ProblemCategoryItem {
   subcategory: string;
 }
 
+export interface LogMetadata {
+  app_version?: string;
+  build_info?: string;
+  os_version?: string;
+  platform?: string;
+  device_model?: string;
+  uid?: string;
+  locale?: string;
+  api_region?: string;
+  file_ids?: string[];
+}
+
 export interface AnalysisResult {
   task_id: string;
   issue_id: string;
@@ -108,6 +121,7 @@ export interface AnalysisResult {
   agent_type: string;
   agent_model: string;
   followup_question?: string;
+  log_metadata?: LogMetadata;
   created_at?: string;
 }
 
@@ -444,11 +458,15 @@ export const updateOncallSchedule = (groups: string[][], startDate: string, user
 // Inaccurate
 // ============================================================
 
-export const escalateIssue = (issueId: string, note: string = "", escalatedBy: string = "") =>
-  request<{ status: string; chat_id?: string; group_name?: string; share_link?: string }>(`/local/${issueId}/escalate`, {
+export const escalateIssue = (issueId: string, note: string = "", escalatedBy: string = "") => {
+  const appllo_url = typeof window !== "undefined"
+    ? `${window.location.origin}/tracking?detail=${issueId}`
+    : "";
+  return request<{ status: string; chat_id?: string; group_name?: string; share_link?: string }>(`/local/${issueId}/escalate`, {
     method: "POST",
-    body: JSON.stringify({ note, escalated_by: escalatedBy }),
+    body: JSON.stringify({ note, escalated_by: escalatedBy, appllo_url }),
   });
+};
 
 export const markInaccurate = (issueId: string) =>
   request<{ status: string }>(`/local/${issueId}/inaccurate`, { method: "POST" });
@@ -467,6 +485,12 @@ export const fetchInaccurate = (page = 1, pageSize = 20) =>
 // ============================================================
 
 export const fetchAgentConfig = () => request<AgentConfig>("/settings/agent");
+export const fetchEscalationMembers = () => request<{ members: string[] }>("/settings/escalation-members");
+export const updateEscalationMembers = (members: string[]) =>
+  request<{ status: string; members: string[] }>("/settings/escalation-members", {
+    method: "PUT",
+    body: JSON.stringify({ members }),
+  });
 export const updateAgentConfig = (data: any) =>
   request<any>("/settings/agent", { method: "PUT", body: JSON.stringify(data) });
 export const fetchHealth = () => request<HealthCheck>("/health");

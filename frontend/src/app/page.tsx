@@ -1077,22 +1077,60 @@ export default function HomePage() {
                     </a>
                   )}
                 </div>
-                {/* Meta grid */}
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {[
-                    { l: t("设备 SN"), v: detailData.issue.device_sn, mono: true },
-                    { l: t("固件"), v: detailData.issue.firmware },
-                    { l: t("APP"), v: detailData.issue.app_version },
-                    { l: t("日志"), v: `${detailData.issue.log_files?.length || 0} ${t("个")}` },
-                  ].map((f) => (
-                    <div key={f.l} className="rounded-lg px-3 py-2" style={{ background: S.overlay }}>
-                      <span style={{ color: S.text3 }}>{f.l}</span>
-                      <p className={`mt-0.5 font-medium ${f.mono ? "font-mono" : ""}`} style={{ color: S.text1 }}>
-                        {f.v || "—"}
-                      </p>
-                    </div>
-                  ))}
-                </div>
+                {/* Meta grid — merged from issue fields + analysis log_metadata + device_type */}
+                {(() => {
+                  const issue = detailData.issue;
+                  const latestAnalysis = detailData.result
+                    || (issueAnalyses[detailId!] && issueAnalyses[detailId!].length > 0 ? issueAnalyses[detailId!][0] : null);
+                  const lm = latestAnalysis?.log_metadata || {};
+                  const deviceType = (latestAnalysis as any)?.device_type || "";
+
+                  // Build unified info grid: log_metadata > issue fields > empty
+                  const fields = [
+                    { l: t("设备 SN"), v: issue.device_sn },
+                    { l: t("设备型号"), v: lm.device_model || deviceType },
+                    { l: t("APP"), v: lm.app_version || issue.app_version },
+                    { l: t("系统版本"), v: lm.os_version },
+                    { l: t("固件"), v: issue.firmware },
+                    { l: t("平台"), v: (lm.platform || issue.platform || "").toUpperCase() || "" },
+                    { l: t("用户 UID"), v: lm.uid, mono: true },
+                    { l: t("语言/地区"), v: lm.locale },
+                    { l: t("日志"), v: `${issue.log_files?.length || 0} ${t("个")}` },
+                    { l: t("API 区域"), v: lm.api_region },
+                  ].filter(f => f.v);
+
+                  return (
+                    <>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        {fields.map((f) => (
+                          <div key={f.l} className="rounded-lg px-3 py-2" style={{ background: S.overlay }}>
+                            <span style={{ color: S.text3 }}>{f.l}</span>
+                            <p className={`mt-0.5 font-medium truncate ${f.mono ? "font-mono text-[11px]" : ""}`}
+                              style={{ color: S.text1 }} title={f.v || ""}>
+                              {f.v || "—"}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      {lm.file_ids && lm.file_ids.length > 0 && (
+                        <div className="mt-2 rounded-lg px-3 py-2 text-xs" style={{ background: S.overlay }}>
+                          <span style={{ color: S.text3 }}>{t("关联文件")} ({lm.file_ids.length})</span>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {lm.file_ids.slice(0, 10).map((fid: string) => (
+                              <span key={fid} className="rounded px-1.5 py-0.5 font-mono text-[10px]"
+                                style={{ background: S.surface, color: S.text2 }}>
+                                {fid.slice(0, 8)}...
+                              </span>
+                            ))}
+                            {lm.file_ids.length > 10 && (
+                              <span className="text-[10px]" style={{ color: S.text3 }}>+{lm.file_ids.length - 10}</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </section>
 
               {/* Description */}
@@ -1136,6 +1174,18 @@ export default function HomePage() {
                           </div>
                         ))}
                       </div>
+                    )}
+                    {/* Download logs button */}
+                    {logs.length > 0 && (
+                      <a href={`/api/local/${issueId}/download-logs`}
+                        download
+                        className="mt-2 flex items-center justify-center gap-2 w-full rounded-lg py-2 text-xs font-medium transition-colors hover:opacity-80"
+                        style={{ background: S.overlay, color: S.accent, border: `1px solid ${S.border}`, textDecoration: "none" }}>
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                        </svg>
+                        {t("下载日志")}
+                      </a>
                     )}
                   </section>
                 );
@@ -1491,27 +1541,6 @@ export default function HomePage() {
                     </button>
                   )
                 )}
-                <button onClick={() => {
-                    const base = "https://nicebuild.feishu.cn/share/base/form/shrcnGuYEnRrbbVw4Y6evkyUDCo";
-                    const params = new URLSearchParams();
-                    const issue = detailData!.issue;
-                    const appUrl = `${window.location.origin}/tracking?detail=${detailId}`;
-                    const desc = `Appllo 工单: ${appUrl}\n\n${issue.description || ""}`;
-                    params.set("prefill_问题描述", desc);
-                    if (issue.zendesk) params.set("prefill_Zendesk 工单链接", issue.zendesk);
-                    if (issue.feishu_link) params.set("prefill_飞书工单链接", issue.feishu_link);
-                    const latestAnalysis = issueAnalyses[detailId!]?.[0] || detailData!.result;
-                    if (latestAnalysis?.root_cause) params.set("prefill_处理结果", latestAnalysis.root_cause);
-                    if (issue.root_cause_summary) params.set("prefill_一句话归因", issue.root_cause_summary);
-                    window.open(`${base}?${params.toString()}`, "_blank");
-                  }}
-                  className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
-                  style={{ background: "rgba(96,165,250,0.12)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }}>
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                  </svg>
-                  {t("转飞书工单")}
-                </button>
                 {detailData.localItem?.local_status === "failed" && (
                   <button onClick={() => { startAnalysis(detailId!, true); closeDetail(); }}
                     className="w-full rounded-lg py-2.5 text-sm font-semibold"

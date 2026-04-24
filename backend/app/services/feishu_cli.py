@@ -683,19 +683,36 @@ async def create_escalation_group(
     problem_type: str = "",
     issue_link: str = "",
     zendesk_id: str = "",
+    appllo_url: str = "",
 ) -> Dict[str, Any]:
     """Create a Feishu group chat for issue escalation.
 
-    Flow: create group → add oncall members to group → post issue info → notify via DM as fallback.
+    Flow: create group → add oncall + fixed members to group → post issue info → notify via DM as fallback.
     """
     from app.db import database as db_mod
 
-    now = datetime.now().strftime("%Y%m%d%H%M")
-    category = problem_type or description[:20].replace(" ", "")
-    group_name = f"工单处理--{category}--{now}"
+    now = datetime.now().strftime("%Y%m%d")
+    category = problem_type or "未知"
+    group_name = f"Appllo工单跟进-{category}-{now}"
 
+    # Collect members: oncall + fixed members + triggering user
     oncall_emails = await db_mod.get_current_oncall()
-    all_emails = list(set(([user_email] if user_email else []) + oncall_emails))
+
+    # Load fixed escalation members from config
+    fixed_raw = await db_mod.get_oncall_config("escalation_fixed_members", "")
+    if fixed_raw:
+        fixed_emails = json.loads(fixed_raw)
+    else:
+        fixed_emails = [
+            "sanato.zhang@plaud.ai", "leon@plaud.ai", "yang@plaud.ai",
+            "will.wu@plaud.ai", "david.liu@plaud.ai", "lucy.ding@plaud.ai",
+        ]
+
+    all_emails = list(set(
+        ([user_email] if user_email else [])
+        + oncall_emails
+        + fixed_emails
+    ))
 
     # 1. Create group (bot-only initially) — non-fatal
     chat_id = ""
@@ -743,14 +760,17 @@ async def create_escalation_group(
     # 4. Post issue info to group
     if chat_id:
         msg_lines = ["🔔 工单转交工程师处理"]
-        msg_lines.append(f"工单ID: {issue_id}")
+        if appllo_url:
+            msg_lines.append(f"工单链接: {appllo_url}")
+        else:
+            msg_lines.append(f"工单ID: {issue_id}")
         msg_lines.append(f"问题描述: {description[:300]}")
         if problem_type:
             msg_lines.append(f"问题分类: {problem_type}")
         if zendesk_id:
             msg_lines.append(f"Zendesk: {zendesk_id}")
         if issue_link:
-            msg_lines.append(f"链接: {issue_link}")
+            msg_lines.append(f"飞书工单: {issue_link}")
         try:
             await send_message(chat_id=chat_id, text="\n".join(msg_lines))
         except Exception as e:
@@ -758,7 +778,10 @@ async def create_escalation_group(
 
     # 5. Send individual DM notifications (always runs as fallback)
     notify_lines = ["🔔 工单已转交工程师处理"]
-    notify_lines.append(f"工单: {issue_id}")
+    if appllo_url:
+        notify_lines.append(f"工单链接: {appllo_url}")
+    else:
+        notify_lines.append(f"工单: {issue_id}")
     notify_lines.append(f"问题: {description[:100]}")
     if share_link:
         notify_lines.append(f"处理群: {share_link}")

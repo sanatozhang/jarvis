@@ -5,6 +5,7 @@ Database layer using SQLAlchemy async with SQLite/PostgreSQL.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -95,6 +96,7 @@ class AnalysisRecord(Base):
     agent_model = Column(String(128), default="")
     raw_output = Column(Text, default="")
     followup_question = Column(Text, default="")
+    log_metadata_json = Column(Text, default="{}")  # JSON: extracted log metadata (uid, version, device, etc.)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -290,6 +292,7 @@ async def init_db():
             ("problem_categories_json", "TEXT", "'[]'"),
             ("device_type", "VARCHAR(64)", "''"),
             ("agent_model", "VARCHAR(128)", "''"),
+            ("log_metadata_json", "TEXT", "'{}'"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -498,6 +501,34 @@ async def get_latest_done_task_for_issue(issue_id: str) -> Optional[TaskRecord]:
         return result.scalar_one_or_none()
 
 
+def normalize_device_type(raw: str) -> str:
+    """Normalize device type to canonical form.
+
+    Strips 'Plaud' prefix, normalizes casing and spacing.
+    Canonical types: Note, Note Pro, Note Pin, NotePin 2
+    """
+    if not raw:
+        return ""
+    # Strip parenthetical info like "(SN: xxx)" and leading "Plaud"
+    s = re.sub(r"\s*\(.*?\)\s*", "", raw).strip()
+    s = re.sub(r"(?i)^plaud\s*", "", s).strip()
+    if not s:
+        return ""
+    low = s.lower().replace(" ", "")
+    if low in ("notepro", "notpro"):
+        return "Note Pro"
+    if low in ("notepin2", "notpin2", "notepin2nd"):
+        return "NotePin 2"
+    if low in ("notepin", "notpin"):
+        return "Note Pin"
+    if low in ("note",):
+        return "Note"
+    if low in ("izyrec",):
+        return "iZYREC"
+    # Fallback: title-case the cleaned string
+    return s
+
+
 async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
     # Auto-classify if AI didn't provide categories (backend-side, zero AI cost)
     categories = data.get("problem_categories", [])
@@ -515,7 +546,7 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             problem_type=data.get("problem_type", ""),
             problem_type_en=data.get("problem_type_en", ""),
             problem_categories_json=json.dumps(categories, ensure_ascii=False),
-            device_type=data.get("device_type", ""),
+            device_type=normalize_device_type(data.get("device_type", "")),
             root_cause=data.get("root_cause", ""),
             root_cause_en=data.get("root_cause_en", ""),
             confidence=data.get("confidence", "medium"),
@@ -530,6 +561,7 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             agent_model=data.get("agent_model", ""),
             raw_output=data.get("raw_output", ""),
             followup_question=data.get("followup_question", ""),
+            log_metadata_json=json.dumps(data.get("log_metadata", {}), ensure_ascii=False),
         )
         session.add(record)
         await session.commit()
@@ -801,6 +833,7 @@ def _issue_to_dict(
             "agent_type": analysis.agent_type or "",
             "agent_model": getattr(analysis, "agent_model", "") or "",
             "followup_question": analysis.followup_question or "",
+            "log_metadata": json.loads(analysis.log_metadata_json) if getattr(analysis, "log_metadata_json", None) else {},
             "created_at": (analysis.created_at.isoformat() + "Z") if analysis.created_at else "",
         }
         d["result_summary"] = analysis.user_reply or ""
@@ -1225,7 +1258,7 @@ async def get_classification_stats(date_from: str, date_to: str) -> Dict[str, An
             except Exception:
                 pass
 
-            device = (row.device_type or "").strip() or "未知"
+            device = normalize_device_type(row.device_type or "") or "未知"
             device_counts[device] = device_counts.get(device, 0) + 1
 
             if not categories:
