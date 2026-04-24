@@ -370,23 +370,29 @@ class RuleEngine:
 ## 输出 JSON Schema
 
 写入 `output/result.json`，同时 `cat output/result.json` 打印到 stdout。
-**每个字段都必须同时提供中文和英文版本（_en 后缀），不能为空。**
+
+⚠️ **双语必填**：每个带 `_en` 后缀的字段**必须填写英文内容**，不能为空字符串。中英文内容结构对应、信息量对等。
 
 ```json
 {
     "problem_type": "问题分类（中文）",
     "problem_type_en": "Problem Type (English)",
-    "root_cause": "根本原因（中文，2-5 句话）",
-    "root_cause_en": "Root cause (English, 2-5 sentences)",
+    "root_cause": "根本原因（中文，5-10 句话，含现象、根因、证据、影响）",
+    "root_cause_en": "Root cause analysis (English, 5-10 sentences, same depth as Chinese version)",
     "confidence": "high / medium / low",
     "confidence_reason": "置信度理由",
     "key_evidence": ["关键日志行1", "关键日志行2（最多5条）"],
-    "user_reply": "完整中文客服回复模板",
-    "user_reply_en": "Complete English reply template",
+    "user_reply": "完整中文客服回复模板（200-500字）",
+    "user_reply_en": "Complete English customer reply template (200-500 words, same structure as Chinese)",
     "needs_engineer": false,
     "fix_suggestion": ""
 }
 ```
+
+**双语检查清单（写 result.json 前必须确认）**：
+- [ ] `problem_type_en` 不为空
+- [ ] `root_cause_en` 不为空，且与中文版信息量对等
+- [ ] `user_reply_en` 不为空，且是完整的客服回复模板，不是一句话摘要
 
 ## Confidence 标准
 

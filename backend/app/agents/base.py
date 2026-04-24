@@ -388,21 +388,34 @@ output/       ← 请将 result.json 写入此目录
 
         _raw_rc = data.get("root_cause") or "分析未产出结构化结果"
         _raw_rc_en = data.get("root_cause_en", "")
+        _raw_reply = data.get("user_reply", "")
+        _raw_reply_en = data.get("user_reply_en", "")
+        _raw_type = _clean_problem_type(data.get("problem_type", "未知"))
+        _raw_type_en = _clean_problem_type(data.get("problem_type_en", ""))
+
+        # Fallback: if English fields are empty, use Chinese content as fallback
+        # (better to show Chinese than nothing when user switches to English)
+        if not _raw_type_en:
+            _raw_type_en = _raw_type
+        if not _raw_rc_en:
+            _raw_rc_en = _raw_rc
+        if not _raw_reply_en:
+            _raw_reply_en = _raw_reply
 
         return AnalysisResult(
             task_id="",
             issue_id="",
-            problem_type=_clean_problem_type(data.get("problem_type", "未知")),
-            problem_type_en=_clean_problem_type(data.get("problem_type_en", "")),
+            problem_type=_raw_type,
+            problem_type_en=_raw_type_en,
             problem_categories=_safe_problem_categories(data.get("problem_categories", [])),
             device_type=str(data.get("device_type", "")).strip(),
             root_cause=_clean_system_lines(_raw_rc),
-            root_cause_en=_clean_system_lines(_raw_rc_en) if _raw_rc_en else "",
+            root_cause_en=_clean_system_lines(_raw_rc_en),
             confidence=_safe_confidence(data.get("confidence", "low")),
             confidence_reason=data.get("confidence_reason", ""),
             key_evidence=_safe_key_evidence(data.get("key_evidence", [])),
-            user_reply=data.get("user_reply", ""),
-            user_reply_en=data.get("user_reply_en", ""),
+            user_reply=_raw_reply,
+            user_reply_en=_raw_reply_en,
             needs_engineer=data.get("needs_engineer", True),
             fix_suggestion=data.get("fix_suggestion", ""),
             raw_output=raw_output[:10000],
@@ -475,9 +488,11 @@ problem_categories 和 device_type 的完整分类体系见 `context/classificat
 **主要语言: {"English" if language == "en" else "中文"}** — 确保主要语言的内容最详细。
 每个字段都必须填写，不能为空。problem_type 必须是具体的问题分类，不能写"分析完成"之类的。
 
+⚠️ **双语必填**: `problem_type_en`、`root_cause_en`、`user_reply_en` 三个字段**绝不能为空**。英文内容必须与中文版信息量对等，不能只写一句摘要。如果中文版有 5 段，英文版也要有 5 段。
+
 **质量要求**：
-- user_reply 是客服直接发给用户的内容，必须完整、有用、可直接解决或解释用户的问题。不能只写一两句话敷衍。
-- root_cause 需要有足够的技术深度和日志证据支撑，让工程师能理解问题全貌。
+- user_reply / user_reply_en 是客服直接发给用户的内容，必须完整、有用、可直接解决或解释用户的问题。不能只写一两句话敷衍。
+- root_cause / root_cause_en 需要有足够的技术深度和日志证据支撑，让工程师能理解问题全貌。
 - key_evidence 每条必须包含两部分：**分析说明**（这条证据说明了什么）+ **原始日志/数据**（引用具体内容）。不要只贴裸日志行，必须解释每条证据的意义。示例：`"蓝牙连接在配对阶段超时断开，说明设备端 BLE 栈未正确响应 —— 日志: [2025-04-10 14:32:05] BLE GATT connection timeout after 30s, peer=XX:XX:XX:XX"`
 - 如果问题复杂，宁可写得更详细，也不要遗漏关键信息。
 """
