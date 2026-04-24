@@ -73,6 +73,7 @@ class BaseAgent(ABC):
         followup_question: str = "",
         few_shot_examples: Optional[List[Dict[str, Any]]] = None,
         context_files: Optional[Dict[str, str]] = None,
+        condensation_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         prompt, _meta = BaseAgent.build_prompt_with_meta(
             issue=issue,
@@ -85,6 +86,7 @@ class BaseAgent(ABC):
             followup_question=followup_question,
             few_shot_examples=few_shot_examples,
             context_files=context_files,
+            condensation_context=condensation_context,
         )
         return prompt
 
@@ -100,11 +102,13 @@ class BaseAgent(ABC):
         followup_question: str = "",
         few_shot_examples: Optional[List[Dict[str, Any]]] = None,
         context_files: Optional[Dict[str, str]] = None,
+        condensation_context: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, Dict[str, Any]]:
         """Build the master prompt for the agent.
 
         Args:
             language: "zh" for Chinese output, "en" for English output.
+            condensation_context: L1.5 structured context from LLM pre-extraction.
         """
         issue_description = _trim_text(issue.description, _MAX_ISSUE_DESCRIPTION_CHARS)
         rules_section = _render_rules_section(rules, max_chars=_MAX_RULE_SECTION_CHARS)
@@ -117,7 +121,60 @@ class BaseAgent(ABC):
         prev_analysis_context_ref = context_files.get("previous_analysis", "context/previous_analysis.json")
         followup_context_ref = context_files.get("followup_question", "context/followup_question.txt")
 
-        if has_logs:
+        condensation_context_ref = context_files.get("condensation", "context/llm_extraction.json")
+        has_condensation = condensation_context is not None
+
+        if has_logs and has_condensation:
+            # ── L1.5 mode: LLM has already extracted key context ──
+            condensation_json = json.dumps(
+                _trim_json_like(condensation_context, max_string_chars=2000),
+                ensure_ascii=False,
+                indent=2,
+            )
+
+            role_and_principles = """你是 Plaud 设备日志分析专家。分析结果将展示给客服，他们会直接复制 user_reply 发给用户。
+
+**本次分析已经过 L1.5 预处理**：一个大 context 模型已经阅读了完整日志并提取了关键上下文（见下方）。
+你的任务是基于这些预提取的上下文进行深度分析，而不是重新 grep 原始日志。
+
+分析流程：读 L1.5 上下文 + context/ 文件 → 分析根因 → 如需补充再 grep logs/ → 写 output/result.json
+
+**效率要求**：L1.5 已提供了关键日志段落和时间线，你应该：
+1. 先基于 L1.5 上下文分析根因（通常已经足够）
+2. 只在 L1.5 上下文不足以确认结论时，才去 logs/ grep 补充
+3. 目标：10 轮以内完成分析"""
+
+            extraction_section = f"""## L1.5 预提取上下文（主要分析依据）
+
+以下是由大 context 模型阅读完整日志后提取的结构化上下文。**这是你的主要分析依据。**
+
+- 完整 L1.5 上下文：`{condensation_context_ref}`
+- 完整 issue 上下文：`{issue_context_ref}`
+- L1 extraction：`{extraction_context_ref}`
+
+### L1.5 提取结果
+
+```json
+{_trim_text(condensation_json, _MAX_EXTRACTION_CHARS)}
+```
+
+### L1 自动提取摘要（补充参考）
+
+{extraction_summary}"""
+
+            workspace_section = """## 工作空间结构
+
+```
+context/      ← L1.5 预提取的结构化上下文（优先使用）
+logs/         ← 时间窗口内的日志（已裁剪，仅在需要补充时 grep）
+images/       ← 用户提供的截图/图片（如果存在），请查看并结合分析
+rules/        ← 规则文件，供参考
+code/         ← 代码仓库（如果存在），可搜索代码定位问题
+output/       ← 请将 result.json 写入此目录
+```"""
+
+        elif has_logs:
+            # ── Standard mode: agent greps logs directly ──
             role_and_principles = """你是 Plaud 设备日志分析专家。分析结果将展示给客服，他们会直接复制 user_reply 发给用户。
 
 **行为规则见 CLAUDE.md**（探索式分析、grep 验证、置信度标准、输出 JSON Schema）。
@@ -203,6 +260,7 @@ output/       ← 请将 result.json 写入此目录
             "compact_mode": False,
             "hard_trimmed": False,
             "has_logs": has_logs,
+            "has_condensation": has_condensation,
             "rule_ids": [rule.meta.id for rule in rules],
             "rule_count": len(rules),
             "few_shot_count": len(few_shot_examples or []),

@@ -2,12 +2,14 @@
 Analysis pipeline worker.
 
 Orchestrates the full flow:
-  Feishu fetch → Download → Decrypt → Rule match → Extract → Agent analyze → Result
+  Feishu fetch → Download → Decrypt → Rule match → Extract
+  → L1.5 context condense → Agent analyze → Result
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -274,12 +276,29 @@ async def run_analysis_pipeline(
     else:
         problem_date = guess_problem_date(routing_text, issue.occurred_at)
 
+    # --- Step 5.5: L1.5 Context Condensation ---
+    condensation_result = None
+    workspace_log_paths = log_paths  # default: use original logs
+
+    if has_logs:
+        condensation_result = await _run_context_condensation(
+            log_paths=log_paths,
+            workspace=workspace,
+            issue=issue,
+            extraction=extraction,
+            rules=rules,
+            problem_date=problem_date,
+            on_progress=on_progress,
+        )
+        if condensation_result is not None:
+            workspace_log_paths = condensation_result["log_paths"]
+
     if on_progress:
-        await on_progress(55, "准备 Agent 工作空间..." if has_logs else "准备代码分析...")
+        await on_progress(60, "准备 Agent 工作空间..." if has_logs else "准备代码分析...")
 
     # --- Step 6: Prepare workspace ---
     code_repo = get_code_repo_for_platform(platform)
-    engine.prepare_workspace(workspace, rules, log_paths, code_repo=code_repo)
+    engine.prepare_workspace(workspace, rules, workspace_log_paths, code_repo=code_repo)
 
     # --- Step 7: Run agent ---
     # For follow-ups that fell through from fast path, still load previous analysis
@@ -310,6 +329,7 @@ async def run_analysis_pipeline(
         on_progress=on_progress,
         previous_analysis=previous_analysis,
         followup_question=followup_question,
+        condensation_context=condensation_result.get("structured_context") if condensation_result else None,
     )
 
     result.task_id = task_id
@@ -494,3 +514,200 @@ def _cleanup_workspace_processed(workspace_root: Path, max_tasks: int = 50):
             )
     except Exception as e:
         logger.warning("Workspace processed cleanup failed: %s", e)
+
+
+async def _run_context_condensation(
+    log_paths: List[Path],
+    workspace: Path,
+    issue: Issue,
+    extraction: Dict[str, Any],
+    rules: list,
+    problem_date: Optional[str],
+    on_progress: Optional[Callable[[int, str], Any]],
+) -> Optional[Dict[str, Any]]:
+    """Run L1.5 context condensation: time-window + optional LLM extraction.
+
+    Returns a dict with:
+        - "log_paths": list of (possibly windowed) log paths to use in workspace
+        - "structured_context": dict from LLM extraction (or None)
+        - "windowing_metadata": list of per-file windowing stats
+    Or None if condensation is not applicable.
+    """
+    import json as _json
+
+    settings = get_settings()
+    cc = settings.context_condensation
+
+    # Override with DB-persisted settings (user-configurable via Settings page)
+    try:
+        import json as _json_cc
+        raw_cc = await db.get_oncall_config("condensation_config", "")
+        if raw_cc:
+            db_cc = _json_cc.loads(raw_cc)
+            cc.enabled = db_cc.get("enabled", cc.enabled)
+            cc.provider = db_cc.get("provider", cc.provider)
+            cc.model = db_cc.get("model", cc.model)
+            if db_cc.get("api_key"):
+                cc.api_key = db_cc["api_key"]
+            cc.log_size_threshold_mb = db_cc.get("log_size_threshold_mb", cc.log_size_threshold_mb)
+            cc.time_window_hours_before = db_cc.get("time_window_hours_before", cc.time_window_hours_before)
+            cc.time_window_hours_after = db_cc.get("time_window_hours_after", cc.time_window_hours_after)
+            cc.timeout = db_cc.get("timeout", cc.timeout)
+    except Exception as e:
+        logger.warning("Failed to load condensation config from DB: %s", e)
+
+    # Check if any log file exceeds the size threshold
+    threshold_bytes = int(cc.log_size_threshold_mb * 1024 * 1024)
+    large_logs = [lp for lp in log_paths if lp.exists() and lp.stat().st_size > threshold_bytes]
+    if not large_logs:
+        return None  # All logs are small, no condensation needed
+
+    total_size = sum(lp.stat().st_size for lp in log_paths if lp.exists())
+    logger.info(
+        "L1.5: %d log files (%d large, total %.1fMB), threshold=%.1fMB",
+        len(log_paths), len(large_logs), total_size / 1024 / 1024, cc.log_size_threshold_mb,
+    )
+
+    if on_progress:
+        await on_progress(52, "L1.5: 日志时间窗口切割...")
+
+    # --- Step A: Time-window extraction (always, free) ---
+    from app.services.log_windower import (
+        window_log_files,
+        infer_center_time_from_extraction,
+        find_error_dense_window,
+    )
+
+    center_time = None
+    date_only = False
+
+    # Priority 1: explicit problem_date from issue
+    if problem_date:
+        try:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                try:
+                    center_time = datetime.strptime(problem_date.strip()[:19], fmt)
+                    if fmt == "%Y-%m-%d":
+                        date_only = True
+                        center_time = center_time.replace(hour=12)
+                    break
+                except ValueError:
+                    continue
+        except Exception:
+            pass
+
+    # Priority 2: infer from L1 extraction timestamps
+    if center_time is None and extraction:
+        center_time = infer_center_time_from_extraction(extraction)
+        if center_time:
+            logger.info("L1.5: center_time inferred from L1 extraction: %s", center_time)
+
+    # Priority 3: find the most error-dense hour in the log
+    if center_time is None and log_paths:
+        for lp in log_paths:
+            if lp.exists() and lp.stat().st_size > threshold_bytes:
+                center_time = find_error_dense_window(lp)
+                if center_time:
+                    logger.info("L1.5: center_time from error-dense window: %s", center_time)
+                    break
+
+    # Priority 4: fallback to None → windower uses last N hours of log
+
+    windowed_dir = workspace / "windowed"
+    # If only a date was provided (no time), use wider window to cover the full day
+    hours_before = cc.time_window_hours_before if not date_only else max(cc.time_window_hours_before, 14)
+    hours_after = cc.time_window_hours_after if not date_only else max(cc.time_window_hours_after, 14)
+
+    windowed_paths, windowing_meta = window_log_files(
+        log_paths=log_paths,
+        output_dir=windowed_dir,
+        center_time=center_time,
+        hours_before=hours_before,
+        hours_after=hours_after,
+        size_threshold=threshold_bytes,
+    )
+
+    # Log windowing results
+    for meta in windowing_meta:
+        if meta.get("windowed"):
+            logger.info(
+                "L1.5 windowed: %s → %d/%d lines (%.1f%% reduction)",
+                meta.get("original_path", "?"),
+                meta.get("kept_lines", 0),
+                meta.get("total_lines", 0),
+                meta.get("reduction_pct", 0),
+            )
+
+    # --- Step B: LLM context extraction (optional, costs money) ---
+    structured_context = None
+    if cc.enabled and cc.api_key:
+        if on_progress:
+            await on_progress(55, "L1.5: LLM 上下文提取...")
+
+        from app.services.context_condenser import ContextCondenser, CondensationConfig
+
+        condenser_config = CondensationConfig(
+            enabled=cc.enabled,
+            provider=cc.provider,
+            model=cc.model,
+            api_key=cc.api_key,
+            api_base_url=cc.api_base_url,
+            max_input_chars=cc.max_input_chars,
+            timeout=cc.timeout,
+            temperature=cc.temperature,
+        )
+        condenser = ContextCondenser(condenser_config)
+
+        rules_summary = ", ".join(r.meta.name or r.meta.id for r in rules[:3])
+
+        try:
+            result = await condenser.condense(
+                log_paths=windowed_paths,
+                issue_description=issue.description,
+                device_sn=issue.device_sn,
+                problem_date=problem_date,
+                l1_extraction=extraction,
+                rules_summary=rules_summary,
+            )
+
+            if result.success:
+                structured_context = result.structured_context
+                # Save to workspace for reference
+                context_dir = workspace / "context"
+                context_dir.mkdir(parents=True, exist_ok=True)
+                (context_dir / "llm_extraction.json").write_text(
+                    _json.dumps(structured_context, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                logger.info(
+                    "L1.5 LLM extraction success: provider=%s, duration=%dms, output=%d chars",
+                    result.provider, result.duration_ms, result.output_chars,
+                )
+            else:
+                logger.warning("L1.5 LLM extraction failed: %s", result.error)
+                if result.raw_output:
+                    # Save raw output even if JSON parsing failed
+                    context_dir = workspace / "context"
+                    context_dir.mkdir(parents=True, exist_ok=True)
+                    (context_dir / "llm_extraction_raw.txt").write_text(
+                        result.raw_output, encoding="utf-8",
+                    )
+        except Exception as e:
+            logger.error("L1.5 LLM extraction error: %s", e, exc_info=True)
+
+    # Save windowing metadata
+    try:
+        context_dir = workspace / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        (context_dir / "windowing_meta.json").write_text(
+            _json.dumps(windowing_meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    return {
+        "log_paths": windowed_paths,
+        "structured_context": structured_context,
+        "windowing_metadata": windowing_meta,
+    }

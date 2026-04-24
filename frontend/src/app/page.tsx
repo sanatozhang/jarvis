@@ -1096,7 +1096,6 @@ export default function HomePage() {
                     { l: t("平台"), v: (lm.platform || issue.platform || "").toUpperCase() || "" },
                     { l: t("用户 UID"), v: lm.uid, mono: true },
                     { l: t("语言/地区"), v: lm.locale },
-                    { l: t("日志"), v: `${issue.log_files?.length || 0} ${t("个")}` },
                     { l: t("API 区域"), v: lm.api_region },
                   ].filter(f => f.v);
 
@@ -1117,14 +1116,14 @@ export default function HomePage() {
                         <div className="mt-2 rounded-lg px-3 py-2 text-xs" style={{ background: S.overlay }}>
                           <span style={{ color: S.text3 }}>{t("关联文件")} ({lm.file_ids.length})</span>
                           <div className="mt-1 flex flex-wrap gap-1">
-                            {lm.file_ids.slice(0, 10).map((fid: string) => (
+                            {lm.file_ids.slice(0, 4).map((fid: string) => (
                               <span key={fid} className="rounded px-1.5 py-0.5 font-mono text-[10px]"
                                 style={{ background: S.surface, color: S.text2 }}>
-                                {fid.slice(0, 8)}...
+                                {fid}
                               </span>
                             ))}
-                            {lm.file_ids.length > 10 && (
-                              <span className="text-[10px]" style={{ color: S.text3 }}>+{lm.file_ids.length - 10}</span>
+                            {lm.file_ids.length > 4 && (
+                              <span className="text-[10px]" style={{ color: S.text3 }}>+{lm.file_ids.length - 4}</span>
                             )}
                           </div>
                         </div>

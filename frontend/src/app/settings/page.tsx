@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, type AgentConfig, type HealthCheck, type UserListItem } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig } from "@/lib/api";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
 interface EnvGroup { key: string; label: string; fields: EnvField[]; }
@@ -87,6 +87,10 @@ export default function SettingsPage() {
   const [escalationMembers, setEscalationMembers] = useState("");
   const [escalationSaving, setEscalationSaving] = useState(false);
 
+  const [condensation, setCondensation] = useState<CondensationConfig | null>(null);
+  const [condensationSaving, setCondensationSaving] = useState(false);
+  const [condensationApiKey, setCondensationApiKey] = useState("");
+
   const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   const isAdmin = username === "sanato";
 
@@ -97,6 +101,7 @@ export default function SettingsPage() {
     fetchEscalationMembers()
       .then((data) => setEscalationMembers(data.members.join("\n")))
       .catch(console.error);
+    fetchCondensationConfig().then(setCondensation).catch(console.error);
     if (isAdmin) loadEnv();
   }, []);
 
@@ -152,6 +157,27 @@ export default function SettingsPage() {
       setToast(t("已保存"));
     } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
     finally { setEscalationSaving(false); }
+  };
+
+  const saveCondensation = async () => {
+    if (!condensation) return;
+    setCondensationSaving(true);
+    try {
+      await updateCondensationConfig({
+        enabled: condensation.enabled,
+        provider: condensation.provider,
+        model: condensation.model,
+        log_size_threshold_mb: condensation.log_size_threshold_mb,
+        time_window_hours_before: condensation.time_window_hours_before,
+        time_window_hours_after: condensation.time_window_hours_after,
+        timeout: condensation.timeout,
+        ...(condensationApiKey ? { api_key: condensationApiKey } : {}),
+      });
+      setToast(t("L1.5 配置已保存"));
+      setCondensationApiKey("");
+      fetchCondensationConfig().then(setCondensation).catch(console.error);
+    } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
+    finally { setCondensationSaving(false); }
   };
 
   const ruleTypes = ["recording_missing", "timestamp_drift", "bluetooth", "cloud_sync", "speaker", "flutter_crash", "file_transfer", "membership_payment", "hardware_firmware", "general"];
@@ -390,6 +416,131 @@ export default function SettingsPage() {
             style={inputStyle}
           />
         </section>
+
+        {/* L1.5 CONTEXT CONDENSATION */}
+        {condensation && (
+          <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                  {t("L1.5 日志预提取")}
+                </h2>
+                <p className="mt-0.5 text-xs" style={{ color: S.text3 }}>
+                  {t("用大 context 模型预提取日志关键信息，减少分析超时")}
+                </p>
+              </div>
+              <button onClick={saveCondensation} disabled={condensationSaving}
+                className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50 transition-opacity"
+                style={{ background: S.overlay, color: S.text1, border: `1px solid ${S.border}` }}>
+                {condensationSaving ? t("保存中...") : t("保存配置")}
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Enable toggle */}
+              <label className="flex cursor-pointer items-center gap-3">
+                <input type="checkbox" checked={condensation.enabled}
+                  onChange={(e) => setCondensation({ ...condensation, enabled: e.target.checked })}
+                  className="h-4 w-4 rounded" style={{ accentColor: S.accent }} />
+                <span className="text-sm font-medium" style={{ color: S.text1 }}>{t("启用 L1.5 预提取")}</span>
+                {condensation.enabled && (
+                  <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                    style={{ background: "rgba(22,163,74,0.1)", color: "#16A34A" }}>{t("已启用")}</span>
+                )}
+              </label>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {/* Provider */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("模型提供商")}</label>
+                  <select value={condensation.provider}
+                    onChange={(e) => {
+                      const p = e.target.value;
+                      setCondensation({ ...condensation, provider: p, model: "" });
+                    }}
+                    className="w-full rounded-lg px-3 py-2 text-sm" style={inputStyle}>
+                    <option value="anthropic">Anthropic (Claude Haiku)</option>
+                    <option value="gemini">Google (Gemini Flash)</option>
+                    <option value="openai">OpenAI (GPT-4.1 mini)</option>
+                  </select>
+                  <p className="mt-1 text-[10px]" style={{ color: S.text3 }}>
+                    {t("默认模型")}: {condensation.default_models?.[condensation.provider] || "?"}
+                  </p>
+                </div>
+
+                {/* Model override */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("模型（留空用默认）")}</label>
+                  <input type="text" value={condensation.model}
+                    onChange={(e) => setCondensation({ ...condensation, model: e.target.value })}
+                    placeholder={condensation.default_models?.[condensation.provider] || ""}
+                    className="w-full rounded-lg px-3 py-2 text-sm" style={inputStyle} />
+                </div>
+
+                {/* API Key */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>API Key</label>
+                  <input type="password" value={condensationApiKey}
+                    onChange={(e) => setCondensationApiKey(e.target.value)}
+                    placeholder={condensation.has_api_key ? condensation.api_key_masked : t("输入 API Key")}
+                    className="w-full rounded-lg px-3 py-2 font-mono text-sm" style={inputStyle} />
+                  {condensation.has_api_key && !condensationApiKey && (
+                    <p className="mt-1 text-[10px]" style={{ color: "#16A34A" }}>✓ {t("已配置")}</p>
+                  )}
+                </div>
+
+                {/* Timeout */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("超时（秒）")}</label>
+                  <input type="number" value={condensation.timeout}
+                    onChange={(e) => setCondensation({ ...condensation, timeout: parseInt(e.target.value) || 120 })}
+                    className="w-full rounded-lg px-3 py-2 text-sm" style={inputStyle} />
+                </div>
+
+                {/* Log size threshold */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("日志阈值 (MB)")}</label>
+                  <input type="number" value={condensation.log_size_threshold_mb} step="1"
+                    onChange={(e) => setCondensation({ ...condensation, log_size_threshold_mb: parseFloat(e.target.value) || 5 })}
+                    className="w-full rounded-lg px-3 py-2 text-sm" style={inputStyle} />
+                  <p className="mt-1 text-[10px]" style={{ color: S.text3 }}>
+                    {t("仅对大于此值的日志启用预提取")}
+                  </p>
+                </div>
+
+                {/* Time window */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>{t("时间窗口")}</label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs" style={{ color: S.text3 }}>{t("前")}</span>
+                    <input type="number" value={condensation.time_window_hours_before} min={1} max={24}
+                      onChange={(e) => setCondensation({ ...condensation, time_window_hours_before: parseInt(e.target.value) || 4 })}
+                      className="w-16 rounded-lg px-2 py-2 text-center text-sm" style={inputStyle} />
+                    <span className="text-xs" style={{ color: S.text3 }}>{t("小时 / 后")}</span>
+                    <input type="number" value={condensation.time_window_hours_after} min={1} max={24}
+                      onChange={(e) => setCondensation({ ...condensation, time_window_hours_after: parseInt(e.target.value) || 2 })}
+                      className="w-16 rounded-lg px-2 py-2 text-center text-sm" style={inputStyle} />
+                    <span className="text-xs" style={{ color: S.text3 }}>{t("小时")}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Info box */}
+              <div className="rounded-lg p-3 text-xs" style={{ background: S.accentBg, border: `1px solid rgba(184,146,46,0.15)` }}>
+                <p style={{ color: S.accent }}><strong>L1.5 {t("工作原理")}:</strong></p>
+                <p className="mt-1" style={{ color: S.text2 }}>
+                  {t("① 时间窗口切割（自动，免费）：大日志按问题日期裁剪，通常减少 80-95% 体积")}
+                </p>
+                <p className="mt-0.5" style={{ color: S.text2 }}>
+                  {t("② LLM 上下文提取（需 API Key）：用便宜模型阅读日志，提取结构化关键信息给分析 Agent")}
+                </p>
+                <p className="mt-0.5" style={{ color: S.text2 }}>
+                  {t("即使不启用 LLM 提取，时间窗口切割也会自动生效，已能显著减少超时")}
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* USER MANAGEMENT (Admin only) */}
         {isAdmin && (

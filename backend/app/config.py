@@ -102,6 +102,28 @@ class AgentSettings(BaseSettings):
     routing: Dict[str, str] = Field(default_factory=dict)
 
 
+class ContextCondensationSettings(BaseSettings):
+    """L1.5: LLM-powered context extraction from large logs."""
+    enabled: bool = False                    # Enable via config.yaml or env
+    provider: str = "gemini"                 # gemini, anthropic, openai
+    model: str = ""                          # empty = use default per provider
+    api_key: str = ""                        # API key (prefer env: CONDENSER_API_KEY)
+    api_base_url: str = ""                   # Custom endpoint (optional)
+    log_size_threshold_mb: float = 5.0       # Only condense logs > this size
+    time_window_hours_before: int = 4        # Hours before problem_date
+    time_window_hours_after: int = 2         # Hours after problem_date
+    max_input_chars: int = 2_800_000         # ~800K tokens for Gemini Flash
+    timeout: int = 120                       # LLM call timeout (seconds)
+    temperature: float = 0.0                 # Deterministic extraction
+
+    model_config = {
+        "env_prefix": "CONDENSER_",
+        "env_file": str(PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+
 class ConcurrencySettings(BaseSettings):
     max_workers: int = 3
     max_agent_sessions: int = 3
@@ -132,6 +154,7 @@ class Settings(BaseSettings):
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
     linear: LinearSettings = Field(default_factory=LinearSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    context_condensation: ContextCondensationSettings = Field(default_factory=ContextCondensationSettings)
     concurrency: ConcurrencySettings = Field(default_factory=ConcurrencySettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 
@@ -177,6 +200,12 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
     if env_agent in _valid_agents:
         settings.agent.default = env_agent
         settings.agent.routing = {k: env_agent for k in settings.agent.routing}
+
+    # Context condensation (L1.5)
+    ccc = cfg.get("context_condensation", {})
+    for k, v in ccc.items():
+        if hasattr(settings.context_condensation, k) and not os.getenv(f"CONDENSER_{k.upper()}"):
+            setattr(settings.context_condensation, k, v)
 
     # Concurrency
     cc = cfg.get("concurrency", {})

@@ -439,6 +439,26 @@ const EN: Record<string, string> = {
   "每行一个邮箱地址": "One email address per line",
   "保存成员列表": "Save Members",
 
+  // L1.5 Context Condensation
+  "L1.5 日志预提取": "L1.5 Log Pre-extraction",
+  "用大 context 模型预提取日志关键信息，减少分析超时": "Use large-context model to pre-extract key log info, reducing analysis timeouts",
+  "启用 L1.5 预提取": "Enable L1.5 Pre-extraction",
+  "模型提供商": "Model Provider",
+  "默认模型": "Default model",
+  "模型（留空用默认）": "Model (leave empty for default)",
+  "输入 API Key": "Enter API Key",
+  "日志阈值 (MB)": "Log Threshold (MB)",
+  "仅对大于此值的日志启用预提取": "Only enable pre-extraction for logs larger than this",
+  "时间窗口": "Time Window",
+  "前": "Before",
+  "小时 / 后": "hrs / After",
+  "L1.5 配置已保存": "L1.5 config saved",
+  "保存配置": "Save Config",
+  "工作原理": "How it works",
+  "① 时间窗口切割（自动，免费）：大日志按问题日期裁剪，通常减少 80-95% 体积": "① Time windowing (automatic, free): Large logs are trimmed by problem date, typically 80-95% reduction",
+  "② LLM 上下文提取（需 API Key）：用便宜模型阅读日志，提取结构化关键信息给分析 Agent": "② LLM extraction (requires API Key): Cheap model reads logs and extracts structured key info for analysis agent",
+  "即使不启用 LLM 提取，时间窗口切割也会自动生效，已能显著减少超时": "Even without LLM extraction, time windowing is always active and significantly reduces timeouts",
+
   // User management
   "用户管理": "User Management",
   "角色": "Role",

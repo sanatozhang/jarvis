@@ -496,6 +496,26 @@ export const updateAgentConfig = (data: any) =>
 export const fetchHealth = () => request<HealthCheck>("/health");
 export const checkAgents = () => request<Record<string, any>>("/health/agents");
 
+// L1.5 Context Condensation
+export interface CondensationConfig {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  has_api_key: boolean;
+  api_key_masked: string;
+  log_size_threshold_mb: number;
+  time_window_hours_before: number;
+  time_window_hours_after: number;
+  timeout: number;
+  default_models: Record<string, string>;
+}
+export const fetchCondensationConfig = () => request<CondensationConfig>("/settings/condensation");
+export const updateCondensationConfig = (data: Partial<CondensationConfig> & { api_key?: string }) =>
+  request<{ status: string }>("/settings/condensation", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+
 // ============================================================
 // Golden Samples
 // ============================================================

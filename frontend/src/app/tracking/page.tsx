@@ -587,14 +587,56 @@ export default function TrackingPage() {
                     {t("分类")}: <span style={{ color: S.text1 }}>{catShort(detailItem.category || "")}</span>
                   </p>
                 )}
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {[{ l: t("设备 SN"), v: detailItem.device_sn, m: true }, { l: t("固件"), v: detailItem.firmware }, { l: "APP", v: detailItem.app_version }, { l: "Zendesk", v: detailItem.zendesk_id }].map((f) => (
-                    <div key={f.l} className="rounded-lg px-3 py-2" style={{ background: S.overlay }}>
-                      <span style={{ color: S.text3 }}>{f.l}</span>
-                      <p className={`mt-0.5 font-medium ${f.m ? "font-mono" : ""}`} style={{ color: S.text1 }}>{f.v || "—"}</p>
-                    </div>
-                  ))}
-                </div>
+                {(() => {
+                  const latestAnalysis = detailItem.analysis
+                    || (issueAnalyses[detailItem.record_id] && issueAnalyses[detailItem.record_id].length > 0 ? issueAnalyses[detailItem.record_id][0] : null);
+                  const lm = latestAnalysis?.log_metadata || {};
+                  const deviceType = (latestAnalysis as any)?.device_type || "";
+
+                  const fields = [
+                    { l: t("设备 SN"), v: detailItem.device_sn, mono: true },
+                    { l: t("设备型号"), v: lm.device_model || deviceType },
+                    { l: t("固件"), v: detailItem.firmware },
+                    { l: t("APP"), v: lm.app_version || detailItem.app_version },
+                    { l: t("系统版本"), v: lm.os_version },
+                    { l: t("平台"), v: (lm.platform || detailItem.platform || "").toUpperCase() || "" },
+                    { l: t("用户 UID"), v: lm.uid, mono: true },
+                    { l: t("语言/地区"), v: lm.locale },
+                    { l: t("API 区域"), v: lm.api_region },
+                  ].filter(f => f.v);
+
+                  return (
+                    <>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        {fields.map((f) => (
+                          <div key={f.l} className="rounded-lg px-3 py-2" style={{ background: S.overlay }}>
+                            <span style={{ color: S.text3 }}>{f.l}</span>
+                            <p className={`mt-0.5 font-medium truncate ${f.mono ? "font-mono text-[11px]" : ""}`}
+                              style={{ color: S.text1 }} title={f.v || ""}>
+                              {f.v || "—"}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      {lm.file_ids && lm.file_ids.length > 0 && (
+                        <div className="mt-2 rounded-lg px-3 py-2 text-xs" style={{ background: S.overlay }}>
+                          <span style={{ color: S.text3 }}>{t("关联文件")} ({lm.file_ids.length})</span>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {lm.file_ids.slice(0, 4).map((fid: string) => (
+                              <span key={fid} className="rounded px-1.5 py-0.5 font-mono text-[10px]"
+                                style={{ background: S.surface, color: S.text2 }}>
+                                {fid}
+                              </span>
+                            ))}
+                            {lm.file_ids.length > 4 && (
+                              <span className="text-[10px]" style={{ color: S.text3 }}>+{lm.file_ids.length - 4}</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </section>
               <section>
                 <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("问题描述")}</h3>
@@ -602,6 +644,55 @@ export default function TrackingPage() {
                   {detailItem.description}
                 </div>
               </section>
+              {/* Attachments / Log Files */}
+              {detailItem.log_files && detailItem.log_files.length > 0 && (() => {
+                const issueId = detailItem.record_id;
+                const images = detailItem.log_files.filter((f: any) => /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name));
+                const logs = detailItem.log_files.filter((f: any) => !/\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name));
+                return (
+                  <section>
+                    <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                      {t("附件")} ({detailItem.log_files.length})
+                    </h3>
+                    {images.length > 0 && (
+                      <div className="mb-2 grid grid-cols-3 gap-2">
+                        {images.map((f: any, i: number) => (
+                          <a key={i} href={`/api/local/${issueId}/files/${f.name}`} target="_blank"
+                            className="block overflow-hidden rounded-lg" style={{ border: `1px solid ${S.border}` }}>
+                            <img src={`/api/local/${issueId}/files/${f.name}`} alt={f.name} className="h-24 w-full object-cover" loading="lazy" />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    {logs.length > 0 && (
+                      <div className="space-y-1">
+                        {logs.map((f: any, i: number) => (
+                          <div key={i} className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs"
+                            style={{ background: S.overlay, color: S.text2 }}>
+                            <svg className="h-3.5 w-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} style={{ color: S.text3 }}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                            </svg>
+                            <span className="truncate">{f.name}</span>
+                            {f.size > 0 && <span className="flex-shrink-0" style={{ color: S.text3 }}>{(f.size / 1024 / 1024).toFixed(1)}MB</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {logs.length > 0 && (
+                      <a href={`/api/local/${issueId}/download-logs`}
+                        download
+                        className="mt-2 flex items-center justify-center gap-2 w-full rounded-lg py-2 text-xs font-medium transition-colors hover:opacity-80"
+                        style={{ background: S.overlay, color: S.accent, border: `1px solid ${S.border}`, textDecoration: "none" }}>
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                        </svg>
+                        {t("下载日志")}
+                      </a>
+                    )}
+                  </section>
+                );
+              })()}
+
               {detailItem.analysis && (() => {
                 const allAnalyses = issueAnalyses[detailItem.record_id];
                 const analyses = allAnalyses && allAnalyses.length > 0 ? allAnalyses : [detailItem.analysis];

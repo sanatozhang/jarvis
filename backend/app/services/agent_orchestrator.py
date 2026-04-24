@@ -127,6 +127,7 @@ class AgentOrchestrator:
         on_progress: Optional[Callable[[int, str], Any]] = None,
         previous_analysis: Optional[Dict[str, Any]] = None,
         followup_question: str = "",
+        condensation_context: Optional[Dict[str, Any]] = None,
     ) -> AnalysisResult:
         """
         Full analysis pipeline with automatic model fallback:
@@ -162,6 +163,17 @@ class AgentOrchestrator:
             few_shot_examples=few_shot_examples,
         )
 
+        # Materialize L1.5 condensation context if available
+        if condensation_context:
+            cc_path = workspace / "context" / "llm_extraction.json"
+            if not cc_path.exists():
+                cc_path.parent.mkdir(parents=True, exist_ok=True)
+                cc_path.write_text(
+                    json.dumps(condensation_context, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            context_files["condensation"] = str(cc_path.relative_to(workspace))
+
         prompt, prompt_meta = BaseAgent.build_prompt_with_meta(
             issue=issue,
             rules=rules,
@@ -173,6 +185,7 @@ class AgentOrchestrator:
             followup_question=followup_question,
             few_shot_examples=few_shot_examples,
             context_files=context_files,
+            condensation_context=condensation_context,
         )
         _write_prompt_meta(workspace, prompt_meta)
         logger.info(
