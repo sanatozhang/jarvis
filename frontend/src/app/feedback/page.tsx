@@ -95,8 +95,8 @@ export default function FeedbackPage() {
     if (!newFiles) return;
     const valid: File[] = [];
     for (const f of Array.from(newFiles)) {
-      if (f.size > 50 * 1024 * 1024) {
-        setToast({ msg: `${f.name} ${t("超过 50MB 限制")}（${formatSize(f.size)}）`, type: "error" });
+      if (f.size > 100 * 1024 * 1024) {
+        setToast({ msg: `${f.name} ${t("超过 100MB 限制")}（${formatSize(f.size)}）`, type: "error" });
         setTimeout(() => setToast(null), 4000);
       } else { valid.push(f); }
     }
@@ -109,9 +109,9 @@ export default function FeedbackPage() {
     if (!form.description.trim()) {
       setToast({ msg: t("请填写问题描述"), type: "error" }); setTimeout(() => setToast(null), 3000); return;
     }
-    const oversized = files.find((f) => f.size > 50 * 1024 * 1024);
+    const oversized = files.find((f) => f.size > 100 * 1024 * 1024);
     if (oversized) {
-      setToast({ msg: `${t("文件")} ${oversized.name} ${t("超过 50MB 限制")}`, type: "error" }); setTimeout(() => setToast(null), 5000); return;
+      setToast({ msg: `${t("文件")} ${oversized.name} ${t("超过 100MB 限制")}`, type: "error" }); setTimeout(() => setToast(null), 5000); return;
     }
     if (!skipLogCheck && files.length === 0) { setShowNoLogConfirm(true); return; }
     setSubmitting(true); setUploadProgress(0);
@@ -288,7 +288,7 @@ export default function FeedbackPage() {
               </div>
               <p className="text-sm font-medium" style={{ color: S.text2 }}>{t("点击或拖拽上传文件")}</p>
               <p className="mt-1 text-xs" style={{ color: S.text3 }}>
-                {t("支持日志 (.plaud, .log, .zip, .gz) 和图片 (.png, .jpg, .gif)（≤ 50MB）")}
+                {t("支持日志 (.plaud, .log, .zip, .gz) 和图片 (.png, .jpg, .gif)（≤ 100MB）")}
               </p>
               <input ref={fileRef} type="file" multiple
                 accept=".plaud,.log,.zip,.gz,.txt,.rtf,.png,.jpg,.jpeg,.gif,.webp,.bmp"
