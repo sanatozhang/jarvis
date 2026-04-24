@@ -80,8 +80,19 @@ async def list_pending_issues(
             "in_progress_count": len(in_progress_issues),
         }
     except Exception as e:
-        logger.error("Failed to list issues: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Failed to list issues from Feishu: %s", e)
+        # Degrade gracefully: return empty list instead of 500
+        # The user can still access analyzed issues via tracking page
+        return {
+            "issues": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": 1,
+            "high_priority": 0,
+            "in_progress_count": 0,
+            "error": f"飞书同步失败: {str(e)[:200]}",
+        }
 
 
 @router.post("/refresh")
