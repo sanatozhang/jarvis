@@ -107,9 +107,10 @@ class ContextCondenser:
         if not self.config.enabled:
             return CondensationResult(error="context_condensation_disabled")
 
-        if not self.config.api_key:
+        if not self.config.api_key and self.config.provider != "anthropic":
             logger.warning("No API key configured for context condensation (provider: %s)", self.config.provider)
             return CondensationResult(error="no_api_key")
+        # anthropic provider without API key → will fall through to CLI mode
 
         # Read log content
         log_content = self._read_logs(log_paths)
@@ -283,7 +284,11 @@ class ContextCondenser:
         if provider == "gemini":
             return await self._call_gemini(prompt, model)
         elif provider == "anthropic":
-            return await self._call_anthropic(prompt, model)
+            if self.config.api_key:
+                return await self._call_anthropic(prompt, model)
+            else:
+                # No API key → use Claude CLI (OAuth auth)
+                return await self._call_claude_cli(prompt, model)
         elif provider == "openai":
             return await self._call_openai(prompt, model)
         else:
@@ -346,6 +351,57 @@ class ContextCondenser:
             )
 
         return self._parse_llm_output(text, provider="anthropic", model=model)
+
+    async def _call_claude_cli(self, prompt: str, model: str) -> CondensationResult:
+        """Call Claude via CLI (uses OAuth auth, no API key needed)."""
+        import asyncio
+
+        cmd = ["claude", "-p", "--output-format", "text"]
+        if model:
+            cmd.extend(["--model", model])
+
+        logger.info("L1.5 calling Claude CLI (model: %s, prompt: %d chars)", model, len(prompt))
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode("utf-8")),
+                timeout=self.config.timeout,
+            )
+            text = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+            if proc.returncode != 0:
+                logger.warning("Claude CLI L1.5 exited %d: %s", proc.returncode, stderr[:300])
+                if "hit your limit" in (stderr + text).lower():
+                    return CondensationResult(
+                        error=f"claude_quota_exhausted: {stderr[:200]}",
+                        provider="anthropic-cli", model=model,
+                    )
+
+            if not text.strip():
+                return CondensationResult(
+                    error=f"claude_cli_empty_output: {stderr[:200]}",
+                    provider="anthropic-cli", model=model,
+                )
+
+            return self._parse_llm_output(text, provider="anthropic-cli", model=model)
+
+        except asyncio.TimeoutError:
+            return CondensationResult(
+                error=f"claude_cli_timeout ({self.config.timeout}s)",
+                provider="anthropic-cli", model=model,
+            )
+        except FileNotFoundError:
+            return CondensationResult(
+                error="claude_cli_not_found",
+                provider="anthropic-cli", model=model,
+            )
 
     async def _call_openai(self, prompt: str, model: str) -> CondensationResult:
         """Call OpenAI Chat Completions API."""

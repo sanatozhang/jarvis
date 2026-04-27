@@ -62,9 +62,9 @@ agent:
 # 开启后，大日志文件会先经过时间窗口切割 + LLM 提取，再交给分析 Agent
 # API key 通过 .env 配置: CONDENSER_API_KEY=your-key-here
 context_condensation:
-  enabled: false                    # 设置 true 并配置 API key 后生效
-  provider: gemini                  # gemini (推荐，最便宜), anthropic, openai
-  model: ""                         # 留空使用默认: gemini-2.5-flash / claude-haiku-4-5 / gpt-4.1-mini
+  enabled: true                     # L1.5 预提取默认开启
+  provider: anthropic               # 使用 Anthropic (和分析 Agent 共用同一个 key)
+  model: "claude-haiku-4-5"         # Haiku 便宜快速，适合预提取
   log_size_threshold_mb: 5          # 仅对 > 5MB 的日志启用 L1.5
   time_window_hours_before: 4       # 问题日期前 N 小时
   time_window_hours_after: 2        # 问题日期后 N 小时

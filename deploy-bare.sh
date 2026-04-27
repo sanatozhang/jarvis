@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Ensure common paths are available (SSH non-login shell may miss these)
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # ============================================================
 # Jarvis 裸机部署脚本（无 Docker）

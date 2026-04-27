@@ -27,7 +27,7 @@ deploy() {
     local tmp; tmp=$(mktemp)
     local rc=0
     ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$server" \
-        "export PATH=/opt/homebrew/bin:/usr/local/bin:\$PATH; cd ~/jarvis && bash ${script} update" \
+        "export PATH=\$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH; cd ~/jarvis && bash ${script} update" \
         >"$tmp" 2>&1 || rc=$?
 
     if [ "$rc" -eq 0 ]; then

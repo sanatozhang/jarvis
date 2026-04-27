@@ -571,9 +571,21 @@ export default function TrackingPage() {
                 <div className="flex flex-wrap items-center gap-2 mb-3">
                   <PriorityBadge p={detailItem.priority} />
                   <StatusBadge status={detailItem.local_status} ruleType={detailItem.analysis?.rule_type} />
-                  {detailItem.platform && (
-                    <span className="rounded-full px-2 py-0.5 text-[10px]"
-                      style={{ background: "rgba(96,165,250,0.1)", color: "#2563EB" }}>{detailItem.platform}</span>
+                  {(() => {
+                    const la = detailItem.analysis || (issueAnalyses[detailItem.record_id]?.[0]) || null;
+                    const deviceType = (la as any)?.device_type || la?.log_metadata?.device_model || "";
+                    return deviceType ? (
+                      <span className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                        style={{ background: "rgba(99,102,241,0.08)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.15)" }}>
+                        {deviceType}
+                      </span>
+                    ) : null;
+                  })()}
+                  {detailItem.device_sn && (
+                    <span className="rounded-full px-2 py-0.5 text-[10px] font-mono"
+                      style={{ background: S.overlay, color: S.text2, border: `1px solid ${S.border}` }}>
+                      SN: {detailItem.device_sn}
+                    </span>
                   )}
                   <SourceBadge source={detailItem.source} />
                   {detailItem.created_by && (
@@ -601,12 +613,10 @@ export default function TrackingPage() {
                   const deviceType = (latestAnalysis as any)?.device_type || "";
 
                   const fields = [
-                    { l: t("设备 SN"), v: detailItem.device_sn, mono: true },
                     { l: t("设备型号"), v: lm.device_model || deviceType },
-                    { l: t("固件"), v: detailItem.firmware },
                     { l: t("APP"), v: lm.app_version || detailItem.app_version },
                     { l: t("系统版本"), v: lm.os_version },
-                    { l: t("平台"), v: (lm.platform || detailItem.platform || "").toUpperCase() || "" },
+                    { l: t("固件"), v: detailItem.firmware },
                     { l: t("用户 UID"), v: lm.uid, mono: true },
                     { l: t("语言/地区"), v: lm.locale },
                     { l: t("API 区域"), v: lm.api_region },
