@@ -123,7 +123,7 @@ class AgentOrchestrator:
         agent_override: Optional[str] = None,
         problem_date: Optional[str] = None,
         has_logs: bool = True,
-        language: str = "zh",
+        language: str = "en",
         on_progress: Optional[Callable[[int, str], Any]] = None,
         previous_analysis: Optional[Dict[str, Any]] = None,
         followup_question: str = "",

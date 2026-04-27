@@ -349,7 +349,9 @@ export interface LocalIssueItem {
   linear_issue_id?: string;
   linear_issue_url?: string;
   result_summary: string;
+  result_summary_en?: string;
   root_cause_summary: string;
+  root_cause_summary_en?: string;
   created_at_ms: number;
   created_at?: string;
   created_by?: string;
@@ -484,6 +486,21 @@ export const getOncallTickets = (status?: string, weeks?: number) => {
 
 export const resolveOncallTicket = (issueId: string) =>
   request<{ status: string; issue_id: string; feishu_notified: boolean }>(`/oncall/tickets/${issueId}/resolve`, { method: "PUT" });
+
+export interface OncallWeekStat {
+  week_num: number;
+  group_index: number;
+  members: string[];
+  week_start: string;
+  week_end: string;
+  is_current: boolean;
+  total: number;
+  in_progress: number;
+  resolved: number;
+}
+
+export const getOncallStats = () =>
+  request<{ weeks: OncallWeekStat[]; groups: string[][]; start_date: string; current_week_num: number }>("/oncall/stats");
 
 // ============================================================
 // Inaccurate

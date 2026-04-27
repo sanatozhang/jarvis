@@ -68,7 +68,7 @@ class BaseAgent(ABC):
         extraction: Dict[str, Any],
         problem_date: Optional[str] = None,
         has_logs: bool = True,
-        language: str = "zh",
+        language: str = "en",
         previous_analysis: Optional[Dict[str, Any]] = None,
         followup_question: str = "",
         few_shot_examples: Optional[List[Dict[str, Any]]] = None,
@@ -97,7 +97,7 @@ class BaseAgent(ABC):
         extraction: Dict[str, Any],
         problem_date: Optional[str] = None,
         has_logs: bool = True,
-        language: str = "zh",
+        language: str = "en",
         previous_analysis: Optional[Dict[str, Any]] = None,
         followup_question: str = "",
         few_shot_examples: Optional[List[Dict[str, Any]]] = None,
@@ -107,7 +107,7 @@ class BaseAgent(ABC):
         """Build the master prompt for the agent.
 
         Args:
-            language: "zh" for Chinese output, "en" for English output.
+            language: "en" for English output (default), "zh" for Chinese output.
             condensation_context: L1.5 structured context from LLM pre-extraction.
         """
         issue_description = _trim_text(issue.description, _MAX_ISSUE_DESCRIPTION_CHARS)
@@ -444,35 +444,48 @@ output/       ← 请将 result.json 写入此目录
                 data.setdefault("needs_engineer", True)
                 logger.info("Using cleaned raw_output (%d chars) as fallback root_cause", len(cleaned_output))
 
-        _raw_rc = data.get("root_cause") or "分析未产出结构化结果"
-        _raw_rc_en = data.get("root_cause_en", "")
-        _raw_reply = data.get("user_reply", "")
-        _raw_reply_en = data.get("user_reply_en", "")
-        _raw_type = _clean_problem_type(data.get("problem_type", "未知"))
-        _raw_type_en = _clean_problem_type(data.get("problem_type_en", ""))
+        # New prompt outputs English in main fields, Chinese in _zh fields.
+        # For backward compat with old results that used Chinese in main fields:
+        # - English: prefer _en field, then main field
+        # - Chinese: prefer _zh field, then main field (old format)
+        _main_rc = data.get("root_cause", "")
+        _main_reply = data.get("user_reply", "")
+        _main_type = data.get("problem_type", "")
 
-        # Fallback: if English fields are empty, use Chinese content as fallback
-        # (better to show Chinese than nothing when user switches to English)
-        if not _raw_type_en:
-            _raw_type_en = _raw_type
-        if not _raw_rc_en:
-            _raw_rc_en = _raw_rc
+        _raw_rc_en = data.get("root_cause_en", "") or _main_rc or "Analysis did not produce structured result"
+        _raw_rc_zh = data.get("root_cause_zh", "") or _main_rc or "分析未产出结构化结果"
+        _raw_reply_en = data.get("user_reply_en", "") or _main_reply
+        _raw_reply_zh = data.get("user_reply_zh", "") or _main_reply
+        _raw_type_en = _clean_problem_type(data.get("problem_type_en", "") or _main_type or "Unknown")
+        _raw_type_zh = _clean_problem_type(data.get("problem_type_zh", "") or _main_type or "未知")
+
+        # Ensure neither side is empty — cross-fallback
+        if not _raw_rc_en or _raw_rc_en == "Analysis did not produce structured result":
+            _raw_rc_en = _raw_rc_zh
+        if not _raw_rc_zh or _raw_rc_zh == "分析未产出结构化结果":
+            _raw_rc_zh = _raw_rc_en
         if not _raw_reply_en:
-            _raw_reply_en = _raw_reply
+            _raw_reply_en = _raw_reply_zh
+        if not _raw_reply_zh:
+            _raw_reply_zh = _raw_reply_en
+        if not _raw_type_en or _raw_type_en == "Unknown":
+            _raw_type_en = _raw_type_zh
+        if not _raw_type_zh or _raw_type_zh == "未知":
+            _raw_type_zh = _raw_type_en
 
         return AnalysisResult(
             task_id="",
             issue_id="",
-            problem_type=_raw_type,
+            problem_type=_raw_type_zh,        # Chinese stays in main field for DB compat
             problem_type_en=_raw_type_en,
             problem_categories=_safe_problem_categories(data.get("problem_categories", [])),
             device_type=str(data.get("device_type", "")).strip(),
-            root_cause=_clean_system_lines(_raw_rc),
+            root_cause=_clean_system_lines(_raw_rc_zh),
             root_cause_en=_clean_system_lines(_raw_rc_en),
             confidence=_safe_confidence(data.get("confidence", "low")),
             confidence_reason=data.get("confidence_reason", ""),
             key_evidence=_safe_key_evidence(data.get("key_evidence", [])),
-            user_reply=_raw_reply,
+            user_reply=_raw_reply_zh,
             user_reply_en=_raw_reply_en,
             needs_engineer=data.get("needs_engineer", True),
             fix_suggestion=data.get("fix_suggestion", ""),
@@ -521,38 +534,40 @@ def _compose_prompt(
 
 ```json
 {{
-    "problem_type": "问题分类（中文，如：蓝牙连接异常、录音丢失、固件升级失败）",
-    "problem_type_en": "Problem Type (English)",
+    "problem_type": "Problem Type in English (e.g.: Bluetooth Connection Failure, Recording Lost, Firmware Update Failed)",
+    "problem_type_en": "Same as problem_type (English is the primary language)",
     "problem_categories": [
-        {{"category": "一级分类", "subcategory": "二级细分"}}
+        {{"category": "Level-1 category", "subcategory": "Level-2 subcategory"}}
     ],
-    "device_type": "设备型号（从日志 device/bind 或 device/info API 提取，无法确认填空串）",
-    "root_cause": "根本原因分析（中文，5-10 句话，包含：1. 问题现象总结 2. 具体根因 3. 关键日志证据引用 4. 影响范围）",
-    "root_cause_en": "Root cause analysis (English, 5-10 sentences with same structure)",
+    "device_type": "Device model (extract from logs device/bind or device/info API, empty string if unknown)",
+    "root_cause": "Root cause analysis in English (5-10 sentences: 1. Problem summary 2. Specific root cause 3. Key log evidence 4. Impact scope)",
+    "root_cause_en": "Same as root_cause (English is the primary language)",
     "confidence": "high / medium / low",
-    "confidence_reason": "置信度理由（为什么是这个级别）",
+    "confidence_reason": "Why this confidence level",
     "key_evidence": [
-        "[说明] 具体日志行或证据内容（每条证据格式：先用一句话解释这条证据说明了什么问题，然后引用原始日志行或数据。最多5条，每条100-200字）"
+        "[Explanation] Specific log line or evidence (format: one sentence explaining what this evidence shows, then quote the raw log line. Max 5 items, 100-200 words each)"
     ],
-    "user_reply": "完整的中文客服回复模板（200-500字，包含：1. 问题确认和共情 2. 原因解释（用用户能理解的语言，避免技术术语）3. 解决方案或操作步骤 4. 如果无法解决，说明后续计划。语气礼貌专业，可直接复制发给用户）",
-    "user_reply_en": "Complete English reply template (200-500 words, same structure as Chinese version)",
+    "user_reply": "Complete English customer reply template (200-500 words: 1. Acknowledge the issue with empathy 2. Explain the cause in user-friendly language 3. Solution or steps 4. Next steps if unresolved. Professional and polite tone, ready to send to user)",
+    "user_reply_en": "Same as user_reply (English is the primary language)",
+    "user_reply_zh": "完整的中文客服回复模板（200-500字，与英文版结构一致：1. 问题确认和共情 2. 原因解释 3. 解决方案 4. 后续计划。可直接复制发给用户）",
+    "root_cause_zh": "中文根因分析（与英文版信息量对等，5-10句话）",
+    "problem_type_zh": "中文问题分类（如：蓝牙连接异常、录音丢失、固件升级失败）",
     "needs_engineer": false,
-    "fix_suggestion": "工程师修复建议（如有）"
+    "fix_suggestion": "Engineering fix suggestion (if applicable)"
 }}
 ```
 
-problem_categories 和 device_type 的完整分类体系见 `context/classification_taxonomy.json`，**分析前必须先读取**。一个问题可属于多个分类。
+problem_categories and device_type taxonomy: see `context/classification_taxonomy.json` — **read it before analysis**. One issue can belong to multiple categories.
 
-**主要语言: {"English" if language == "en" else "中文"}** — 确保主要语言的内容最详细。
-每个字段都必须填写，不能为空。problem_type 必须是具体的问题分类，不能写"分析完成"之类的。
+**Primary language: English** — All main fields (problem_type, root_cause, user_reply, key_evidence, confidence_reason, fix_suggestion) MUST be written in English first.
 
-⚠️ **双语必填**: `problem_type_en`、`root_cause_en`、`user_reply_en` 三个字段**绝不能为空**。英文内容必须与中文版信息量对等，不能只写一句摘要。如果中文版有 5 段，英文版也要有 5 段。
+⚠️ **Bilingual required**: Chinese fields `problem_type_zh`, `root_cause_zh`, `user_reply_zh` must also be filled. Chinese content must match the English version in depth — if English has 5 paragraphs, Chinese must too.
 
-**质量要求**：
-- user_reply / user_reply_en 是客服直接发给用户的内容，必须完整、有用、可直接解决或解释用户的问题。不能只写一两句话敷衍。
-- root_cause / root_cause_en 需要有足够的技术深度和日志证据支撑，让工程师能理解问题全貌。
-- key_evidence 每条必须包含两部分：**分析说明**（这条证据说明了什么）+ **原始日志/数据**（引用具体内容）。不要只贴裸日志行，必须解释每条证据的意义。示例：`"蓝牙连接在配对阶段超时断开，说明设备端 BLE 栈未正确响应 —— 日志: [2025-04-10 14:32:05] BLE GATT connection timeout after 30s, peer=XX:XX:XX:XX"`
-- 如果问题复杂，宁可写得更详细，也不要遗漏关键信息。
+**Quality requirements**:
+- user_reply / user_reply_zh are sent directly to the customer. Must be complete, actionable, and ready to copy-paste. No lazy one-liners.
+- root_cause / root_cause_zh must have enough technical depth with log evidence for engineers to understand the full picture.
+- key_evidence: each item must have two parts: **analysis** (what this evidence shows) + **raw log/data** (quoted content). Don't paste bare log lines without explanation. Example: `"Bluetooth disconnected during pairing phase, indicating BLE stack on device did not respond correctly — Log: [2025-04-10 14:32:05] BLE GATT connection timeout after 30s, peer=XX:XX:XX:XX"`
+- When in doubt, write more detail rather than less.
 """
 
 

@@ -77,6 +77,11 @@ export default function TrackingPage() {
   const t = useT();
   const currentLang = useLang();
   const catShort = (cat: string) => currentLang === "en" ? (CATEGORY_SHORT_EN[cat] || cat) : (CATEGORY_SHORT[cat] || cat);
+  /** Pick the right language field — fallback to Chinese if English is empty */
+  const lang = <T extends Record<string, any>>(obj: T, zhKey: string, enKey: string): string => {
+    if (currentLang === "en") return (obj as any)[enKey] || (obj as any)[zhKey] || "";
+    return (obj as any)[zhKey] || "";
+  };
 
   const [data, setData] = useState<PaginatedResponse<LocalIssueItem> | null>(null);
   const [page, setPage] = useState(1);
@@ -465,10 +470,12 @@ export default function TrackingPage() {
                     <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                       {item.description}
                     </p>
-                    {item.root_cause_summary && (
+                    {(item.root_cause_summary || item.root_cause_summary_en) && (
                       <div className="mt-1.5 flex items-start gap-1.5">
                         <span className="mt-px flex-shrink-0 text-[10px] font-semibold" style={{ color: S.accent }}>{t("原因")}</span>
-                        <p className="text-xs" style={{ color: S.text2, display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.root_cause_summary}</p>
+                        <p className="text-xs" style={{ color: S.text2, display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                          {lang(item, "root_cause_summary", "root_cause_summary_en")}
+                        </p>
                       </div>
                     )}
                     {item.category && (
@@ -521,8 +528,8 @@ export default function TrackingPage() {
                           {t("重试")}
                         </button>
                       )}
-                      {item.analysis?.user_reply && (
-                        <button onClick={() => copy(item.analysis!.user_reply)}
+                      {(item.analysis?.user_reply || item.analysis?.user_reply_en) && (
+                        <button onClick={() => copy(lang(item.analysis!, "user_reply", "user_reply_en"))}
                           className="rounded-lg px-2.5 py-1 text-[11px] font-medium"
                           style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                           {t("复制回复")}
@@ -764,7 +771,7 @@ export default function TrackingPage() {
                             <div>
                               <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("问题原因")}</h3>
                               <div className="rounded-lg p-3 text-sm" style={{ background: S.overlay, color: S.text2 }}>
-                                <MarkdownText>{r.root_cause}</MarkdownText>
+                                <MarkdownText>{lang(r, "root_cause", "root_cause_en")}</MarkdownText>
                               </div>
                             </div>
 
@@ -805,11 +812,13 @@ export default function TrackingPage() {
                             )}
 
                             {/* Suggested reply */}
-                            {r.user_reply && (
+                            {(r.user_reply || r.user_reply_en) && (() => {
+                              const reply = lang(r, "user_reply", "user_reply_en");
+                              return reply ? (
                               <div>
                                 <div className="mb-1.5 flex items-center justify-between">
                                   <h3 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("建议回复")}</h3>
-                                  <button onClick={() => copy(r.user_reply)}
+                                  <button onClick={() => copy(reply)}
                                     className="rounded-lg px-3 py-1 text-[11px] font-medium"
                                     style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                                     {t("一键复制")}
@@ -817,10 +826,11 @@ export default function TrackingPage() {
                                 </div>
                                 <div className="rounded-lg p-3 text-sm"
                                   style={{ background: S.overlay, color: S.text2, borderLeft: "2px solid rgba(34,197,94,0.4)" }}>
-                                  <MarkdownText>{r.user_reply}</MarkdownText>
+                                  <MarkdownText>{reply}</MarkdownText>
                                 </div>
                               </div>
-                            )}
+                              ) : null;
+                            })()}
                           </div>
                         </div>
                       );

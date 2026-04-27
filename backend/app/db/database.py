@@ -907,7 +907,9 @@ def _issue_to_dict(
             "created_at": (analysis.created_at.isoformat() + "Z") if analysis.created_at else "",
         }
         d["result_summary"] = analysis.user_reply or ""
+        d["result_summary_en"] = analysis.user_reply_en or ""
         d["root_cause_summary"] = analysis.root_cause or ""
+        d["root_cause_summary_en"] = analysis.root_cause_en or ""
 
     if task:
         d["task"] = {

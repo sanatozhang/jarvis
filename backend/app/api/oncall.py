@@ -4,12 +4,15 @@ API routes for oncall schedule management.
 - Admin: create/edit oncall groups
 - All users: view current oncall, schedule
 - Escalated tickets: view/resolve with Feishu group notification
+- Stats: per-week oncall workload statistics
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import List, Optional
+from datetime import date, timedelta, datetime
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -81,46 +84,98 @@ async def update_schedule(
 @router.get("/tickets")
 async def get_escalated_tickets(
     status: Optional[str] = Query(None, description="Filter: in_progress / resolved"),
-    weeks: int = Query(2, description="Show tickets from the last N weeks (default 2 = current + previous)"),
+    weeks: int = Query(0, description="0 = all history, N = last N weeks"),
 ):
-    """Get escalated tickets scoped to recent oncall weeks."""
-    from datetime import date, timedelta
+    """Get escalated tickets. weeks=0 returns all."""
 
-    # Calculate the week boundary based on oncall start_date
-    start_date_str = await db.get_oncall_config("start_date", "")
-    if start_date_str:
-        try:
-            oncall_start = date.fromisoformat(start_date_str)
-        except ValueError:
-            oncall_start = None
-    else:
+    since_date = None
+    if weeks > 0:
+        start_date_str = await db.get_oncall_config("start_date", "")
         oncall_start = None
+        if start_date_str:
+            try:
+                oncall_start = date.fromisoformat(start_date_str)
+            except ValueError:
+                pass
 
-    # Determine the cutoff: start of (current_week - weeks + 1)
-    today = date.today()
-    if oncall_start:
-        days_since_start = (today - oncall_start).days
-        current_week_num = days_since_start // 7
-        cutoff_week_num = max(0, current_week_num - weeks + 1)
-        since_date = oncall_start + timedelta(weeks=cutoff_week_num)
-    else:
-        # Fallback: last N*7 days
-        since_date = today - timedelta(days=weeks * 7)
+        today = date.today()
+        if oncall_start:
+            days_since_start = (today - oncall_start).days
+            current_week_num = days_since_start // 7
+            cutoff_week_num = max(0, current_week_num - weeks + 1)
+            since_date = oncall_start + timedelta(weeks=cutoff_week_num)
+        else:
+            since_date = today - timedelta(days=weeks * 7)
 
     items = await db.get_escalated_issues(status=status, since_date=since_date)
 
     return {
         "tickets": items,
         "count": len(items),
-        "since_date": since_date.isoformat(),
+        "since_date": since_date.isoformat() if since_date else "",
         "weeks": weeks,
+    }
+
+
+@router.get("/stats")
+async def get_oncall_stats():
+    """Per-week oncall workload statistics."""
+    groups = await db.get_oncall_groups()
+    start_date_str = await db.get_oncall_config("start_date", "")
+    if not start_date_str or not groups:
+        return {"weeks": [], "groups": [g["members"] for g in groups]}
+
+    oncall_start = date.fromisoformat(start_date_str)
+    today = date.today()
+    total_groups = len(groups)
+    current_week_num = max(0, (today - oncall_start).days // 7)
+
+    # Fetch ALL escalated tickets
+    all_tickets = await db.get_escalated_issues()
+
+    # Build a lookup: week_number -> list of tickets
+    week_tickets: Dict[int, List[Dict[str, Any]]] = {}
+    for tk in all_tickets:
+        esc_at = tk.get("escalated_at", "")
+        if not esc_at:
+            continue
+        esc_date = date.fromisoformat(esc_at[:10])
+        wn = (esc_date - oncall_start).days // 7
+        week_tickets.setdefault(wn, []).append(tk)
+
+    # Build week stats (most recent first, up to 12 weeks)
+    week_stats = []
+    start_week = max(0, current_week_num - 11)
+    for wn in range(current_week_num, start_week - 1, -1):
+        gi = wn % total_groups
+        w_start = oncall_start + timedelta(weeks=wn)
+        w_end = w_start + timedelta(days=6)
+        tks = week_tickets.get(wn, [])
+        in_progress = sum(1 for t in tks if t.get("escalation_status") != "resolved")
+        resolved = sum(1 for t in tks if t.get("escalation_status") == "resolved")
+        week_stats.append({
+            "week_num": wn,
+            "group_index": gi,
+            "members": groups[gi]["members"],
+            "week_start": w_start.isoformat(),
+            "week_end": w_end.isoformat(),
+            "is_current": wn == current_week_num,
+            "total": len(tks),
+            "in_progress": in_progress,
+            "resolved": resolved,
+        })
+
+    return {
+        "weeks": week_stats,
+        "groups": [g["members"] for g in groups],
+        "start_date": start_date_str,
+        "current_week_num": current_week_num,
     }
 
 
 @router.put("/tickets/{issue_id}/resolve")
 async def resolve_ticket(issue_id: str):
     """Mark an escalated ticket as resolved + notify Feishu group."""
-    # Get issue info before resolving (need chat_id and description)
     async with db.get_session() as session:
         issue = await session.get(db.IssueRecord, issue_id)
     if not issue or not issue.escalated_at:
@@ -129,18 +184,15 @@ async def resolve_ticket(issue_id: str):
     chat_id = issue.escalation_chat_id or ""
     description = issue.description or issue_id
 
-    # Get problem type for the message
     problem_type = ""
     analysis = await db.get_analysis_by_issue(issue_id)
     if analysis:
         problem_type = analysis.problem_type or ""
 
-    # Update DB status
     ok = await db.resolve_escalation(issue_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Failed to resolve")
 
-    # Send notification to Feishu group
     feishu_notified = False
     if chat_id:
         try:
