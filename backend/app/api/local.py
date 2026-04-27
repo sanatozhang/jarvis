@@ -303,23 +303,19 @@ class EscalateRequest(BaseModel):
 @_handle_exceptions("Failed to escalate issue")
 async def escalate_issue(issue_id: str, body: EscalateRequest):
     """Escalate an issue to engineering team — creates a Feishu group chat."""
-    ok = await db.escalate_issue(issue_id, escalated_by=body.escalated_by, note=body.note)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Issue not found")
-    await db.log_event("escalate", issue_id=issue_id, username=body.escalated_by,
-                       detail={"note": body.note})
-
     async with db.get_session() as session:
         issue_rec = await session.get(db.IssueRecord, issue_id)
+    if not issue_rec:
+        raise HTTPException(status_code=404, detail="Issue not found")
 
-    description = issue_rec.description if issue_rec else issue_id
+    description = issue_rec.description or issue_id
     problem_type = ""
     analysis = await db.get_analysis_by_issue(issue_id)
     if analysis:
         problem_type = analysis.problem_type or ""
 
     issue_link = ""
-    if issue_rec and is_feishu_source(issue_id):
+    if is_feishu_source(issue_id):
         issue_link = FeishuCLI().get_feishu_link(issue_id)
 
     appllo_url = body.appllo_url or ""
@@ -329,15 +325,15 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
 
     chat_result = None
 
-    # All sources: create a new escalation group + add members + notify
+    # Create Feishu escalation group + add members + notify
     try:
         chat_result = await create_escalation_group(
             user_email=user_email,
             issue_id=issue_id,
-            description=description or "",
+            description=description,
             problem_type=problem_type,
             issue_link=issue_link,
-            zendesk_id=issue_rec.zendesk_id if issue_rec else "",
+            zendesk_id=issue_rec.zendesk_id or "",
             appllo_url=appllo_url,
         )
         logger.info("Escalation completed: %s", chat_result)
@@ -347,12 +343,20 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
             from app.services.notify import notify_oncall
             await notify_oncall(
                 issue_id=issue_id,
-                description=description or "",
+                description=description,
                 reason=f"工单转交工程师: {problem_type}" if problem_type else "工单转交工程师",
                 link=issue_link,
             )
         except Exception as ne:
             logger.error("Fallback notify_oncall also failed: %s", ne)
+
+    # Save escalation metadata (including chat_id for later resolve notification)
+    escalation_chat_id = chat_result.get("chat_id", "") if chat_result else ""
+    ok = await db.escalate_issue(issue_id, escalated_by=body.escalated_by, note=body.note, chat_id=escalation_chat_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    await db.log_event("escalate", issue_id=issue_id, username=body.escalated_by,
+                       detail={"note": body.note, "chat_id": escalation_chat_id})
 
     result = {"status": "escalated", "issue_id": issue_id}
     if chat_result:

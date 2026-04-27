@@ -69,14 +69,19 @@ class ClaudeCodeAgent(BaseAgent):
                     "overloaded", "token limit", "usage limit",
                     "exceeded your current", "insufficient_quota",
                     "out of credits", "plan limit",
+                    "hit your limit", "you've hit your",
+                    "resets ", "hit the limit",
                 ]):
-                    logger.error("Claude Code token quota exhausted. stderr: %s", stderr[:300])
+                    # Extract the original error message for display
+                    raw_err = (stderr.strip() or stdout.strip())[:500]
+                    logger.error("Claude Code token quota exhausted. raw: %s", raw_err)
                     return AnalysisResult(
                         task_id="", issue_id="",
                         problem_type="Claude 额度不足",
                         root_cause=(
-                            "Anthropic API 额度已耗尽，无法完成分析。\n\n"
-                            "请检查 Anthropic 账户余额或升级套餐后重试。"
+                            "Claude Code 额度已耗尽，无法完成分析。\n\n"
+                            f"原始错误: {raw_err}\n\n"
+                            "请检查账户余额或等待额度重置后重试。"
                         ),
                         confidence="low", needs_engineer=True, agent_type="claude_code",
                     )

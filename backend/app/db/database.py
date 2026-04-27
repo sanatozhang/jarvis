@@ -53,6 +53,9 @@ class IssueRecord(Base):
     escalated_at = Column(DateTime, nullable=True)
     escalated_by = Column(String(64), default="")
     escalation_note = Column(Text, default="")
+    escalation_status = Column(String(16), default="")       # in_progress / resolved
+    escalation_resolved_at = Column(DateTime, nullable=True)
+    escalation_chat_id = Column(String(128), default="")    # Feishu group chat_id for sending resolve msg
     created_at_ms = Column(Integer, default=0)             # creation time (Unix ms)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -277,6 +280,9 @@ async def init_db():
             ("escalated_at", "DATETIME", "NULL"),
             ("escalated_by", "VARCHAR(64)", "''"),
             ("escalation_note", "TEXT", "''"),
+            ("escalation_status", "VARCHAR(16)", "''"),
+            ("escalation_resolved_at", "DATETIME", "NULL"),
+            ("escalation_chat_id", "VARCHAR(128)", "''"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -412,7 +418,7 @@ async def update_issue_status(issue_id: str, status: str):
             await session.commit()
 
 
-async def escalate_issue(issue_id: str, escalated_by: str = "", note: str = "") -> bool:
+async def escalate_issue(issue_id: str, escalated_by: str = "", note: str = "", chat_id: str = "") -> bool:
     async with get_session() as session:
         record = await session.get(IssueRecord, issue_id)
         if not record:
@@ -422,9 +428,70 @@ async def escalate_issue(issue_id: str, escalated_by: str = "", note: str = "") 
         record.escalated_at = datetime.utcnow()
         record.escalated_by = escalated_by
         record.escalation_note = note
+        record.escalation_status = "in_progress"
+        record.escalation_chat_id = chat_id
         record.updated_at = datetime.utcnow()
         await session.commit()
         return True
+
+
+async def resolve_escalation(issue_id: str) -> bool:
+    """Mark an escalated issue as resolved."""
+    async with get_session() as session:
+        record = await session.get(IssueRecord, issue_id)
+        if not record or not record.escalated_at:
+            return False
+        record.escalation_status = "resolved"
+        record.escalation_resolved_at = datetime.utcnow()
+        record.updated_at = datetime.utcnow()
+        await session.commit()
+        return True
+
+
+async def get_escalated_issues(status: str | None = None, since_date=None) -> List[Dict[str, Any]]:
+    """Get escalated issues, optionally filtered by status and date cutoff."""
+    from sqlalchemy import select as sa_select
+    async with get_session() as session:
+        stmt = sa_select(IssueRecord).where(
+            IssueRecord.escalated_at.isnot(None),
+            IssueRecord.deleted == False,
+        )
+        if status:
+            stmt = stmt.where(IssueRecord.escalation_status == status)
+        if since_date:
+            cutoff = datetime(since_date.year, since_date.month, since_date.day)
+            stmt = stmt.where(IssueRecord.escalated_at >= cutoff)
+        stmt = stmt.order_by(IssueRecord.escalated_at.desc())
+        result = await session.execute(stmt)
+        issues = result.scalars().all()
+
+        items = []
+        for issue in issues:
+            # Inline latest analysis query
+            a_stmt = sa_select(AnalysisRecord).where(
+                AnalysisRecord.issue_id == issue.id
+            ).order_by(AnalysisRecord.created_at.desc()).limit(1)
+            a_result = await session.execute(a_stmt)
+            analysis = a_result.scalar_one_or_none()
+
+            items.append({
+                "record_id": issue.id,
+                "description": issue.description or "",
+                "problem_type": analysis.problem_type if analysis else "",
+                "problem_type_en": getattr(analysis, "problem_type_en", "") or "" if analysis else "",
+                "root_cause": analysis.root_cause if analysis else "",
+                "confidence": analysis.confidence if analysis else "",
+                "user_reply": analysis.user_reply if analysis else "",
+                "zendesk_id": issue.zendesk_id or "",
+                "source": issue.source or "",
+                "escalated_at": (issue.escalated_at.isoformat() + "Z") if issue.escalated_at else "",
+                "escalated_by": issue.escalated_by or "",
+                "escalation_note": issue.escalation_note or "",
+                "escalation_status": issue.escalation_status or "in_progress",
+                "escalation_resolved_at": (issue.escalation_resolved_at.isoformat() + "Z") if issue.escalation_resolved_at else "",
+                "created_at": (issue.created_at.isoformat() + "Z") if issue.created_at else "",
+            })
+        return items
 
 
 async def soft_delete_issue(issue_id: str) -> bool:
@@ -811,6 +878,9 @@ def _issue_to_dict(
         "escalated_at": (issue.escalated_at.isoformat() + "Z") if issue.escalated_at else "",
         "escalated_by": issue.escalated_by or "",
         "escalation_note": issue.escalation_note or "",
+        "escalation_status": issue.escalation_status or "",
+        "escalation_resolved_at": (issue.escalation_resolved_at.isoformat() + "Z") if issue.escalation_resolved_at else "",
+        "escalation_chat_id": issue.escalation_chat_id or "",
     }
 
     if analysis:

@@ -454,6 +454,37 @@ export const updateOncallSchedule = (groups: string[][], startDate: string, user
     body: JSON.stringify({ groups: groups.map((m) => ({ members: m })), start_date: startDate }),
   });
 
+export interface EscalatedTicket {
+  record_id: string;
+  description: string;
+  problem_type: string;
+  problem_type_en: string;
+  root_cause: string;
+  confidence: string;
+  user_reply: string;
+  zendesk_id: string;
+  source: string;
+  escalated_at: string;
+  escalated_by: string;
+  escalation_note: string;
+  escalation_status: string;
+  escalation_resolved_at: string;
+  created_at: string;
+}
+
+export const getOncallTickets = (status?: string, weeks?: number) => {
+  const p = new URLSearchParams();
+  if (status) p.set("status", status);
+  if (weeks !== undefined) p.set("weeks", String(weeks));
+  const qs = p.toString();
+  return request<{ tickets: EscalatedTicket[]; count: number; since_date: string; weeks: number }>(
+    `/oncall/tickets${qs ? "?" + qs : ""}`
+  );
+};
+
+export const resolveOncallTicket = (issueId: string) =>
+  request<{ status: string; issue_id: string; feishu_notified: boolean }>(`/oncall/tickets/${issueId}/resolve`, { method: "PUT" });
+
 // ============================================================
 // Inaccurate
 // ============================================================
