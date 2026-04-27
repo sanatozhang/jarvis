@@ -25,7 +25,8 @@ Plaud app（Flutter + 原生 iOS/Android 壳）周发版节奏下，崩溃数据
 - 全新 / 回归 / 飙升三维新增判定 + crash-free 影响度排序
 - AI agent 完成根因 + 复现 + 修复方案 + fix_diff 生成
 - 修复方案必须基于**石锤证据 + 可行度评分**，禁止猜测
-- Flutter 走完整自动 PR 闭环（Level 2 单测验证），Android/iOS 走半自动 PR（人工 ✋ 一键 approve）
+- Flutter 自动**创建** draft PR（Level 2 单测验证通过后），Android/iOS 半自动**创建** draft PR（人工 ✋ 一键 approve 后才创建）
+- ⚠️ **三平台所有 PR 一律 draft 状态，必须人工 review + approve + merge，禁止任何自动合入**
 - 数据持久化、跨版本去重、可追溯
 - 模块强解耦 — 未来可独立拆分为单独服务
 
@@ -34,7 +35,7 @@ Plaud app（Flutter + 原生 iOS/Android 壳）周发版节奏下，崩溃数据
 - 集成测试 / Widget 测试自动复现（Level 3）
 - 模拟器/真机自动复现（Level 4）
 - iOS Level 2 单测验证（需 macOS runner，远期）
-- 自动合入 PR（永远 draft，强制人工 review）
+- **🚫 自动合入 PR — 三平台 PR 永远 draft，强制人工 review + approve + merge，repo_updater 严禁调用任何 merge / squash / rebase API**
 - Web / Desktop 端崩溃（数据源未覆盖）
 
 ---
@@ -444,7 +445,8 @@ def compute_feasibility(verification_result: str, agent_confidence: str) -> floa
 | 修复方案文档 | ✅ MVP | ✅ MVP | ✅ MVP |
 | fix_diff 生成 | ✅ MVP | ✅ MVP | ✅ MVP |
 | Level 2 单测验证 | ✅ MVP | ⏳ 阶段 2 | ⏳ 阶段 3 |
-| 自动 draft PR | ✅ MVP（验证通过） | ⚠️ 半自动 | ⚠️ 半自动 |
+| 自动**创建** draft PR | ✅ MVP（Level 2 验证通过后自动创建，**仍需人工 merge**） | ⚠️ 半自动（人工 approve 后创建，**仍需人工 merge**） | ⚠️ 半自动（同 Android） |
+| 自动**合入** PR | 🚫 禁止 | 🚫 禁止 | 🚫 禁止 |
 | feasibility 上限 | 1.0 | 0.7 | 0.7 |
 
 ### 3.7 Agent 工具白名单（仅读，禁写）
@@ -467,12 +469,19 @@ crashguard:
 
 ### 3.8 PR 提交安全栏（services/repo_updater.py 唯一执刀手）
 
-- 始终 draft，绝不合入
+**🚫 强制约束（写入代码 assertion，违反则 raise）：**
+- **始终创建 `--draft` PR**，repo_updater 调用 `gh pr create` 时 `--draft` flag 硬编码必传
+- **严禁调用** `gh pr merge` / `git merge` / `gh pr ready`（取消 draft 状态）/ 任何 squash/rebase 合入操作
+- crashguard 模块代码层 grep `(pr merge|merge_pull_request|gh pr ready)` 应为零命中（CI 静态扫描）
+
+**通用规则：**
 - 分支命名：`crashguard/auto-fix/<datadog_issue_id>-<date>`
-- PR body 强制包含：root cause / evidence / feasibility score / "AI 生成，需人工 review" 声明
-- 标题前缀 `[crashguard]`
+- PR body 强制包含：root cause / evidence / feasibility score / **"⚠️ AI 生成，必须人工 review，禁止直接合入"声明**
+- PR title 前缀 `[crashguard][DRAFT]` 双重标注
 - 冷却机制：同一 fingerprint 7 天内已提过 PR 不再提
-- 验证：`git apply --check` + target_repo 白名单 + base_branch 非受保护
+- 创建前验证：`git apply --check` + target_repo 白名单 + base_branch 非受保护
+- **PR 创建后流水线即结束**——后续 review、CI、approve、merge 全部由人工 + 现有 GitHub 流程处理，crashguard 不参与
+- PR 合入后的"崩溃是否消失"追踪（`crash_pull_requests.verification_status`）只是**只读观察**，不触发任何写操作
 
 ### 3.9 Stack Fingerprint 算法（dedup.py）
 
@@ -793,8 +802,9 @@ crashguard:
 - ✅ 4 个对外耦合点显式声明，import-linter 强制
 - ✅ DB 表前缀 `crash_*`，无 jarvis 表外键
 - ✅ Agent 只读源码，禁止写
-- ✅ PR 永远 draft，禁止合入
-- ✅ PR 必须基于石锤证据 + 可行度评分（≥ 0.7 才进自动 PR）
-- ✅ Flutter 走 Level 2 单测验证 (red→green) 才能自动 PR
-- ✅ Android/iOS 走半自动 PR（人工 ✋ approve）
+- ✅ **三平台 PR 一律 draft 状态，crashguard 严禁调用任何合入 API（gh pr merge / git merge / gh pr ready）**
+- ✅ PR 必须基于石锤证据 + 可行度评分（≥ 0.7 才进自动**创建** PR 通道）
+- ✅ Flutter 走 Level 2 单测验证 (red→green) 才能自动**创建** draft PR（merge 仍需人工）
+- ✅ Android/iOS 走半自动 PR（人工 ✋ approve 后创建 draft，merge 仍需人工）
+- ✅ 任何 PR 从创建到合入，**人工 review 是不可绕过的强制环节**
 - ✅ 三层 kill switch + 灰度三阶段 + 紧急回滚
