@@ -359,12 +359,14 @@ CI / pre-commit 强制跑，违反即 build fail。
         7.5.5 verification_result = "test_red_then_green" / "static_only" / "test_failed"
         7.5.6 计算 feasibility_score，写回 crash_analyses
         ↓
-[8] PR 分级
-        feasibility_score >= 0.7 AND verification_result == test_red_then_green
+[8] PR 分级（按顺序判定，命中即停）
+        a) complexity_level == "high" OR fix_diff is NULL
+            → 仅方案文档，不开 PR
+        b) feasibility_score >= 0.7 AND verification_result == "test_red_then_green"
             → 自动 draft PR (triggered_by=auto_verified)
-        feasibility_score 0.5 - 0.7 (静态分析)
+        c) feasibility_score in [0.5, 0.7) (含静态分析路径)
             → 半自动：写 crash_analyses，等人工 ✋ approve
-        feasibility_score < 0.5 OR complexity_level == high
+        d) feasibility_score < 0.5 (含 test_failed=0.3、unreproducible=0.0)
             → 仅方案文档，不开 PR
         ↓
 [9] 群消息推送 ── reporter.send_daily_report()
@@ -412,18 +414,26 @@ class ReproducerContext:
 ### 3.5 Quality Gate（feasibility 计算）
 
 ```python
-def compute_feasibility(verification_result, agent_confidence):
+CONFIDENCE_NUMERIC = {"high": 1.0, "medium": 0.5, "low": 0.0}
+
+def compute_feasibility(verification_result: str, agent_confidence: str) -> float:
+    """
+    verification_result ∈ {test_red_then_green, static_only, test_failed, unreproducible}
+    agent_confidence ∈ {high, medium, low}
+    """
+    conf = CONFIDENCE_NUMERIC[agent_confidence]
     if verification_result == "test_red_then_green":
-        return min(1.0, 0.7 + 0.3 * agent_confidence)
+        return min(1.0, 0.7 + 0.3 * conf)            # 0.7 - 1.0
     elif verification_result == "static_only":
-        return min(0.7, 0.5 + 0.2 * agent_confidence)
+        return min(0.7, 0.5 + 0.2 * conf)            # 0.5 - 0.7（顶到 0.7 仍不会触发自动 PR）
     elif verification_result == "test_failed":
-        return 0.3
-    else:
+        return 0.3                                    # 复现测试跑了但没 red→green，明确低分
+    else:                                             # unreproducible 或异常
         return 0.0
 ```
 
-PR 触发线 = 0.7。仅静态分析最高 0.7 → 卡在边界 → 不进自动 PR 通道。
+**PR 触发线 = 0.7 + verification == test_red_then_green**（双重门槛）。
+仅静态分析最高 0.7 → 因 verification 条件不满足 → 进半自动通道，由人工把关。
 
 ### 3.6 平台覆盖矩阵
 
