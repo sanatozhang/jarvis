@@ -69,8 +69,21 @@ async def lifespan(app: FastAPI):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     logger.info("Starting Appllo...")
+
+    # Import crashguard models to register with SQLAlchemy Base
+    from app.crashguard import models as _crashguard_models  # noqa: F401
+
     await init_db()
     logger.info("Database initialized.")
+
+    # Crashguard DB 解耦自检 — 违规则阻止启动
+    try:
+        from scripts.check_crash_decoupling import assert_crash_tables_decoupled
+        assert_crash_tables_decoupled()
+        logger.info("Crashguard decoupling check passed.")
+    except RuntimeError as e:
+        logger.error("Crashguard decoupling check FAILED: %s", e)
+        raise
 
     # Clean up zombie tasks from previous crashes/restarts
     from app.db.database import get_session
