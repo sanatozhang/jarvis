@@ -23,7 +23,8 @@ def compute_impact_score(users_affected: int, events_count: int) -> float:
     return users * math.log10(events + 1)
 
 
-from datetime import date
+from datetime import date, timedelta
+import json as _json
 from typing import Any, Dict
 
 from sqlalchemy import select
@@ -34,6 +35,7 @@ async def pick_top_n(
     session: AsyncSession,
     today: date,
     n: int = 20,
+    dedup_days: int = 7,
 ) -> List[Dict[str, Any]]:
     """
     返回 Top N issue（dict 形式）。
@@ -41,12 +43,30 @@ async def pick_top_n(
     优先级:
     - P0: is_new_in_version OR is_regression → 强制入选
     - P1: 剩余席位按 crash_free_impact_score DESC 填满
+    - 同 issue 在 dedup_days 内已推送过 → 跳过（is_surge 例外）
 
     返回字段: datadog_issue_id, title, platform, events_count, users_affected,
              crash_free_impact_score, is_new_in_version, is_regression, is_surge,
              tier ('P0' / 'P1')
     """
-    from app.crashguard.models import CrashSnapshot, CrashIssue
+    from app.crashguard.models import CrashSnapshot, CrashIssue, CrashDailyReport
+
+    # 1. 取最近 dedup_days 内已推过的 issue ids
+    recently_reported: set = set()
+    if dedup_days > 0:
+        since = today - timedelta(days=dedup_days)
+        report_rows = (await session.execute(
+            select(CrashDailyReport).where(CrashDailyReport.report_date >= since)
+        )).scalars().all()
+        for r in report_rows:
+            try:
+                payload = _json.loads(r.report_payload or "{}")
+                for issue in payload.get("issues", []):
+                    iid = issue.get("datadog_issue_id")
+                    if iid:
+                        recently_reported.add(iid)
+            except (ValueError, TypeError):
+                continue
 
     rows = (await session.execute(
         select(CrashSnapshot, CrashIssue)
@@ -59,6 +79,9 @@ async def pick_top_n(
 
     enriched: List[Dict[str, Any]] = []
     for snap, issue in rows:
+        # 2. 7 天内已推 + 非 surge → 跳过
+        if snap.datadog_issue_id in recently_reported and not snap.is_surge:
+            continue
         enriched.append({
             "datadog_issue_id": snap.datadog_issue_id,
             "title": issue.title or "",

@@ -114,3 +114,63 @@ async def test_pick_top_n_returns_sorted_by_score_within_tier(tmp_path, monkeypa
         top = await pick_top_n(s, today=today, n=10)
         scores = [t["crash_free_impact_score"] for t in top]
         assert scores == sorted(scores, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_pick_top_n_skips_recently_reported(tmp_path, monkeypatch):
+    """同 issue 7 天内已在某日报里推送过 → 跳过（除非 is_surge）"""
+    from datetime import date, timedelta
+    import json
+    from app.db.database import get_session, init_db
+    from app.crashguard import models  # noqa
+    from app.crashguard.models import CrashSnapshot, CrashIssue, CrashDailyReport
+    from app.crashguard.services.ranker import pick_top_n
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'rank3.db'}")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    await init_db()
+
+    today = date.today()
+    five_days_ago = today - timedelta(days=5)
+
+    async with get_session() as s:
+        # i_recently_reported: 5 天前已推送，今日普通 P1（应被跳过）
+        s.add(CrashIssue(datadog_issue_id="i_dup", platform="flutter", title="dup"))
+        s.add(CrashSnapshot(
+            datadog_issue_id="i_dup", snapshot_date=today,
+            crash_free_impact_score=100.0,
+        ))
+        # i_dup_surge: 5 天前推过，今日是 surge（应保留）
+        s.add(CrashIssue(datadog_issue_id="i_dup_surge", platform="flutter", title="dup surge"))
+        s.add(CrashSnapshot(
+            datadog_issue_id="i_dup_surge", snapshot_date=today,
+            crash_free_impact_score=80.0, is_surge=True,
+        ))
+        # i_fresh: 全新，未推过
+        s.add(CrashIssue(datadog_issue_id="i_fresh", platform="flutter", title="fresh"))
+        s.add(CrashSnapshot(
+            datadog_issue_id="i_fresh", snapshot_date=today,
+            crash_free_impact_score=50.0,
+        ))
+        # 历史报告记录
+        s.add(CrashDailyReport(
+            report_date=five_days_ago,
+            report_type="morning",
+            top_n=2,
+            report_payload=json.dumps({
+                "issues": [
+                    {"datadog_issue_id": "i_dup"},
+                    {"datadog_issue_id": "i_dup_surge"},
+                ],
+            }),
+        ))
+        await s.commit()
+
+    async with get_session() as s:
+        top = await pick_top_n(s, today=today, n=10, dedup_days=7)
+        ids = [t["datadog_issue_id"] for t in top]
+
+    assert "i_dup" not in ids          # 7 天内重复 → 跳过
+    assert "i_dup_surge" in ids         # surge 例外
+    assert "i_fresh" in ids
