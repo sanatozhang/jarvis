@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+import time
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 import httpx
 
@@ -19,6 +21,10 @@ _RATE_LIMIT_STATUS = {429}
 
 class DatadogRateLimitError(Exception):
     """Datadog 触发限流"""
+
+
+class CircuitBreakerOpen(Exception):
+    """限流熔断器开启中"""
 
 
 class DatadogClient:
@@ -36,6 +42,11 @@ class DatadogClient:
         self.site = site
         self.timeout = timeout
         self.base_url = f"https://api.{site}/api/v2/error-tracking"
+        self._rate_limit_events: Deque[float] = deque(maxlen=10)
+        self._circuit_open_until: float = 0.0
+        self._circuit_threshold: int = 5
+        self._circuit_window_sec: int = 600     # 10 分钟
+        self._circuit_open_sec: int = 1800      # 30 分钟
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -54,6 +65,12 @@ class DatadogClient:
 
         失败重试 3 次指数退避（1s/2s/4s），429 抛 DatadogRateLimitError。
         """
+        now = time.time()
+        if now < self._circuit_open_until:
+            raise CircuitBreakerOpen(
+                f"Datadog 熔断中，将于 {int(self._circuit_open_until - now)}s 后恢复"
+            )
+
         params: Dict[str, Any] = {
             "filter[from]": f"now-{window_hours}h",
             "filter[to]": "now",
@@ -94,6 +111,7 @@ class DatadogClient:
             try:
                 resp = await client.get(url, headers=self._headers(), params=params)
                 if resp.status_code in _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
                     raise DatadogRateLimitError(
                         f"Datadog 限流 (429), retry-after={resp.headers.get('retry-after')}"
                     )
@@ -119,3 +137,17 @@ class DatadogClient:
                 raise
 
         raise last_error if last_error else RuntimeError("未知错误")
+
+    def _record_rate_limit_event(self) -> None:
+        now = time.time()
+        # 清理窗口外事件
+        while self._rate_limit_events and self._rate_limit_events[0] < now - self._circuit_window_sec:
+            self._rate_limit_events.popleft()
+        self._rate_limit_events.append(now)
+        # 触发熔断
+        if len(self._rate_limit_events) >= self._circuit_threshold:
+            self._circuit_open_until = now + self._circuit_open_sec
+            logger.error(
+                "Datadog 熔断开启 — %d 次 429 in %ds，暂停 %ds",
+                self._circuit_threshold, self._circuit_window_sec, self._circuit_open_sec,
+            )

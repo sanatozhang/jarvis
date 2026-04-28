@@ -84,3 +84,29 @@ async def test_list_issues_retries_on_5xx(monkeypatch):
     issues = await client.list_issues(window_hours=24)
     assert len(issues) == 1
     assert call_count["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_circuit_breaker(monkeypatch):
+    """10 分钟内 5 次 429 → 熔断 30 分钟"""
+    from app.crashguard.services.datadog_client import (
+        DatadogClient,
+        DatadogRateLimitError,
+        CircuitBreakerOpen,
+    )
+
+    async def fake_get(self, url, **kw):
+        return httpx.Response(429, headers={"retry-after": "5"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    client = DatadogClient(api_key="k", app_key="a", site="datadoghq.com")
+
+    # 前 5 次都应抛 DatadogRateLimitError
+    for _ in range(5):
+        with pytest.raises(DatadogRateLimitError):
+            await client.list_issues(window_hours=24)
+
+    # 第 6 次应抛熔断
+    with pytest.raises(CircuitBreakerOpen):
+        await client.list_issues(window_hours=24)
