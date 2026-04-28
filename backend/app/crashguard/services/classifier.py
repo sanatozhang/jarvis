@@ -41,3 +41,22 @@ def is_regression(
     if seen_set & recent_set:
         return False  # 最近还出现过，不算静默
     return True
+
+
+def is_surge(
+    today_events: int,
+    prev_avg_events: float,
+    multiplier: float = 1.5,
+    min_events: int = 10,
+) -> bool:
+    """
+    飙升判定:
+    - today_events > prev_avg_events * multiplier
+    - 且 today_events >= min_events（防小基数刷量）
+    - prev_avg_events == 0 时，只要 today_events >= min_events 就算
+    """
+    if today_events < min_events:
+        return False
+    if prev_avg_events <= 0:
+        return True
+    return today_events > prev_avg_events * multiplier

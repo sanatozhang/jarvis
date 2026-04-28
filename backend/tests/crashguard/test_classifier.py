@@ -78,3 +78,48 @@ def test_is_regression_false_when_silence_too_short():
         current_version="1.4.8",
         silent_threshold=3,
     ) is False
+
+
+def test_is_surge_true_when_more_than_multiplier_and_min_events():
+    """today=20, prev_avg=10, multiplier=1.5, min_events=10 → 20 > 15 AND 20 >= 10 → True"""
+    from app.crashguard.services.classifier import is_surge
+
+    assert is_surge(
+        today_events=20, prev_avg_events=10,
+        multiplier=1.5, min_events=10,
+    ) is True
+
+
+def test_is_surge_false_when_below_multiplier():
+    """today=14, prev_avg=10, multiplier=1.5 → 14 < 15 → False"""
+    from app.crashguard.services.classifier import is_surge
+
+    assert is_surge(
+        today_events=14, prev_avg_events=10,
+        multiplier=1.5, min_events=10,
+    ) is False
+
+
+def test_is_surge_false_when_below_min_events():
+    """today=8, prev_avg=2, ratio=4 但 8 < min_events=10 → False（防小数刷量）"""
+    from app.crashguard.services.classifier import is_surge
+
+    assert is_surge(
+        today_events=8, prev_avg_events=2,
+        multiplier=1.5, min_events=10,
+    ) is False
+
+
+def test_is_surge_handles_zero_baseline():
+    """prev_avg=0 时，只要超 min_events 就算 surge（无前值，新爆发）"""
+    from app.crashguard.services.classifier import is_surge
+
+    assert is_surge(
+        today_events=15, prev_avg_events=0,
+        multiplier=1.5, min_events=10,
+    ) is True
+
+    assert is_surge(
+        today_events=5, prev_avg_events=0,
+        multiplier=1.5, min_events=10,
+    ) is False  # 仍未到 min_events
