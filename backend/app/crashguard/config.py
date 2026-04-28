@@ -6,12 +6,26 @@ Crashguard 模块配置 — 独立配置段，与 jarvis 全局配置解耦。
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple, Type
 
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 from app.config import PROJECT_ROOT, _load_yaml
+
+
+class _YamlSource(PydanticBaseSettingsSource):
+    """从 config.yaml crashguard 段读取的低优先级 source"""
+
+    def get_field_value(
+        self, field: FieldInfo, field_name: str
+    ) -> Tuple[Any, str, bool]:
+        # 不实现单字段读取（用 __call__ 批量返回）
+        return None, field_name, False
+
+    def __call__(self) -> Dict[str, Any]:
+        return _yaml_overrides()
 
 
 class CrashguardSettings(BaseSettings):
@@ -47,6 +61,24 @@ class CrashguardSettings(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: Type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> Tuple[PydanticBaseSettingsSource, ...]:
+        # 优先级（左 > 右）: init_kwargs > env > dotenv > yaml > defaults
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            _YamlSource(settings_cls),
+            file_secret_settings,
+        )
 
 
 def _yaml_overrides() -> Dict[str, Any]:
@@ -88,6 +120,8 @@ def _yaml_overrides() -> Dict[str, Any]:
 
 @lru_cache
 def get_crashguard_settings() -> CrashguardSettings:
-    """获取 crashguard 配置（cached singleton）"""
-    overrides = _yaml_overrides()
-    return CrashguardSettings(**overrides)
+    """获取 crashguard 配置（cached singleton）
+
+    优先级由 ``settings_customise_sources`` 注册：env > dotenv > yaml > defaults。
+    """
+    return CrashguardSettings()
