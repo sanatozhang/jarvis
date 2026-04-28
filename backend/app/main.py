@@ -184,6 +184,10 @@ app.include_router(eval_router, prefix="/api/eval", tags=["Eval"])
 app.include_router(tools_router, prefix="/api/tools", tags=["Tools"])
 app.include_router(wishes_router, prefix="/api/wishes", tags=["Wishes"])
 
+# Crashguard API（独立子模块，prefix 在 router 内部声明 /api/crash）
+from app.crashguard.api import crash as _crash_api  # noqa: E402
+app.include_router(_crash_api.router)
+
 
 # ---------------------------------------------------------------------------
 # Main
