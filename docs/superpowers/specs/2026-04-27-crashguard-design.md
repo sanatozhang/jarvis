@@ -103,7 +103,7 @@ backend/app/crashguard/
 
 ### 1.4 解耦约束的强制机制（防腐）
 
-**1️⃣ 自动化 lint** — `backend/.importlinter.cfg`：
+**1️⃣ 自动化 lint** — `backend/.importlinter`（lint-imports 默认文件名）：
 
 ```ini
 [importlinter]
