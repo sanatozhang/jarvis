@@ -84,3 +84,56 @@ def compute_fingerprint(stack_trace: str, top_n: int = 5) -> str:
     frames = normalize_stack_frames(stack_trace or "", top_n=top_n)
     payload = "\n".join(frames) if frames else "empty"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+import json
+from typing import List as _List
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+async def upsert_fingerprint_link(
+    session: AsyncSession,
+    fingerprint: str,
+    datadog_issue_id: str,
+    first_seen_version: str,
+    events_count: int,
+    normalized_top_frames: _List[str],
+) -> None:
+    """
+    把 (fingerprint, datadog_issue_id) 关系写入 crash_fingerprints 表。
+
+    - 不存在 → 新建
+    - 已存在 → 把 datadog_issue_id 追加到 list；累加 events count；
+              first_seen_version 取早版本（字符串字典序兜底）
+    """
+    from app.crashguard.models import CrashFingerprint
+
+    row = (await session.execute(
+        select(CrashFingerprint).where(CrashFingerprint.fingerprint == fingerprint)
+    )).scalar_one_or_none()
+
+    if row is None:
+        row = CrashFingerprint(
+            fingerprint=fingerprint,
+            datadog_issue_ids=json.dumps([datadog_issue_id]),
+            first_seen_version=first_seen_version,
+            total_events_across_versions=events_count,
+            normalized_top_frames=json.dumps(normalized_top_frames),
+        )
+        session.add(row)
+        return
+
+    ids = json.loads(row.datadog_issue_ids or "[]")
+    if datadog_issue_id not in ids:
+        ids.append(datadog_issue_id)
+        row.datadog_issue_ids = json.dumps(ids)
+
+    row.total_events_across_versions = (row.total_events_across_versions or 0) + events_count
+
+    # 取更早的版本（简单字典序，足够大多数 semver 场景）
+    if first_seen_version and (
+        not row.first_seen_version or first_seen_version < row.first_seen_version
+    ):
+        row.first_seen_version = first_seen_version
