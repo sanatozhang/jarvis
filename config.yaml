@@ -87,3 +87,30 @@ storage:
 # CODE_REPO_WEB=/path/to/plaud_web         # Web 前端源码
 # CODE_REPO_DESKTOP=/path/to/plaud_desktop # Desktop (Electron) 源码
 # CODE_REPO_PATH=/path/to/plaud_ai         # 旧字段，兼容，等同于 CODE_REPO_APP
+
+# ===========================
+# Crashguard 模块配置
+# ===========================
+crashguard:
+  enabled: true                # kill switch
+  pr_enabled: true             # PR 创建总开关
+  feishu_enabled: true         # 群消息开关
+  max_top_n: 20
+
+  datadog:
+    site: "datadoghq.com"      # 或 "datadoghq.eu"
+    # api_key / app_key 请通过 .env 配置:
+    #   CRASHGUARD_DATADOG_API_KEY=xxx
+    #   CRASHGUARD_DATADOG_APP_KEY=xxx
+
+  feishu:
+    target_chat_id: ""         # 群聊 chat_id（必填）
+    admin_open_ids: []         # 一键 PR approve 白名单
+    morning_cron: "0 7 * * *"
+    evening_cron: "0 17 * * *"
+
+  thresholds:
+    surge_multiplier: 1.5              # 飙升判定阈值（倍数）
+    surge_min_events: 10               # 飙升最小事件数
+    regression_silent_versions: 3      # 回归判定的静默版本数
+    feasibility_pr_threshold: 0.7      # 自动创建 PR 的 feasibility 触发线
