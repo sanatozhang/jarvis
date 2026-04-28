@@ -9,6 +9,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional
 
 import httpx
@@ -151,3 +152,32 @@ class DatadogClient:
                 "Datadog 熔断开启 — %d 次 429 in %ds，暂停 %ds",
                 self._circuit_threshold, self._circuit_window_sec, self._circuit_open_sec,
             )
+
+
+def normalize_issue(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Datadog raw issue → 统一字段名结构（喂给上游 dedup/classifier 等）。
+
+    所有字段缺失时给安全默认值，避免 KeyError 中断流水线。
+    """
+    attrs = raw.get("attributes") or {}
+
+    def _ts_to_dt(ms: Any) -> Optional[datetime]:
+        if not ms:
+            return None
+        return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc)
+
+    return {
+        "datadog_issue_id": raw.get("id", ""),
+        "title": attrs.get("title", ""),
+        "service": attrs.get("service", ""),
+        "platform": attrs.get("platform", ""),
+        "first_seen_at": _ts_to_dt(attrs.get("first_seen_timestamp")),
+        "last_seen_at": _ts_to_dt(attrs.get("last_seen_timestamp")),
+        "first_seen_version": attrs.get("first_seen_version", ""),
+        "last_seen_version": attrs.get("last_seen_version", ""),
+        "events_count": int(attrs.get("events_count") or 0),
+        "users_affected": int(attrs.get("users_affected") or 0),
+        "stack_trace": attrs.get("stack_trace", ""),
+        "tags": attrs.get("tags") or {},
+    }

@@ -110,3 +110,47 @@ async def test_rate_limit_circuit_breaker(monkeypatch):
     # 第 6 次应抛熔断
     with pytest.raises(CircuitBreakerOpen):
         await client.list_issues(window_hours=24)
+
+
+def test_normalize_issue_payload():
+    """Datadog 原始响应 → 内部统一结构"""
+    from app.crashguard.services.datadog_client import normalize_issue
+    raw = {
+        "id": "abc123",
+        "type": "error_tracking_issue",
+        "attributes": {
+            "title": "NullPointerException @ play",
+            "service": "plaud_ai",
+            "platform": "flutter",
+            "first_seen_timestamp": 1714003200000,
+            "last_seen_timestamp": 1714176000000,
+            "first_seen_version": "1.4.7",
+            "last_seen_version": "1.4.7",
+            "events_count": 145,
+            "users_affected": 23,
+            "stack_trace": "NullPointerException\n  at A.x\n  at B.y",
+            "tags": {"env": "prod"},
+        },
+    }
+    norm = normalize_issue(raw)
+    assert norm["datadog_issue_id"] == "abc123"
+    assert norm["title"] == "NullPointerException @ play"
+    assert norm["platform"] == "flutter"
+    assert norm["service"] == "plaud_ai"
+    assert norm["events_count"] == 145
+    assert norm["users_affected"] == 23
+    assert norm["first_seen_version"] == "1.4.7"
+    assert norm["stack_trace"].startswith("NullPointerException")
+    assert norm["tags"] == {"env": "prod"}
+    assert norm["first_seen_at"].year == 2024  # 2024-04-25 unix ms
+
+
+def test_normalize_handles_missing_fields():
+    """缺失字段不报错，给默认值"""
+    from app.crashguard.services.datadog_client import normalize_issue
+    raw = {"id": "xxx", "attributes": {}}
+    norm = normalize_issue(raw)
+    assert norm["datadog_issue_id"] == "xxx"
+    assert norm["title"] == ""
+    assert norm["platform"] == ""
+    assert norm["events_count"] == 0
