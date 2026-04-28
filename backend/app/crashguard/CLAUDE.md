@@ -21,7 +21,7 @@
 ## 新增耦合点的流程
 
 1. 先更新 `docs/adr/0001-crashguard-isolation.md`
-2. 修改 `backend/.importlinter.cfg` 的 forbidden_modules 白名单
+2. 修改 `backend/.importlinter` 的 forbidden_modules 白名单
 3. 在 PR 描述里说明引入的耦合点 + 必要性
 4. 通过 lint：`cd backend && lint-imports`
 
