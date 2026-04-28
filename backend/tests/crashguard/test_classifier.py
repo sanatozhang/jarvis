@@ -123,3 +123,75 @@ def test_is_surge_handles_zero_baseline():
         today_events=5, prev_avg_events=0,
         multiplier=1.5, min_events=10,
     ) is False  # 仍未到 min_events
+
+
+@pytest.mark.asyncio
+async def test_classify_today_writes_three_flags(tmp_path, monkeypatch):
+    """classify_today 跑完，crash_snapshots 当天三个 flag 字段都填上"""
+    from datetime import date, datetime, timedelta
+    from app.db.database import get_session, init_db
+    from app.crashguard import models  # noqa
+    from app.crashguard.models import CrashSnapshot, CrashIssue, CrashFingerprint
+    from app.crashguard.services.classifier import classify_today
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'cls.db'}")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    await init_db()
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    # Issue 1: 全新（first_seen_version == 1.4.7）
+    # Issue 2: 飙升（昨日 5 事件，今日 30）— 但需 min_events=10 满足
+    # Issue 3: 回归（fingerprint 之前在 1.4.3 出现，最近 1.4.4/5/6 静默，今日 1.4.7 出现）
+    async with get_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="i1", stack_fingerprint="fp1", platform="flutter",
+            first_seen_version="1.4.7", last_seen_version="1.4.7",
+        ))
+        s.add(CrashIssue(
+            datadog_issue_id="i2", stack_fingerprint="fp2", platform="flutter",
+            first_seen_version="1.4.3", last_seen_version="1.4.7",
+        ))
+        s.add(CrashIssue(
+            datadog_issue_id="i3", stack_fingerprint="fp3", platform="flutter",
+            first_seen_version="1.4.3", last_seen_version="1.4.7",
+        ))
+        # 今日 snapshot
+        s.add(CrashSnapshot(datadog_issue_id="i1", snapshot_date=today, app_version="1.4.7", events_count=10))
+        s.add(CrashSnapshot(datadog_issue_id="i2", snapshot_date=today, app_version="1.4.7", events_count=30))
+        s.add(CrashSnapshot(datadog_issue_id="i3", snapshot_date=today, app_version="1.4.7", events_count=15))
+        # 昨日 snapshot（用于 surge 计算）
+        s.add(CrashSnapshot(datadog_issue_id="i2", snapshot_date=yesterday, app_version="1.4.6", events_count=5))
+        # fingerprint 历史
+        import json as _json
+        s.add(CrashFingerprint(
+            fingerprint="fp3",
+            datadog_issue_ids=_json.dumps(["i3"]),
+            first_seen_version="1.4.3",
+        ))
+        await s.commit()
+
+    async with get_session() as s:
+        await classify_today(
+            session=s,
+            today=today,
+            latest_release="1.4.7",
+            recent_versions=["1.4.4", "1.4.5", "1.4.6"],
+            surge_multiplier=1.5,
+            surge_min_events=10,
+            regression_silent_threshold=3,
+        )
+        await s.commit()
+
+    async with get_session() as s:
+        from sqlalchemy import select
+        rows = (await s.execute(
+            select(CrashSnapshot).where(CrashSnapshot.snapshot_date == today)
+        )).scalars().all()
+        by_id = {r.datadog_issue_id: r for r in rows}
+
+        assert by_id["i1"].is_new_in_version is True
+        assert by_id["i2"].is_surge is True
+        assert by_id["i3"].is_regression is True
