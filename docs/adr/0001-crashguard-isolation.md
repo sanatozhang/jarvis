@@ -30,7 +30,7 @@ Crashguard 是 jarvis 的子模块，用于自动化崩溃分析与 PR 提交。
 
 ## 实施要点
 
-- `backend/.importlinter.cfg`：forbidden 合约
+- `backend/.importlinter`：forbidden 合约（lint-imports 默认文件名）
 - `backend/scripts/check_crash_decoupling.py`：启动时跑外键自检
 - `backend/app/crashguard/CLAUDE.md`：AI 修改指引
 - PR 模板加 checkbox：确认未引入新耦合点
