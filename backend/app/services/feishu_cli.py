@@ -630,6 +630,40 @@ async def _feishu_api(method: str, path: str, params: Optional[Dict] = None, bod
         return result
 
 
+async def send_interactive_card(
+    chat_id: str = "",
+    card: Dict[str, Any] = None,
+    email: str = "",
+) -> bool:
+    """发送 Feishu interactive card（msg_type=interactive）。
+
+    优先 chat_id；否则用 email（点对点推给指定用户，测试阶段常用）。
+    """
+    import json as _json
+    if not chat_id and not email:
+        raise ValueError("chat_id or email required")
+    if card is None:
+        raise ValueError("card required")
+    content = _json.dumps(card, ensure_ascii=False)
+    try:
+        if chat_id:
+            await _feishu_api(
+                "POST", "/im/v1/messages",
+                params={"receive_id_type": "chat_id"},
+                body={"receive_id": chat_id, "msg_type": "interactive", "content": content},
+            )
+        else:
+            await _feishu_api(
+                "POST", "/im/v1/messages",
+                params={"receive_id_type": "email"},
+                body={"receive_id": email, "msg_type": "interactive", "content": content},
+            )
+        return True
+    except Exception as e:
+        logger.error("Failed to send interactive card: %s", e)
+        return False
+
+
 async def send_message(
     chat_id: str = "",
     email: str = "",

@@ -1,8 +1,9 @@
 "use client";
 
-import { useContext } from "react";
+import { useContext, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useT, useLang, LangToggleContext } from "@/lib/i18n";
+import { fetchCrashEnabled } from "@/lib/api";
 
 const NAV_ITEMS = [
   {
@@ -48,6 +49,11 @@ const NAV_ITEMS = [
     icon: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
   },
   {
+    href: "/crashguard",
+    label: "崩溃看板",
+    icon: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z",
+  },
+  {
     href: "/settings",
     label: "系统设置",
     icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z",
@@ -59,6 +65,18 @@ export default function Sidebar() {
   const lang = useLang();
   const toggleLang = useContext(LangToggleContext);
   const pathname = usePathname();
+
+  // Crashguard feature flag — hide entry when CRASHGUARD_ENABLED=false
+  const [crashguardEnabled, setCrashguardEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchCrashEnabled().then((ok) => {
+      if (!cancelled) setCrashguardEnabled(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -102,7 +120,11 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 space-y-px px-2.5 py-3">
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.filter((item) => {
+          // crashguardEnabled === false 时隐藏；null（加载中）和 true 都显示，避免闪烁
+          if (item.href === "/crashguard" && crashguardEnabled === false) return false;
+          return true;
+        }).map((item) => {
           const active = isActive(item.href);
           return (
             <a

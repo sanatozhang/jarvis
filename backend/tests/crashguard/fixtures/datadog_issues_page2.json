@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "id": "def456",
+      "type": "error_tracking_issue",
+      "attributes": {
+        "title": "EXC_BAD_ACCESS @ AudioEngine.swift:78",
+        "service": "plaud_ios",
+        "platform": "ios",
+        "first_seen_timestamp": 1714003200000,
+        "last_seen_timestamp": 1714176000000,
+        "first_seen_version": "1.4.7",
+        "last_seen_version": "1.4.7",
+        "events_count": 67,
+        "users_affected": 12,
+        "stack_trace": "EXC_BAD_ACCESS\n  at AudioEngine.start (AudioEngine.swift:78)",
+        "tags": {"env": "prod"}
+      }
+    }
+  ],
+  "meta": {
+    "page": {}
+  }
+}

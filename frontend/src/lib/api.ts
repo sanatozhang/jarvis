@@ -808,3 +808,399 @@ export const voteWish = (id: number) =>
 
 export const deleteWish = (id: number) =>
   request<{ deleted: number }>(`/wishes/${id}`, { method: "DELETE" });
+
+// ============================================================
+// Crashguard
+// ============================================================
+
+export type CrashStatus =
+  | "open"
+  | "investigating"
+  | "resolved_by_pr"
+  | "ignored"
+  | "wontfix";
+
+export interface CrashTopItemAnalysisFlag {
+  first_analyzed_at?: string | null;
+  last_analyzed_at?: string | null;
+}
+
+export interface CrashTopItem extends CrashTopItemAnalysisFlag {
+  datadog_issue_id: string;
+  datadog_url: string;
+  title: string;
+  platform: string;
+  service: string;
+  events_count: number;
+  users_affected: number;
+  sessions_affected: number;
+  crash_free_impact_score: number;
+  is_new_in_version: boolean;
+  is_regression: boolean;
+  is_surge: boolean;
+  tier: "P0" | "P1";
+  status: CrashStatus;
+  assignee: string;
+  first_seen_version: string;
+  last_seen_version: string;
+  has_pr?: boolean;
+  pr_url?: string;
+  pr_number?: number | null;
+  pr_status?: "" | "draft" | "open" | "merged" | "closed";
+  pr_repo?: string;
+}
+
+export interface CrashTopResponse {
+  date: string;
+  count: number;
+  issues: CrashTopItem[];
+}
+
+export interface CrashSnapshot {
+  snapshot_date?: string;
+  events_count: number;
+  users_affected: number;
+  sessions_affected?: number;
+  crash_free_impact_score: number;
+  is_new_in_version: boolean;
+  is_regression: boolean;
+  is_surge: boolean;
+  app_version: string;
+}
+
+export interface CrashCause {
+  title: string;
+  evidence: string;
+  confidence: string;
+  code_pointer: string;
+}
+
+export interface CrashAnalysis {
+  scenario: string;
+  root_cause: string;
+  fix_suggestion: string;
+  feasibility_score: number;
+  confidence: string;
+  reproducibility: string;
+  agent_name: string;
+  agent_model?: string;
+  status: string;
+  possible_causes?: CrashCause[];
+  complexity_kind?: "simple" | "complex" | "";
+  solution?: string;
+  hint?: string;
+  run_id?: string;
+  created_at?: string;
+}
+
+export interface CrashIssueDetail {
+  datadog_issue_id: string;
+  datadog_url: string;
+  stack_fingerprint: string;
+  title: string;
+  platform: string;
+  service: string;
+  first_seen_at?: string;
+  last_seen_at?: string;
+  first_seen_version: string;
+  last_seen_version: string;
+  total_events: number;
+  total_users_affected: number;
+  representative_stack: string;
+  tags: Record<string, unknown>;
+  status: CrashStatus;
+  assignee: string;
+  top_os?: string;
+  top_device?: string;
+  top_app_version?: string;
+  snapshot: CrashSnapshot | Record<string, never>;
+  analysis: CrashAnalysis | Record<string, never>;
+  pull_requests?: CrashIssuePr[];
+}
+
+export interface CrashIssuePr {
+  id: number;
+  pr_url: string;
+  pr_number: number | null;
+  pr_status: "draft" | "open" | "merged" | "closed";
+  repo: string;
+  branch_name: string;
+  created_at: string | null;
+  merged_at: string | null;
+  closed_at: string | null;
+  last_synced_at: string | null;
+}
+
+export interface CrashHealth {
+  module: string;
+  enabled: boolean;
+  datadog_configured: boolean;
+  feishu_target_set: boolean;
+}
+
+export const fetchCrashTop = (limit = 40, target_date?: string) => {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (target_date) q.set("target_date", target_date);
+  return request<CrashTopResponse>(`/crash/top?${q.toString()}`);
+};
+
+export const updateCrashIssue = (
+  issueId: string,
+  patch: { status?: CrashStatus; assignee?: string },
+) =>
+  request<{ datadog_issue_id: string; status: CrashStatus; assignee: string }>(
+    `/crash/issues/${encodeURIComponent(issueId)}`,
+    { method: "PATCH", body: JSON.stringify(patch) },
+  );
+
+export interface CrashAnalyzeResponse {
+  run_id: string;
+  status: "pending" | "running" | "success" | "empty" | "failed";
+}
+
+export interface CrashAnalysisStatus {
+  run_id: string;
+  datadog_issue_id: string;
+  status: "pending" | "running" | "success" | "empty" | "failed";
+  scenario?: string;
+  root_cause?: string;
+  fix_suggestion?: string;
+  feasibility_score?: number;
+  confidence?: string;
+  reproducibility?: string;
+  agent_name?: string;
+  agent_model?: string;
+  possible_causes?: CrashCause[];
+  complexity_kind?: "simple" | "complex" | "";
+  solution?: string;
+  hint?: string;
+  error?: string;
+  created_at?: string | null;
+}
+
+export const startCrashAnalysis = (issueId: string) =>
+  request<CrashAnalyzeResponse>(`/crash/analyze/${encodeURIComponent(issueId)}`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+
+export const fetchCrashAnalysisStatus = (runId: string) =>
+  request<CrashAnalysisStatus>(`/crash/analyses/${encodeURIComponent(runId)}`);
+
+export interface CrashAnalysisRecord extends CrashAnalysisStatus {
+  is_followup: boolean;
+  followup_question: string;
+  answer: string;
+  parent_run_id: string;
+}
+
+export interface CrashAnalysesResponse {
+  datadog_issue_id: string;
+  count: number;
+  analyses: CrashAnalysisRecord[];
+}
+
+export const fetchCrashAnalyses = (issueId: string) =>
+  request<CrashAnalysesResponse>(`/crash/issues/${encodeURIComponent(issueId)}/analyses`);
+
+export const followupCrashIssue = (issueId: string, question: string, parent_run_id?: string) =>
+  request<{ run_id: string; status: string }>(
+    `/crash/issues/${encodeURIComponent(issueId)}/followup`,
+    {
+      method: "POST",
+      body: JSON.stringify({ question, parent_run_id }),
+    },
+  );
+
+export interface BatchAnalyzeResult {
+  scheduled: { datadog_issue_id: string; title: string; run_id: string; tier: string }[];
+  skipped: { datadog_issue_id: string; title: string; reason: string }[];
+  scanned: number;
+}
+
+export const batchAnalyzeCrash = (top_n?: number, force = false) =>
+  request<BatchAnalyzeResult>(`/crash/batch-analyze`, {
+    method: "POST",
+    body: JSON.stringify({ top_n, force }),
+  });
+
+export interface DailyReportRunResult {
+  ok: boolean;
+  dry_run?: boolean;
+  preview?: string;
+  payload?: any;
+  sent?: boolean;
+  skipped_reason?: string;
+  persisted_id?: number;
+}
+
+export const runCrashDailyReport = (
+  report_type: "morning" | "evening",
+  opts?: { top_n?: number; dry_run?: boolean; chat_id?: string }
+) =>
+  request<DailyReportRunResult>(`/crash/reports/run-now`, {
+    method: "POST",
+    body: JSON.stringify({
+      report_type,
+      top_n: opts?.top_n ?? 10,
+      dry_run: opts?.dry_run ?? true,
+      chat_id: opts?.chat_id,
+    }),
+  });
+
+export interface CrashAuditSummary {
+  window_hours: number;
+  total: number;
+  by_op: Record<string, { success: number; failed: number; last_at: string | null }>;
+  recent_errors: { op: string; target_id: string; error: string; created_at: string | null }[];
+}
+
+export const fetchCrashAuditSummary = (hours = 48) =>
+  request<CrashAuditSummary>(`/crash/audit-summary?hours=${hours}`);
+
+export interface CrashReportHistoryItem {
+  id: number;
+  report_date: string | null;
+  report_type: "morning" | "evening";
+  top_n: number;
+  new_count: number;
+  regression_count: number;
+  surge_count: number;
+  feishu_message_id: string;
+  created_at: string | null;
+  summary: string;
+  attention_total: number;
+}
+
+export const fetchCrashReportHistory = (opts?: {
+  days?: number;
+  report_type?: "morning" | "evening";
+  limit?: number;
+}) => {
+  const qs = new URLSearchParams();
+  if (opts?.days) qs.set("days", String(opts.days));
+  if (opts?.report_type) qs.set("report_type", opts.report_type);
+  if (opts?.limit) qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return request<{ items: CrashReportHistoryItem[]; total: number; days: number }>(
+    `/crash/reports/history${q ? "?" + q : ""}`
+  );
+};
+
+export const fetchCrashReportDetail = (id: number) =>
+  request<{
+    id: number;
+    report_date: string | null;
+    report_type: string;
+    markdown: string;
+    payload: Record<string, unknown>;
+    created_at: string | null;
+  }>(`/crash/reports/${id}`);
+
+export interface CrashPullRequestItem {
+  id: number;
+  datadog_issue_id: string;
+  title: string;
+  repo: string;
+  branch_name: string;
+  pr_url: string;
+  pr_number: number | null;
+  pr_status: "draft" | "open" | "merged" | "closed";
+  triggered_by: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  feasibility: number;
+  created_at: string | null;
+  merged_at: string | null;
+  closed_at: string | null;
+  last_synced_at: string | null;
+}
+
+export interface CrashPrSyncResult {
+  ok: boolean;
+  pr_id?: number;
+  old_status?: string;
+  new_status?: string;
+  changed?: boolean;
+  skipped?: string;
+  error?: string;
+}
+
+export const refreshCrashPr = (prId: number) =>
+  request<CrashPrSyncResult>(`/crash/pull-requests/${prId}/refresh`, { method: "POST" });
+
+export const syncAllCrashPrs = () =>
+  request<{ checked: number; changed: number; errors: number }>(
+    `/crash/pull-requests/sync-all`,
+    { method: "POST" },
+  );
+
+export const fetchCrashPullRequests = (opts?: {
+  days?: number;
+  status?: "draft" | "open" | "merged" | "closed";
+  repo?: "flutter" | "android" | "ios" | "app";
+  limit?: number;
+}) => {
+  const qs = new URLSearchParams();
+  if (opts?.days) qs.set("days", String(opts.days));
+  if (opts?.status) qs.set("status", opts.status);
+  if (opts?.repo) qs.set("repo", opts.repo);
+  if (opts?.limit) qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return request<{ items: CrashPullRequestItem[]; total: number; days: number }>(
+    `/crash/pull-requests${q ? "?" + q : ""}`
+  );
+};
+
+export const auditCleanup = (keep_days = 30) =>
+  request<{ deleted: number; keep_days: number; cutoff: string }>(`/crash/audit-cleanup`, {
+    method: "POST",
+    body: JSON.stringify({ keep_days }),
+  });
+
+// 兼容老调用：异步启动 + 轮询，最长 8 分钟。
+export const analyzeCrashIssue = async (issueId: string): Promise<CrashAnalysisStatus> => {
+  const start = await startCrashAnalysis(issueId);
+  const runId = start.run_id;
+  const deadline = Date.now() + 8 * 60 * 1000;
+  let delay = 3000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(delay + 1000, 8000);
+    const st = await fetchCrashAnalysisStatus(runId);
+    if (st.status === "success" || st.status === "failed" || st.status === "empty") {
+      return st;
+    }
+  }
+  return {
+    run_id: runId,
+    datadog_issue_id: issueId,
+    status: "failed",
+    error: "polling timeout (8min)",
+  };
+};
+
+export const fetchCrashIssue = (issueId: string, target_date?: string) => {
+  const q = new URLSearchParams();
+  if (target_date) q.set("target_date", target_date);
+  const qs = q.toString();
+  return request<CrashIssueDetail>(`/crash/issues/${encodeURIComponent(issueId)}${qs ? "?" + qs : ""}`);
+};
+
+export const fetchCrashHealth = () => request<CrashHealth>("/crash/health");
+
+// Lightweight feature flag check — used by Sidebar to conditionally show entry
+export async function fetchCrashEnabled(): Promise<boolean> {
+  try {
+    const h = await fetchCrashHealth();
+    return Boolean(h?.enabled);
+  } catch {
+    return false;  // 网络错 / 后端没起 → 视为不可用，隐藏入口
+  }
+}
+
+export const triggerCrashPipeline = (latest_release: string, recent_versions: string[], target_date?: string) =>
+  request<{ issues_processed: number; snapshots_written: number; top_n_count: number }>("/crash/trigger", {
+    method: "POST",
+    body: JSON.stringify({ latest_release, recent_versions, target_date }),
+  });

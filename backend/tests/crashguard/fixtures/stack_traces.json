@@ -1,0 +1,6 @@
+{
+  "flutter_v1": "NullPointerException: buffer is null\n  at AudioPlayer.play (lib/audio/player.dart:42)\n  at PlaybackController._start (lib/audio/playback.dart:18)\n  at <anonymous> (package:flutter/src/widgets/framework.dart:4567)\n  at _$xxxxx_closure (lib/main.dart)\n  at dart:async/zone.dart:1234\n",
+  "flutter_v2_same_bug": "NullPointerException: buffer is null\n  at AudioPlayer.play (lib/audio/player.dart:55)\n  at PlaybackController._start (lib/audio/playback.dart:23)\n  at <anonymous> (package:flutter/src/widgets/framework.dart:4789)\n  at _$yyyyy_closure (lib/main.dart)\n  at dart:async/zone.dart:1234\n",
+  "ios_native": "EXC_BAD_ACCESS\n  at AudioEngine.start (AudioEngine.swift:78)\n  at PlaybackVC.viewDidLoad (PlaybackVC.swift:34)\n  at libsystem_pthread.dylib`__pthread_start\n",
+  "different_bug": "OutOfMemoryError\n  at ImageDecoder.decode (lib/image/decoder.dart:99)\n  at GalleryView.build (lib/ui/gallery.dart:45)\n"
+}

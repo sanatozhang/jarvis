@@ -69,8 +69,28 @@ async def lifespan(app: FastAPI):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     logger.info("Starting Appllo...")
+
+    # Import crashguard models to register with SQLAlchemy Base
+    from app.crashguard import models as _crashguard_models  # noqa: F401
+
     await init_db()
     logger.info("Database initialized.")
+
+    # Crashguard DB 解耦自检 — 违规则阻止启动
+    try:
+        from scripts.check_crash_decoupling import assert_crash_tables_decoupled
+        assert_crash_tables_decoupled()
+        logger.info("Crashguard decoupling check passed.")
+    except RuntimeError as e:
+        logger.error("Crashguard decoupling check FAILED: %s", e)
+        raise
+
+    # Crashguard 轻量自动迁移 — SQLite 已建表后追加新列
+    try:
+        from app.crashguard.migrations import ensure_columns
+        await ensure_columns()
+    except Exception as e:
+        logger.warning("Crashguard auto-migration skipped: %s", e)
 
     # Clean up zombie tasks from previous crashes/restarts
     from app.db.database import get_session
@@ -106,8 +126,13 @@ async def lifespan(app: FastAPI):
     from app.services.repo_updater import repo_update_loop
     repo_update_task = asyncio.create_task(repo_update_loop())
 
+    # Crashguard 早晚报调度（每 60 秒 tick；命中 morning/evening cron 即推飞书）
+    from app.crashguard.workers.scheduler import report_scheduler_loop
+    crashguard_scheduler_task = asyncio.create_task(report_scheduler_loop())
+
     yield
 
+    crashguard_scheduler_task.cancel()
     repo_update_task.cancel()
     zombie_task.cancel()
     await close_db()
@@ -170,6 +195,10 @@ app.include_router(golden_samples_router, prefix="/api/golden-samples", tags=["G
 app.include_router(eval_router, prefix="/api/eval", tags=["Eval"])
 app.include_router(tools_router, prefix="/api/tools", tags=["Tools"])
 app.include_router(wishes_router, prefix="/api/wishes", tags=["Wishes"])
+
+# Crashguard API（独立子模块，prefix 在 router 内部声明 /api/crash）
+from app.crashguard.api import crash as _crash_api  # noqa: E402
+app.include_router(_crash_api.router)
 
 
 # ---------------------------------------------------------------------------
