@@ -1,8 +1,9 @@
 "use client";
 
-import { useContext } from "react";
+import { useContext, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useT, useLang, LangToggleContext } from "@/lib/i18n";
+import { fetchCrashEnabled } from "@/lib/api";
 
 const NAV_ITEMS = [
   {
@@ -65,6 +66,18 @@ export default function Sidebar() {
   const toggleLang = useContext(LangToggleContext);
   const pathname = usePathname();
 
+  // Crashguard feature flag — hide entry when CRASHGUARD_ENABLED=false
+  const [crashguardEnabled, setCrashguardEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchCrashEnabled().then((ok) => {
+      if (!cancelled) setCrashguardEnabled(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
@@ -107,7 +120,11 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 space-y-px px-2.5 py-3">
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.filter((item) => {
+          // crashguardEnabled === false 时隐藏；null（加载中）和 true 都显示，避免闪烁
+          if (item.href === "/crashguard" && crashguardEnabled === false) return false;
+          return true;
+        }).map((item) => {
           const active = isActive(item.href);
           return (
             <a

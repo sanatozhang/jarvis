@@ -55,6 +55,7 @@ class AnalysisOutput:
     solution: str = ""
     hint: str = ""
     answer: str = ""
+    fix_diff: str = ""
     error: Optional[str] = None
 
     def __post_init__(self):
@@ -107,11 +108,28 @@ _PROMPT_TEMPLATE = """你是 Plaud 移动端崩溃分析专家。基于下方崩
   "hint": "complexity=complex 时填：给开发者的排查思路（不直接改代码），分点列出",
   "root_cause": "把 possible_causes 中最可能那条扩展为 5-10 句的根因总结（保留以兼容旧字段）",
   "fix_suggestion": "complexity=simple 直接复制 solution；complexity=complex 复制 hint",
+  "fix_diff": "**unified diff 格式的真实 patch**（complexity=simple 时强烈建议；下方有详细规则）",
   "feasibility_score": 0.0,
   "confidence": "high | medium | low",
   "reproducibility": "reproducible | likely | unknown"
 }}
 ```
+
+### fix_diff 输出规则（极重要 —— 决定能否自动开 PR）
+
+- **complexity=simple 时必须给**；complexity=complex 或缺数据时给空串 `""`
+- 必须是**可被 `git apply --3way` 应用的 unified diff**，文件头格式：
+  ```
+  --- a/<相对子仓库根的路径>
+  +++ b/<相对子仓库根的路径>
+  @@ -原行,数 +新行,数 @@ 上下文
+  -原代码
+  +新代码
+  ```
+- **路径规则**：移除 `code/<sub-repo>/` 前缀。例：源码在 `code/plaud-flutter-common/lib/foo.dart`，diff 里写 `lib/foo.dart`。每个端的子仓库都是独立 git repo，patch 是相对它们各自根的
+- **必须真去 Read 那个文件确认行号和上下文**，行号错了 patch 就 apply 不了
+- **宁缺毋滥**：不确定行号/不确定该改哪行 → 把 fix_diff 留空，让工程师手动 patch；编造 diff 比留空伤害更大
+- 单个 diff 控制在 30 行以内，跨多文件可拼接（连续多个 `--- a/...` 块）
 
 ### possible_causes 输出规则
 
@@ -316,6 +334,8 @@ async def _update_failed(run_id: str, err: str) -> None:
 
 
 async def _persist_to_run(run_id: str, output: AnalysisOutput, is_followup: bool = False) -> None:
+    analysis_id_for_pr: Optional[int] = None
+    feasibility_for_pr: float = 0.0
     async with get_session() as session:
         row = (await session.execute(
             select(CrashAnalysis).where(CrashAnalysis.analysis_run_id == run_id)
@@ -348,12 +368,67 @@ async def _persist_to_run(run_id: str, output: AnalysisOutput, is_followup: bool
             row.complexity_kind = output.complexity_kind or ""
             row.solution = output.solution or ""
             row.hint = output.hint or ""
+            row.fix_diff = output.fix_diff or ""
             if output.error:
                 row.status = "failed"
                 row.error = output.error[:1000]
             else:
                 row.status = "success" if output.root_cause else "empty"
+            # 根分析成功 + 可行性达标 → 触发自动 draft PR（fire-and-forget）
+            if row.status == "success":
+                analysis_id_for_pr = row.id
+                feasibility_for_pr = float(output.feasibility_score or 0.0)
         await session.commit()
+
+    if analysis_id_for_pr is not None:
+        try:
+            asyncio.create_task(_maybe_auto_draft_pr(analysis_id_for_pr, feasibility_for_pr))
+        except RuntimeError:
+            # 没有事件循环（同步入口），直接同步跑一次
+            try:
+                await _maybe_auto_draft_pr(analysis_id_for_pr, feasibility_for_pr)
+            except Exception:
+                logger.exception("auto draft PR fallback failed")
+
+
+async def _maybe_auto_draft_pr(analysis_id: int, feasibility: float) -> None:
+    """根分析成功后的自动 PR 勾子。检查阈值 + 写 audit log，PR 失败不影响分析主流程。"""
+    from app.crashguard.config import get_crashguard_settings
+    from app.crashguard.services.audit import write_audit
+    s = get_crashguard_settings()
+    if not s.pr_enabled:
+        return
+    threshold = float(getattr(s, "feasibility_pr_threshold", 0.7) or 0.7)
+    if feasibility < threshold:
+        await write_audit(
+            op="auto_draft_pr",
+            target_id=str(analysis_id),
+            success=False,
+            detail=f"feasibility={feasibility:.2f} < threshold={threshold:.2f}",
+            error="below_threshold",
+        )
+        return
+    try:
+        from app.crashguard.services.pr_drafter import draft_pr_for_analysis
+        result = await draft_pr_for_analysis(analysis_id, approver="auto")
+        await write_audit(
+            op="auto_draft_pr",
+            target_id=str(analysis_id),
+            success=bool(result.get("ok")),
+            detail=str({k: v for k, v in result.items() if k != "raw"})[:500],
+            error=result.get("error", "") if not result.get("ok") else None,
+        )
+    except Exception as exc:
+        logger.exception("auto_draft_pr crashed")
+        try:
+            await write_audit(
+                op="auto_draft_pr",
+                target_id=str(analysis_id),
+                success=False,
+                error=str(exc)[:300],
+            )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -576,7 +651,7 @@ def _platform_code_hint(platform: str, workspace: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-_CRASHGUARD_AGENT_TIMEOUT = 300  # 5 分钟硬超时——比 jarvis 默认 600s 紧，防止 claude 子进程被 macOS 杀掉后父端干等
+_CRASHGUARD_AGENT_TIMEOUT = 600  # 10 分钟硬超时——AI 要 Read 源码 + 写 fix_diff，5 分钟太紧；保留 hard cap 防 macOS 子进程被 SIGKILL 后父端干等
 
 
 async def _run_agent(workspace: Path, prompt: str, is_followup: bool = False) -> AnalysisOutput:
@@ -622,6 +697,7 @@ async def _run_agent(workspace: Path, prompt: str, is_followup: bool = False) ->
                 reproducibility=str(parsed.get("reproducibility", "") or "unknown").lower(),
                 raw_output=parsed.get("_raw", ""),
                 agent_name=getattr(agent.config, "agent_type", "claude_code"),
+                fix_diff=parsed.get("fix_diff", "") or "",
             )
         return AnalysisOutput(
             scenario="", root_cause="", fix_suggestion="",
@@ -677,6 +753,7 @@ async def _run_agent(workspace: Path, prompt: str, is_followup: bool = False) ->
         complexity_kind=str(parsed.get("complexity", "") or "").lower(),
         solution=parsed.get("solution", "") or "",
         hint=parsed.get("hint", "") or "",
+        fix_diff=parsed.get("fix_diff", "") or "",
     )
 
 
@@ -716,6 +793,7 @@ async def _persist_analysis_legacy(issue_id: str, output: AnalysisOutput) -> Non
             scenario=output.scenario,
             root_cause=output.root_cause,
             fix_suggestion=output.fix_suggestion,
+            fix_diff=output.fix_diff or "",
             feasibility_score=output.feasibility_score,
             confidence=output.confidence,
             reproducibility=output.reproducibility,
@@ -726,6 +804,14 @@ async def _persist_analysis_legacy(issue_id: str, output: AnalysisOutput) -> Non
         )
         session.add(row)
         await session.commit()
+        analysis_id = row.id
+        is_success = row.status == "success"
+    # 同步路径同样挂自动 PR 勾子
+    if is_success:
+        try:
+            await _maybe_auto_draft_pr(analysis_id, float(output.feasibility_score or 0.0))
+        except Exception:
+            logger.exception("legacy auto draft PR failed (non-fatal)")
 
 
 # ---------------------------------------------------------------------------

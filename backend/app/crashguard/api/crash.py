@@ -5,14 +5,34 @@ import logging
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.crashguard.config import get_crashguard_settings
 
 logger = logging.getLogger("crashguard.api")
 
-router = APIRouter(prefix="/api/crash", tags=["crashguard"])
+
+def _require_enabled(request: Request) -> None:
+    """Gate：crashguard 关闭时整个子模块返回 403。
+
+    例外：/health 始终可访问，frontend 用它探测开关状态。
+    """
+    if request.url.path.endswith("/health"):
+        return
+    s = get_crashguard_settings()
+    if not s.enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="crashguard is disabled (set CRASHGUARD_ENABLED=true to enable)",
+        )
+
+
+router = APIRouter(
+    prefix="/api/crash",
+    tags=["crashguard"],
+    dependencies=[Depends(_require_enabled)],
+)
 
 
 class TriggerRequest(BaseModel):
@@ -533,3 +553,301 @@ async def patch_issue(issue_id: str, patch: IssuePatch) -> Dict[str, Any]:
             "status": row.status or "open",
             "assignee": getattr(row, "assignee", "") or "",
         }
+
+
+@router.get("/reports/history")
+async def list_reports_history(
+    days: int = Query(30, ge=1, le=180),
+    report_type: Optional[str] = Query(None, regex="^(morning|evening)$"),
+    limit: int = Query(60, ge=1, le=180),
+) -> Dict[str, Any]:
+    """列出最近 N 天的历史早晚报（含 attention 计数 + payload 摘要）。"""
+    from datetime import datetime, timedelta, date as _date
+    from sqlalchemy import select, desc
+    from app.db.database import get_session
+    from app.crashguard.models import CrashDailyReport
+    import json as _json
+
+    since = _date.today() - timedelta(days=days)
+    async with get_session() as session:
+        stmt = select(CrashDailyReport).where(CrashDailyReport.report_date >= since)
+        if report_type:
+            stmt = stmt.where(CrashDailyReport.report_type == report_type)
+        stmt = stmt.order_by(
+            desc(CrashDailyReport.report_date),
+            desc(CrashDailyReport.created_at),
+        ).limit(limit)
+        rows = (await session.execute(stmt)).scalars().all()
+
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        try:
+            payload = _json.loads(r.report_payload or "{}")
+        except Exception:
+            payload = {}
+        items.append({
+            "id": r.id,
+            "report_date": r.report_date.isoformat() if r.report_date else None,
+            "report_type": r.report_type,
+            "top_n": r.top_n,
+            "new_count": r.new_count,
+            "regression_count": r.regression_count,
+            "surge_count": r.surge_count,
+            "feishu_message_id": r.feishu_message_id,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "summary": payload.get("summary") or "",
+            "attention_total": (
+                int(r.new_count or 0) + int(r.regression_count or 0) + int(r.surge_count or 0)
+            ),
+        })
+    return {"items": items, "total": len(items), "days": days}
+
+
+@router.get("/reports/{report_id}")
+async def get_report_detail(report_id: int) -> Dict[str, Any]:
+    """单份历史报告的完整 markdown + payload"""
+    from sqlalchemy import select
+    from app.db.database import get_session
+    from app.crashguard.services.daily_report import compose_report
+    from app.crashguard.models import CrashDailyReport
+    import json as _json
+
+    async with get_session() as session:
+        row = (await session.execute(
+            select(CrashDailyReport).where(CrashDailyReport.id == report_id)
+        )).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="report not found")
+        try:
+            payload = _json.loads(row.report_payload or "{}")
+        except Exception:
+            payload = {}
+
+    # 历史报告未存全量 markdown，重新基于落库时的当日数据 compose 一次
+    try:
+        text, _ = await compose_report(
+            row.report_type, row.report_date, top_n=int(row.top_n or 5)
+        )
+    except Exception:
+        text = "_报告内容已过期，无法重新生成（数据已轮转）_"
+
+    return {
+        "id": row.id,
+        "report_date": row.report_date.isoformat() if row.report_date else None,
+        "report_type": row.report_type,
+        "markdown": text,
+        "payload": payload,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.get("/pull-requests")
+async def list_pull_requests(
+    days: int = Query(30, ge=1, le=180),
+    status: Optional[str] = Query(None, regex="^(draft|open|merged|closed)$"),
+    repo: Optional[str] = Query(None, regex="^(flutter|android|ios|app)$"),
+    limit: int = Query(50, ge=1, le=200),
+) -> Dict[str, Any]:
+    """自动 PR 列表（含 issue 标题 + 平台 + 状态）"""
+    from datetime import datetime, timedelta
+    from sqlalchemy import select, desc
+    from app.db.database import get_session
+    from app.crashguard.models import CrashPullRequest, CrashIssue, CrashAnalysis
+
+    since = datetime.utcnow() - timedelta(days=days)
+    async with get_session() as session:
+        stmt = select(CrashPullRequest).where(CrashPullRequest.created_at >= since)
+        if status:
+            stmt = stmt.where(CrashPullRequest.pr_status == status)
+        if repo:
+            stmt = stmt.where(CrashPullRequest.repo == repo)
+        stmt = stmt.order_by(desc(CrashPullRequest.created_at)).limit(limit)
+        rows = (await session.execute(stmt)).scalars().all()
+
+        # 批量补 issue title + analysis feasibility
+        issue_ids = [r.datadog_issue_id for r in rows]
+        analysis_ids = [r.analysis_id for r in rows]
+        title_map: Dict[str, str] = {}
+        feas_map: Dict[int, float] = {}
+        if issue_ids:
+            issues = (await session.execute(
+                select(CrashIssue).where(CrashIssue.datadog_issue_id.in_(issue_ids))
+            )).scalars().all()
+            title_map = {i.datadog_issue_id: i.title or "" for i in issues}
+        if analysis_ids:
+            analyses = (await session.execute(
+                select(CrashAnalysis).where(CrashAnalysis.id.in_(analysis_ids))
+            )).scalars().all()
+            feas_map = {a.id: float(a.feasibility_score or 0.0) for a in analyses}
+
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        items.append({
+            "id": r.id,
+            "datadog_issue_id": r.datadog_issue_id,
+            "title": title_map.get(r.datadog_issue_id, ""),
+            "repo": r.repo,
+            "branch_name": r.branch_name,
+            "pr_url": r.pr_url,
+            "pr_number": r.pr_number,
+            "pr_status": r.pr_status,
+            "triggered_by": r.triggered_by,
+            "approved_by": r.approved_by,
+            "approved_at": r.approved_at.isoformat() if r.approved_at else None,
+            "feasibility": feas_map.get(r.analysis_id, 0.0),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+    return {"items": items, "total": len(items), "days": days}
+
+
+class BackfillAutoPrRequest(BaseModel):
+    days: int = Field(7, ge=1, le=90, description="回溯最近 N 天的 success 分析")
+    dry_run: bool = Field(False, description="True=只列出候选，不实际建 PR")
+    min_feasibility: Optional[float] = Field(None, description="覆盖 config 阈值")
+    limit: int = Field(0, ge=0, le=100, description="最多创建 N 个 PR，0=不限")
+
+
+@router.post("/backfill-auto-pr")
+async def backfill_auto_pr(req: BackfillAutoPrRequest) -> Dict[str, Any]:
+    """对历史 success 分析（feasibility ≥ threshold 且未建过 PR）批量补 draft PR。
+
+    用途：在加自动 PR 勾子之前已经跑过的成功分析没机会触发 _maybe_auto_draft_pr，
+    需要这个端点一次性补齐。
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    from app.db.database import get_session
+    from app.crashguard.models import CrashAnalysis, CrashPullRequest
+    from app.crashguard.services.pr_drafter import draft_pr_for_analysis
+    from app.crashguard.services.audit import write_audit
+
+    s = get_crashguard_settings()
+    threshold = float(req.min_feasibility if req.min_feasibility is not None
+                      else getattr(s, "feasibility_pr_threshold", 0.7) or 0.7)
+    since = datetime.utcnow() - timedelta(days=req.days)
+
+    candidates: List[Dict[str, Any]] = []
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(CrashAnalysis).where(
+                CrashAnalysis.status == "success",
+                CrashAnalysis.followup_question == "",
+                CrashAnalysis.feasibility_score >= threshold,
+                CrashAnalysis.created_at >= since,
+            )
+        )).scalars().all()
+        # 过滤掉没对应 sub-repo 的 platform（browser/desktop/未知）
+        from app.crashguard.models import CrashIssue
+        issue_ids = list({a.datadog_issue_id for a in rows})
+        plat_map: Dict[str, str] = {}
+        if issue_ids:
+            issues = (await session.execute(
+                select(CrashIssue).where(CrashIssue.datadog_issue_id.in_(issue_ids))
+            )).scalars().all()
+            plat_map = {i.datadog_issue_id: (i.platform or "").lower() for i in issues}
+        VALID_PLATFORMS = {"android", "ios", "flutter"}
+        rows = [a for a in rows if plat_map.get(a.datadog_issue_id) in VALID_PLATFORMS]
+        existing_pr_ana_ids = set(
+            r[0] for r in (await session.execute(
+                select(CrashPullRequest.analysis_id)
+            )).all()
+        )
+
+    triggered = 0
+    skipped_dup = 0
+    failed: List[Dict[str, str]] = []
+    candidates_out: List[Dict[str, Any]] = []
+    limit = int(req.limit or 0)
+    for ana in rows:
+        # limit > 0 时，只创建 limit 个 PR；后面的标 skipped_limit
+        if limit > 0 and triggered >= limit and not req.dry_run:
+            candidates_out.append({
+                "analysis_id": ana.id,
+                "issue_id": ana.datadog_issue_id,
+                "feasibility": float(ana.feasibility_score or 0.0),
+                "status": "skipped_limit",
+            })
+            continue
+        info = {
+            "analysis_id": ana.id,
+            "issue_id": ana.datadog_issue_id,
+            "feasibility": float(ana.feasibility_score or 0.0),
+        }
+        if ana.id in existing_pr_ana_ids:
+            info["status"] = "skipped_existing_pr"
+            skipped_dup += 1
+            candidates_out.append(info)
+            continue
+        if req.dry_run:
+            info["status"] = "would_create"
+            candidates_out.append(info)
+            continue
+        try:
+            res = await draft_pr_for_analysis(ana.id, approver="backfill")
+            if res.get("ok"):
+                info["status"] = "created"
+                info["pr_url"] = res.get("pr_url", "")
+                triggered += 1
+            else:
+                info["status"] = "failed"
+                info["error"] = res.get("error", "")
+                failed.append({"analysis_id": str(ana.id), "error": res.get("error", "")})
+        except Exception as exc:
+            info["status"] = "exception"
+            info["error"] = str(exc)[:300]
+            failed.append({"analysis_id": str(ana.id), "error": str(exc)[:300]})
+        candidates_out.append(info)
+        try:
+            await write_audit(
+                op="backfill_auto_pr",
+                target_id=str(ana.id),
+                success=info["status"] == "created",
+                detail=str(info)[:500],
+                error=info.get("error", "") if info["status"] != "created" else None,
+            )
+        except Exception:
+            pass
+
+    return {
+        "threshold": threshold,
+        "days": req.days,
+        "dry_run": req.dry_run,
+        "total_candidates": len(rows),
+        "triggered": triggered,
+        "skipped_existing_pr": skipped_dup,
+        "failed_count": len(failed),
+        "candidates": candidates_out,
+    }
+
+
+class AuditCleanupRequest(BaseModel):
+    keep_days: int = Field(30, ge=7, le=365, description="保留最近 N 天，超出删除")
+
+
+@router.post("/audit-cleanup")
+async def audit_cleanup(req: AuditCleanupRequest) -> Dict[str, Any]:
+    """清理超过 N 天的审计日志（防止表无限增长）。"""
+    from datetime import datetime, timedelta
+    from sqlalchemy import delete
+    from app.db.database import get_session
+    from app.crashguard.models import CrashAuditLog
+    from app.crashguard.services.audit import write_audit
+
+    cutoff = datetime.utcnow() - timedelta(days=req.keep_days)
+    async with get_session() as session:
+        result = await session.execute(
+            delete(CrashAuditLog).where(CrashAuditLog.created_at < cutoff)
+        )
+        deleted = int(getattr(result, "rowcount", 0) or 0)
+        await session.commit()
+
+    try:
+        await write_audit(
+            op="audit_cleanup",
+            target_id=str(req.keep_days),
+            success=True,
+            detail=f"deleted {deleted} rows older than {req.keep_days}d",
+        )
+    except Exception:
+        pass
+    return {"deleted": deleted, "keep_days": req.keep_days, "cutoff": cutoff.isoformat()}

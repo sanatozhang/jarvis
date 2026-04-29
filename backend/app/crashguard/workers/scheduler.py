@@ -57,6 +57,10 @@ async def _tick_once() -> None:
     s = get_crashguard_settings()
     if not s.enabled or not s.feishu_enabled:
         return
+    # 多实例部署兜底：只有显式开启 scheduler 的机器跑 cron 触发；
+    # 即使两台都开了，下游 send_daily_report 也有 DB 抢锁去重保护。
+    if not getattr(s, "scheduler_enabled", True):
+        return
     if not s.feishu_target_chat_id:
         return
 

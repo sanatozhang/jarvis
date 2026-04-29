@@ -33,6 +33,8 @@ class CrashguardSettings(BaseSettings):
     enabled: bool = True
     pr_enabled: bool = True
     feishu_enabled: bool = True
+    # 多实例部署时，仅一台机器开启 scheduler，避免双发（兜底；DB 锁是主要去重）
+    scheduler_enabled: bool = True
 
     # Datadog
     datadog_api_key: str = ""
@@ -110,7 +112,7 @@ def _yaml_overrides() -> Dict[str, Any]:
     cfg = _load_yaml().get("crashguard") or {}
     flat: Dict[str, Any] = {}
     for k in (
-        "enabled", "pr_enabled", "feishu_enabled",
+        "enabled", "pr_enabled", "feishu_enabled", "scheduler_enabled",
         "max_top_n", "analyze_top_n",
     ):
         if k in cfg:
@@ -151,6 +153,18 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["morning_cron"] = f["morning_cron"]
         if "evening_cron" in f:
             flat["evening_cron"] = f["evening_cron"]
+    if "repo_paths" in cfg:
+        rp = cfg["repo_paths"] or {}
+        if "flutter" in rp:
+            flat["repo_path_flutter"] = rp["flutter"]
+        if "android" in rp:
+            flat["repo_path_android"] = rp["android"]
+        if "ios" in rp:
+            flat["repo_path_ios"] = rp["ios"]
+    if "frontend_base_url" in cfg:
+        flat["frontend_base_url"] = cfg["frontend_base_url"]
+    if "pr_dedup_days" in cfg:
+        flat["pr_dedup_days"] = int(cfg["pr_dedup_days"])
     return flat
 
 

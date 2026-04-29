@@ -1039,6 +1039,84 @@ export interface CrashAuditSummary {
 export const fetchCrashAuditSummary = (hours = 48) =>
   request<CrashAuditSummary>(`/crash/audit-summary?hours=${hours}`);
 
+export interface CrashReportHistoryItem {
+  id: number;
+  report_date: string | null;
+  report_type: "morning" | "evening";
+  top_n: number;
+  new_count: number;
+  regression_count: number;
+  surge_count: number;
+  feishu_message_id: string;
+  created_at: string | null;
+  summary: string;
+  attention_total: number;
+}
+
+export const fetchCrashReportHistory = (opts?: {
+  days?: number;
+  report_type?: "morning" | "evening";
+  limit?: number;
+}) => {
+  const qs = new URLSearchParams();
+  if (opts?.days) qs.set("days", String(opts.days));
+  if (opts?.report_type) qs.set("report_type", opts.report_type);
+  if (opts?.limit) qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return request<{ items: CrashReportHistoryItem[]; total: number; days: number }>(
+    `/crash/reports/history${q ? "?" + q : ""}`
+  );
+};
+
+export const fetchCrashReportDetail = (id: number) =>
+  request<{
+    id: number;
+    report_date: string | null;
+    report_type: string;
+    markdown: string;
+    payload: Record<string, unknown>;
+    created_at: string | null;
+  }>(`/crash/reports/${id}`);
+
+export interface CrashPullRequestItem {
+  id: number;
+  datadog_issue_id: string;
+  title: string;
+  repo: string;
+  branch_name: string;
+  pr_url: string;
+  pr_number: number | null;
+  pr_status: "draft" | "open" | "merged" | "closed";
+  triggered_by: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  feasibility: number;
+  created_at: string | null;
+}
+
+export const fetchCrashPullRequests = (opts?: {
+  days?: number;
+  status?: "draft" | "open" | "merged" | "closed";
+  repo?: "flutter" | "android" | "ios" | "app";
+  limit?: number;
+}) => {
+  const qs = new URLSearchParams();
+  if (opts?.days) qs.set("days", String(opts.days));
+  if (opts?.status) qs.set("status", opts.status);
+  if (opts?.repo) qs.set("repo", opts.repo);
+  if (opts?.limit) qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return request<{ items: CrashPullRequestItem[]; total: number; days: number }>(
+    `/crash/pull-requests${q ? "?" + q : ""}`
+  );
+};
+
+export const auditCleanup = (keep_days = 30) =>
+  request<{ deleted: number; keep_days: number; cutoff: string }>(`/crash/audit-cleanup`, {
+    method: "POST",
+    body: JSON.stringify({ keep_days }),
+  });
+
 // 兼容老调用：异步启动 + 轮询，最长 8 分钟。
 export const analyzeCrashIssue = async (issueId: string): Promise<CrashAnalysisStatus> => {
   const start = await startCrashAnalysis(issueId);
@@ -1069,6 +1147,16 @@ export const fetchCrashIssue = (issueId: string, target_date?: string) => {
 };
 
 export const fetchCrashHealth = () => request<CrashHealth>("/crash/health");
+
+// Lightweight feature flag check — used by Sidebar to conditionally show entry
+export async function fetchCrashEnabled(): Promise<boolean> {
+  try {
+    const h = await fetchCrashHealth();
+    return Boolean(h?.enabled);
+  } catch {
+    return false;  // 网络错 / 后端没起 → 视为不可用，隐藏入口
+  }
+}
 
 export const triggerCrashPipeline = (latest_release: string, recent_versions: string[], target_date?: string) =>
   request<{ issues_processed: number; snapshots_written: number; top_n_count: number }>("/crash/trigger", {

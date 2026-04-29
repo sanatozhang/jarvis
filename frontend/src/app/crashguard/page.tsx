@@ -331,7 +331,6 @@ function CrashguardPageInner() {
 
   const onSendReport = async () => {
     if (!reportModal) return;
-    if (!confirm(t("确认发送到飞书群？"))) return;
     setReportBusy(true);
     try {
       const res = await runCrashDailyReport(reportModal.reportType, { top_n: 5, dry_run: false });
@@ -552,6 +551,32 @@ function CrashguardPageInner() {
             >
               🌇 {t("晚报")}
             </button>
+            <a
+              href="/crashguard/reports"
+              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              style={{
+                background: "transparent",
+                border: `1px solid ${D.borderStrong}`,
+                color: D.text1,
+                textDecoration: "none",
+              }}
+              title={t("查看历史早晚报")}
+            >
+              📋 {t("历史报告")}
+            </a>
+            <a
+              href="/crashguard/pull-requests"
+              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              style={{
+                background: "transparent",
+                border: `1px solid ${D.borderStrong}`,
+                color: D.text1,
+                textDecoration: "none",
+              }}
+              title={t("查看 AI 自动创建的 draft PR")}
+            >
+              🔧 {t("自动 PR")}
+            </a>
           </div>
         </div>
 

@@ -29,6 +29,7 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_analyses", "parent_run_id", "VARCHAR(64)", "''"),
     ("crash_analyses", "answer", "TEXT", "''"),
     ("crash_analyses", "agent_model", "VARCHAR(64)", "''"),
+    ("crash_analyses", "fix_diff", "TEXT", "''"),
     ("crash_issues", "top_os", "VARCHAR(256)", "''"),
     ("crash_issues", "top_device", "VARCHAR(256)", "''"),
     ("crash_issues", "top_app_version", "VARCHAR(128)", "''"),

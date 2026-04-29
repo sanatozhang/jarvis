@@ -715,6 +715,74 @@ async def send_daily_report(
             pass
         return {"ok": False, "sent": False, "skipped_reason": "no_target_chat_id_or_email"}
 
+    # 多实例去重锁：抢先 INSERT 一行占位 (date, type)；
+    # crash_daily_reports 上有 UniqueConstraint(report_date, report_type) → 第二个实例
+    # 拿到 IntegrityError，直接返回 already_sent，不发飞书也不写 audit 失败。
+    # 注：手动触发场景（chat_id_override 非空）跳过锁，允许重发。
+    skip_lock = bool(chat_id_override or email_override)
+    if not skip_lock:
+        from sqlalchemy.exc import IntegrityError
+        async with get_session() as session:
+            try:
+                placeholder = CrashDailyReport(
+                    report_date=target_date,
+                    report_type=report_type,
+                    top_n=0,
+                    new_count=0,
+                    regression_count=0,
+                    surge_count=0,
+                    feishu_message_id="locking",
+                    report_payload="{}",
+                    created_at=datetime.utcnow(),
+                )
+                session.add(placeholder)
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                # 已有同 date+type 行 → 检查是不是另一实例正在 / 已经发过
+                existing = (await session.execute(
+                    select(CrashDailyReport).where(
+                        CrashDailyReport.report_date == target_date,
+                        CrashDailyReport.report_type == report_type,
+                    )
+                )).scalar_one_or_none()
+                state = (existing.feishu_message_id or "") if existing else ""
+                if state and state != "locking":
+                    # 另一实例已成功发送
+                    try:
+                        from app.crashguard.services.audit import write_audit
+                        await write_audit(
+                            op="daily_report",
+                            target_id=report_type,
+                            success=True,
+                            detail=f"skipped: another instance sent (state={state})",
+                        )
+                    except Exception:
+                        pass
+                    return {
+                        "ok": True,
+                        "sent": False,
+                        "skipped_reason": "already_sent_by_other_instance",
+                        "persisted_id": existing.id if existing else None,
+                    }
+                # state == "locking" 或空 — 另一实例正在跑，本实例放弃这次（避免双发）
+                try:
+                    from app.crashguard.services.audit import write_audit
+                    await write_audit(
+                        op="daily_report",
+                        target_id=report_type,
+                        success=False,
+                        error="lock_contended",
+                        detail="another instance holds the lock",
+                    )
+                except Exception:
+                    pass
+                return {
+                    "ok": False,
+                    "sent": False,
+                    "skipped_reason": "lock_contended",
+                }
+
     text, payload = await compose_report(report_type, target_date, top_n=top_n)
 
     # 关注点 issue 自动 AI 分析（fire-and-forget，不阻塞推送）

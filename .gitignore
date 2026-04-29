@@ -1,5 +1,8 @@
 # Python
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+.env.bak.*
+frontend/tsconfig.tsbuildinfo
 .pids/
 __pycache__/
 *.py[cod]
