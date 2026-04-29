@@ -85,6 +85,13 @@ async def lifespan(app: FastAPI):
         logger.error("Crashguard decoupling check FAILED: %s", e)
         raise
 
+    # Crashguard 轻量自动迁移 — SQLite 已建表后追加新列
+    try:
+        from app.crashguard.migrations import ensure_columns
+        await ensure_columns()
+    except Exception as e:
+        logger.warning("Crashguard auto-migration skipped: %s", e)
+
     # Clean up zombie tasks from previous crashes/restarts
     from app.db.database import get_session
     from sqlalchemy import text
@@ -119,8 +126,13 @@ async def lifespan(app: FastAPI):
     from app.services.repo_updater import repo_update_loop
     repo_update_task = asyncio.create_task(repo_update_loop())
 
+    # Crashguard 早晚报调度（每 60 秒 tick；命中 morning/evening cron 即推飞书）
+    from app.crashguard.workers.scheduler import report_scheduler_loop
+    crashguard_scheduler_task = asyncio.create_task(report_scheduler_loop())
+
     yield
 
+    crashguard_scheduler_task.cancel()
     repo_update_task.cancel()
     zombie_task.cancel()
     await close_db()

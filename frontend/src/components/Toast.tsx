@@ -41,7 +41,7 @@ export function Toast({
       : `1px solid ${S.border}`;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center pointer-events-none">
       <div
         className="pointer-events-auto rounded-2xl px-8 py-5 text-sm font-medium shadow-2xl max-w-md text-center"
         style={{ background: bg, color, border, backdropFilter: "blur(8px)" }}

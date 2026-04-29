@@ -41,3 +41,50 @@
   outline: 2px solid #B8922E;
   outline-offset: 2px;
 }
+
+/* Crashguard markdown content (AI 分析卡片) */
+.crashguard-md pre {
+  background: #0F172A;
+  color: #E2E8F0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin: 6px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  font-family: var(--font-mono);
+  overflow-x: auto;
+  white-space: pre;
+}
+.crashguard-md pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+.crashguard-md code {
+  background: rgba(0,0,0,0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.crashguard-md p {
+  margin: 4px 0;
+}
+.crashguard-md ol, .crashguard-md ul {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.crashguard-md li {
+  margin: 2px 0;
+}
+.crashguard-md strong {
+  font-weight: 600;
+  color: #111827;
+}
+.crashguard-md h1, .crashguard-md h2, .crashguard-md h3, .crashguard-md h4 {
+  font-weight: 600;
+  margin: 8px 0 4px;
+  font-size: 13px;
+}
+

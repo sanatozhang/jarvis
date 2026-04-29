@@ -63,7 +63,7 @@ async def test_run_data_phase_end_to_end(tmp_path, monkeypatch):
         },
     ]
 
-    async def fake_list_issues(self, window_hours=24, page_size=100):
+    async def fake_list_issues(self, window_hours=24, page_size=100, tracks="rum", query="*"):
         return mock_issues
 
     from app.crashguard.services.datadog_client import DatadogClient

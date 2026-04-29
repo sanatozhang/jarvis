@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crashguard.config import get_crashguard_settings
+from app.crashguard.services.categorizer import classify_kind
 from app.crashguard.services.classifier import classify_today
 from app.crashguard.services.datadog_client import DatadogClient, normalize_issue
 from app.crashguard.services.dedup import compute_fingerprint, normalize_stack_frames, upsert_fingerprint_link
@@ -55,8 +56,15 @@ async def run_data_phase(
         app_key=s.datadog_app_key,
         site=s.datadog_site,
     )
-    raw_issues = await client.list_issues(window_hours=s.datadog_window_hours)
-    logger.info("Datadog 拉取 %d 条 issue", len(raw_issues))
+    raw_issues = await client.list_issues(
+        window_hours=s.datadog_window_hours,
+        tracks=s.datadog_tracks,
+        query=s.datadog_query,
+    )
+    logger.info(
+        "Datadog 拉取 %d 条 issue (tracks=%s query=%s window=%dh)",
+        len(raw_issues), s.datadog_tracks, s.datadog_query, s.datadog_window_hours,
+    )
 
     issues_processed = 0
     snapshots_written = 0
@@ -111,6 +119,17 @@ async def run_data_phase(
         "pipeline data phase done: issues=%d snapshots=%d top_n=%d",
         issues_processed, snapshots_written, len(top),
     )
+
+    # 后台预热 RUM 分布（fire-and-forget，不阻塞主流程）
+    # 给所有今日 snapshot 的 issue 拉 top_os/top_app_version，让早晚报"❓未确定"桶清空
+    try:
+        import asyncio as _asyncio
+        from app.crashguard.services.distribution_prewarmer import prewarm_today_distributions
+        _asyncio.create_task(prewarm_today_distributions(today=today, max_issues=30))
+        logger.info("prewarmer task scheduled for %s", today)
+    except Exception as exc:
+        logger.warning("prewarmer schedule failed (non-fatal): %s", exc)
+
     return {
         "issues_processed": issues_processed,
         "snapshots_written": snapshots_written,
@@ -131,6 +150,8 @@ async def _upsert_issue(
         select(CrashIssue).where(CrashIssue.datadog_issue_id == norm["datadog_issue_id"])
     )).scalar_one_or_none()
 
+    kind = classify_kind(norm["title"], norm.get("platform"), norm.get("service"))
+
     if row is None:
         row = CrashIssue(
             datadog_issue_id=norm["datadog_issue_id"],
@@ -146,6 +167,7 @@ async def _upsert_issue(
             total_users_affected=norm["users_affected"],
             representative_stack=norm["stack_trace"][:8000],  # 限长
             tags=json.dumps(norm["tags"]),
+            kind=kind,
         )
         session.add(row)
     else:
@@ -157,6 +179,7 @@ async def _upsert_issue(
         row.total_users_affected = max(row.total_users_affected or 0, norm["users_affected"])
         if not row.representative_stack:
             row.representative_stack = norm["stack_trace"][:8000]
+        row.kind = kind
 
 
 async def _upsert_snapshot(
@@ -174,8 +197,9 @@ async def _upsert_snapshot(
         )
     )).scalar_one_or_none()
 
+    sessions = int(norm.get("sessions_affected") or 0)
     score = compute_impact_score(
-        users_affected=norm["users_affected"],
+        users_affected=norm["users_affected"] or sessions,  # 没 user 数据用 sessions 兜底
         events_count=norm["events_count"],
     )
 
@@ -186,11 +210,13 @@ async def _upsert_snapshot(
             app_version=norm["last_seen_version"],
             events_count=norm["events_count"],
             users_affected=norm["users_affected"],
+            sessions_affected=sessions,
             crash_free_impact_score=score,
         )
         session.add(row)
     else:
         row.events_count = norm["events_count"]
         row.users_affected = norm["users_affected"]
+        row.sessions_affected = sessions
         row.crash_free_impact_score = score
         row.app_version = norm["last_seen_version"] or row.app_version

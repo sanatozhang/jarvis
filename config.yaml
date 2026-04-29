@@ -104,8 +104,9 @@ crashguard:
     #   CRASHGUARD_DATADOG_APP_KEY=xxx
 
   feishu:
-    target_chat_id: ""         # 群聊 chat_id（必填）
-    admin_open_ids: []         # 一键 PR approve 白名单
+    target_chat_id: ""                       # 群聊 chat_id（生产环境用）
+    target_email: "sanato.zhang@plaud.ai"    # 测试阶段：点对点推送给该邮箱（优先级高于 chat_id）
+    admin_open_ids: []                       # 一键 PR approve 白名单
     morning_cron: "0 7 * * *"
     evening_cron: "0 17 * * *"
 
@@ -114,3 +115,7 @@ crashguard:
     surge_min_events: 10               # 飙升最小事件数
     regression_silent_versions: 3      # 回归判定的静默版本数
     feasibility_pr_threshold: 0.7      # 自动创建 PR 的 feasibility 触发线
+    # 早晚报关注点阈值（vs 昨日变化率 + events 量级下限）
+    daily_surge_threshold: 0.10        # +10% 进突增
+    daily_drop_threshold: -0.10        # -10% 进下降
+    daily_attention_min_events: 100    # events 量级下限，新增 issue 不受此限

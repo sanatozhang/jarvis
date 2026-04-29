@@ -37,12 +37,23 @@ class CrashIssue(Base):
     first_seen_version = Column(String(32), default="")
     last_seen_at = Column(DateTime, nullable=True)
     last_seen_version = Column(String(32), default="")
-    status = Column(String(32), default="open")  # open / resolved_by_pr / ignored / wontfix
+    status = Column(String(32), default="open")  # open / investigating / resolved_by_pr / ignored / wontfix
+    assignee = Column(String(64), default="")    # 指派人（jarvis 用户名）
+    kind = Column(String(16), default="crash")   # crash / anr / memory / web_warning / other（见 categorizer）
     total_events = Column(Integer, default=0)
     total_users_affected = Column(Integer, default=0)
     representative_stack = Column(Text, default="")
     tags = Column(Text, default="{}")           # JSON
     external_refs = Column(Text, default="[]")  # JSON
+    first_analyzed_at = Column(DateTime, nullable=True)  # 首次 AI 分析时间，去重用
+    last_analyzed_at = Column(DateTime, nullable=True)   # 最近一次 AI 分析时间
+    # Sprint 4 — RUM 分布缓存（每次 analyzer 运行时刷新）
+    top_os = Column(String(256), default="")             # 例: "Android 14 (40%), Android 13 (20%)"
+    top_device = Column(String(256), default="")         # 例: "Samsung SM-S911B (40%), Sony SO-52C (20%)"
+    top_app_version = Column(String(128), default="")    # 例: "3.16.0-634 (60%), 3.15.1-631 (30%)"
+    prewarm_attempts = Column(Integer, default=0)        # 已尝试预热次数
+    prewarm_last_error = Column(Text, default="")        # 最近一次失败原因
+    prewarm_last_at = Column(DateTime, nullable=True)    # 最近一次预热时间
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -55,7 +66,8 @@ class CrashSnapshot(Base):
     snapshot_date = Column(Date, nullable=False)
     app_version = Column(String(32), default="")
     events_count = Column(Integer, default=0)
-    users_affected = Column(Integer, default=0)
+    users_affected = Column(Integer, default=0)         # Datadog 不直接返回，留待 Plan 2.5 RUM Events API
+    sessions_affected = Column(Integer, default=0)      # Datadog impacted_sessions
     crash_free_rate = Column(Float, default=1.0)
     crash_free_impact_score = Column(Float, default=0.0)
     is_new_in_version = Column(Boolean, default=False)
@@ -105,6 +117,16 @@ class CrashAnalysis(Base):
     feasibility_reasoning = Column(Text, default="")
     fix_suggestion = Column(Text, default="")
     fix_diff = Column(Text, nullable=True)
+    # Sprint 1.2 — 多根因 + 复杂度
+    possible_causes = Column(Text, default="[]")     # JSON: [{title,evidence,confidence,code_pointer}]
+    complexity_kind = Column(String(8), default="")  # simple / complex（区别于已有 complexity_level）
+    solution = Column(Text, default="")              # simple 时：可执行 patch
+    hint = Column(Text, default="")                  # complex 时：排查思路
+    # Sprint 3 — 追问会话
+    followup_question = Column(Text, default="")    # 用户的追问内容（首次分析为空）
+    parent_run_id = Column(String(64), default="")  # 上一轮分析的 run_id；首次分析为空
+    answer = Column(Text, default="")               # 追问轮次 AI 给的回答（独立于 root_cause）
+    agent_model = Column(String(64), default="")    # 实际使用的模型（如 claude-sonnet-4-6[1m]）
     reproduction_test_path = Column(String(256), nullable=True)
     reproduction_test_code = Column(Text, nullable=True)
     verification_log = Column(Text, default="")
@@ -169,3 +191,18 @@ class CrashVersion(Base):
     __table_args__ = (
         PrimaryKeyConstraint("version", "platform", name="pk_crash_versions"),
     )
+
+
+class CrashAuditLog(Base):
+    """运维 audit log：记录每次报告生成 / PR 创建 / 预热的成功失败结果。"""
+    __tablename__ = "crash_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    op = Column(String(32), index=True, nullable=False)
+    # daily_report / pr_draft / prewarm / batch_analyze / followup
+    target_id = Column(String(128), default="")        # issue_id / analysis_id / "morning|evening"
+    success = Column(Boolean, default=False)
+    detail = Column(Text, default="")                  # JSON 或文本
+    error = Column(Text, default="")
+    duration_ms = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

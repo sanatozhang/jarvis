@@ -39,6 +39,11 @@ class CrashguardSettings(BaseSettings):
     datadog_app_key: str = ""
     datadog_site: str = "datadoghq.com"
     datadog_window_hours: int = 24
+    # 哪个 track 含有崩溃数据：rum / logs / trace。Plaud 移动端崩溃在 RUM。
+    # 多 track 用逗号分隔（如 "rum,logs"），空 = 单 track。
+    datadog_tracks: str = "rum"
+    # 搜索 query（event search 语法）。"*" = 全量；可改成 "@type:error" 等。
+    datadog_query: str = "*"
 
     # Schedule
     morning_cron: str = "0 7 * * *"
@@ -46,14 +51,33 @@ class CrashguardSettings(BaseSettings):
 
     # Top N + thresholds
     max_top_n: int = 20
+    # 批量自动 AI 分析的 Top N 上限
+    analyze_top_n: int = 20
     surge_multiplier: float = 1.5
     surge_min_events: int = 10
     regression_silent_versions: int = 3
     feasibility_pr_threshold: float = 0.7
+    # 早晚报关注点阈值（vs 昨日变化率）
+    daily_surge_threshold: float = 0.10   # +10%
+    daily_drop_threshold: float = -0.10   # -10%
+    # 噪声治理：events 量级下限。低于此值的 surge / drop 不进 attention，
+    # 但「新增 issue」(is_new_in_version) 不受此限制（新代码崩溃永远是信号）。
+    daily_attention_min_events: int = 100
 
     # Feishu
     feishu_target_chat_id: str = ""
+    # 测试阶段可改用点对点推送给指定邮箱（优先级高于 chat_id）
+    feishu_target_email: str = ""
     feishu_admin_open_ids: List[str] = Field(default_factory=list)
+    # 飞书消息中链接前缀（指向 frontend）
+    frontend_base_url: str = "http://localhost:3000"
+
+    # 半自动 PR 仓库映射（按平台覆盖，未设回落 jarvis code_repo_app）
+    repo_path_flutter: str = ""
+    repo_path_android: str = ""
+    repo_path_ios: str = ""
+    # PR 去重窗口（同一 issue+platform 30 天内只允许一个 draft PR）
+    pr_dedup_days: int = 30
 
     model_config = {
         "env_prefix": "CRASHGUARD_",
@@ -87,7 +111,7 @@ def _yaml_overrides() -> Dict[str, Any]:
     flat: Dict[str, Any] = {}
     for k in (
         "enabled", "pr_enabled", "feishu_enabled",
-        "max_top_n",
+        "max_top_n", "analyze_top_n",
     ):
         if k in cfg:
             flat[k] = cfg[k]
@@ -98,6 +122,9 @@ def _yaml_overrides() -> Dict[str, Any]:
             ("surge_min_events", "surge_min_events"),
             ("regression_silent_versions", "regression_silent_versions"),
             ("feasibility_pr_threshold", "feasibility_pr_threshold"),
+            ("daily_surge_threshold", "daily_surge_threshold"),
+            ("daily_drop_threshold", "daily_drop_threshold"),
+            ("daily_attention_min_events", "daily_attention_min_events"),
         ]:
             if k_yaml in t:
                 flat[k_py] = t[k_yaml]
@@ -105,10 +132,19 @@ def _yaml_overrides() -> Dict[str, Any]:
         d = cfg["datadog"] or {}
         if "site" in d:
             flat["datadog_site"] = d["site"]
+        if "tracks" in d:
+            v = d["tracks"]
+            flat["datadog_tracks"] = ",".join(v) if isinstance(v, list) else str(v)
+        if "query" in d:
+            flat["datadog_query"] = d["query"]
+        if "window_hours" in d:
+            flat["datadog_window_hours"] = int(d["window_hours"])
     if "feishu" in cfg:
         f = cfg["feishu"] or {}
         if "target_chat_id" in f:
             flat["feishu_target_chat_id"] = f["target_chat_id"]
+        if "target_email" in f:
+            flat["feishu_target_email"] = f["target_email"]
         if "admin_open_ids" in f:
             flat["feishu_admin_open_ids"] = f["admin_open_ids"]
         if "morning_cron" in f:

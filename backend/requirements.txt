@@ -31,3 +31,6 @@ pytest-asyncio>=0.24.0
 
 # Architecture lint
 import-linter>=2.0
+
+# Crashguard — Datadog SDK
+datadog-api-client>=2.30.0
