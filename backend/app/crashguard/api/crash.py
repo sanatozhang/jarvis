@@ -116,6 +116,7 @@ async def get_top(
     """
     from app.db.database import get_session
     from app.crashguard.services.ranker import pick_top_n
+    from sqlalchemy import select
 
     if target_date is None:
         target_date = date.today()
@@ -132,8 +133,33 @@ async def get_top(
             n=limit,
             kinds=kind_tuple,
         )
+        # 批量补 PR 状态：每个 issue 取最新一条 PR
+        issue_ids = [item["datadog_issue_id"] for item in top]
+        pr_map: Dict[str, Dict[str, Any]] = {}
+        if issue_ids:
+            from app.crashguard.models import CrashPullRequest
+            pr_rows = (await session.execute(
+                select(CrashPullRequest)
+                .where(CrashPullRequest.datadog_issue_id.in_(issue_ids))
+                .order_by(CrashPullRequest.created_at.desc())
+            )).scalars().all()
+            for pr in pr_rows:
+                # 同一 issue 多条 PR 时，最新创建的覆盖（按 created_at desc 来的，第一次写入即最新）
+                pr_map.setdefault(pr.datadog_issue_id, {
+                    "pr_url": pr.pr_url or "",
+                    "pr_number": pr.pr_number,
+                    "pr_status": pr.pr_status or "draft",
+                    "pr_repo": pr.repo or "",
+                })
+
     for item in top:
         item["datadog_url"] = _datadog_url_for(item["datadog_issue_id"])
+        pr = pr_map.get(item["datadog_issue_id"])
+        item["has_pr"] = pr is not None
+        item["pr_url"] = pr["pr_url"] if pr else ""
+        item["pr_number"] = pr["pr_number"] if pr else None
+        item["pr_status"] = pr["pr_status"] if pr else ""
+        item["pr_repo"] = pr["pr_repo"] if pr else ""
     return {"date": target_date.isoformat(), "count": len(top), "issues": top}
 
 
@@ -230,6 +256,30 @@ async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) ->
             "created_at": analysis.created_at.isoformat() if analysis.created_at else None,
         }
 
+    # 关联的 PR 列表（最多 5 条，最新在前）
+    pull_requests: List[Dict[str, Any]] = []
+    async with get_session() as session:
+        from app.crashguard.models import CrashPullRequest
+        pr_rows = (await session.execute(
+            select(CrashPullRequest)
+            .where(CrashPullRequest.datadog_issue_id == issue_id)
+            .order_by(CrashPullRequest.created_at.desc())
+            .limit(5)
+        )).scalars().all()
+        for pr in pr_rows:
+            pull_requests.append({
+                "id": pr.id,
+                "pr_url": pr.pr_url,
+                "pr_number": pr.pr_number,
+                "pr_status": pr.pr_status or "draft",
+                "repo": pr.repo or "",
+                "branch_name": pr.branch_name or "",
+                "created_at": pr.created_at.isoformat() if pr.created_at else None,
+                "merged_at": pr.merged_at.isoformat() if pr.merged_at else None,
+                "closed_at": pr.closed_at.isoformat() if pr.closed_at else None,
+                "last_synced_at": pr.last_synced_at.isoformat() if pr.last_synced_at else None,
+            })
+
     return {
         "datadog_issue_id": issue.datadog_issue_id,
         "datadog_url": _datadog_url_for(issue.datadog_issue_id),
@@ -252,6 +302,7 @@ async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) ->
         "assignee": getattr(issue, "assignee", "") or "",
         "snapshot": snap_block,
         "analysis": analysis_block,
+        "pull_requests": pull_requests,
     }
 
 
@@ -696,8 +747,31 @@ async def list_pull_requests(
             "approved_at": r.approved_at.isoformat() if r.approved_at else None,
             "feasibility": feas_map.get(r.analysis_id, 0.0),
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "merged_at": r.merged_at.isoformat() if r.merged_at else None,
+            "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+            "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None,
         })
     return {"items": items, "total": len(items), "days": days}
+
+
+@router.post("/pull-requests/{pr_id}/refresh")
+async def refresh_pull_request(pr_id: int) -> Dict[str, Any]:
+    """手动触发单条 PR 状态同步（前端按钮用）。"""
+    from app.crashguard.services.pr_sync import sync_pr
+    return await sync_pr(pr_id)
+
+
+@router.post("/pull-requests/sync-all")
+async def sync_all_pull_requests() -> Dict[str, Any]:
+    """批量同步所有非终态 PR（cron 用，手动也可调）。"""
+    from app.crashguard.services.pr_sync import sync_all_open_prs
+    res = await sync_all_open_prs()
+    # 不把每条 detail 全返回到前端（噪声），只给汇总
+    return {
+        "checked": res.get("checked", 0),
+        "changed": res.get("changed", 0),
+        "errors": res.get("errors", 0),
+    }
 
 
 class BackfillAutoPrRequest(BaseModel):

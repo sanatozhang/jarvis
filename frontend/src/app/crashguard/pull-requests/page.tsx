@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { fetchCrashPullRequests, type CrashPullRequestItem } from "@/lib/api";
+import {
+  fetchCrashPullRequests,
+  refreshCrashPr,
+  syncAllCrashPrs,
+  type CrashPullRequestItem,
+} from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 const D = {
@@ -37,6 +42,49 @@ export default function CrashPullRequestsPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | "draft" | "open" | "merged" | "closed">("all");
   const [repoFilter, setRepoFilter] = useState<"all" | "flutter" | "android" | "ios" | "app">("all");
   const [days, setDays] = useState(30);
+  const [syncingIds, setSyncingIds] = useState<Set<number>>(new Set());
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const refreshOne = async (prId: number) => {
+    setSyncingIds((s) => new Set(s).add(prId));
+    try {
+      await refreshCrashPr(prId);
+    } catch (e) {
+      console.error("refresh pr failed", e);
+    } finally {
+      setSyncingIds((s) => {
+        const n = new Set(s);
+        n.delete(prId);
+        return n;
+      });
+      setReloadKey((k) => k + 1);
+    }
+  };
+
+  const refreshAll = async () => {
+    setSyncingAll(true);
+    try {
+      await syncAllCrashPrs();
+    } catch (e) {
+      console.error("sync all failed", e);
+    } finally {
+      setSyncingAll(false);
+      setReloadKey((k) => k + 1);
+    }
+  };
+
+  const fmtSyncTime = (iso: string | null): string => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    const diff = Date.now() - d.getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "刚刚";
+    if (mins < 60) return `${mins}分钟前`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}小时前`;
+    return `${Math.floor(hrs / 24)}天前`;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -62,7 +110,7 @@ export default function CrashPullRequestsPage() {
     return () => {
       cancelled = true;
     };
-  }, [statusFilter, repoFilter, days]);
+  }, [statusFilter, repoFilter, days, reloadKey]);
 
   return (
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text1 }}>
@@ -74,9 +122,26 @@ export default function CrashPullRequestsPage() {
               {t("最近")} {days} {t("天")} · {items.length} {t("个 PR")}
             </p>
           </div>
-          <Link href="/crashguard" style={{ color: D.accent, fontSize: 13, textDecoration: "none" }}>
-            ← {t("返回主页")}
-          </Link>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <button
+              onClick={refreshAll}
+              disabled={syncingAll}
+              style={{
+                padding: "6px 12px",
+                borderRadius: 6,
+                border: `1px solid ${D.border}`,
+                background: syncingAll ? "rgba(0,0,0,0.04)" : D.surface,
+                color: D.text1,
+                fontSize: 12,
+                cursor: syncingAll ? "wait" : "pointer",
+              }}
+            >
+              {syncingAll ? t("同步中…") : t("⟳ 同步全部状态")}
+            </button>
+            <Link href="/crashguard" style={{ color: D.accent, fontSize: 13, textDecoration: "none" }}>
+              ← {t("返回主页")}
+            </Link>
+          </div>
         </div>
 
         {/* 过滤器 */}
@@ -248,9 +313,35 @@ export default function CrashPullRequestsPage() {
                         <span>{pr.created_at.slice(0, 10)}</span>
                       </>
                     )}
+                    {pr.last_synced_at && (
+                      <>
+                        <span>·</span>
+                        <span title={pr.last_synced_at}>
+                          {t("同步")} {fmtSyncTime(pr.last_synced_at)}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
+                  {pr.pr_status !== "merged" && pr.pr_status !== "closed" && (
+                    <button
+                      onClick={() => refreshOne(pr.id)}
+                      disabled={syncingIds.has(pr.id)}
+                      title={t("刷新此 PR 状态")}
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 6,
+                        border: `1px solid ${D.border}`,
+                        background: syncingIds.has(pr.id) ? "rgba(0,0,0,0.04)" : D.surface,
+                        color: D.text1,
+                        fontSize: 12,
+                        cursor: syncingIds.has(pr.id) ? "wait" : "pointer",
+                      }}
+                    >
+                      {syncingIds.has(pr.id) ? "…" : "⟳"}
+                    </button>
+                  )}
                   <Link
                     href={`/crashguard?issue=${encodeURIComponent(pr.datadog_issue_id)}`}
                     style={{

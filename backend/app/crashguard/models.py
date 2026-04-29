@@ -154,6 +154,10 @@ class CrashPullRequest(Base):
     approved_at = Column(DateTime, nullable=True)
     verification_status = Column(String(32), default="pending")
     verified_at = Column(DateTime, nullable=True)
+    # GitHub PR 状态同步（pr_sync 服务回填）
+    merged_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

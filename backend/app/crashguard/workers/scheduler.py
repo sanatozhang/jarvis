@@ -22,6 +22,7 @@ logger = logging.getLogger("crashguard.scheduler")
 
 _TICK_INTERVAL_SEC = 60
 _last_fired: dict[str, str] = {}  # report_type → "YYYY-MM-DD HH:MM"
+_pr_sync_last_fired: str = ""    # "YYYY-MM-DD HH:MM" 防同分钟重跑
 
 
 def _cron_matches(expr: str, now: datetime) -> bool:
@@ -84,6 +85,21 @@ async def _tick_once() -> None:
             )
         except Exception:
             logger.exception("crashguard daily_report tick failed: type=%s", report_type)
+
+    # PR 状态同步（独立 cron，默认 */15）
+    global _pr_sync_last_fired
+    pr_cron = getattr(s, "pr_sync_cron", "") or ""
+    if pr_cron and _pr_sync_last_fired != tag and _cron_matches(pr_cron, now):
+        try:
+            from app.crashguard.services.pr_sync import sync_all_open_prs
+            res = await sync_all_open_prs()
+            _pr_sync_last_fired = tag
+            logger.info(
+                "crashguard pr_sync fired: checked=%d changed=%d errors=%d",
+                res.get("checked", 0), res.get("changed", 0), res.get("errors", 0),
+            )
+        except Exception:
+            logger.exception("crashguard pr_sync tick failed")
 
 
 async def report_scheduler_loop() -> None:

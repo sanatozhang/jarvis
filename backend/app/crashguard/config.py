@@ -80,6 +80,8 @@ class CrashguardSettings(BaseSettings):
     repo_path_ios: str = ""
     # PR 去重窗口（同一 issue+platform 30 天内只允许一个 draft PR）
     pr_dedup_days: int = 30
+    # PR 状态同步 cron（拉 GitHub 现态回填 DB）；默认每 15 分钟
+    pr_sync_cron: str = "*/15 * * * *"
 
     model_config = {
         "env_prefix": "CRASHGUARD_",
@@ -165,6 +167,8 @@ def _yaml_overrides() -> Dict[str, Any]:
         flat["frontend_base_url"] = cfg["frontend_base_url"]
     if "pr_dedup_days" in cfg:
         flat["pr_dedup_days"] = int(cfg["pr_dedup_days"])
+    if "pr_sync_cron" in cfg:
+        flat["pr_sync_cron"] = str(cfg["pr_sync_cron"])
     return flat
 
 

@@ -843,6 +843,11 @@ export interface CrashTopItem extends CrashTopItemAnalysisFlag {
   assignee: string;
   first_seen_version: string;
   last_seen_version: string;
+  has_pr?: boolean;
+  pr_url?: string;
+  pr_number?: number | null;
+  pr_status?: "" | "draft" | "open" | "merged" | "closed";
+  pr_repo?: string;
 }
 
 export interface CrashTopResponse {
@@ -910,6 +915,20 @@ export interface CrashIssueDetail {
   top_app_version?: string;
   snapshot: CrashSnapshot | Record<string, never>;
   analysis: CrashAnalysis | Record<string, never>;
+  pull_requests?: CrashIssuePr[];
+}
+
+export interface CrashIssuePr {
+  id: number;
+  pr_url: string;
+  pr_number: number | null;
+  pr_status: "draft" | "open" | "merged" | "closed";
+  repo: string;
+  branch_name: string;
+  created_at: string | null;
+  merged_at: string | null;
+  closed_at: string | null;
+  last_synced_at: string | null;
 }
 
 export interface CrashHealth {
@@ -1092,7 +1111,29 @@ export interface CrashPullRequestItem {
   approved_at: string | null;
   feasibility: number;
   created_at: string | null;
+  merged_at: string | null;
+  closed_at: string | null;
+  last_synced_at: string | null;
 }
+
+export interface CrashPrSyncResult {
+  ok: boolean;
+  pr_id?: number;
+  old_status?: string;
+  new_status?: string;
+  changed?: boolean;
+  skipped?: string;
+  error?: string;
+}
+
+export const refreshCrashPr = (prId: number) =>
+  request<CrashPrSyncResult>(`/crash/pull-requests/${prId}/refresh`, { method: "POST" });
+
+export const syncAllCrashPrs = () =>
+  request<{ checked: number; changed: number; errors: number }>(
+    `/crash/pull-requests/sync-all`,
+    { method: "POST" },
+  );
 
 export const fetchCrashPullRequests = (opts?: {
   days?: number;

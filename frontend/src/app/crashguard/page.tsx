@@ -658,6 +658,9 @@ function CrashguardPageInner() {
                   <th className="text-right px-3 py-2 font-medium" style={{ width: 80 }}>
                     {t("会话")}
                   </th>
+                  <th className="text-center px-3 py-2 font-medium" style={{ width: 90 }}>
+                    PR
+                  </th>
                   <th className="text-center px-3 py-2 font-medium" style={{ width: 50 }}>
                     DD
                   </th>
@@ -666,7 +669,7 @@ function CrashguardPageInner() {
               <tbody>
                 {filteredItems.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={7} className="px-6 py-12 text-center" style={{ color: D.text3 }}>
+                    <td colSpan={8} className="px-6 py-12 text-center" style={{ color: D.text3 }}>
                       {t("暂无数据，先点【立即拉取】触发一次 Datadog 同步")}
                     </td>
                   </tr>
@@ -780,6 +783,42 @@ function CrashguardPageInner() {
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: D.text1 }}>
                         {compactNumber(it.sessions_affected)}
+                      </td>
+                      <td className="px-3 py-2.5 text-center" onClick={(e) => e.stopPropagation()}>
+                        {it.has_pr && it.pr_url ? (
+                          (() => {
+                            const sc = (() => {
+                              switch (it.pr_status) {
+                                case "merged": return { fg: "#16A34A", bg: "rgba(22,163,74,0.10)", border: "#16A34A" };
+                                case "open":   return { fg: "#2563EB", bg: "rgba(37,99,235,0.10)", border: "#2563EB" };
+                                case "closed": return { fg: "#9CA3AF", bg: "rgba(0,0,0,0.05)",     border: "#9CA3AF" };
+                                case "draft":
+                                default:       return { fg: "#D97706", bg: "rgba(217,119,6,0.10)", border: "#D97706" };
+                              }
+                            })();
+                            return (
+                              <a
+                                href={it.pr_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={`${it.pr_repo || ""} #${it.pr_number ?? ""} · ${it.pr_status}`}
+                                className="inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                                style={{
+                                  background: sc.bg,
+                                  color: sc.fg,
+                                  border: `1px solid ${sc.border}`,
+                                  textDecoration: "none",
+                                  textTransform: "uppercase",
+                                  minWidth: 60,
+                                }}
+                              >
+                                {it.pr_status || "draft"}
+                              </a>
+                            );
+                          })()
+                        ) : (
+                          <span style={{ color: D.text3, fontSize: 11 }}>—</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-center" onClick={(e) => e.stopPropagation()}>
                         <a
@@ -1230,6 +1269,36 @@ function DetailDrawer({
               >
                 {t("在 Datadog 中打开")} ↗
               </a>
+              {(detail.pull_requests || []).slice(0, 3).map((pr) => {
+                const sc = (() => {
+                  switch (pr.pr_status) {
+                    case "merged": return { fg: "#16A34A", bg: "rgba(22,163,74,0.10)", border: "#16A34A" };
+                    case "open":   return { fg: "#2563EB", bg: "rgba(37,99,235,0.10)", border: "#2563EB" };
+                    case "closed": return { fg: "#9CA3AF", bg: "rgba(0,0,0,0.05)",     border: "#9CA3AF" };
+                    case "draft":
+                    default:       return { fg: "#D97706", bg: "rgba(217,119,6,0.10)", border: "#D97706" };
+                  }
+                })();
+                const label = pr.pr_number ? `#${pr.pr_number}` : "PR";
+                return (
+                  <a
+                    key={pr.id}
+                    href={pr.pr_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`${pr.repo} · ${pr.pr_status}${pr.branch_name ? " · " + pr.branch_name : ""}`}
+                    className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
+                    style={{
+                      background: sc.bg,
+                      color: sc.fg,
+                      border: `1px solid ${sc.border}`,
+                      textDecoration: "none",
+                    }}
+                  >
+                    {label} · {pr.pr_status} ↗
+                  </a>
+                );
+              })}
               <button
                 onClick={onAnalyze}
                 disabled={analyzing}

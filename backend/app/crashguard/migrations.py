@@ -30,6 +30,10 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_analyses", "answer", "TEXT", "''"),
     ("crash_analyses", "agent_model", "VARCHAR(64)", "''"),
     ("crash_analyses", "fix_diff", "TEXT", "''"),
+    # PR 状态同步（pr_sync 回填）
+    ("crash_pull_requests", "merged_at", "DATETIME", "NULL"),
+    ("crash_pull_requests", "closed_at", "DATETIME", "NULL"),
+    ("crash_pull_requests", "last_synced_at", "DATETIME", "NULL"),
     ("crash_issues", "top_os", "VARCHAR(256)", "''"),
     ("crash_issues", "top_device", "VARCHAR(256)", "''"),
     ("crash_issues", "top_app_version", "VARCHAR(128)", "''"),
