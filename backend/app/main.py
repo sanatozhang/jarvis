@@ -130,8 +130,20 @@ async def lifespan(app: FastAPI):
     from app.crashguard.workers.scheduler import report_scheduler_loop
     crashguard_scheduler_task = asyncio.create_task(report_scheduler_loop())
 
+    # Daily escalation reminder (09:00 Asia/Shanghai) — gated by ENABLE_ONCALL_NOTIFY
+    import os
+    reminder_task = None
+    if os.environ.get("ENABLE_ONCALL_NOTIFY", "false").lower() == "true":
+        from app.services.escalation_reminder import escalation_reminder_loop
+        reminder_task = asyncio.create_task(escalation_reminder_loop())
+        logger.info("Escalation reminder loop started (ENABLE_ONCALL_NOTIFY=true)")
+    else:
+        logger.info("Escalation reminder disabled (set ENABLE_ONCALL_NOTIFY=true to enable)")
+
     yield
 
+    if reminder_task is not None:
+        reminder_task.cancel()
     crashguard_scheduler_task.cancel()
     repo_update_task.cancel()
     zombie_task.cancel()

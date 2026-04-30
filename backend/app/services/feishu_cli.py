@@ -66,11 +66,14 @@ _cli_initialized = False
 
 
 async def _ensure_cli_profile():
-    """Auto-configure lark-cli from .env credentials if not already set up."""
+    """Auto-configure lark-cli from .env credentials if not already set up.
+
+    Always rewrites config.json with inline plaintext secret — lark-cli's default
+    'keychain' storage doesn't work in Linux Docker containers (no Keychain access).
+    """
     global _cli_initialized
     if _cli_initialized:
         return
-    _cli_initialized = True
 
     import shutil
     if not shutil.which("lark-cli"):
@@ -82,16 +85,7 @@ async def _ensure_cli_profile():
         logger.warning("FEISHU_APP_ID/SECRET not set — cannot init CLI")
         return
 
-    # Check if already configured with the right app
-    proc = await asyncio.create_subprocess_exec(
-        "lark-cli", "auth", "status",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await proc.communicate()
-    if settings.feishu.app_id in stdout.decode("utf-8", errors="replace"):
-        return
-
-    # Use `config init` — works across all lark-cli versions
+    # Run `config init` — generates config.json structure
     proc = await asyncio.create_subprocess_exec(
         "lark-cli", "config", "init",
         "--app-id", settings.feishu.app_id,
@@ -102,12 +96,33 @@ async def _ensure_cli_profile():
         stderr=asyncio.subprocess.PIPE,
     )
     out, err = await proc.communicate(input=settings.feishu.app_secret.encode())
-    if proc.returncode == 0:
-        logger.info("Auto-configured lark-cli with app %s", settings.feishu.app_id)
-    else:
+    if proc.returncode != 0:
         err_str = (err or out).decode("utf-8", errors="replace").strip()
         logger.error("Failed to configure lark-cli: %s", err_str)
-        _cli_initialized = False
+        return
+
+    # Force inline plaintext secret in config.json (override keychain reference).
+    # On Linux containers, lark-cli writes appSecret as {source: keychain, id: ...}
+    # which the CLI cannot resolve at runtime → causes [10003] invalid param.
+    import json as _json
+    from pathlib import Path
+    cfg_path = Path.home() / ".lark-cli" / "config.json"
+    if cfg_path.exists():
+        try:
+            cfg = _json.loads(cfg_path.read_text())
+            modified = False
+            for app in cfg.get("apps", []):
+                if app.get("appId") == settings.feishu.app_id and not isinstance(app.get("appSecret"), str):
+                    app["appSecret"] = settings.feishu.app_secret
+                    modified = True
+            if modified:
+                cfg_path.write_text(_json.dumps(cfg))
+                logger.info("Patched lark-cli config.json with inline secret (keychain → plaintext)")
+        except Exception as e:
+            logger.warning("Failed to patch lark-cli config: %s", e)
+
+    _cli_initialized = True
+    logger.info("Auto-configured lark-cli with app %s", settings.feishu.app_id)
 
 
 # ---------------------------------------------------------------------------

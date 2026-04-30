@@ -56,6 +56,8 @@ class IssueRecord(Base):
     escalation_status = Column(String(16), default="")       # in_progress / resolved
     escalation_resolved_at = Column(DateTime, nullable=True)
     escalation_chat_id = Column(String(128), default="")    # Feishu group chat_id for sending resolve msg
+    escalation_share_link = Column(String(512), default="") # Feishu group invite link for "join group" button
+    escalation_reminded_at = Column(DateTime, nullable=True) # Last day-after reminder timestamp (avoid duplicate pings)
     created_at_ms = Column(Integer, default=0)             # creation time (Unix ms)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -248,6 +250,15 @@ async def init_db():
             "pool_size": 5,       # concurrent readers via WAL mode
             "max_overflow": 10,   # burst capacity for parallel analysis tasks
             "pool_timeout": 30,   # wait up to 30s for a pool slot
+            # ── Self-healing under transient I/O errors ────────────────────
+            # macOS colima virtiofs occasionally returns "disk I/O error" on
+            # SQLite WAL files. Without these, a single transient failure
+            # poisons a connection that stays in the pool forever — every
+            # subsequent request hits the bad connection and returns 500
+            # until backend is restarted. With pre_ping + recycle, broken
+            # connections get evicted automatically.
+            "pool_pre_ping": True,  # SELECT 1 before checkout — drops dead conns
+            "pool_recycle": 300,    # recycle every 5 min — caps stale conn age
         }
 
     _engine = create_async_engine(
@@ -283,6 +294,8 @@ async def init_db():
             ("escalation_status", "VARCHAR(16)", "''"),
             ("escalation_resolved_at", "DATETIME", "NULL"),
             ("escalation_chat_id", "VARCHAR(128)", "''"),
+            ("escalation_share_link", "VARCHAR(512)", "''"),
+            ("escalation_reminded_at", "DATETIME", "NULL"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -418,7 +431,13 @@ async def update_issue_status(issue_id: str, status: str):
             await session.commit()
 
 
-async def escalate_issue(issue_id: str, escalated_by: str = "", note: str = "", chat_id: str = "") -> bool:
+async def escalate_issue(
+    issue_id: str,
+    escalated_by: str = "",
+    note: str = "",
+    chat_id: str = "",
+    share_link: str = "",
+) -> bool:
     async with get_session() as session:
         record = await session.get(IssueRecord, issue_id)
         if not record:
@@ -429,7 +448,22 @@ async def escalate_issue(issue_id: str, escalated_by: str = "", note: str = "", 
         record.escalated_by = escalated_by
         record.escalation_note = note
         record.escalation_status = "in_progress"
-        record.escalation_chat_id = chat_id
+        if chat_id:
+            record.escalation_chat_id = chat_id
+        if share_link:
+            record.escalation_share_link = share_link
+        record.escalation_reminded_at = None
+        record.updated_at = datetime.utcnow()
+        await session.commit()
+        return True
+
+
+async def mark_escalation_reminded(issue_id: str) -> bool:
+    async with get_session() as session:
+        record = await session.get(IssueRecord, issue_id)
+        if not record:
+            return False
+        record.escalation_reminded_at = datetime.utcnow()
         record.updated_at = datetime.utcnow()
         await session.commit()
         return True
@@ -489,6 +523,8 @@ async def get_escalated_issues(status: str | None = None, since_date=None) -> Li
                 "escalation_note": issue.escalation_note or "",
                 "escalation_status": issue.escalation_status or "in_progress",
                 "escalation_resolved_at": (issue.escalation_resolved_at.isoformat() + "Z") if issue.escalation_resolved_at else "",
+                "escalation_chat_id": issue.escalation_chat_id or "",
+                "escalation_share_link": issue.escalation_share_link or "",
                 "created_at": (issue.created_at.isoformat() + "Z") if issue.created_at else "",
             })
         return items
@@ -881,6 +917,7 @@ def _issue_to_dict(
         "escalation_status": issue.escalation_status or "",
         "escalation_resolved_at": (issue.escalation_resolved_at.isoformat() + "Z") if issue.escalation_resolved_at else "",
         "escalation_chat_id": issue.escalation_chat_id or "",
+        "escalation_share_link": issue.escalation_share_link or "",
     }
 
     if analysis:

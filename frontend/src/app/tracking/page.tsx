@@ -914,36 +914,41 @@ export default function TrackingPage() {
                   </div>
                 </section>
               )}
-              {/* Escalation info */}
-              {(detailItem.escalated_at || escalateLinks[detailItem.record_id]) && (
-                <section className="rounded-lg p-3 space-y-2" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
-                      style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
-                      {t("已转交")}
-                    </span>
-                    {detailItem.escalated_by && (
-                      <span className="text-xs" style={{ color: S.text2 }}>{t("转交人")}: {detailItem.escalated_by}</span>
+              {/* Escalation info — share_link prefers in-session state, falls back to persisted DB value */}
+              {(() => {
+                const persistedLink = detailItem.escalation_share_link || "";
+                const link = escalateLinks[detailItem.record_id] || persistedLink;
+                if (!detailItem.escalated_at && !link) return null;
+                return (
+                  <section className="rounded-lg p-3 space-y-2" style={{ background: S.orangeBg, border: `1px solid ${S.orangeBorder}` }}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium"
+                        style={{ background: S.orangeBg, color: S.orange, border: `1px solid ${S.orangeBorder}` }}>
+                        {t("已转交")}
+                      </span>
+                      {detailItem.escalated_by && (
+                        <span className="text-xs" style={{ color: S.text2 }}>{t("转交人")}: {detailItem.escalated_by}</span>
+                      )}
+                      {detailItem.escalated_at && (
+                        <span className="text-[10px] ml-auto" style={{ color: S.text3 }}>{formatLocalTime(detailItem.escalated_at)}</span>
+                      )}
+                    </div>
+                    {detailItem.escalation_note && (
+                      <p className="text-xs mt-1" style={{ color: S.orange }}>{t("转交备注")}: {detailItem.escalation_note}</p>
                     )}
-                    {detailItem.escalated_at && (
-                      <span className="text-[10px] ml-auto" style={{ color: S.text3 }}>{formatLocalTime(detailItem.escalated_at)}</span>
+                    {link && (
+                      <a href={link} target="_blank"
+                        className="flex items-center justify-center gap-2 w-full rounded-lg py-2 text-sm font-semibold transition-colors hover:opacity-80"
+                        style={{ background: S.orange, color: "#FFFFFF", textDecoration: "none" }}>
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                        </svg>
+                        {t("打开飞书群")}
+                      </a>
                     )}
-                  </div>
-                  {detailItem.escalation_note && (
-                    <p className="text-xs mt-1" style={{ color: S.orange }}>{t("转交备注")}: {detailItem.escalation_note}</p>
-                  )}
-                  {escalateLinks[detailItem.record_id] && (
-                    <a href={escalateLinks[detailItem.record_id]} target="_blank"
-                      className="flex items-center justify-center gap-2 w-full rounded-lg py-2 text-sm font-semibold transition-colors hover:opacity-80"
-                      style={{ background: S.orange, color: "#FFFFFF", textDecoration: "none" }}>
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                      </svg>
-                      {t("打开飞书群")}
-                    </a>
-                  )}
-                </section>
-              )}
+                  </section>
+                );
+              })()}
               <section className="pt-4 space-y-2" style={{ borderTop: `1px solid ${S.border}` }}>
                 {/* Mark complete — for done/failed, syncs to Feishu */}
                 {(detailItem.local_status === "done" || detailItem.local_status === "failed") && (
@@ -956,6 +961,21 @@ export default function TrackingPage() {
                     {t("标记完成")}
                   </button>
                 )}
+                {/* Already escalated → show "join group" CTA in the same slot as the escalate button */}
+                {(detailItem.local_status === "done" || detailItem.local_status === "failed") && detailItem.escalated_at && (() => {
+                  const link = escalateLinks[detailItem.record_id] || detailItem.escalation_share_link || "";
+                  if (!link) return null;
+                  return (
+                    <a href={link} target="_blank"
+                      className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+                      style={{ background: S.orange, color: "#FFFFFF", textDecoration: "none" }}>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                      </svg>
+                      {t("加入飞书群")}
+                    </a>
+                  );
+                })()}
                 {/* Escalate button — show for done/failed (not already escalated) */}
                 {(detailItem.local_status === "done" || detailItem.local_status === "failed") && !detailItem.escalated_at && (
                   showEscalateDialog ? (
