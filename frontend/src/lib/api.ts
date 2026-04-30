@@ -830,12 +830,16 @@ export interface CrashTopItemAnalysisFlag {
   last_analyzed_at?: string | null;
 }
 
+export type CrashFatality = "fatal" | "non_fatal";
+
 export interface CrashTopItem extends CrashTopItemAnalysisFlag {
   datadog_issue_id: string;
   datadog_url: string;
   title: string;
   platform: string;
   service: string;
+  kind?: string;
+  fatality?: CrashFatality;
   events_count: number;
   users_affected: number;
   sessions_affected: number;
@@ -881,6 +885,7 @@ export interface CrashCause {
 }
 
 export interface CrashAnalysis {
+  id?: number;
   scenario: string;
   root_cause: string;
   fix_suggestion: string;
@@ -943,9 +948,15 @@ export interface CrashHealth {
   feishu_target_set: boolean;
 }
 
-export const fetchCrashTop = (limit = 40, target_date?: string) => {
+export const fetchCrashTop = (
+  limit = 40,
+  target_date?: string,
+  opts?: { fatality?: CrashFatality | ""; kinds?: string },
+) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (target_date) q.set("target_date", target_date);
+  if (opts?.fatality) q.set("fatality", opts.fatality);
+  if (opts?.kinds) q.set("kinds", opts.kinds);
   return request<CrashTopResponse>(`/crash/top?${q.toString()}`);
 };
 
@@ -1027,6 +1038,71 @@ export const batchAnalyzeCrash = (top_n?: number, force = false) =>
   request<BatchAnalyzeResult>(`/crash/batch-analyze`, {
     method: "POST",
     body: JSON.stringify({ top_n, force }),
+  });
+
+export interface AutoPrQueueItem {
+  analysis_id?: number | string;
+  datadog_issue_id?: string;
+  title?: string;
+  platform?: string;
+  feasibility_score?: number;
+  created_at?: string;
+  started_at?: string;
+}
+export interface AutoPrQueuePr {
+  id: number;
+  datadog_issue_id: string;
+  repo: string;
+  pr_number?: number | null;
+  pr_url: string;
+  pr_status: string;
+  branch_name?: string;
+  created_at?: string;
+}
+export interface AutoPrQueueFailure {
+  analysis_id: number | string;
+  error: string;
+  created_at?: string;
+}
+export interface AutoPrQueueResponse {
+  threshold: number;
+  summary: {
+    pending: number;
+    running: number;
+    recent_prs: number;
+    recent_failures: number;
+  };
+  pending: AutoPrQueueItem[];
+  running: AutoPrQueueItem[];
+  recent_prs: AutoPrQueuePr[];
+  recent_failures: AutoPrQueueFailure[];
+}
+
+export const fetchAutoPrQueue = () =>
+  request<AutoPrQueueResponse>(`/crash/auto-pr-queue`);
+
+export interface BackfillAutoPrResult {
+  scanned: number;
+  triggered: number;
+  skipped_dup: number;
+  skipped_limit?: number;
+  failed: { analysis_id: number; error: string }[];
+  candidates?: any[];
+}
+export const backfillAutoPr = (opts?: {
+  days?: number;
+  dry_run?: boolean;
+  min_feasibility?: number;
+  limit?: number;
+}) =>
+  request<BackfillAutoPrResult>(`/crash/backfill-auto-pr`, {
+    method: "POST",
+    body: JSON.stringify({
+      days: opts?.days ?? 14,
+      dry_run: opts?.dry_run ?? false,
+      min_feasibility: opts?.min_feasibility,
+      limit: opts?.limit ?? 0,
+    }),
   });
 
 export interface DailyReportRunResult {
@@ -1131,6 +1207,27 @@ export interface CrashPrSyncResult {
   error?: string;
 }
 
+export interface ApproveCrashPrResult {
+  ok: boolean;
+  reason?: string;
+  pr_id?: number;
+  pr_url?: string;
+  pr_number?: number | null;
+  pr_status?: "draft" | "open" | "merged" | "closed";
+  branch?: string;
+  repo?: string;
+  dry_run?: boolean;
+}
+
+export const approveCrashPr = (analysisId: number, opts?: { approver?: string; dry_run?: boolean }) =>
+  request<ApproveCrashPrResult>(`/crash/approve-pr/${analysisId}`, {
+    method: "POST",
+    body: JSON.stringify({
+      approver: opts?.approver || "human",
+      dry_run: !!opts?.dry_run,
+    }),
+  });
+
 export const refreshCrashPr = (prId: number) =>
   request<CrashPrSyncResult>(`/crash/pull-requests/${prId}/refresh`, { method: "POST" });
 
@@ -1209,3 +1306,9 @@ export const triggerCrashPipeline = (latest_release: string, recent_versions: st
     method: "POST",
     body: JSON.stringify({ latest_release, recent_versions, target_date }),
   });
+
+// 完整闭环：拉数 → Top10 选取 → 串行 auto-analyze（含 auto-PR 钩子）
+export const triggerCrashWarmup = () =>
+  request<{ issues_processed: number; attention_count: number; analyzed: number }>(
+    "/crash/warmup", { method: "POST" }
+  );

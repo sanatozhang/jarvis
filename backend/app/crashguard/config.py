@@ -44,8 +44,14 @@ class CrashguardSettings(BaseSettings):
     # 哪个 track 含有崩溃数据：rum / logs / trace。Plaud 移动端崩溃在 RUM。
     # 多 track 用逗号分隔（如 "rum,logs"），空 = 单 track。
     datadog_tracks: str = "rum"
-    # 搜索 query（event search 语法）。"*" = 全量；可改成 "@type:error" 等。
+    # 搜索 query（event search 语法）。
+    # ⚠️ 双路口径（C 路线，对齐 Datadog UI "Crashes" 与 "Errors" 两个独立看板）：
+    #   - fatal  → 真崩溃 + ANR + App Hang（App 死/卡）
+    #   - non_fatal → 业务侧捕获异常（runZonedGuarded / addError，App 没挂但流程中断）
+    # 旧字段 datadog_query 保留兼容（单路全量），新代码请用 fatal/non_fatal。
     datadog_query: str = "*"
+    datadog_query_fatal: str = "@error.is_crash:true OR @error.category:ANR OR @error.category:\"App Hang\""
+    datadog_query_nonfatal: str = "@type:error -@error.is_crash:true -@error.category:ANR -@error.category:\"App Hang\""
 
     # Schedule
     morning_cron: str = "0 7 * * *"
@@ -82,6 +88,10 @@ class CrashguardSettings(BaseSettings):
     pr_dedup_days: int = 30
     # PR 状态同步 cron（拉 GitHub 现态回填 DB）；默认每 15 分钟
     pr_sync_cron: str = "*/15 * * * *"
+    # 启动后延迟一次性跑 pipeline + auto-analyze（避免重启等到 07:00 才开始）
+    warmup_on_startup: bool = True
+    # 周期 pipeline cron（与早晚报解耦）；默认每 4 小时整点
+    pipeline_cron: str = "0 */4 * * *"
 
     model_config = {
         "env_prefix": "CRASHGUARD_",
@@ -169,6 +179,10 @@ def _yaml_overrides() -> Dict[str, Any]:
         flat["pr_dedup_days"] = int(cfg["pr_dedup_days"])
     if "pr_sync_cron" in cfg:
         flat["pr_sync_cron"] = str(cfg["pr_sync_cron"])
+    if "warmup_on_startup" in cfg:
+        flat["warmup_on_startup"] = bool(cfg["warmup_on_startup"])
+    if "pipeline_cron" in cfg:
+        flat["pipeline_cron"] = str(cfg["pipeline_cron"])
     return flat
 
 

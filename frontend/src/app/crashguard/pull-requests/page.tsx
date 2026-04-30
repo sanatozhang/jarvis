@@ -6,7 +6,10 @@ import {
   fetchCrashPullRequests,
   refreshCrashPr,
   syncAllCrashPrs,
+  fetchAutoPrQueue,
+  backfillAutoPr,
   type CrashPullRequestItem,
+  type AutoPrQueueResponse,
 } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
@@ -34,6 +37,15 @@ const STATUS_COLOR: Record<string, { fg: string; bg: string }> = {
   closed: { fg: D.text3, bg: "rgba(0,0,0,0.05)" },
 };
 
+function StatCard({ label, value, fg, bg }: { label: string; value: number; fg: string; bg: string }) {
+  return (
+    <div style={{ background: bg, border: `1px solid ${fg}33`, borderRadius: 6, padding: "10px 12px" }}>
+      <div style={{ fontSize: 11, color: fg, fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 22, color: fg, fontWeight: 700, marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
 export default function CrashPullRequestsPage() {
   const t = useT();
   const [items, setItems] = useState<CrashPullRequestItem[]>([]);
@@ -45,6 +57,9 @@ export default function CrashPullRequestsPage() {
   const [syncingIds, setSyncingIds] = useState<Set<number>>(new Set());
   const [syncingAll, setSyncingAll] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [queue, setQueue] = useState<AutoPrQueueResponse | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
 
   const refreshOne = async (prId: number) => {
     setSyncingIds((s) => new Set(s).add(prId));
@@ -84,6 +99,40 @@ export default function CrashPullRequestsPage() {
     const hrs = Math.floor(mins / 60);
     if (hrs < 24) return `${hrs}小时前`;
     return `${Math.floor(hrs / 24)}天前`;
+  };
+
+  // 自动 PR 队列状态（每 15s 刷新）
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const q = await fetchAutoPrQueue();
+        if (!cancelled) setQueue(q);
+      } catch {}
+    };
+    tick();
+    const id = setInterval(tick, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [reloadKey]);
+
+  const onBackfill = async () => {
+    if (!confirm("将对所有未建过 PR 的 success 分析（feasibility≥阈值）补建 draft PR。继续？")) return;
+    setBackfilling(true);
+    setBackfillMsg(null);
+    try {
+      const r = await backfillAutoPr({ days: 14, dry_run: false, limit: 0 });
+      setBackfillMsg(
+        `扫描 ${r.scanned} · 触发 ${r.triggered} · 重复跳过 ${r.skipped_dup} · 失败 ${r.failed.length}`
+      );
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setBackfillMsg(`补建失败：${String(e)}`);
+    } finally {
+      setBackfilling(false);
+    }
   };
 
   useEffect(() => {
@@ -143,6 +192,85 @@ export default function CrashPullRequestsPage() {
             </Link>
           </div>
         </div>
+
+        {/* 自动 PR 队列状态面板 */}
+        {queue && (
+          <div
+            style={{
+              background: D.surface,
+              border: `1px solid ${D.border}`,
+              borderRadius: 8,
+              padding: "14px 16px",
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>
+                🤖 {t("自动 PR 队列")} <span style={{ color: D.text3, fontWeight: 400 }}>· feasibility ≥ {queue.threshold.toFixed(2)}</span>
+              </div>
+              <button
+                onClick={onBackfill}
+                disabled={backfilling || queue.summary.pending === 0}
+                style={{
+                  padding: "5px 12px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: backfilling ? "#9CA3AF" : (queue.summary.pending > 0 ? D.accent : "#D1D5DB"),
+                  color: "#FFFFFF",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: backfilling ? "wait" : (queue.summary.pending > 0 ? "pointer" : "not-allowed"),
+                }}
+                title={t("对未建 PR 的成功分析批量补建 draft PR")}
+              >
+                {backfilling ? t("补建中...") : `🔧 ${t("一键补建")} (${queue.summary.pending})`}
+              </button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+              <StatCard label={t("待生成")} value={queue.summary.pending} fg={D.warn} bg={D.warnBg} />
+              <StatCard label={t("分析中")} value={queue.summary.running} fg={D.info} bg={D.infoBg} />
+              <StatCard label={t("近期 PR")} value={queue.summary.recent_prs} fg={D.ok} bg={D.okBg} />
+              <StatCard label={t("近期失败")} value={queue.summary.recent_failures} fg={D.danger} bg="rgba(220,38,38,0.10)" />
+            </div>
+            {backfillMsg && (
+              <div style={{ marginTop: 10, padding: "6px 10px", background: D.infoBg, borderRadius: 6, fontSize: 12, color: D.text1 }}>
+                {backfillMsg}
+              </div>
+            )}
+            {queue.recent_failures.length > 0 && (
+              <details style={{ marginTop: 10, fontSize: 12 }}>
+                <summary style={{ cursor: "pointer", color: D.text2 }}>
+                  {t("展开近期失败原因")} ({queue.recent_failures.length})
+                </summary>
+                <div style={{ marginTop: 6, maxHeight: 200, overflowY: "auto" }}>
+                  {queue.recent_failures.map((f, i) => (
+                    <div key={i} style={{ padding: "4px 0", borderBottom: `1px solid ${D.border}`, color: D.text2 }}>
+                      <code style={{ color: D.danger }}>ana={String(f.analysis_id)}</code> · {f.error}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {queue.pending.length > 0 && (
+              <details style={{ marginTop: 6, fontSize: 12 }}>
+                <summary style={{ cursor: "pointer", color: D.text2 }}>
+                  {t("展开待生成清单")} ({queue.pending.length})
+                </summary>
+                <div style={{ marginTop: 6, maxHeight: 240, overflowY: "auto" }}>
+                  {queue.pending.map((p, i) => (
+                    <div key={i} style={{ padding: "4px 0", borderBottom: `1px solid ${D.border}` }}>
+                      <span style={{ color: D.text3, marginRight: 6 }}>[{p.platform}]</span>
+                      <span style={{ color: D.text1 }}>{p.title || p.datadog_issue_id}</span>
+                      <span style={{ marginLeft: 8, color: D.text3 }}>
+                        feas={(p.feasibility_score ?? 0).toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
 
         {/* 过滤器 */}
         <div

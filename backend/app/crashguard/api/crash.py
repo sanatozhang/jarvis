@@ -78,6 +78,168 @@ async def trigger_pipeline(req: TriggerRequest) -> Any:
     )
 
 
+@router.post("/warmup")
+async def trigger_warmup() -> Dict[str, Any]:
+    """立即跑一次"拉数 → 选 Top → 串行 auto-analyze（含 auto-PR）"。
+
+    与 /trigger 区别：trigger 只跑数据阶段；这里跑完整闭环（含 AI 分析触发）。
+    """
+    s = get_crashguard_settings()
+    if not s.enabled:
+        raise HTTPException(status_code=503, detail="crashguard 已被 kill switch 关闭")
+    from app.crashguard.workers.warmup import run_pipeline_and_auto_analyze
+    try:
+        return await run_pipeline_and_auto_analyze(reason="manual")
+    except Exception as e:
+        logger.exception("manual warmup failed")
+        raise HTTPException(status_code=500, detail=f"warmup failed: {e}")
+
+
+@router.get("/auto-pr-queue")
+async def auto_pr_queue() -> Dict[str, Any]:
+    """自动 PR 队列状态总览。
+
+    返回 4 个分桶（每桶最多 30 条），让前端渲染进度面板：
+    - pending: success 且 feasibility≥阈值，但还没建过 PR、也没失败审计
+    - running: CrashAnalysis.status == "running"（AI 在分析）
+    - recent_prs: 最近 30 天的真实 PR（已建出来）
+    - recent_failures: 最近 7 天的 auto_draft_pr 失败审计（含原因）
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import select, desc
+    from app.db.database import get_session
+    from app.crashguard.models import (
+        CrashAnalysis, CrashPullRequest, CrashAuditLog, CrashIssue,
+    )
+
+    s = get_crashguard_settings()
+    threshold = float(getattr(s, "feasibility_pr_threshold", 0.7) or 0.7)
+    now = datetime.utcnow()
+    pr_since = now - timedelta(days=30)
+    audit_since = now - timedelta(days=7)
+    pending_since = now - timedelta(days=14)
+    VALID_PLATFORMS = {"android", "ios", "flutter"}
+
+    async with get_session() as session:
+        # 1. running: AI 正在分析
+        running_rows = (await session.execute(
+            select(CrashAnalysis).where(
+                CrashAnalysis.status == "running",
+                CrashAnalysis.followup_question == "",
+            ).order_by(desc(CrashAnalysis.id)).limit(30)
+        )).scalars().all()
+
+        # 2. pending: success + feasibility≥阈值 + 无 PR + 无失败审计
+        success_rows = (await session.execute(
+            select(CrashAnalysis).where(
+                CrashAnalysis.status == "success",
+                CrashAnalysis.followup_question == "",
+                CrashAnalysis.feasibility_score >= threshold,
+                CrashAnalysis.created_at >= pending_since,
+            ).order_by(desc(CrashAnalysis.id))
+        )).scalars().all()
+        pr_ana_ids = set(
+            r[0] for r in (await session.execute(
+                select(CrashPullRequest.analysis_id)
+            )).all() if r[0] is not None
+        )
+        failed_ana_ids = set(
+            (a.target_id for a in (await session.execute(
+                select(CrashAuditLog).where(
+                    CrashAuditLog.op == "auto_draft_pr",
+                    CrashAuditLog.success == False,  # noqa: E712
+                    CrashAuditLog.created_at >= audit_since,
+                )
+            )).scalars().all())
+        )
+        # 解析 issue 拿 title/platform
+        all_issue_ids = list({a.datadog_issue_id for a in success_rows} |
+                             {a.datadog_issue_id for a in running_rows})
+        plat_map: Dict[str, Dict[str, str]] = {}
+        if all_issue_ids:
+            issues = (await session.execute(
+                select(CrashIssue).where(CrashIssue.datadog_issue_id.in_(all_issue_ids))
+            )).scalars().all()
+            for i in issues:
+                plat_map[i.datadog_issue_id] = {
+                    "title": (i.title or "")[:120],
+                    "platform": (i.platform or "").lower(),
+                }
+
+        pending = []
+        for a in success_rows:
+            if a.id in pr_ana_ids:
+                continue
+            if str(a.id) in failed_ana_ids:
+                continue
+            meta = plat_map.get(a.datadog_issue_id, {})
+            if meta.get("platform") not in VALID_PLATFORMS:
+                continue
+            pending.append({
+                "analysis_id": a.id,
+                "datadog_issue_id": a.datadog_issue_id,
+                "title": meta.get("title", ""),
+                "platform": meta.get("platform", ""),
+                "feasibility_score": a.feasibility_score,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            })
+            if len(pending) >= 30:
+                break
+
+        running = [{
+            "analysis_id": a.id,
+            "datadog_issue_id": a.datadog_issue_id,
+            "title": plat_map.get(a.datadog_issue_id, {}).get("title", ""),
+            "platform": plat_map.get(a.datadog_issue_id, {}).get("platform", ""),
+            "started_at": a.created_at.isoformat() if a.created_at else None,
+        } for a in running_rows]
+
+        # 3. recent PRs
+        prs = (await session.execute(
+            select(CrashPullRequest).where(
+                CrashPullRequest.created_at >= pr_since
+            ).order_by(desc(CrashPullRequest.id)).limit(30)
+        )).scalars().all()
+        recent_prs = [{
+            "id": p.id,
+            "datadog_issue_id": p.datadog_issue_id,
+            "repo": p.repo,
+            "pr_number": p.pr_number,
+            "pr_url": p.pr_url,
+            "pr_status": p.pr_status,
+            "branch_name": p.branch_name,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        } for p in prs]
+
+        # 4. recent failures
+        fails = (await session.execute(
+            select(CrashAuditLog).where(
+                CrashAuditLog.op == "auto_draft_pr",
+                CrashAuditLog.success == False,  # noqa: E712
+                CrashAuditLog.created_at >= audit_since,
+            ).order_by(desc(CrashAuditLog.id)).limit(30)
+        )).scalars().all()
+        recent_failures = [{
+            "analysis_id": int(f.target_id) if (f.target_id or "").isdigit() else f.target_id,
+            "error": (f.error or "")[:200],
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+        } for f in fails]
+
+    return {
+        "threshold": threshold,
+        "summary": {
+            "pending": len(pending),
+            "running": len(running),
+            "recent_prs": len(recent_prs),
+            "recent_failures": len(recent_failures),
+        },
+        "pending": pending,
+        "running": running,
+        "recent_prs": recent_prs,
+        "recent_failures": recent_failures,
+    }
+
+
 @router.get("/health")
 async def health() -> Dict[str, Any]:
     """模块健康检查"""
@@ -107,12 +269,14 @@ def _datadog_url_for(issue_id: str) -> str:
 async def get_top(
     target_date: Optional[date] = None,
     limit: int = 40,
-    kinds: str = "crash,anr",
+    kinds: str = "all",
+    fatality: str = "",
 ) -> Dict[str, Any]:
     """读取指定日期的 Top N（不重新跑流水线）。
 
-    kinds: 逗号分隔的类别白名单。默认 "crash,anr"——
-    过滤掉 MemoryWarning / 浏览器告警等。传 "all" 不过滤。
+    kinds: 逗号分隔的类别白名单。默认 "all"——不再按 kind 过滤；
+           真正的"App 崩溃 vs 业务失败"分类用 `fatality` 维度。
+    fatality: "fatal" / "non_fatal" / "" (=不过滤，全部返回，前端按需分流)。
     """
     from app.db.database import get_session
     from app.crashguard.services.ranker import pick_top_n
@@ -132,6 +296,7 @@ async def get_top(
             today=target_date,
             n=limit,
             kinds=kind_tuple,
+            fatality=fatality,
         )
         # 批量补 PR 状态：每个 issue 取最新一条 PR
         issue_ids = [item["datadog_issue_id"] for item in top]
@@ -239,6 +404,7 @@ async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) ->
         except (ValueError, TypeError):
             causes = []
         analysis_block = {
+            "id": analysis.id,
             "scenario": analysis.scenario or "",
             "root_cause": analysis.root_cause or "",
             "fix_suggestion": analysis.fix_suggestion or "",
@@ -549,10 +715,10 @@ async def approve_pr(analysis_id: int, req: ApprovePrRequest) -> Dict[str, Any]:
     人工 ✋ approve 后创建 draft PR。
     强制 --draft，永远不合入。同 issue+platform 30 天内只允许一次。
     """
-    from app.crashguard.services.pr_drafter import draft_pr_for_analysis
+    from app.crashguard.services.pr_drafter import draft_prs_multi
 
     try:
-        result = await draft_pr_for_analysis(
+        result = await draft_prs_multi(
             analysis_id=analysis_id,
             approver=req.approver or "human",
             dry_run=req.dry_run,
@@ -561,7 +727,6 @@ async def approve_pr(analysis_id: int, req: ApprovePrRequest) -> Dict[str, Any]:
         logger.exception("approve-pr failed for analysis_id=%d", analysis_id)
         raise HTTPException(status_code=500, detail=f"approve-pr failed: {e}")
     if not result.get("ok") and not req.dry_run:
-        # 业务校验失败用 4xx 而非 5xx
         raise HTTPException(status_code=400, detail=result)
     return result
 
@@ -792,7 +957,7 @@ async def backfill_auto_pr(req: BackfillAutoPrRequest) -> Dict[str, Any]:
     from sqlalchemy import select
     from app.db.database import get_session
     from app.crashguard.models import CrashAnalysis, CrashPullRequest
-    from app.crashguard.services.pr_drafter import draft_pr_for_analysis
+    from app.crashguard.services.pr_drafter import draft_prs_multi
     from app.crashguard.services.audit import write_audit
 
     s = get_crashguard_settings()
@@ -857,15 +1022,22 @@ async def backfill_auto_pr(req: BackfillAutoPrRequest) -> Dict[str, Any]:
             candidates_out.append(info)
             continue
         try:
-            res = await draft_pr_for_analysis(ana.id, approver="backfill")
+            res = await draft_prs_multi(ana.id, approver="backfill")
             if res.get("ok"):
                 info["status"] = "created"
-                info["pr_url"] = res.get("pr_url", "")
+                # multi 可能产 N 条 PR；这里把所有 PR url 拼起来
+                pr_urls = [p.get("pr_url") for p in res.get("prs", []) if p.get("pr_url")]
+                info["pr_url"] = " ; ".join(pr_urls)
+                info["pr_count"] = res.get("succeeded", 0)
                 triggered += 1
             else:
                 info["status"] = "failed"
-                info["error"] = res.get("error", "")
-                failed.append({"analysis_id": str(ana.id), "error": res.get("error", "")})
+                first_err = next(
+                    (p.get("error", "") for p in res.get("prs", []) if not p.get("ok")),
+                    res.get("error", ""),
+                )
+                info["error"] = first_err
+                failed.append({"analysis_id": str(ana.id), "error": first_err})
         except Exception as exc:
             info["status"] = "exception"
             info["error"] = str(exc)[:300]

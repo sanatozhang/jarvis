@@ -17,7 +17,7 @@ async def test_skip_when_pr_disabled():
     })()
     with patch.object(analyzer, "get_crashguard_settings", return_value=fake_settings, create=True), \
          patch("app.crashguard.services.audit.write_audit", new_callable=AsyncMock) as audit_mock, \
-         patch("app.crashguard.services.pr_drafter.draft_pr_for_analysis",
+         patch("app.crashguard.services.pr_drafter.draft_prs_multi",
                new_callable=AsyncMock) as draft_mock:
         # 注意：fake settings 通过 import 路径替换
         import app.crashguard.config as cfg
@@ -40,7 +40,7 @@ async def test_skip_when_below_threshold_writes_audit():
     })()
     with patch.object(cfg, "get_crashguard_settings", return_value=fake_settings), \
          patch("app.crashguard.services.audit.write_audit", new_callable=AsyncMock) as audit_mock, \
-         patch("app.crashguard.services.pr_drafter.draft_pr_for_analysis",
+         patch("app.crashguard.services.pr_drafter.draft_prs_multi",
                new_callable=AsyncMock) as draft_mock:
         await analyzer._maybe_auto_draft_pr(analysis_id=42, feasibility=0.5)
 
@@ -62,10 +62,16 @@ async def test_invokes_draft_pr_and_records_success():
         "pr_enabled": True,
         "feasibility_pr_threshold": 0.7,
     })()
-    fake_result = {"ok": True, "pr_url": "https://example.com/pr/1", "branch_name": "crashguard/ios/abc-202604"}
+    fake_result = {
+        "ok": True,
+        "succeeded": 1,
+        "failed": 0,
+        "total": 1,
+        "prs": [{"ok": True, "pr_url": "https://example.com/pr/1", "branch_name": "crashguard/ios/abc-202604"}],
+    }
     with patch.object(cfg, "get_crashguard_settings", return_value=fake_settings), \
          patch("app.crashguard.services.audit.write_audit", new_callable=AsyncMock) as audit_mock, \
-         patch("app.crashguard.services.pr_drafter.draft_pr_for_analysis",
+         patch("app.crashguard.services.pr_drafter.draft_prs_multi",
                new_callable=AsyncMock, return_value=fake_result) as draft_mock:
         await analyzer._maybe_auto_draft_pr(analysis_id=42, feasibility=0.85)
 
@@ -86,13 +92,19 @@ async def test_records_failure_when_draft_pr_returns_error():
         "pr_enabled": True,
         "feasibility_pr_threshold": 0.7,
     })()
-    fake_result = {"ok": False, "error": "dup_within_30d"}
+    fake_result = {
+        "ok": False,
+        "succeeded": 0,
+        "failed": 1,
+        "total": 1,
+        "prs": [{"ok": False, "error": "dup_within_30d"}],
+    }
     with patch.object(cfg, "get_crashguard_settings", return_value=fake_settings), \
          patch("app.crashguard.services.audit.write_audit", new_callable=AsyncMock) as audit_mock, \
-         patch("app.crashguard.services.pr_drafter.draft_pr_for_analysis",
+         patch("app.crashguard.services.pr_drafter.draft_prs_multi",
                new_callable=AsyncMock, return_value=fake_result):
         await analyzer._maybe_auto_draft_pr(analysis_id=42, feasibility=0.85)
 
     kwargs = audit_mock.call_args.kwargs
     assert kwargs["success"] is False
-    assert kwargs["error"] == "dup_within_30d"
+    assert "dup_within_30d" in (kwargs["error"] or "")

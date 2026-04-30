@@ -37,6 +37,7 @@ async def pick_top_n(
     n: int = 20,
     dedup_days: int = 7,
     kinds: tuple = ("crash", "anr"),
+    fatality: str = "",
 ) -> List[Dict[str, Any]]:
     """
     返回 Top N issue（dict 形式）。
@@ -80,12 +81,19 @@ async def pick_top_n(
 
     enriched: List[Dict[str, Any]] = []
     allowed_kinds = set(kinds) if kinds else None
+    fatality_filter = (fatality or "").strip().lower()
     for snap, issue in rows:
         # 2. 7 天内已推 + 非 surge → 跳过
         if snap.datadog_issue_id in recently_reported and not snap.is_surge:
             continue
         kind = (getattr(issue, "kind", None) or "crash").lower()
         if allowed_kinds is not None and kind not in allowed_kinds:
+            continue
+        # C 路线：fatality 过滤（fatal / non_fatal / 空=不过滤；unknown 兜底归 fatal）
+        issue_fatality = (getattr(issue, "fatality", "") or "unknown").lower()
+        if issue_fatality not in ("fatal", "non_fatal"):
+            issue_fatality = "fatal"  # legacy fallback
+        if fatality_filter in ("fatal", "non_fatal") and issue_fatality != fatality_filter:
             continue
         first_ana = getattr(issue, "first_analyzed_at", None)
         last_ana = getattr(issue, "last_analyzed_at", None)
@@ -95,6 +103,7 @@ async def pick_top_n(
             "platform": issue.platform or "",
             "service": issue.service or "",
             "kind": kind,
+            "fatality": issue_fatality,
             "events_count": snap.events_count or 0,
             "users_affected": snap.users_affected or 0,
             "sessions_affected": getattr(snap, "sessions_affected", 0) or 0,

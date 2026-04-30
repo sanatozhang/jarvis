@@ -40,6 +40,8 @@ class CrashIssue(Base):
     status = Column(String(32), default="open")  # open / investigating / resolved_by_pr / ignored / wontfix
     assignee = Column(String(64), default="")    # 指派人（jarvis 用户名）
     kind = Column(String(16), default="crash")   # crash / anr / memory / web_warning / other（见 categorizer）
+    # C 路线：致命性分类——fatal（App 挂/卡：crash + ANR + App Hang）/ non_fatal（业务捕获异常）/ unknown
+    fatality = Column(String(16), default="unknown", index=True)
     total_events = Column(Integer, default=0)
     total_users_affected = Column(Integer, default=0)
     representative_stack = Column(Text, default="")

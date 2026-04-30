@@ -53,6 +53,12 @@ PLATFORM_DISPLAY = [
     # UNKNOWN 桶（FLUTTER 无 RUM 采样的低频 issue）一并忽略，不展示
 ]
 
+# C 路线：早晚报只关注 fatal（App 真挂/卡），non_fatal 量大噪音多，不入日报
+# 业务失败明细去首页大盘看（双卡 + 列表），日报保持精简
+FATALITY_DISPLAY = [
+    ("fatal", "🔴 严重崩溃（App 挂/卡）"),
+]
+
 
 def _resolve_real_os(raw_platform: str, top_os: str) -> Optional[str]:
     """
@@ -161,7 +167,7 @@ async def compose_report(
             .where(CrashSnapshot.snapshot_date == target_date)
         )).all()
 
-        # 昨日 snap → dict
+        # 昨日 snap → dict（DB fallback：实时拉失败时降级用）
         yesterday_rows = (await session.execute(
             select(CrashSnapshot.datadog_issue_id, CrashSnapshot.events_count)
             .where(CrashSnapshot.snapshot_date == yesterday)
@@ -170,15 +176,16 @@ async def compose_report(
             r[0]: int(r[1] or 0) for r in yesterday_rows
         }
 
-        # 注：之前在此查询并展示 AI 根因，但卡片过长，已移除。
-        # 用户点击 issue 链接到 Web 端可查看完整 AI 分析。
-
     # 拉每个平台的 24h 总 sessions + distinct crash sessions（含 ANR），
     # 用于以 Datadog 官方口径算 crash-free rate；失败返回空 dict 不致命。
     s_cfg = get_crashguard_settings()
     total_sessions_by_plat: Dict[str, int] = {}
     distinct_crash_sessions_by_plat: Dict[str, int] = {}
     crash_breakdown_by_plat: Dict[str, Dict[str, int]] = {}
+    # 方案 A：实时双窗口拉数（C 路线下 = fatal/non_fatal × today/yesterday = 4 次，含 5min 缓存）
+    # 关键收益：today/yesterday 都从 `now` 反推，严格对齐 24h 边界，不受 pipeline 跑点影响。
+    realtime_today_events: Dict[str, int] = {}
+    realtime_yesterday_events: Dict[str, int] = {}
     if s_cfg.datadog_api_key:
         try:
             from app.crashguard.services.datadog_client import DatadogClient
@@ -197,8 +204,48 @@ async def compose_report(
                 window_hours=s_cfg.datadog_window_hours
             )
             crash_breakdown_by_plat = {k.upper(): v for k, v in (raw_breakdown or {}).items()}
+
+            # 方案 A：dual-window × dual-fatality 拉 events
+            import time as _t
+            now_ms = int(_t.time() * 1000)
+            win_ms = max(1, int(s_cfg.datadog_window_hours)) * 3600 * 1000
+            for q in (s_cfg.datadog_query_fatal, s_cfg.datadog_query_nonfatal):
+                try:
+                    today_pull = await client.list_issues_for_window(
+                        start_ms=now_ms - win_ms, end_ms=now_ms,
+                        tracks=s_cfg.datadog_tracks, query=q,
+                    )
+                    for it in today_pull:
+                        iid = it.get("id") or ""
+                        if iid:
+                            realtime_today_events[iid] = int(
+                                it.get("attributes", {}).get("events_count", 0) or 0
+                            )
+                    yest_pull = await client.list_issues_for_window(
+                        start_ms=now_ms - 2 * win_ms, end_ms=now_ms - win_ms,
+                        tracks=s_cfg.datadog_tracks, query=q,
+                    )
+                    for it in yest_pull:
+                        iid = it.get("id") or ""
+                        if iid:
+                            realtime_yesterday_events[iid] = int(
+                                it.get("attributes", {}).get("events_count", 0) or 0
+                            )
+                except Exception:
+                    logger.exception("dual-window pull failed for query=%s (non-fatal)", q)
         except Exception:
             logger.exception("count_sessions failed (non-fatal)")
+
+    # 方案 A：用实时窗口数据覆盖 yesterday_events
+    if realtime_yesterday_events:
+        yesterday_events = realtime_yesterday_events
+    # 方案 A：用实时窗口数据覆盖 today snapshot 的 events_count（in-memory mutation，session 已关）
+    # 这样后续所有 snap.events_count 引用都自动用对齐窗口数据，不必逐处改写。
+    if realtime_today_events:
+        for snap, _ in today_rows:
+            rt = realtime_today_events.get(snap.datadog_issue_id)
+            if rt is not None:
+                snap.events_count = rt
 
     # 按真实 OS 分桶（FLUTTER 按 top_os 重新归类，无 top_os 进 UNKNOWN）
     by_platform: Dict[str, List[Tuple[CrashSnapshot, CrashIssue]]] = defaultdict(list)
@@ -240,16 +287,65 @@ async def compose_report(
     attn_surges: List[Dict[str, Any]] = []
     attn_drops: List[Dict[str, Any]] = []
 
+    # C 路线扩 auto-PR 池：跨平台收集 Top10 fatal + Top10 non_fatal + 全部新增（含 non_fatal）
+    # 这部分独立于日报渲染——日报只展示 fatal，但 auto-PR 池要更广，
+    # 让 non_fatal Top10 / 新增 non_fatal 也能享受"自动分析→自动建 PR"待遇。
+    auto_pr_candidates: set = set()
+    fatal_pool_xplat: List[Tuple[CrashSnapshot, CrashIssue]] = []
+    nonfatal_pool_xplat: List[Tuple[CrashSnapshot, CrashIssue]] = []
+    for plat_key, _ in PLATFORM_DISPLAY:
+        for snap, issue in by_platform.get(plat_key, []):
+            f = (getattr(issue, "fatality", "") or "").lower()
+            if f == "non_fatal":
+                nonfatal_pool_xplat.append((snap, issue))
+            else:
+                fatal_pool_xplat.append((snap, issue))  # legacy unknown 兜底归 fatal
+            if snap.is_new_in_version:
+                auto_pr_candidates.add(snap.datadog_issue_id)
+    fatal_pool_xplat.sort(
+        key=lambda r: (
+            float(r[0].crash_free_impact_score or 0.0),
+            int(r[0].events_count or 0),
+        ),
+        reverse=True,
+    )
+    nonfatal_pool_xplat.sort(
+        key=lambda r: (
+            float(r[0].crash_free_impact_score or 0.0),
+            int(r[0].events_count or 0),
+        ),
+        reverse=True,
+    )
+    AUTO_PR_TOP_N = 10
+    for snap, _ in fatal_pool_xplat[:AUTO_PR_TOP_N]:
+        auto_pr_candidates.add(snap.datadog_issue_id)
+    for snap, _ in nonfatal_pool_xplat[:AUTO_PR_TOP_N]:
+        auto_pr_candidates.add(snap.datadog_issue_id)
+
     for plat_key, plat_label in PLATFORM_DISPLAY:
-        rows = by_platform.get(plat_key, [])
-        if not rows:
+        all_plat_rows = by_platform.get(plat_key, [])
+        if not all_plat_rows:
             continue
 
-        # ── Section 1：数据快照 ─────────────────────────
+        # C 路线：日报只看 fatal——legacy 行 fatality 缺失/unknown 兜底归 fatal（pre-C 默认就是"崩溃"）
+        plat_fatality_buckets: Dict[str, List[Tuple[CrashSnapshot, CrashIssue]]] = defaultdict(list)
+        for snap, issue in all_plat_rows:
+            f = (getattr(issue, "fatality", "") or "").lower()
+            if f not in ("fatal", "non_fatal"):
+                f = "fatal"  # legacy fallback
+            plat_fatality_buckets[f].append((snap, issue))
+
+        # 日报只渲染 fatal——直接收敛 plat_rows 到 fatal 桶
+        plat_rows = plat_fatality_buckets.get("fatal", [])
+        if not plat_rows:
+            continue  # 该平台无 fatal issue，跳过整段
+
+        # ── Section 1：数据快照（仅 fatal 池）──────────────────────────
         # 真实版本分布在 crash_issues.top_app_version（RUM Events 按 application.version
         # 聚合的真分布）。snapshot.app_version 只是 last_seen_version 的拷贝（误导，禁用）。
         # 策略：跨 issue 加权——以每个 issue 的 events_count 为权重，把 top_app_version 解析后
         # 按版本重新聚合，得到该平台真实的"主力版本"。
+        rows = plat_rows
         events_total = sum(int(snap.events_count or 0) for snap, _ in rows)
         sessions_total = sum(int(snap.sessions_affected or 0) for snap, _ in rows)
         impact_total = sum(float(snap.crash_free_impact_score or 0.0) for snap, _ in rows)
@@ -299,70 +395,7 @@ async def compose_report(
         sessions_main = sessions_total
         version_count = len(weighted_events_by_ver) or len(set(first_versions + last_versions))
 
-        # ── Section 2：新增 / 突增 ─────────────────────
-        # 噪声治理：突增需 events >= attention_min_events 才进 attention；
-        # 新增 issue (is_new_in_version) 不受此限制。
-        surges: List[Tuple[CrashSnapshot, CrashIssue, Optional[float]]] = []
-        for snap, issue in rows:
-            events_today = int(snap.events_count or 0)
-            yt = yesterday_events.get(snap.datadog_issue_id)
-            delta = _delta_pct(events_today, yt)
-            is_new = bool(snap.is_new_in_version)
-            is_surge = (
-                delta is not None
-                and delta >= surge_threshold
-                and events_today >= attention_min_events
-            )
-            if is_new or is_surge:
-                surges.append((snap, issue, delta))
-                bucket = attn_news if is_new else attn_surges
-                bucket.append({
-                    "issue_id": snap.datadog_issue_id,
-                    "title": issue.title or "",
-                    "platform": plat_label,
-                    "events": events_today,
-                    "delta": delta,
-                })
-        surges.sort(
-            key=lambda t: (
-                -(int(t[0].events_count or 0)),
-                -(t[2] if t[2] is not None else 1e9),
-            )
-        )
-
-        # ── Section 3：下降 ────────────────────────────
-        # 噪声治理：下降也需 events >= attention_min_events（小量值的下降无诊断价值）
-        drops: List[Tuple[CrashSnapshot, CrashIssue, float]] = []
-        for snap, issue in rows:
-            events_today = int(snap.events_count or 0)
-            yt = yesterday_events.get(snap.datadog_issue_id)
-            delta = _delta_pct(events_today, yt)
-            yt_int = int(yt or 0)
-            yt_satisfies = yt_int >= attention_min_events
-            today_satisfies = events_today >= attention_min_events
-            if (
-                delta is not None
-                and delta <= drop_threshold
-                and (today_satisfies or yt_satisfies)  # 今日或昨日只要有一边量级达标即可
-            ):
-                drops.append((snap, issue, delta))
-                attn_drops.append({
-                    "issue_id": snap.datadog_issue_id,
-                    "title": issue.title or "",
-                    "platform": plat_label,
-                    "events": events_today,
-                    "delta": delta,
-                })
-        drops.sort(key=lambda t: t[2])  # 跌得最狠在前
-
-        # ── Section 4：Top 5 ──────────────────────────
-        top5 = sorted(
-            rows,
-            key=lambda r: (float(r[0].crash_free_impact_score or 0.0), int(r[0].events_count or 0)),
-            reverse=True,
-        )[:top_n]
-
-        # 渲染本平台
+        # 渲染本平台标题（§1 数据快照在标题之后）
         lines.append(f"## {plat_label}")
         lines.append("")
 
@@ -416,66 +449,159 @@ async def compose_report(
             )
         lines.append("")
 
-        # § 2 — 新增 / 突增
-        lines.append(
-            f"### 🆕 新增 / 突增（>= +{int(surge_threshold * 100)}% vs 昨日，"
-            f"突增需 events ≥ {attention_min_events}）"
-        )
-        if not surges:
-            lines.append("- _无_")
-        else:
-            for snap, issue, delta in surges[:5]:
-                tags: List[str] = []
-                if snap.is_new_in_version:
-                    tags.append("新版首现")
-                if snap.is_regression:
-                    tags.append("回归")
-                tag_str = ", ".join(tags)
+        # ── §2-4 按 fatality 分桶渲染 ──────────────────
+        # C 路线核心：fatal / non_fatal 各自独立 Top N + 突增/下降，互不挤压。
+        plat_surge_total = 0
+        plat_drop_total = 0
+        plat_top_total = 0
+        plat_new_total = 0
+        plat_payload_buckets: Dict[str, Dict[str, int]] = {}
+
+        for fkey, flabel in FATALITY_DISPLAY:
+            f_rows = plat_fatality_buckets.get(fkey, [])
+            if not f_rows:
+                continue
+
+            # § 2 - 突增 / 新增（per fatality）
+            surges: List[Tuple[CrashSnapshot, CrashIssue, Optional[float]]] = []
+            for snap, issue in f_rows:
+                events_today = int(snap.events_count or 0)
+                yt = yesterday_events.get(snap.datadog_issue_id)
+                delta = _delta_pct(events_today, yt)
+                is_new = bool(snap.is_new_in_version)
+                is_surge = (
+                    delta is not None
+                    and delta >= surge_threshold
+                    and events_today >= attention_min_events
+                )
+                if is_new or is_surge:
+                    surges.append((snap, issue, delta))
+                    bucket = attn_news if is_new else attn_surges
+                    bucket.append({
+                        "issue_id": snap.datadog_issue_id,
+                        "title": issue.title or "",
+                        "platform": plat_label,
+                        "fatality": fkey,
+                        "events": events_today,
+                        "delta": delta,
+                    })
+            surges.sort(
+                key=lambda t: (
+                    -(int(t[0].events_count or 0)),
+                    -(t[2] if t[2] is not None else 1e9),
+                )
+            )
+
+            # § 3 - 下降（per fatality）
+            drops: List[Tuple[CrashSnapshot, CrashIssue, float]] = []
+            for snap, issue in f_rows:
+                events_today = int(snap.events_count or 0)
+                yt = yesterday_events.get(snap.datadog_issue_id)
+                delta = _delta_pct(events_today, yt)
+                yt_int = int(yt or 0)
+                yt_satisfies = yt_int >= attention_min_events
+                today_satisfies = events_today >= attention_min_events
+                if (
+                    delta is not None
+                    and delta <= drop_threshold
+                    and (today_satisfies or yt_satisfies)
+                ):
+                    drops.append((snap, issue, delta))
+                    attn_drops.append({
+                        "issue_id": snap.datadog_issue_id,
+                        "title": issue.title or "",
+                        "platform": plat_label,
+                        "fatality": fkey,
+                        "events": events_today,
+                        "delta": delta,
+                    })
+            drops.sort(key=lambda t: t[2])
+
+            # § 4 - Top N（per fatality）
+            top5 = sorted(
+                f_rows,
+                key=lambda r: (float(r[0].crash_free_impact_score or 0.0), int(r[0].events_count or 0)),
+                reverse=True,
+            )[:top_n]
+
+            # 渲染本 fatality 段
+            f_events = sum(int(s.events_count or 0) for s, _ in f_rows)
+            lines.append(f"### {flabel} — {f_events:,} events / {len(f_rows)} issue")
+            lines.append("")
+
+            # § 2 渲染
+            lines.append(
+                f"#### 🆕 新增 / 突增（>= +{int(surge_threshold * 100)}% vs 昨日，"
+                f"突增需 events ≥ {attention_min_events}）"
+            )
+            if not surges:
+                lines.append("- _无_")
+            else:
+                for snap, issue, delta in surges[:5]:
+                    tags: List[str] = []
+                    if snap.is_new_in_version:
+                        tags.append("新版首现")
+                    if snap.is_regression:
+                        tags.append("回归")
+                    tag_str = ", ".join(tags)
+                    lines.append(_line_for_issue(
+                        snap.datadog_issue_id,
+                        issue.title or "",
+                        int(snap.events_count or 0),
+                        delta,
+                        extra=tag_str,
+                        is_new_in_version=bool(snap.is_new_in_version),
+                    ))
+            lines.append("")
+
+            # § 3 渲染
+            lines.append(f"#### 📉 下降（<= {int(drop_threshold * 100)}% vs 昨日）")
+            if not drops:
+                lines.append("- _无_")
+            else:
+                for snap, issue, delta in drops[:5]:
+                    lines.append(_line_for_issue(
+                        snap.datadog_issue_id,
+                        issue.title or "",
+                        int(snap.events_count or 0),
+                        delta,
+                    ))
+            lines.append("")
+
+            # § 4 渲染
+            lines.append(f"#### 🔥 Top {len(top5)}")
+            for i, (snap, issue) in enumerate(top5, 1):
+                events_today = int(snap.events_count or 0)
+                yt = yesterday_events.get(snap.datadog_issue_id)
+                delta = _delta_pct(events_today, yt)
                 lines.append(_line_for_issue(
                     snap.datadog_issue_id,
-                    issue.title or "",
-                    int(snap.events_count or 0),
+                    f"{i}. {issue.title or ''}",
+                    events_today,
                     delta,
-                    extra=tag_str,
                     is_new_in_version=bool(snap.is_new_in_version),
                 ))
-        lines.append("")
+            lines.append("")
 
-        # § 3 — 下降
-        lines.append(f"### 📉 下降（<= {int(drop_threshold * 100)}% vs 昨日）")
-        if not drops:
-            lines.append("- _无_")
-        else:
-            for snap, issue, delta in drops[:5]:
-                lines.append(_line_for_issue(
-                    snap.datadog_issue_id,
-                    issue.title or "",
-                    int(snap.events_count or 0),
-                    delta,
-                ))
-        lines.append("")
+            plat_new_total += sum(1 for s, _, d in surges if s.is_new_in_version)
+            plat_surge_total += sum(1 for s, _, d in surges if not s.is_new_in_version)
+            plat_drop_total += len(drops)
+            plat_top_total += len(top5)
+            plat_payload_buckets[fkey] = {
+                "events": f_events,
+                "issue_count": len(f_rows),
+                "surge_count": len(surges),
+                "drop_count": len(drops),
+                "top_count": len(top5),
+            }
 
-        # § 4 — Top 5
-        lines.append(f"### 🔥 Top {len(top5)}")
-        for i, (snap, issue) in enumerate(top5, 1):
-            events_today = int(snap.events_count or 0)
-            yt = yesterday_events.get(snap.datadog_issue_id)
-            delta = _delta_pct(events_today, yt)
-            lines.append(_line_for_issue(
-                snap.datadog_issue_id,
-                f"{i}. {issue.title or ''}",
-                events_today,
-                delta,
-                is_new_in_version=bool(snap.is_new_in_version),
-            ))
-        lines.append("")
         lines.append("---")
         lines.append("")
 
-        total_new += sum(1 for s, _, d in surges if s.is_new_in_version)
-        total_surge += sum(1 for s, _, d in surges if not s.is_new_in_version)
-        total_drop += len(drops)
-        total_top += len(top5)
+        total_new += plat_new_total
+        total_surge += plat_surge_total
+        total_drop += plat_drop_total
+        total_top += plat_top_total
 
         payload["platforms"][plat_key] = {
             "main_version": main_version,
@@ -485,9 +611,10 @@ async def compose_report(
             "sessions_total": sessions_total,
             "version_count": version_count,
             "impact_total": round(impact_total, 1),
-            "surge_count": len(surges),
-            "drop_count": len(drops),
-            "top_count": len(top5),
+            "fatality_buckets": plat_payload_buckets,
+            "surge_count": plat_surge_total,
+            "drop_count": plat_drop_total,
+            "top_count": plat_top_total,
         }
 
     # ── 顶部摘要 + 关注点 ─────────────────────────────
@@ -496,27 +623,32 @@ async def compose_report(
         f"下降 **{total_drop}** · Top 总览 **{total_top}**"
     )
 
-    attn_lines: List[str] = ["## ✨ 今日关注点"]
-    has_anomaly = bool(attn_news or attn_surges or attn_drops)
+    # C 路线：日报只关注 fatal——non_fatal 量大噪音多，全量去首页大盘看
+    fatal_news = [x for x in attn_news if x.get("fatality") == "fatal"]
+    fatal_surges = [x for x in attn_surges if x.get("fatality") == "fatal"]
+    fatal_drops = [x for x in attn_drops if x.get("fatality") == "fatal"]
 
-    if not has_anomaly:
+    attn_lines: List[str] = ["## ✨ 今日关注点"]
+    has_fatal_anomaly = bool(fatal_news or fatal_surges or fatal_drops)
+
+    if not has_fatal_anomaly:
         attn_lines.append("")
         attn_lines.append("> 🌿 **数据平稳，安全无虞** — 无新增崩溃，无 ±10% 以上波动。")
     else:
-        if attn_news:
+        if fatal_news:
             attn_lines.append("")
-            attn_lines.append(f"### 🆕 新增 ({len(attn_news)} 项)")
-            for item in sorted(attn_news, key=lambda x: -x["events"])[:5]:
+            attn_lines.append(f"### 🆕 新增 ({len(fatal_news)} 项)")
+            for item in sorted(fatal_news, key=lambda x: -x["events"])[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
                 attn_lines.append(
                     f"- [{item['platform']}] **{item['events']:,}** events · "
                     f"[{title_short}]({url})"
                 )
-        if attn_surges:
+        if fatal_surges:
             attn_lines.append("")
-            attn_lines.append(f"### 📈 突增 (>= +10% vs 昨日, {len(attn_surges)} 项)")
-            for item in sorted(attn_surges, key=lambda x: -(x["delta"] or 0))[:5]:
+            attn_lines.append(f"### 📈 突增 (>= +10% vs 昨日, {len(fatal_surges)} 项)")
+            for item in sorted(fatal_surges, key=lambda x: -(x["delta"] or 0))[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
                 d = item["delta"]
@@ -525,10 +657,10 @@ async def compose_report(
                     f"- [{item['platform']}] **{item['events']:,}** events ({d_str}) · "
                     f"[{title_short}]({url})"
                 )
-        if attn_drops:
+        if fatal_drops:
             attn_lines.append("")
-            attn_lines.append(f"### 📉 下降 (<= -10% vs 昨日, {len(attn_drops)} 项)")
-            for item in sorted(attn_drops, key=lambda x: x["delta"] or 0)[:5]:
+            attn_lines.append(f"### 📉 下降 (<= -10% vs 昨日, {len(fatal_drops)} 项)")
+            for item in sorted(fatal_drops, key=lambda x: x["delta"] or 0)[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
                 d = item["delta"]
@@ -553,18 +685,48 @@ async def compose_report(
         if retro_md:
             retro_lines = retro_md.split("\n")
 
+    # C 路线：今日自动修复 PR 高亮段（早报 = 过去 24h；晚报 = 过去 12h，避免与早报重叠）
+    auto_pr_lines: List[str] = []
+    try:
+        lookback_h = 24 if report_type == "morning" else 12
+        recent_prs = await _recent_auto_prs(target_date, lookback_hours=lookback_h)
+    except Exception:
+        logger.exception("recent auto PR query failed (non-fatal)")
+        recent_prs = []
+    if recent_prs:
+        auto_pr_lines = [
+            f"## 🔧 今日自动修复 PR（最近 {lookback_h}h，{len(recent_prs)} 条）",
+            "",
+        ]
+        for pr in recent_prs[:10]:
+            number = f"#{pr['pr_number']}" if pr.get("pr_number") else ""
+            status_emoji = {
+                "merged": "✅", "open": "🟢", "closed": "⚪", "draft": "🟡",
+            }.get(pr.get("pr_status") or "draft", "🟡")
+            issue_url = _frontend_issue_url(pr["datadog_issue_id"])
+            title_short = (pr.get("issue_title") or "")[:60]
+            pr_link = pr.get("pr_url") or ""
+            auto_pr_lines.append(
+                f"- {status_emoji} [{pr.get('pr_status') or 'draft'}] [{title_short}]({issue_url}) "
+                f"→ [PR{number}]({pr_link})"
+            )
+        auto_pr_lines.append("")
+        auto_pr_lines.append("---")
+        auto_pr_lines.append("")
+
     # 插入位置：title (line 0) + 数据窗口 (line 1) + 空行 (line 2) 后
+    # 顺序：Σ 摘要 → 昨日复盘 → 🔧 今日自动 PR（高亮置顶）→ ✨ 关注点
     insert_at = 2
-    lines[insert_at:insert_at] = [sigma, ""] + retro_lines + attn_lines
+    lines[insert_at:insert_at] = [sigma, ""] + retro_lines + auto_pr_lines + attn_lines
 
     payload["new_count"] = total_new
     payload["regression_count"] = total_surge
     payload["surge_count"] = total_surge
     payload["top_n"] = total_top
-    # 关注点 issue id 集合（供 send_daily_report 触发 auto-analyze）
-    payload["attention_issue_ids"] = list({
-        item["issue_id"] for item in (attn_news + attn_surges)
-    })
+    # 关注点 issue id 集合（供 send_daily_report 触发 auto-analyze → auto-PR）
+    # C 路线扩展：fatal news/surges + Top10 fatal + Top10 non_fatal + 全部新增（含 non_fatal）
+    auto_pr_candidates.update(item["issue_id"] for item in (fatal_news + fatal_surges))
+    payload["attention_issue_ids"] = sorted(auto_pr_candidates)
 
     text = "\n".join(lines).rstrip() + "\n"
     return text, payload
@@ -651,14 +813,59 @@ async def _retrospect_yesterday(target_date: date) -> Optional[str]:
     return "\n".join(lines)
 
 
+async def _recent_auto_prs(
+    target_date: date,
+    lookback_hours: int = 24,
+) -> List[Dict[str, Any]]:
+    """查最近 N 小时由 auto-flow 创建的 PR（approved_by='auto'），带 issue 标题。"""
+    from datetime import timedelta
+    from app.crashguard.models import CrashPullRequest, CrashIssue
+    cutoff = datetime.utcnow() - timedelta(hours=max(1, int(lookback_hours)))
+    out: List[Dict[str, Any]] = []
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(CrashPullRequest)
+            .where(
+                CrashPullRequest.created_at >= cutoff,
+                CrashPullRequest.approved_by == "auto",
+            )
+            .order_by(CrashPullRequest.created_at.desc())
+            .limit(20)
+        )).scalars().all()
+        if not rows:
+            return out
+        issue_ids = [r.datadog_issue_id for r in rows]
+        issues = (await session.execute(
+            select(CrashIssue.datadog_issue_id, CrashIssue.title)
+            .where(CrashIssue.datadog_issue_id.in_(issue_ids))
+        )).all()
+        title_map = {row[0]: (row[1] or "") for row in issues}
+    for r in rows:
+        out.append({
+            "datadog_issue_id": r.datadog_issue_id,
+            "issue_title": title_map.get(r.datadog_issue_id, ""),
+            "pr_url": r.pr_url or "",
+            "pr_number": r.pr_number,
+            "pr_status": r.pr_status or "draft",
+            "repo": r.repo or "",
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+    return out
+
+
 async def _auto_analyze_attention(issue_ids: List[str]) -> int:
-    """对关注点 issue 中尚无 success root 分析的，后台启 start_analysis。返回排队数。"""
+    """对关注点 issue 中尚无 success root 分析的，**串行**跑 analyze_issue（含 auto-PR）。
+
+    设计取舍：
+    - 早报 7:00 触发，2 小时窗口足以跑完 ~20 个 issue（每个 30-90s + PR 30s）；
+    - 串行避免：(a) 多个 Claude/Codex 子进程争抢；(b) 多 PR 同 repo git push race；
+    - 单个 issue 失败不影响其他（捕获 exception 继续）。
+    """
     if not issue_ids:
         return 0
     from app.crashguard.models import CrashAnalysis
-    from app.crashguard.services.analyzer import start_analysis
+    from app.crashguard.services.analyzer import analyze_issue
 
-    queued = 0
     async with get_session() as session:
         # 已有 success root 的 / 正在跑的 → 跳
         existing = (await session.execute(
@@ -669,17 +876,23 @@ async def _auto_analyze_attention(issue_ids: List[str]) -> int:
             )
         )).all()
     skip_set = {row[0] for row in existing}
-    for iid in issue_ids:
-        if iid in skip_set:
-            continue
+
+    pending = [iid for iid in issue_ids if iid not in skip_set]
+    if not pending:
+        logger.info("auto_analyze: all %d issues already analyzed/running, nothing to do", len(issue_ids))
+        return 0
+    logger.info("auto_analyze: %d pending issues, running serially...", len(pending))
+
+    completed = 0
+    for idx, iid in enumerate(pending, 1):
         try:
-            await start_analysis(iid, triggered_by="daily_report_auto")
-            queued += 1
+            logger.info("auto_analyze [%d/%d] analyzing %s", idx, len(pending), iid)
+            await analyze_issue(iid)  # 串行：含 _maybe_auto_draft_pr hook
+            completed += 1
         except Exception as exc:
-            logger.warning("auto_analyze start_analysis failed for %s: %s", iid, exc)
-    if queued:
-        logger.info("daily_report auto-analyze queued %d issues", queued)
-    return queued
+            logger.warning("auto_analyze [%d/%d] %s failed: %s", idx, len(pending), iid, exc)
+    logger.info("auto_analyze done: %d/%d issues completed", completed, len(pending))
+    return completed
 
 
 async def send_daily_report(

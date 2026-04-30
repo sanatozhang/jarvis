@@ -56,14 +56,38 @@ async def run_data_phase(
         app_key=s.datadog_app_key,
         site=s.datadog_site,
     )
-    raw_issues = await client.list_issues(
+
+    # C 路线：双路拉取——fatal 与 non_fatal 分别用独立 query，各自 Top 100 互不挤压。
+    # 同一 issue 若两路都返回（理论上不会，因 query 互斥），fatal 优先。
+    fatal_raw = await client.list_issues(
         window_hours=s.datadog_window_hours,
         tracks=s.datadog_tracks,
-        query=s.datadog_query,
+        query=s.datadog_query_fatal,
     )
+    nonfatal_raw = await client.list_issues(
+        window_hours=s.datadog_window_hours,
+        tracks=s.datadog_tracks,
+        query=s.datadog_query_nonfatal,
+    )
+    fatality_by_id: Dict[str, str] = {}
+    seen: Dict[str, Dict[str, Any]] = {}
+    for item in fatal_raw:
+        iid = item.get("id") or ""
+        if not iid:
+            continue
+        seen[iid] = item
+        fatality_by_id[iid] = "fatal"
+    for item in nonfatal_raw:
+        iid = item.get("id") or ""
+        if not iid or iid in seen:
+            continue  # fatal 优先
+        seen[iid] = item
+        fatality_by_id[iid] = "non_fatal"
+    raw_issues = list(seen.values())
     logger.info(
-        "Datadog 拉取 %d 条 issue (tracks=%s query=%s window=%dh)",
-        len(raw_issues), s.datadog_tracks, s.datadog_query, s.datadog_window_hours,
+        "Datadog 双路拉取：fatal=%d / non_fatal=%d / merged=%d (tracks=%s window=%dh)",
+        len(fatal_raw), len(nonfatal_raw), len(raw_issues),
+        s.datadog_tracks, s.datadog_window_hours,
     )
 
     issues_processed = 0
@@ -79,8 +103,11 @@ async def run_data_phase(
             fp = compute_fingerprint(norm["stack_trace"])
             top_frames = normalize_stack_frames(norm["stack_trace"])
 
-            # Step 3: upsert issues
-            await _upsert_issue(session, norm, fp)
+            # Step 3: upsert issues（带 fatality tag）
+            await _upsert_issue(
+                session, norm, fp,
+                fatality=fatality_by_id.get(norm["datadog_issue_id"], "unknown"),
+            )
 
             # 关联 fingerprint 表
             await upsert_fingerprint_link(
@@ -142,8 +169,9 @@ async def _upsert_issue(
     session: AsyncSession,
     norm: Dict[str, Any],
     stack_fingerprint: str,
+    fatality: str = "unknown",
 ) -> None:
-    """upsert crash_issues 主表"""
+    """upsert crash_issues 主表（含 fatality 分类标签）"""
     from app.crashguard.models import CrashIssue
 
     row = (await session.execute(
@@ -168,6 +196,7 @@ async def _upsert_issue(
             representative_stack=norm["stack_trace"][:8000],  # 限长
             tags=json.dumps(norm["tags"]),
             kind=kind,
+            fatality=fatality,
         )
         session.add(row)
     else:
@@ -180,6 +209,9 @@ async def _upsert_issue(
         if not row.representative_stack:
             row.representative_stack = norm["stack_trace"][:8000]
         row.kind = kind
+        # fatality 仅在本次 fetch 提供了明确分类时覆盖（避免历史"unknown"覆盖已分类的行）
+        if fatality and fatality != "unknown":
+            row.fatality = fatality
 
 
 async def _upsert_snapshot(

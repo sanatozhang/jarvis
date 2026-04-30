@@ -41,6 +41,8 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_issues", "prewarm_attempts", "INTEGER", "0"),
     ("crash_issues", "prewarm_last_error", "TEXT", "''"),
     ("crash_issues", "prewarm_last_at", "DATETIME", "NULL"),
+    # C 路线：致命性分类（fatal / non_fatal / unknown）
+    ("crash_issues", "fatality", "VARCHAR(16)", "'unknown'"),
 ]
 
 

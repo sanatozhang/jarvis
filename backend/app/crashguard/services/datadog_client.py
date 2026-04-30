@@ -21,6 +21,12 @@ logger = logging.getLogger("crashguard.datadog")
 _RETRY_STATUSES = {500, 502, 503, 504}
 _RATE_LIMIT_STATUS = 429
 
+# 进程内 5min 缓存：按 (start_ms, end_ms, tracks, query) 去重；
+# C 路线下 daily_report 双窗口 × 双 fatality = 4 次拉取，preview/send 又会再走一遍 → 8 次，
+# 缓存能把同口径的重复调用合并为 1 次。
+_LIST_CACHE_TTL_SEC = 300
+_list_cache: Dict[str, Any] = {}
+
 
 class DatadogRateLimitError(Exception):
     """Datadog 触发限流"""
@@ -90,9 +96,37 @@ class DatadogClient:
 
         end_ms = int(time.time() * 1000)
         start_ms = end_ms - window_hours * 3600 * 1000
+        return await self.list_issues_for_window(
+            start_ms=start_ms, end_ms=end_ms, tracks=tracks, query=query,
+        )
+
+    async def list_issues_for_window(
+        self,
+        start_ms: int,
+        end_ms: int,
+        tracks: str = "rum",
+        query: str = "*",
+        use_cache: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """与 list_issues 等价，但接受显式时间窗口（C 路线 + 方案 A 同窗口对齐用）。
+
+        - start_ms / end_ms: 毫秒时间戳
+        - 5min 进程内缓存（同 cache key 复用，避免 dual-window × dual-fatality 重复调用）
+        """
+        now = time.time()
+        if now < self._circuit_open_until:
+            raise CircuitBreakerOpen(
+                f"Datadog 熔断中，将于 {int(self._circuit_open_until - now)}s 后恢复"
+            )
+
         track_list = [t.strip().lower() for t in (tracks or "rum").split(",") if t.strip()]
         if not track_list:
             track_list = ["rum"]
+        cache_key = f"{start_ms}|{end_ms}|{','.join(track_list)}|{query}"
+        if use_cache:
+            entry = _list_cache.get(cache_key)
+            if entry and (now - entry[0]) < _LIST_CACHE_TTL_SEC:
+                return entry[1]
 
         merged: Dict[str, Dict[str, Any]] = {}
         for track in track_list:
@@ -112,7 +146,10 @@ class DatadogClient:
                 ):
                     merged[key] = item
 
-        return list(merged.values())
+        result = list(merged.values())
+        if use_cache:
+            _list_cache[cache_key] = (now, result)
+        return result
 
     def _build_search_request(
         self,

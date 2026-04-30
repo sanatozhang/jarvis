@@ -409,14 +409,23 @@ async def _maybe_auto_draft_pr(analysis_id: int, feasibility: float) -> None:
         )
         return
     try:
-        from app.crashguard.services.pr_drafter import draft_pr_for_analysis
-        result = await draft_pr_for_analysis(analysis_id, approver="auto")
+        from app.crashguard.services.pr_drafter import draft_prs_multi
+        result = await draft_prs_multi(analysis_id, approver="auto")
+        # multi 返回 {ok, prs:[...], total, succeeded, failed}
+        prs = result.get("prs", [])
+        urls = [p.get("pr_url") for p in prs if p.get("pr_url")]
         await write_audit(
             op="auto_draft_pr",
             target_id=str(analysis_id),
             success=bool(result.get("ok")),
-            detail=str({k: v for k, v in result.items() if k != "raw"})[:500],
-            error=result.get("error", "") if not result.get("ok") else None,
+            detail=str({
+                "succeeded": result.get("succeeded", 0),
+                "failed": result.get("failed", 0),
+                "pr_urls": urls,
+                "errors": [p.get("error") for p in prs if not p.get("ok")][:3],
+            })[:500],
+            error=("; ".join(p.get("error", "") for p in prs if not p.get("ok"))[:300]
+                   if not result.get("ok") else None),
         )
     except Exception as exc:
         logger.exception("auto_draft_pr crashed")

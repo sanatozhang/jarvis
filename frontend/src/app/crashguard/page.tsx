@@ -17,6 +17,10 @@ import {
   followupCrashIssue,
   fetchCrashAnalysisStatus,
   runCrashDailyReport,
+  approveCrashPr,
+  fetchAutoPrQueue,
+  triggerCrashWarmup,
+  type AutoPrQueueResponse,
   type CrashAnalysisRecord,
   type CrashTopItem,
   type CrashIssueDetail,
@@ -120,6 +124,11 @@ function CrashguardPageInner() {
   const [triggering, setTriggering] = useState(false);
   const [batching, setBatching] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
+  const [reportLoading, setReportLoading] = useState<{
+    type: "morning" | "evening";
+    startedAt: number;
+  } | null>(null);
+  const [reportElapsed, setReportElapsed] = useState(0);
   const [reportModal, setReportModal] = useState<{
     title: string;
     preview: string;
@@ -129,6 +138,13 @@ function CrashguardPageInner() {
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const [tierFilter, setTierFilter] = useState<"all" | "P0" | "P1">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | CrashStatus>("all");
+  // C 路线：fatality 过滤——默认 fatal（首页关注真崩溃，非致命单独切换）
+  const [fatalityFilter, setFatalityFilter] = useState<"all" | "fatal" | "non_fatal">("fatal");
+  const [autoPrQueue, setAutoPrQueue] = useState<AutoPrQueueResponse | null>(null);
+  // 首次进入若空数据 → 自动 bootstrap（拉数 + AI 分析），避免用户面对空白
+  const [bootstrapping, setBootstrapping] = useState(false);
+  const [bootstrapElapsed, setBootstrapElapsed] = useState(0);
+  const [bootstrapDone, setBootstrapDone] = useState(false);
   const [sortBy, setSortBy] = useState<"impact" | "events" | "users" | "new_first">("impact");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const router = useRouter();
@@ -156,6 +172,8 @@ function CrashguardPageInner() {
   const [savingPatch, setSavingPatch] = useState(false);
   const [search, setSearch] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
+  // 自动化修复 PR 创建状态：按 analysis_id 跟踪 loading
+  const [creatingPr, setCreatingPr] = useState<number | null>(null);
 
   const platforms = useMemo(() => {
     const set = new Set<string>();
@@ -169,6 +187,7 @@ function CrashguardPageInner() {
       if (platformFilter !== "all" && (i.platform || "").toLowerCase() !== platformFilter) return false;
       if (tierFilter !== "all" && i.tier !== tierFilter) return false;
       if (statusFilter !== "all" && i.status !== statusFilter) return false;
+      if (fatalityFilter !== "all" && (i.fatality || "fatal") !== fatalityFilter) return false;
       if (q && !(i.title.toLowerCase().includes(q) || i.datadog_issue_id.toLowerCase().includes(q))) return false;
       return true;
     });
@@ -187,22 +206,37 @@ function CrashguardPageInner() {
       return (b.crash_free_impact_score || 0) - (a.crash_free_impact_score || 0);
     });
     return sorted;
-  }, [items, platformFilter, tierFilter, statusFilter, search, sortBy]);
+  }, [items, platformFilter, tierFilter, statusFilter, fatalityFilter, search, sortBy]);
 
   const totals = useMemo(() => {
     const events = items.reduce((s, i) => s + (i.events_count || 0), 0);
     const sessions = items.reduce((s, i) => s + (i.sessions_affected || 0), 0);
     const p0 = items.filter((i) => i.tier === "P0").length;
     const surge = items.filter((i) => i.is_surge).length;
-    return { events, sessions, p0, surge };
+    // C 路线：fatal/non_fatal 拆分
+    const fatalItems = items.filter((i) => (i.fatality || "fatal") === "fatal");
+    const nonFatalItems = items.filter((i) => i.fatality === "non_fatal");
+    const fatalEvents = fatalItems.reduce((s, i) => s + (i.events_count || 0), 0);
+    const nonFatalEvents = nonFatalItems.reduce((s, i) => s + (i.events_count || 0), 0);
+    return {
+      events, sessions, p0, surge,
+      fatalEvents, nonFatalEvents,
+      fatalCount: fatalItems.length, nonFatalCount: nonFatalItems.length,
+    };
   }, [items]);
 
   const loadTop = async () => {
     setLoading(true);
     try {
-      const [resp, h] = await Promise.all([fetchCrashTop(40), fetchCrashHealth()]);
-      setItems(resp.issues);
-      setDate(resp.date);
+      // C 路线：fatal/non_fatal 各拉 40 条独立 Top（合并 80 条），互不挤压；
+      // 否则单路 Top 80 会被高 events 的 non_fatal 挤掉真崩溃排名。
+      const [fatalResp, nonFatalResp, h] = await Promise.all([
+        fetchCrashTop(40, undefined, { fatality: "fatal", kinds: "all" }),
+        fetchCrashTop(40, undefined, { fatality: "non_fatal", kinds: "all" }),
+        fetchCrashHealth(),
+      ]);
+      setItems([...fatalResp.issues, ...nonFatalResp.issues]);
+      setDate(fatalResp.date || nonFatalResp.date);
       setDatadogConfigured(h.datadog_configured);
     } catch (e: any) {
       setToast({ msg: e.message || "load failed", type: "error" });
@@ -273,6 +307,30 @@ function CrashguardPageInner() {
     }
   };
 
+  const onCreatePr = async (analysisId: number, issueId: string) => {
+    if (creatingPr !== null) return;
+    setCreatingPr(analysisId);
+    setToast({ msg: t("正在创建修复 PR，请稍候..."), type: "success" });
+    try {
+      const res = await approveCrashPr(analysisId);
+      if (res.ok && res.pr_url) {
+        setToast({ msg: t("修复 PR 已创建"), type: "success" });
+        if (selectedId === issueId) {
+          const fresh = await fetchCrashIssue(issueId);
+          setDetail(fresh);
+        }
+        // 顺便刷新列表（让行内 has_pr / pr_url 同步）
+        await loadTop();
+      } else {
+        setToast({ msg: t("创建失败: ") + (res.reason || "unknown"), type: "error" });
+      }
+    } catch (e: any) {
+      setToast({ msg: e.message || "create PR failed", type: "error" });
+    } finally {
+      setCreatingPr(null);
+    }
+  };
+
   const refreshAnalyses = async (issueId: string) => {
     try {
       const list = await fetchCrashAnalyses(issueId);
@@ -315,6 +373,8 @@ function CrashguardPageInner() {
 
   const onPreviewReport = async (reportType: "morning" | "evening") => {
     setReportBusy(true);
+    setReportLoading({ type: reportType, startedAt: Date.now() });
+    setReportElapsed(0);
     try {
       const res = await runCrashDailyReport(reportType, { top_n: 5, dry_run: true });
       setReportModal({
@@ -326,6 +386,7 @@ function CrashguardPageInner() {
       setToast({ msg: e.message || "preview failed", type: "error" });
     } finally {
       setReportBusy(false);
+      setReportLoading(null);
     }
   };
 
@@ -397,6 +458,69 @@ function CrashguardPageInner() {
     loadTop();
   }, []);
 
+  // 自动 bootstrap：首次 loadTop 完成后，若空数据 + datadog 已配置 + 没跑过 → 自动拉数
+  // 不阻塞 loadTop 自身，避免初始 loading 状态被占满。bootstrapDone 防重入。
+  useEffect(() => {
+    if (loading) return;                        // 还在首次 load
+    if (bootstrapping || bootstrapDone) return; // 已在跑或已跑过
+    if (!datadogConfigured) return;             // 没配置 datadog 不自动拉
+    if (items.length > 0) {
+      setBootstrapDone(true); // 有数据就标记跑过，下次刷新不再触发
+      return;
+    }
+    // 空数据 + 配置 OK → 自动 bootstrap
+    setBootstrapping(true);
+    setBootstrapElapsed(0);
+    const startedAt = Date.now();
+    const timer = setInterval(
+      () => setBootstrapElapsed(Math.floor((Date.now() - startedAt) / 1000)),
+      500,
+    );
+    triggerCrashWarmup()
+      .then(async (r) => {
+        setToast({
+          msg: `已拉取 ${r.issues_processed} 条 issue，触发 ${r.analyzed} 个 AI 分析`,
+          type: "success",
+        });
+        await loadTop(); // 拉数完成后立即刷新列表
+      })
+      .catch((e) => {
+        setToast({ msg: `自动拉取失败：${e?.message || e}`, type: "error" });
+      })
+      .finally(() => {
+        clearInterval(timer);
+        setBootstrapping(false);
+        setBootstrapDone(true);
+      });
+  }, [loading, items.length, datadogConfigured, bootstrapping, bootstrapDone]);
+
+  // 自动 PR 队列状态（每 30s 刷新一次，让用户实时看到进度）
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const q = await fetchAutoPrQueue();
+        if (!cancelled) setAutoPrQueue(q);
+      } catch {
+        // 静默——队列接口不可用不阻塞主流程
+      }
+    };
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!reportLoading) return;
+    const id = setInterval(() => {
+      setReportElapsed(Math.floor((Date.now() - reportLoading.startedAt) / 1000));
+    }, 500);
+    return () => clearInterval(id);
+  }, [reportLoading]);
+
   // Deep link：URL ?issue=<id> 同步打开抽屉（含初次加载 + 浏览器返回前进）
   useEffect(() => {
     const urlIssue = searchParams?.get("issue") || null;
@@ -426,6 +550,16 @@ function CrashguardPageInner() {
               value={platformFilter}
               onChange={setPlatformFilter}
               options={[{ v: "all", l: t("全部") }, ...platforms.map((p) => ({ v: p, l: platformLabel(p) }))]}
+            />
+            <FilterPill
+              label={t("类型")}
+              value={fatalityFilter}
+              onChange={(v) => setFatalityFilter(v as any)}
+              options={[
+                { v: "all", l: t("全部") },
+                { v: "fatal", l: t("🔴 严重崩溃") },
+                { v: "non_fatal", l: t("⚠️ 业务失败") },
+              ]}
             />
             <FilterPill
               label={t("等级")}
@@ -573,9 +707,30 @@ function CrashguardPageInner() {
                 color: D.text1,
                 textDecoration: "none",
               }}
-              title={t("查看 AI 自动创建的 draft PR")}
+              title={
+                autoPrQueue
+                  ? `pending=${autoPrQueue.summary.pending} · running=${autoPrQueue.summary.running} · failed=${autoPrQueue.summary.recent_failures}`
+                  : t("查看 AI 自动创建的 draft PR")
+              }
             >
               🔧 {t("自动 PR")}
+              {autoPrQueue && (autoPrQueue.summary.pending > 0 || autoPrQueue.summary.running > 0) && (
+                <span
+                  style={{
+                    marginLeft: 4,
+                    padding: "1px 6px",
+                    borderRadius: 999,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    background: autoPrQueue.summary.running > 0 ? "#2563EB" : "#D97706",
+                    color: "#FFFFFF",
+                  }}
+                >
+                  {autoPrQueue.summary.running > 0
+                    ? `${autoPrQueue.summary.running}⚙`
+                    : `${autoPrQueue.summary.pending}⏳`}
+                </span>
+              )}
             </a>
           </div>
         </div>
@@ -597,9 +752,51 @@ function CrashguardPageInner() {
           />
         </div>
 
+        {/* C 路线：fatal vs non_fatal 双卡（点击切换列表过滤）*/}
+        <div className="grid grid-cols-2 gap-3 px-6 mt-3">
+          <button
+            onClick={() => setFatalityFilter(fatalityFilter === "fatal" ? "all" : "fatal")}
+            className="text-left rounded-lg p-4 transition"
+            style={{
+              background: D.surface,
+              border: `1px solid ${fatalityFilter === "fatal" ? D.danger : D.border}`,
+              boxShadow: fatalityFilter === "fatal" ? `0 0 0 2px ${D.danger}33` : "none",
+            }}
+          >
+            <div className="text-xs mb-1" style={{ color: D.text2 }}>
+              🔴 {t("严重崩溃（App 挂/卡）")}
+            </div>
+            <div className="text-2xl font-bold" style={{ color: D.text1 }}>
+              {totals.fatalEvents.toLocaleString()}
+            </div>
+            <div className="text-xs mt-1" style={{ color: D.text2 }}>
+              {totals.fatalCount} {t("issue")} · {t("含 native crash + ANR + App Hang")}
+            </div>
+          </button>
+          <button
+            onClick={() => setFatalityFilter(fatalityFilter === "non_fatal" ? "all" : "non_fatal")}
+            className="text-left rounded-lg p-4 transition"
+            style={{
+              background: D.surface,
+              border: `1px solid ${fatalityFilter === "non_fatal" ? D.warn : D.border}`,
+              boxShadow: fatalityFilter === "non_fatal" ? `0 0 0 2px ${D.warn}33` : "none",
+            }}
+          >
+            <div className="text-xs mb-1" style={{ color: D.text2 }}>
+              ⚠️ {t("业务失败（捕获异常）")}
+            </div>
+            <div className="text-2xl font-bold" style={{ color: D.text1 }}>
+              {totals.nonFatalEvents.toLocaleString()}
+            </div>
+            <div className="text-xs mt-1" style={{ color: D.text2 }}>
+              {totals.nonFatalCount} {t("issue")} · {t("addError / zone guard 主动上报")}
+            </div>
+          </button>
+        </div>
+
         {/* Trends mini-panel */}
         <div className="grid grid-cols-3 gap-3 px-6 mt-3">
-          <TrendCard title={t("总崩溃 issue")} value={items.length.toString()} hint={t("Top 40 范围内")} />
+          <TrendCard title={t("总 issue")} value={items.length.toString()} hint={t("fatal Top 40 + non_fatal Top 40")} />
           <TrendCard title="P0" value={totals.p0.toString()} hint={t("新增 / 回归 / 飙升")} accent={D.danger} />
           <TrendCard title={t("飙升")} value={totals.surge.toString()} hint={t("当日翻倍并 ≥ 10 events")} accent={D.warn} />
         </div>
@@ -670,7 +867,11 @@ function CrashguardPageInner() {
                 {filteredItems.length === 0 && !loading && (
                   <tr>
                     <td colSpan={8} className="px-6 py-12 text-center" style={{ color: D.text3 }}>
-                      {t("暂无数据，先点【立即拉取】触发一次 Datadog 同步")}
+                      {bootstrapping
+                        ? `⏳ ${t("正在从 Datadog 拉取最新崩溃数据并触发 AI 分析...")} ${bootstrapElapsed}s`
+                        : (datadogConfigured
+                            ? t("暂无数据。系统会自动拉取——若长时间未刷新，可点【刷新】重试")
+                            : t("Datadog 未配置，无法自动拉取数据"))}
                     </td>
                   </tr>
                 )}
@@ -720,6 +921,16 @@ function CrashguardPageInner() {
                               <span className="text-xs" style={{ color: D.text3 }}>
                                 {platformLabel(it.platform)}
                               </span>
+                              {/* C 路线：fatality tag */}
+                              {it.fatality === "non_fatal" ? (
+                                <Badge fg={D.warn} bg={D.warnBg}>
+                                  ⚠️ {t("业务失败")}
+                                </Badge>
+                              ) : (
+                                <Badge fg={D.danger} bg={D.dangerBg}>
+                                  🔴 {t("崩溃")}
+                                </Badge>
+                              )}
                               {it.is_regression && (
                                 <Badge fg={D.warn} bg={D.warnBg}>
                                   ↩ {t("回归")}
@@ -864,11 +1075,69 @@ function CrashguardPageInner() {
             setDetail(null);
             syncSelectedToUrl(null);
           }}
+          creatingPr={creatingPr}
+          onCreatePr={onCreatePr}
           t={t}
         />
       )}
 
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
+
+      {reportLoading && !reportModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.45)" }}
+        >
+          <div
+            className="rounded-lg shadow-xl px-6 py-5"
+            style={{
+              background: D.surface,
+              width: 420,
+              border: `1px solid ${D.border}`,
+            }}
+          >
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-base">
+                {reportLoading.type === "morning" ? "🌅" : "🌇"}
+              </span>
+              <div className="text-sm font-semibold" style={{ color: D.text1 }}>
+                {reportLoading.type === "morning" ? t("生成早报中...") : t("生成晚报中...")}
+              </div>
+              <span className="ml-auto text-xs tabular-nums" style={{ color: D.text2 }}>
+                {reportElapsed}s
+              </span>
+            </div>
+            <div
+              className="relative h-1.5 rounded-full overflow-hidden mb-3"
+              style={{ background: "rgba(0,0,0,0.06)" }}
+            >
+              <div
+                className="absolute inset-y-0 rounded-full"
+                style={{
+                  width: "40%",
+                  background: `linear-gradient(90deg, transparent, ${D.accent}, transparent)`,
+                  animation: "crashguard-indeterminate 1.4s linear infinite",
+                }}
+              />
+            </div>
+            <div className="text-xs leading-relaxed" style={{ color: D.text2 }}>
+              {reportElapsed < 5
+                ? t("正在拉取 Datadog 崩溃数据…")
+                : reportElapsed < 15
+                ? t("正在排序 Top N 并匹配历史…")
+                : reportElapsed < 30
+                ? t("正在生成 Markdown 报告…")
+                : t("接近完成，请稍候（首次拉取耗时较长）…")}
+            </div>
+          </div>
+          <style jsx global>{`
+            @keyframes crashguard-indeterminate {
+              0% { left: -40%; }
+              100% { left: 100%; }
+            }
+          `}</style>
+        </div>
+      )}
 
       {reportModal && (
         <div
@@ -1189,6 +1458,8 @@ function DetailDrawer({
   onAnalyze,
   onPatch,
   onClose,
+  creatingPr,
+  onCreatePr,
   t,
 }: {
   loading: boolean;
@@ -1203,6 +1474,8 @@ function DetailDrawer({
   onAnalyze: () => void;
   onPatch: (patch: { status?: CrashStatus; assignee?: string }) => void;
   onClose: () => void;
+  creatingPr: number | null;
+  onCreatePr: (analysisId: number, issueId: string) => void;
   t: (k: string) => string;
 }) {
   return (
@@ -1269,6 +1542,34 @@ function DetailDrawer({
               >
                 {t("在 Datadog 中打开")} ↗
               </a>
+              {/* 自动化修复 PR — 与 Datadog 链接相邻，方便查找 */}
+              {(() => {
+                const ana = detail.analysis as any;
+                const anaId = ana?.id as number | undefined;
+                const prs = detail.pull_requests || [];
+                const openablePr = prs.find((p) => p.pr_url);
+                const isLoading = creatingPr === anaId;
+                if (openablePr) {
+                  return null; // 下方 PR 标签链已显示，不重复渲染
+                }
+                if (!anaId) return null;
+                return (
+                  <button
+                    onClick={() => onCreatePr(anaId, detail.datadog_issue_id)}
+                    disabled={isLoading || creatingPr !== null}
+                    className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
+                    style={{
+                      background: isLoading ? "#9CA3AF" : "#1F2937",
+                      color: "#FFFFFF",
+                      cursor: isLoading ? "wait" : "pointer",
+                      opacity: creatingPr !== null && !isLoading ? 0.5 : 1,
+                    }}
+                    title={t("基于修复方案，自动生成 GitHub draft PR")}
+                  >
+                    {isLoading ? `⏳ ${t("生成中...")}` : `🔧 ${t("自动化修复 PR")}`}
+                  </button>
+                );
+              })()}
               {(detail.pull_requests || []).slice(0, 3).map((pr) => {
                 const sc = (() => {
                   switch (pr.pr_status) {
@@ -1561,7 +1862,7 @@ function DetailDrawer({
                     </>
                   )}
 
-                  <div className="flex items-center gap-3 pt-1">
+                  <div className="flex items-center gap-3 pt-1 flex-wrap">
                     <KV
                       k={t("可行度")}
                       v={`${(((detail.analysis as any).feasibility_score || 0) * 100).toFixed(0)}%`}

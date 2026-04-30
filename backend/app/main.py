@@ -130,6 +130,16 @@ async def lifespan(app: FastAPI):
     from app.crashguard.workers.scheduler import report_scheduler_loop
     crashguard_scheduler_task = asyncio.create_task(report_scheduler_loop())
 
+    # Crashguard 启动预热 + 周期 pipeline（与早晚报解耦，重启后 60s 自动跑一次）
+    from app.crashguard.config import get_crashguard_settings as _cg_settings
+    from app.crashguard.workers.warmup import warmup_on_startup, pipeline_scheduler_loop
+    _cg = _cg_settings()
+    crashguard_warmup_task = None
+    if _cg.enabled and getattr(_cg, "warmup_on_startup", True):
+        crashguard_warmup_task = asyncio.create_task(warmup_on_startup())
+        logger.info("crashguard warmup scheduled (60s after startup)")
+    crashguard_pipeline_task = asyncio.create_task(pipeline_scheduler_loop())
+
     # Daily escalation reminder (09:00 Asia/Shanghai) — gated by ENABLE_ONCALL_NOTIFY
     import os
     reminder_task = None
@@ -144,6 +154,9 @@ async def lifespan(app: FastAPI):
 
     if reminder_task is not None:
         reminder_task.cancel()
+    if crashguard_warmup_task is not None:
+        crashguard_warmup_task.cancel()
+    crashguard_pipeline_task.cancel()
     crashguard_scheduler_task.cancel()
     repo_update_task.cancel()
     zombie_task.cancel()
