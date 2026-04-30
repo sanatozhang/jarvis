@@ -507,6 +507,21 @@ def _compose_prompt(
 ) -> str:
     return f"""{role_and_principles}
 
+## ⚡ Anti-Timeout 协议（必读，违反会因超时白干）
+
+本次分析有 30 轮交互上限和 600 秒墙钟超时。**严格遵守以下"防御式输出"流程**：
+
+1. **第 1-3 轮**：读 context/ 文件 + 阅读 1-2 个最相关 grep 结果，列 2-3 个核心假设。
+2. **第 4 轮**：**立即用 Write 工具写入 result.json 初版**——即使证据不全也写完整 JSON 骨架（confidence 设为 "low"，problem_type 写当前最佳猜测，user_reply 写一个"我们正在分析..."的占位）。
+3. **第 5-25 轮**：grep logs/ 验证假设，每次有新证据就用 Write **覆盖更新 result.json**（每 3-5 轮至少更新一次）。
+4. **第 26 轮起**：必须停止 grep，将累积证据 finalize 写入终版 result.json。
+
+**铁律**：
+- ❌ **严禁**连续 5 个 turn 不写 result.json
+- ❌ **严禁**第 8 个 grep 之后还没写出任何 result.json
+- ❌ **严禁**因为"证据不充分"就拒绝写 result.json——partial result（confidence=low）永远比超时空结果有价值
+- ✅ 把 Write 看作 checkpoint：每次 Write 都是"如果现在被 kill 也能交差"的快照
+
 ## 工单信息
 
 - **问题描述**: {issue_description}

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.appllo.backup-db</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/mac/jarvis/scripts/backup-db.sh</string>
+    </array>
+
+    <!-- Daily at 02:00 local time -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Catch up if Mac was asleep at 02:00 (run as soon as it wakes up) -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mac/jarvis/data/backups/backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mac/jarvis/data/backups/backup.log</string>
+
+    <!-- Ensure homebrew docker is on PATH -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

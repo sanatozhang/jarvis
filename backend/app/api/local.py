@@ -302,11 +302,25 @@ class EscalateRequest(BaseModel):
 @router.post("/{issue_id}/escalate")
 @_handle_exceptions("Failed to escalate issue")
 async def escalate_issue(issue_id: str, body: EscalateRequest):
-    """Escalate an issue to engineering team — creates a Feishu group chat."""
+    """Escalate an issue to engineering team — creates a Feishu group chat.
+
+    Idempotent: if the issue is already escalated and has a chat group, return
+    the existing chat info without creating a duplicate group.
+    """
     async with db.get_session() as session:
         issue_rec = await session.get(db.IssueRecord, issue_id)
     if not issue_rec:
         raise HTTPException(status_code=404, detail="Issue not found")
+
+    # Short-circuit: already escalated with an active group → return existing info
+    if issue_rec.escalated_at and issue_rec.escalation_chat_id:
+        return {
+            "status": "escalated",
+            "issue_id": issue_id,
+            "chat_id": issue_rec.escalation_chat_id or "",
+            "share_link": issue_rec.escalation_share_link or "",
+            "group_exists": True,
+        }
 
     description = issue_rec.description or issue_id
     problem_type = ""
@@ -338,21 +352,31 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
         )
         logger.info("Escalation completed: %s", chat_result)
     except Exception as e:
-        logger.error("Failed to create escalation group, sending direct notification: %s", e)
-        try:
-            from app.services.notify import notify_oncall
-            await notify_oncall(
-                issue_id=issue_id,
-                description=description,
-                reason=f"工单转交工程师: {problem_type}" if problem_type else "工单转交工程师",
-                link=issue_link,
-            )
-        except Exception as ne:
-            logger.error("Fallback notify_oncall also failed: %s", ne)
+        logger.error("Failed to create escalation group: %s", e)
+        # Fallback DM gated by ENABLE_ONCALL_NOTIFY (default off)
+        import os
+        if os.environ.get("ENABLE_ONCALL_NOTIFY", "false").lower() == "true":
+            try:
+                from app.services.notify import notify_oncall
+                await notify_oncall(
+                    issue_id=issue_id,
+                    description=description,
+                    reason=f"工单转交工程师: {problem_type}" if problem_type else "工单转交工程师",
+                    link=issue_link,
+                )
+            except Exception as ne:
+                logger.error("Fallback notify_oncall also failed: %s", ne)
 
-    # Save escalation metadata (including chat_id for later resolve notification)
+    # Save escalation metadata (including chat_id + share_link for later notifications and "join group" button)
     escalation_chat_id = chat_result.get("chat_id", "") if chat_result else ""
-    ok = await db.escalate_issue(issue_id, escalated_by=body.escalated_by, note=body.note, chat_id=escalation_chat_id)
+    escalation_share_link = chat_result.get("share_link", "") if chat_result else ""
+    ok = await db.escalate_issue(
+        issue_id,
+        escalated_by=body.escalated_by,
+        note=body.note,
+        chat_id=escalation_chat_id,
+        share_link=escalation_share_link,
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="Issue not found")
     await db.log_event("escalate", issue_id=issue_id, username=body.escalated_by,

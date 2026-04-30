@@ -11,12 +11,19 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, HTTPException
 
 from app.config import get_settings
 from app.db import database as db
 from app.services.zendesk import extract_ticket_id, fetch_ticket_with_comments
 from app.services.summarize import summarize_ticket_conversation
+
+# Process-local lock to prevent the same client double-clicking submit (or
+# browser auto-retry) from racing two pipelines for the same issue. The DB-level
+# check below catches cross-process duplicates.
+_submit_lock = asyncio.Lock()
 
 logger = logging.getLogger("jarvis.api.feedback")
 router = APIRouter()
@@ -87,6 +94,24 @@ async def submit_feedback(
             desc_parts.append(f"[{category}]")
         desc_parts.append(description)
         full_description = " ".join(desc_parts)
+
+        # Refuse to start a parallel analysis pipeline for an issue already in flight.
+        # Two concurrent claude subprocesses on the same logs starve each other on
+        # CPU/network and both hit the 600s timeout (observed 2026-04-29 fb_9d56ec4516).
+        async with _submit_lock:
+            from sqlalchemy import select
+            async with db.get_session() as session:
+                stmt = select(db.TaskRecord).where(
+                    db.TaskRecord.issue_id == record_id,
+                    db.TaskRecord.status.in_(["queued", "analyzing", "downloading", "decrypting", "extracting"]),
+                ).limit(1)
+                in_flight = (await session.execute(stmt)).scalar_one_or_none()
+                if in_flight:
+                    logger.warning("Duplicate feedback submit for %s — task %s still in %s", record_id, in_flight.id, in_flight.status)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"该工单正在分析中（task={in_flight.id}），请等待结果或刷新页面。",
+                    )
 
         # Save to DB as "analyzing" (immediately start analysis)
         issue_data = {

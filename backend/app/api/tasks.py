@@ -404,17 +404,19 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 task_id=task_id, issue_id=issue_id, status=TaskStatus.FAILED,
                 progress=100, message="分析失败", error=error_msg, updated_at=datetime.utcnow(),
             ))
-            # Auto-notify oncall engineers on analysis failure
-            try:
-                from app.services.notify import notify_oncall
-                await notify_oncall(
-                    issue_id=issue_id,
-                    description=result.root_cause[:200],
-                    reason=f"AI 分析失败: {result.problem_type}",
-                    zendesk_id="",
-                )
-            except Exception as ne:
-                logger.warning("Failed to notify oncall on analysis failure: %s", ne)
+            # Auto-notify oncall engineers on analysis failure (gated by ENABLE_ONCALL_NOTIFY)
+            import os
+            if os.environ.get("ENABLE_ONCALL_NOTIFY", "false").lower() == "true":
+                try:
+                    from app.services.notify import notify_oncall
+                    await notify_oncall(
+                        issue_id=issue_id,
+                        description=result.root_cause[:200],
+                        reason=f"AI 分析失败: {result.problem_type}",
+                        zendesk_id="",
+                    )
+                except Exception as ne:
+                    logger.warning("Failed to notify oncall on analysis failure: %s", ne)
 
             # Track: analysis failed
             duration = int((_time.monotonic() - _start_time) * 1000)

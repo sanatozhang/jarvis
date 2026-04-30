@@ -104,32 +104,76 @@ class ClaudeCodeAgent(BaseAgent):
         except asyncio.TimeoutError:
             logger.error("Claude Code timed out after %ds", self.config.timeout)
 
-            # Kill the timed-out process
+            # Kill the timed-out process and try to drain whatever stdout/stderr it produced
+            stdout_dump = ""
+            stderr_dump = ""
             try:
                 proc.kill()  # type: ignore[possibly-undefined]
+                # Best-effort drain — communicate() with short timeout to grab buffered output
+                try:
+                    drained_out, drained_err = await asyncio.wait_for(
+                        proc.communicate(), timeout=5,  # type: ignore[possibly-undefined]
+                    )
+                    stdout_dump = drained_out.decode("utf-8", errors="replace") if drained_out else ""
+                    stderr_dump = drained_err.decode("utf-8", errors="replace") if drained_err else ""
+                except Exception:
+                    pass
             except Exception:
                 pass
 
-            # Check if Claude already wrote result.json before timing out
+            # Persist drained output for post-mortem analysis (never lose evidence again)
+            try:
+                debug_dir = workspace / "output"
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                if stdout_dump:
+                    (debug_dir / "timeout_stdout.txt").write_text(stdout_dump, encoding="utf-8")
+                if stderr_dump:
+                    (debug_dir / "timeout_stderr.txt").write_text(stderr_dump, encoding="utf-8")
+                logger.info(
+                    "Timeout dump saved: stdout=%d chars, stderr=%d chars",
+                    len(stdout_dump), len(stderr_dump),
+                )
+            except Exception as e:
+                logger.warning("Failed to dump timeout output: %s", e)
+
+            # Salvage path 1: result.json exists → use it (partial result has value)
             result_file = workspace / "output" / "result.json"
             if result_file.exists():
                 try:
-                    result = self.parse_result(workspace, "")
+                    result = self.parse_result(workspace, stdout_dump)
+                    # Accept any result with non-empty root_cause that isn't the literal timeout marker.
+                    # A partial result (confidence=low, placeholder user_reply) is strictly better
+                    # than reporting 600s of work as a total failure.
                     if result.root_cause and result.root_cause != "分析超时":
                         logger.info(
-                            "Claude Code timed out but result.json exists — salvaging result (type: %s)",
-                            result.problem_type,
+                            "Claude Code timed out but result.json exists — salvaging partial result (type=%s, confidence=%s)",
+                            result.problem_type, result.confidence,
                         )
                         result.agent_type = "claude_code"
                         return result
                 except Exception as e:
                     logger.warning("Failed to parse result.json after timeout: %s", e)
 
+            # Salvage path 2: stdout has structured content → try parse_result on it
+            # (covers cases where claude printed JSON to stdout but never called Write)
+            if stdout_dump and "{" in stdout_dump:
+                try:
+                    result = self.parse_result(workspace, stdout_dump)
+                    if result.root_cause and result.root_cause != "分析超时":
+                        logger.info(
+                            "Claude Code timed out, salvaging from stdout (type=%s)",
+                            result.problem_type,
+                        )
+                        result.agent_type = "claude_code"
+                        return result
+                except Exception:
+                    pass
+
             return AnalysisResult(
                 task_id="",
                 issue_id="",
                 problem_type="分析超时",
-                root_cause=f"Claude Code 分析超过 {self.config.timeout}s 超时",
+                root_cause=f"Claude Code 分析超过 {self.config.timeout}s 超时（已 dump stdout/stderr 到 output/timeout_*.txt 供排查）",
                 confidence="low",
                 needs_engineer=True,
                 agent_type="claude_code",

@@ -363,6 +363,9 @@ export interface LocalIssueItem {
   escalated_at?: string;
   escalated_by?: string;
   escalation_note?: string;
+  escalation_status?: string;
+  escalation_chat_id?: string;
+  escalation_share_link?: string;
   analysis_count?: number;
   analysis?: AnalysisResult;
   task?: { task_id: string; status: string; progress: number; message: string; error?: string };
@@ -471,6 +474,8 @@ export interface EscalatedTicket {
   escalation_note: string;
   escalation_status: string;
   escalation_resolved_at: string;
+  escalation_chat_id?: string;
+  escalation_share_link?: string;
   created_at: string;
 }
 
