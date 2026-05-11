@@ -710,46 +710,55 @@ async def draft_pr_for_analysis(
                     last_failure_reason = apply_err2
                     logger.warning("fix_diff apply failed: %s", apply_err2)
 
-        if patch_applied:
-            # 精准 add：实施 agent 路径下用 changed_files；fix_diff 路径下用 -A（diff 已在 apply）
-            if impl_source == "agent" and changed_files:
-                rc, _, err = _run_git(
-                    ["git", "add", "--"] + changed_files, repo_path,
-                )
-            else:
-                rc, _, err = _run_git(["git", "add", "-A"], repo_path)
-            if rc != 0:
-                return {"ok": False, "error": f"git add (post-apply) failed: {err}"}
-            via = "implementation agent" if impl_source == "agent" else "fix_diff text"
-            file_summary = ", ".join(changed_files[:5]) if changed_files else "see diff"
-            commit_message = (
-                f"fix(crashguard): {(issue.title or ana.datadog_issue_id)[:60]}\n\n"
-                f"AI-generated patch via {via} for crash issue {ana.datadog_issue_id}.\n"
-                f"Files: {file_summary}\n"
-                f"Confidence: {ana.confidence or 'low'} · Feasibility: {ana.feasibility_score:.2f}\n"
-                f"Reviewer must verify diff correctness before merge."
+        # ⚠️ 用户硬性要求：PR 必须是真代码改动，不接受 md 修复方案文档兜底。
+        # agent / diff 都失败 = 直接判失败，不建 doc-only PR，进失败审计供前端展示
+        if not patch_applied:
+            err_msg = f"no_real_patch: {last_failure_reason or 'no source change produced'}"
+            logger.warning(
+                "crashguard PR creation aborted: %s (repo=%s ana=%d)",
+                err_msg, repo_logical or platform, analysis_id,
             )
-            pr_title = f"[Crashguard][{platform}] {(issue.title or 'crash fix')[:80]}"
+            try:
+                from app.crashguard.services.audit import write_audit
+                await write_audit(
+                    op="pr_draft",
+                    target_id=str(analysis_id),
+                    success=False,
+                    error=err_msg,
+                    detail={
+                        "repo": repo_logical or platform,
+                        "reason": "patch_failed",
+                        "impl_failure": last_failure_reason,
+                    },
+                )
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "error": err_msg,
+                "repo": repo_logical or platform,
+                "patch_applied": False,
+            }
+
+        # 精准 add：实施 agent 路径下用 changed_files；fix_diff 路径下用 -A（diff 已在 apply）
+        if impl_source == "agent" and changed_files:
+            rc, _, err = _run_git(
+                ["git", "add", "--"] + changed_files, repo_path,
+            )
         else:
-            if last_failure_reason:
-                logger.warning(
-                    "crashguard implementation failed, falling back to md doc: %s",
-                    last_failure_reason,
-                )
-            # 回退：写 .crashguard/fixes/<id>.md（保留旧行为）
-            fix_doc_relpath = f".crashguard/fixes/{ana.datadog_issue_id}.md"
-            fix_doc_content = _build_pr_body(issue, ana, frontend_url, patch_applied=False) + "\n"
-            doc_abs = Path(repo_path) / fix_doc_relpath
-            doc_abs.parent.mkdir(parents=True, exist_ok=True)
-            doc_abs.write_text(fix_doc_content, encoding="utf-8")
-            rc, _, err = _run_git(["git", "add", "-f", fix_doc_relpath], repo_path)
-            if rc != 0:
-                return {"ok": False, "error": f"git add (md fallback) failed: {err}"}
-            commit_message = f"docs(crashguard): draft fix for {ana.datadog_issue_id}"
-            pr_title = (
-                f"[Crashguard][{platform}][needs manual patch] "
-                f"{(issue.title or 'crash fix')[:70]}"
-            )
+            rc, _, err = _run_git(["git", "add", "-A"], repo_path)
+        if rc != 0:
+            return {"ok": False, "error": f"git add (post-apply) failed: {err}"}
+        via = "implementation agent" if impl_source == "agent" else "fix_diff text"
+        file_summary = ", ".join(changed_files[:5]) if changed_files else "see diff"
+        commit_message = (
+            f"fix(crashguard): {(issue.title or ana.datadog_issue_id)[:60]}\n\n"
+            f"AI-generated patch via {via} for crash issue {ana.datadog_issue_id}.\n"
+            f"Files: {file_summary}\n"
+            f"Confidence: {ana.confidence or 'low'} · Feasibility: {ana.feasibility_score:.2f}\n"
+            f"Reviewer must verify diff correctness before merge."
+        )
+        pr_title = f"[Crashguard][{platform}] {(issue.title or 'crash fix')[:80]}"
 
         pr_body = _build_pr_body(issue, ana, frontend_url, patch_applied=patch_applied)
 
