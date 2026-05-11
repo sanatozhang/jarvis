@@ -40,6 +40,34 @@ check_deps() {
     fi
 }
 
+# ---- Check docker daemon reachable, auto-start colima on macOS ----
+check_docker_daemon() {
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+    warn "Docker daemon not reachable."
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v colima >/dev/null 2>&1; then
+        warn "Detected colima on macOS — starting it..."
+        if colima start; then
+            # wait up to 30s for daemon
+            for i in $(seq 1 30); do
+                if docker info >/dev/null 2>&1; then
+                    log "✅ Docker daemon is up (colima)"
+                    return 0
+                fi
+                sleep 1
+            done
+            err "colima started but docker daemon still not reachable after 30s"
+            exit 1
+        else
+            err "Failed to start colima. Run 'colima start' manually."
+            exit 1
+        fi
+    fi
+    err "Docker daemon not running. Start Docker Desktop / colima / dockerd first."
+    exit 1
+}
+
 # ---- Docker compose wrapper (supports v1 and v2) ----
 dc() {
     if docker compose version >/dev/null 2>&1; then
@@ -227,6 +255,11 @@ cmd_dev() {
 
 # ---- Main ----
 check_deps
+
+# Daemon check only for commands that actually need Docker running
+case "${1:-help}" in
+    setup|start|restart|update|status|logs|stop) check_docker_daemon ;;
+esac
 
 case "${1:-help}" in
     setup)   cmd_setup ;;
