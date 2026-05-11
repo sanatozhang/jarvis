@@ -2,10 +2,16 @@
 FROM python:3.12-slim AS test
 
 WORKDIR /app
+
+# git needed for crashguard pr_drafter tests (worktree / apply / status)
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY rules/ ./rules/
+COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY pytest.ini .
 RUN python -m pytest --tb=short -q
@@ -23,6 +29,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Node.js 20 (needed for Codex CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI (gh) — crashguard pr_drafter calls `gh pr create --draft`
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Codex CLI globally
