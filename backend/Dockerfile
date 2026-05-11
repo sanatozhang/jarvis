@@ -55,6 +55,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend code (no tests in production)
 COPY app/ ./app/
 COPY rules/ ./rules/
+# scripts/ is imported at startup (check_crash_decoupling)
+COPY scripts/ ./scripts/
 
 # Create data dirs
 RUN mkdir -p /app/data /app/workspaces
