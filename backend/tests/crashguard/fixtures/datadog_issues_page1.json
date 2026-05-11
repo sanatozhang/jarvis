@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "id": "abc123",
+      "type": "error_tracking_issue",
+      "attributes": {
+        "title": "NullPointerException @ AudioPlayer.play",
+        "service": "plaud_ai",
+        "platform": "flutter",
+        "first_seen_timestamp": 1714003200000,
+        "last_seen_timestamp": 1714176000000,
+        "first_seen_version": "1.4.7",
+        "last_seen_version": "1.4.7",
+        "events_count": 145,
+        "users_affected": 23,
+        "stack_trace": "NullPointerException\n  at AudioPlayer.play (lib/audio/player.dart:42)\n  at PlaybackController.start (lib/audio/playback.dart:18)",
+        "tags": {"env": "prod", "os.version": "14"}
+      }
+    }
+  ],
+  "meta": {
+    "page": {"after": "next-cursor"}
+  }
+}

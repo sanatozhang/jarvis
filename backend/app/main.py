@@ -69,8 +69,28 @@ async def lifespan(app: FastAPI):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     logger.info("Starting Appllo...")
+
+    # Import crashguard models to register with SQLAlchemy Base
+    from app.crashguard import models as _crashguard_models  # noqa: F401
+
     await init_db()
     logger.info("Database initialized.")
+
+    # Crashguard DB 解耦自检 — 违规则阻止启动
+    try:
+        from scripts.check_crash_decoupling import assert_crash_tables_decoupled
+        assert_crash_tables_decoupled()
+        logger.info("Crashguard decoupling check passed.")
+    except RuntimeError as e:
+        logger.error("Crashguard decoupling check FAILED: %s", e)
+        raise
+
+    # Crashguard 轻量自动迁移 — SQLite 已建表后追加新列
+    try:
+        from app.crashguard.migrations import ensure_columns
+        await ensure_columns()
+    except Exception as e:
+        logger.warning("Crashguard auto-migration skipped: %s", e)
 
     # Clean up zombie tasks from previous crashes/restarts
     from app.db.database import get_session
@@ -106,6 +126,20 @@ async def lifespan(app: FastAPI):
     from app.services.repo_updater import repo_update_loop
     repo_update_task = asyncio.create_task(repo_update_loop())
 
+    # Crashguard 早晚报调度（每 60 秒 tick；命中 morning/evening cron 即推飞书）
+    from app.crashguard.workers.scheduler import report_scheduler_loop
+    crashguard_scheduler_task = asyncio.create_task(report_scheduler_loop())
+
+    # Crashguard 启动预热 + 周期 pipeline（与早晚报解耦，重启后 60s 自动跑一次）
+    from app.crashguard.config import get_crashguard_settings as _cg_settings
+    from app.crashguard.workers.warmup import warmup_on_startup, pipeline_scheduler_loop
+    _cg = _cg_settings()
+    crashguard_warmup_task = None
+    if _cg.enabled and getattr(_cg, "warmup_on_startup", True):
+        crashguard_warmup_task = asyncio.create_task(warmup_on_startup())
+        logger.info("crashguard warmup scheduled (60s after startup)")
+    crashguard_pipeline_task = asyncio.create_task(pipeline_scheduler_loop())
+
     # Daily escalation reminder (09:00 Asia/Shanghai) — gated by ENABLE_ONCALL_NOTIFY
     import os
     reminder_task = None
@@ -120,6 +154,10 @@ async def lifespan(app: FastAPI):
 
     if reminder_task is not None:
         reminder_task.cancel()
+    if crashguard_warmup_task is not None:
+        crashguard_warmup_task.cancel()
+    crashguard_pipeline_task.cancel()
+    crashguard_scheduler_task.cancel()
     repo_update_task.cancel()
     zombie_task.cancel()
     await close_db()
@@ -182,6 +220,10 @@ app.include_router(golden_samples_router, prefix="/api/golden-samples", tags=["G
 app.include_router(eval_router, prefix="/api/eval", tags=["Eval"])
 app.include_router(tools_router, prefix="/api/tools", tags=["Tools"])
 app.include_router(wishes_router, prefix="/api/wishes", tags=["Wishes"])
+
+# Crashguard API（独立子模块，prefix 在 router 内部声明 /api/crash）
+from app.crashguard.api import crash as _crash_api  # noqa: E402
+app.include_router(_crash_api.router)
 
 
 # ---------------------------------------------------------------------------

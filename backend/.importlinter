@@ -1,0 +1,19 @@
+[importlinter]
+root_packages =
+    app
+
+[importlinter:contract:crashguard-isolation]
+name = crashguard 模块隔离合约
+type = forbidden
+source_modules =
+    app.crashguard
+forbidden_modules =
+    app.models
+    app.workers.analysis_worker
+    app.services.rule_engine
+    app.api.issues
+    app.api.tasks
+    app.api.feedback
+ignore_imports =
+    # crashguard.config 允许 import app.config 的 PROJECT_ROOT 与 _load_yaml
+    app.crashguard.config -> app.config
