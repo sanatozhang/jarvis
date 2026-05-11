@@ -218,6 +218,147 @@ cmd_status() {
     fi
 }
 
+# ---- Enable auto-start on host reboot (cross-platform) ----
+cmd_enable_autostart() {
+    local os
+    os="$(uname -s)"
+    log "Enabling auto-start on '${os}'..."
+
+    case "$os" in
+        Linux)   _autostart_linux ;;
+        Darwin)  _autostart_macos ;;
+        *)       err "Unsupported OS: $os"; exit 1 ;;
+    esac
+}
+
+cmd_disable_autostart() {
+    local os
+    os="$(uname -s)"
+    case "$os" in
+        Linux)
+            if [ -f /etc/systemd/system/jarvis.service ]; then
+                sudo systemctl disable --now jarvis.service || true
+                sudo rm -f /etc/systemd/system/jarvis.service
+                sudo systemctl daemon-reload
+                log "✅ Removed jarvis.service"
+            else
+                warn "jarvis.service not installed"
+            fi
+            ;;
+        Darwin)
+            if command -v brew >/dev/null 2>&1 && brew services list 2>/dev/null | grep -q "^colima.*started"; then
+                brew services stop colima || true
+                log "✅ Stopped colima brew service"
+            fi
+            ;;
+    esac
+}
+
+_autostart_linux() {
+    # Pre-flight: systemd present
+    if ! command -v systemctl >/dev/null 2>&1; then
+        err "systemctl not found — this script targets systemd-based Linux. For SysV/OpenRC, install manually."
+        exit 1
+    fi
+
+    # 1. docker.service enable
+    if systemctl list-unit-files docker.service >/dev/null 2>&1; then
+        if ! systemctl is-enabled docker.service >/dev/null 2>&1; then
+            log "Enabling docker.service..."
+            sudo systemctl enable --now docker.service
+        else
+            log "docker.service already enabled"
+        fi
+    else
+        err "docker.service unit not found. Install Docker via your distro's package manager first."
+        exit 1
+    fi
+
+    # 2. jarvis.service unit
+    local unit_path=/etc/systemd/system/jarvis.service
+    local workdir="$SCRIPT_DIR"
+    local docker_bin
+    docker_bin="$(command -v docker)"
+    local invoking_user="${SUDO_USER:-$USER}"
+
+    log "Installing $unit_path (WorkingDirectory=$workdir, User=$invoking_user)..."
+    sudo tee "$unit_path" >/dev/null <<EOF
+[Unit]
+Description=Jarvis Docker Compose Stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$workdir
+User=$invoking_user
+Group=$invoking_user
+# Pull from compose state; idempotent
+ExecStart=$docker_bin compose up -d
+ExecStop=$docker_bin compose down
+TimeoutStartSec=0
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable jarvis.service
+    log "✅ jarvis.service installed and enabled"
+
+    # 3. Self-test (no actual reboot)
+    log "Dry-run: systemctl status jarvis.service"
+    systemctl status jarvis.service --no-pager 2>&1 | head -5 || true
+    log ""
+    log "  To verify across reboot:  sudo reboot && docker ps"
+    log "  To inspect:               systemctl cat jarvis.service"
+    log "  To disable:               ./deploy.sh disable-autostart"
+}
+
+_autostart_macos() {
+    if ! command -v colima >/dev/null 2>&1; then
+        err "colima not found. Install: brew install colima docker docker-compose"
+        exit 1
+    fi
+    if ! command -v brew >/dev/null 2>&1; then
+        err "Homebrew not found — needed to register colima as a launchd service."
+        exit 1
+    fi
+
+    # Idempotent: brew services start is no-op if already started
+    log "Registering colima with brew services (launchd)..."
+    brew services start colima
+    brew services list | grep -E "^colima"
+
+    # Verify plist
+    local plist="$HOME/Library/LaunchAgents/homebrew.mxcl.colima.plist"
+    if [ -f "$plist" ]; then
+        log "✅ LaunchAgent installed: $plist"
+        log "   RunAtLoad: $(/usr/libexec/PlistBuddy -c 'Print RunAtLoad' "$plist" 2>/dev/null || echo '?')"
+    fi
+
+    # Check macOS auto-login (LaunchAgent only fires on login)
+    local autologin
+    autologin="$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null || true)"
+    if [ -z "$autologin" ]; then
+        warn ""
+        warn "⚠ macOS auto-login is NOT configured. LaunchAgent runs at LOGIN, not BOOT."
+        warn "  Enable in: System Settings → Users & Groups → Automatic login"
+        warn "  Without auto-login, colima won't start until you SSH in."
+    else
+        log "✅ Auto-login user: $autologin (LaunchAgent will fire after boot)"
+    fi
+
+    log ""
+    log "  Containers will auto-resume via compose 'restart: unless-stopped'"
+    log "  To verify:  sudo reboot, then 'docker ps' after auto-login"
+    log "  To disable: ./deploy.sh disable-autostart"
+}
+
 # ---- Local dev (no Docker) ----
 cmd_dev() {
     log "Starting in dev mode (no Docker)..."
@@ -262,27 +403,31 @@ case "${1:-help}" in
 esac
 
 case "${1:-help}" in
-    setup)   cmd_setup ;;
-    start)   cmd_start ;;
-    stop)    cmd_stop ;;
-    restart) cmd_restart ;;
-    logs)    shift; cmd_logs "$@" ;;
-    update)  cmd_update ;;
-    status)  cmd_status ;;
-    dev)     cmd_dev ;;
+    setup)              cmd_setup ;;
+    start)              cmd_start ;;
+    stop)               cmd_stop ;;
+    restart)            cmd_restart ;;
+    logs)               shift; cmd_logs "$@" ;;
+    update)             cmd_update ;;
+    status)             cmd_status ;;
+    dev)                cmd_dev ;;
+    enable-autostart)   cmd_enable_autostart ;;
+    disable-autostart)  cmd_disable_autostart ;;
     *)
         echo "Jarvis Deploy Script"
         echo ""
         echo "Usage: $0 <command>"
         echo ""
         echo "Commands:"
-        echo "  setup     First-time setup (create .env, build, start)"
-        echo "  start     Start all services"
-        echo "  stop      Stop all services"
-        echo "  restart   Restart all services"
-        echo "  logs      View logs (add 'backend' or 'frontend' to filter)"
-        echo "  update    Pull code + rebuild + restart"
-        echo "  status    Check service status"
-        echo "  dev       Start in local dev mode (no Docker)"
+        echo "  setup              First-time setup (create .env, build, start)"
+        echo "  start              Start all services"
+        echo "  stop               Stop all services"
+        echo "  restart            Restart all services"
+        echo "  logs               View logs (add 'backend' or 'frontend' to filter)"
+        echo "  update             Pull code + rebuild + restart"
+        echo "  status             Check service status"
+        echo "  dev                Start in local dev mode (no Docker)"
+        echo "  enable-autostart   Install boot-time auto-start (systemd on Linux, launchd on macOS)"
+        echo "  disable-autostart  Remove auto-start"
         ;;
 esac
