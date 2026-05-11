@@ -227,19 +227,22 @@ async def serve_issue_file(issue_id: str, filename: str):
 @router.get("/{issue_id}/download-logs")
 @_handle_exceptions("Failed to download logs")
 async def download_logs(issue_id: str):
-    """Download decrypted log files for an issue.
+    """Download log files for an issue.
 
-    Prioritizes the processed logs/ directory (decrypted).
-    Returns the file directly if only one log; otherwise ZIPs them.
+    Lookup order:
+      1. Decrypted .log/.txt in task workspace logs/ (may be cleaned for old tasks)
+      2. Decrypted .log/.txt in issue workspace processed/ (may be cleaned)
+      3. Raw .plaud encrypted source in task or issue raw/ (retained long-term)
+
+    Single file → direct download; multiple → zipped.
     """
     import io
     import zipfile
 
     settings = get_settings()
+    workspace_dir = Path(settings.storage.workspace_dir)
 
-    # Prefer decrypted logs (logs/ dir), fall back to processed/ dir
-    search_dirs: list[Path] = []
-
+    task_id: Optional[str] = None
     async with db.get_session() as session:
         stmt = select(db.TaskRecord).where(
             db.TaskRecord.issue_id == issue_id
@@ -247,13 +250,17 @@ async def download_logs(issue_id: str):
         result = await session.execute(stmt)
         task = result.scalar_one_or_none()
         if task:
-            search_dirs.append(Path(settings.storage.workspace_dir) / task.id / "logs")
+            task_id = task.id
 
-    search_dirs.append(Path(settings.storage.workspace_dir) / issue_id / "processed")
+    # Tier 1+2: decrypted logs
+    decrypted_dirs: list[Path] = []
+    if task_id:
+        decrypted_dirs.append(workspace_dir / task_id / "logs")
+    decrypted_dirs.append(workspace_dir / issue_id / "processed")
 
     log_files: list[Path] = []
     seen_names: set[str] = set()
-    for d in search_dirs:
+    for d in decrypted_dirs:
         if not d.exists():
             continue
         for f in sorted(d.iterdir()):
@@ -261,14 +268,36 @@ async def download_logs(issue_id: str):
                 log_files.append(f)
                 seen_names.add(f.name)
 
+    # Tier 3: fall back to raw .plaud (encrypted source, retained for hundreds of tasks)
     if not log_files:
-        raise HTTPException(status_code=404, detail="No decrypted log files found")
+        raw_dirs: list[Path] = []
+        if task_id:
+            raw_dirs.append(workspace_dir / task_id / "raw")
+        raw_dirs.append(workspace_dir / issue_id / "raw")
 
-    # Single file — return directly (no ZIP overhead)
+        for d in raw_dirs:
+            if not d.exists():
+                continue
+            for f in sorted(d.iterdir()):
+                if f.is_file() and f.name not in seen_names and f.suffix.lower() == ".plaud":
+                    log_files.append(f)
+                    seen_names.add(f.name)
+
+    if not log_files:
+        raise HTTPException(
+            status_code=404,
+            detail="No log files found (neither decrypted logs nor raw .plaud source)",
+        )
+
+    # Single file → direct download with proper Content-Disposition
     if len(log_files) == 1:
-        return FileResponse(log_files[0], filename=log_files[0].name)
+        return FileResponse(
+            log_files[0],
+            filename=log_files[0].name,
+            media_type="application/octet-stream",
+        )
 
-    # Multiple files — ZIP them
+    # Multiple files → ZIP
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in log_files:
