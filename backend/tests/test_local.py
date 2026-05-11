@@ -88,3 +88,65 @@ async def test_soft_delete(client, db_session):
 async def test_soft_delete_not_found(client):
     resp = await client.delete("/api/local/no_such")
     assert resp.status_code == 404
+
+
+# ---- download-logs three-tier fallback ----
+
+def _patch_endpoint_settings(monkeypatch, workspace_dir):
+    """Patch the get_settings reference inside app.api.local to use a known workspace."""
+    import app.api.local as local_mod
+    from types import SimpleNamespace
+    fake = SimpleNamespace(storage=SimpleNamespace(workspace_dir=str(workspace_dir)))
+    monkeypatch.setattr(local_mod, "get_settings", lambda: fake)
+
+
+async def test_download_logs_404_when_nothing_exists(client, db_session, tmp_path, monkeypatch):
+    _patch_endpoint_settings(monkeypatch, tmp_path)
+    await seed_issue(db_session, "dl_none", status="done")
+    resp = await client.get("/api/local/dl_none/download-logs")
+    assert resp.status_code == 404
+
+
+async def test_download_logs_serves_decrypted_log(client, db_session, tmp_path, monkeypatch):
+    _patch_endpoint_settings(monkeypatch, tmp_path)
+    await seed_issue(db_session, "dl_dec", status="done")
+    await seed_task(db_session, "task_dl_dec", "dl_dec")
+    logs_dir = tmp_path / "task_dl_dec" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / "app.log").write_text("hello world")
+
+    resp = await client.get("/api/local/dl_dec/download-logs")
+    assert resp.status_code == 200
+    assert "app.log" in resp.headers.get("content-disposition", "")
+    assert resp.content == b"hello world"
+
+
+async def test_download_logs_falls_back_to_raw_plaud(client, db_session, tmp_path, monkeypatch):
+    """Old tasks have decrypted dirs cleaned; raw/*.plaud is retained — must serve it."""
+    _patch_endpoint_settings(monkeypatch, tmp_path)
+    await seed_issue(db_session, "dl_raw", status="done")
+    await seed_task(db_session, "task_dl_raw", "dl_raw")
+    raw_dir = tmp_path / "task_dl_raw" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "log_2026.plaud").write_bytes(b"\x03\xfdV\xff\x7b\xfc\x28kBINARY_PLAUD_BODY")
+
+    resp = await client.get("/api/local/dl_raw/download-logs")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type", "").startswith("application/octet-stream")
+    assert "log_2026.plaud" in resp.headers.get("content-disposition", "")
+    assert resp.content.startswith(b"\x03\xfdV\xff")
+
+
+async def test_download_logs_decrypted_takes_priority_over_raw(client, db_session, tmp_path, monkeypatch):
+    """If both decrypted and raw exist, prefer decrypted (smaller, ready-to-read)."""
+    _patch_endpoint_settings(monkeypatch, tmp_path)
+    await seed_issue(db_session, "dl_both", status="done")
+    await seed_task(db_session, "task_dl_both", "dl_both")
+    (tmp_path / "task_dl_both" / "logs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "task_dl_both" / "logs" / "app.log").write_text("decrypted")
+    (tmp_path / "task_dl_both" / "raw").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "task_dl_both" / "raw" / "src.plaud").write_bytes(b"raw")
+
+    resp = await client.get("/api/local/dl_both/download-logs")
+    assert resp.status_code == 200
+    assert resp.content == b"decrypted"
