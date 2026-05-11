@@ -9,7 +9,6 @@ import {
   fetchCrashTop,
   fetchCrashIssue,
   fetchCrashHealth,
-  triggerCrashPipeline,
   updateCrashIssue,
   analyzeCrashIssue,
   batchAnalyzeCrash,
@@ -19,6 +18,7 @@ import {
   runCrashDailyReport,
   approveCrashPr,
   fetchAutoPrQueue,
+  fetchCrashLatestRelease,
   triggerCrashWarmup,
   type AutoPrQueueResponse,
   type CrashAnalysisRecord,
@@ -121,7 +121,6 @@ function CrashguardPageInner() {
   const [items, setItems] = useState<CrashTopItem[]>([]);
   const [date, setDate] = useState<string>("");
   const [loading, setLoading] = useState(false);
-  const [triggering, setTriggering] = useState(false);
   const [batching, setBatching] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const [reportLoading, setReportLoading] = useState<{
@@ -141,6 +140,8 @@ function CrashguardPageInner() {
   // C 路线：fatality 过滤——默认 fatal（首页关注真崩溃，非致命单独切换）
   const [fatalityFilter, setFatalityFilter] = useState<"all" | "fatal" | "non_fatal">("fatal");
   const [autoPrQueue, setAutoPrQueue] = useState<AutoPrQueueResponse | null>(null);
+  const [latestRelease, setLatestRelease] = useState<{ flutter: string; android: string; ios: string } | null>(null);
+  const [latestReleaseSource, setLatestReleaseSource] = useState<{ flutter: string; android: string; ios: string } | null>(null);
   // 首次进入若空数据 → 自动 bootstrap（拉数 + AI 分析），避免用户面对空白
   const [bootstrapping, setBootstrapping] = useState(false);
   const [bootstrapElapsed, setBootstrapElapsed] = useState(0);
@@ -172,6 +173,9 @@ function CrashguardPageInner() {
   const [savingPatch, setSavingPatch] = useState(false);
   const [search, setSearch] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
+  // 重新分析 modal：允许用户输入引导 prompt
+  const [reanalyzeModal, setReanalyzeModal] = useState<{ issueId: string } | null>(null);
+  const [reanalyzePrompt, setReanalyzePrompt] = useState("");
   // 自动化修复 PR 创建状态：按 analysis_id 跟踪 loading
   const [creatingPr, setCreatingPr] = useState<number | null>(null);
 
@@ -285,20 +289,29 @@ function CrashguardPageInner() {
     }
   };
 
-  const onAnalyze = async (issueId: string) => {
+  const onAnalyze = async (issueId: string, userPrompt = "") => {
     if (analyzing) return;
     setAnalyzing(true);
-    setToast({ msg: t("AI 分析中，可能需要 30-90 秒..."), type: "success" });
+    setToast({
+      msg: userPrompt
+        ? t("AI 分析中（带引导 prompt），可能需要 30-90 秒...")
+        : t("AI 分析中，可能需要 30-90 秒..."),
+      type: "success",
+    });
     try {
-      const res = await analyzeCrashIssue(issueId);
+      const res = await analyzeCrashIssue(issueId, userPrompt);
       if (res.status === "failed") {
         setToast({ msg: t("分析失败: ") + (res.error || "unknown"), type: "error" });
       } else {
         setToast({ msg: t("分析完成"), type: "success" });
       }
       if (selectedId === issueId) {
-        const fresh = await fetchCrashIssue(issueId);
+        const [fresh, list] = await Promise.all([
+          fetchCrashIssue(issueId),
+          fetchCrashAnalyses(issueId).catch(() => ({ analyses: [] as CrashAnalysisRecord[] })),
+        ]);
         setDetail(fresh);
+        setAnalyses((list as any).analyses || []);
       }
     } catch (e: any) {
       setToast({ msg: e.message || "analyze failed", type: "error" });
@@ -307,14 +320,27 @@ function CrashguardPageInner() {
     }
   };
 
+  const submitReanalyze = async () => {
+    if (!reanalyzeModal) return;
+    const issueId = reanalyzeModal.issueId;
+    const prompt = reanalyzePrompt.trim();
+    setReanalyzeModal(null);
+    setReanalyzePrompt("");
+    await onAnalyze(issueId, prompt);
+  };
+
   const onCreatePr = async (analysisId: number, issueId: string) => {
     if (creatingPr !== null) return;
     setCreatingPr(analysisId);
     setToast({ msg: t("正在创建修复 PR，请稍候..."), type: "success" });
     try {
       const res = await approveCrashPr(analysisId);
-      if (res.ok && res.pr_url) {
-        setToast({ msg: t("修复 PR 已创建"), type: "success" });
+      const prUrls = res.pr_url
+        ? [res.pr_url]
+        : (res.prs || []).filter((p) => p.ok && p.pr_url).map((p) => p.pr_url as string);
+      if (res.ok && prUrls.length > 0) {
+        const count = prUrls.length;
+        setToast({ msg: count > 1 ? `${t("修复 PR 已创建")} x${count}` : t("修复 PR 已创建"), type: "success" });
         if (selectedId === issueId) {
           const fresh = await fetchCrashIssue(issueId);
           setDetail(fresh);
@@ -322,7 +348,8 @@ function CrashguardPageInner() {
         // 顺便刷新列表（让行内 has_pr / pr_url 同步）
         await loadTop();
       } else {
-        setToast({ msg: t("创建失败: ") + (res.reason || "unknown"), type: "error" });
+        const firstErr = (res.prs || []).find((p) => !p.ok)?.error;
+        setToast({ msg: t("创建失败: ") + (res.error || res.reason || firstErr || "unknown"), type: "error" });
       }
     } catch (e: any) {
       setToast({ msg: e.message || "create PR failed", type: "error" });
@@ -437,38 +464,35 @@ function CrashguardPageInner() {
     }
   };
 
-  const onTrigger = async () => {
-    if (!confirm(t("立即拉取一次 Datadog（约 5 秒）？"))) return;
-    setTriggering(true);
-    try {
-      const res = await triggerCrashPipeline("3.16.0", ["3.16.0", "3.15.5", "3.15.4", "3.15.3", "3.14.9", "3.14.8"]);
-      setToast({
-        msg: t("已拉取 ") + res.issues_processed + t(" 条，Top ") + res.top_n_count,
-        type: "success",
-      });
-      await loadTop();
-    } catch (e: any) {
-      setToast({ msg: e.message || "trigger failed", type: "error" });
-    } finally {
-      setTriggering(false);
-    }
-  };
-
   useEffect(() => {
     loadTop();
   }, []);
 
-  // 自动 bootstrap：首次 loadTop 完成后，若空数据 + datadog 已配置 + 没跑过 → 自动拉数
-  // 不阻塞 loadTop 自身，避免初始 loading 状态被占满。bootstrapDone 防重入。
+  // 自动刷新：每次打开页面都先展示本地数据（loadTop 已完成），再异步拉服务端最新
+  // 设计要点：
+  //   - 本地优先：loadTop 同步先跑（上面 effect），用户立刻看到数据
+  //   - 服务端兜底：触发 /warmup 拉 Datadog；3 秒返回，AI 分析后台跑
+  //   - 冷却保护：localStorage 记录上次拉取时间，CRASHGUARD_REFRESH_COOLDOWN_MIN 内不重复
+  //   - 空数据强刷：忽略冷却（首次/重置后必须拉）
+  //   - bootstrapDone 单次保护：本次会话只触发一次，避免路由切换反复拉
   useEffect(() => {
-    if (loading) return;                        // 还在首次 load
-    if (bootstrapping || bootstrapDone) return; // 已在跑或已跑过
-    if (!datadogConfigured) return;             // 没配置 datadog 不自动拉
-    if (items.length > 0) {
-      setBootstrapDone(true); // 有数据就标记跑过，下次刷新不再触发
+    if (loading) return;
+    if (bootstrapping || bootstrapDone) return;
+    if (!datadogConfigured) return;
+
+    const cooldownMin = 5;
+    const lastKey = "crashguard_last_refresh";
+    let last = 0;
+    try {
+      last = Number(localStorage.getItem(lastKey) || 0);
+    } catch {}
+    const ageMin = (Date.now() - last) / 60_000;
+    const isEmpty = items.length === 0;
+    if (!isEmpty && ageMin < cooldownMin) {
+      setBootstrapDone(true);
       return;
     }
-    // 空数据 + 配置 OK → 自动 bootstrap
+
     setBootstrapping(true);
     setBootstrapElapsed(0);
     const startedAt = Date.now();
@@ -478,11 +502,15 @@ function CrashguardPageInner() {
     );
     triggerCrashWarmup()
       .then(async (r) => {
+        try { localStorage.setItem(lastKey, String(Date.now())); } catch {}
+        const bg = (r as any).ai_background;
         setToast({
-          msg: `已拉取 ${r.issues_processed} 条 issue，触发 ${r.analyzed} 个 AI 分析`,
+          msg: isEmpty
+            ? `已拉取 ${r.issues_processed} 条 issue${bg ? "，AI 分析后台运行中" : ""}`
+            : `已自动同步最新数据 (${r.issues_processed} 条)`,
           type: "success",
         });
-        await loadTop(); // 拉数完成后立即刷新列表
+        await loadTop();
       })
       .catch((e) => {
         setToast({ msg: `自动拉取失败：${e?.message || e}`, type: "error" });
@@ -512,6 +540,23 @@ function CrashguardPageInner() {
       clearInterval(id);
     };
   }, []);
+
+  // 「线上最新版本」——按平台从后端拉，替换硬编码 3.16.0
+  useEffect(() => {
+    let cancelled = false;
+    fetchCrashLatestRelease()
+      .then((r) => {
+        if (cancelled) return;
+        setLatestRelease(r.versions);
+        setLatestReleaseSource(r.source as any);
+      })
+      .catch(() => {
+        // 接口不通 → 不显示，比错显 3.16.0 强
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [items.length]);
 
   useEffect(() => {
     if (!reportLoading) return;
@@ -610,7 +655,28 @@ function CrashguardPageInner() {
               ⚠
             </span>
             <span className="text-sm" style={{ color: D.text1 }}>
-              {t("最新版本")} <strong>3.16.0</strong>
+              {t("最新版本")}{" "}
+              {(() => {
+                if (!latestRelease) return <strong style={{ color: D.text3 }}>—</strong>;
+                const order: Array<keyof typeof latestRelease> = ["flutter", "ios", "android"];
+                const visible = order.filter((k) => {
+                  if (platformFilter !== "all" && k !== platformFilter) return false;
+                  return Boolean(latestRelease[k]);
+                });
+                if (visible.length === 0) return <strong style={{ color: D.text3 }}>—</strong>;
+                return visible.map((k, i) => {
+                  const src = latestReleaseSource?.[k];
+                  const tag = src === "config_override" ? "·配置" : src === "derived" ? "·派生" : "";
+                  return (
+                    <span key={k}>
+                      {i > 0 && <span style={{ color: D.text3 }}> · </span>}
+                      <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
+                      <strong>{latestRelease[k]}</strong>
+                      <span style={{ color: D.text3, fontSize: 11 }}>{tag}</span>
+                    </span>
+                  );
+                });
+              })()}
             </span>
             <span className="text-sm" style={{ color: D.text2 }}>
               · {totals.sessions.toLocaleString()} {t("受影响会话")} · {totals.events.toLocaleString()} {t("总事件")}
@@ -634,14 +700,6 @@ function CrashguardPageInner() {
               }}
             >
               {loading ? t("加载中...") : t("刷新")}
-            </button>
-            <button
-              onClick={onTrigger}
-              disabled={triggering}
-              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
-              style={{ background: D.accent, color: "#FFFFFF", opacity: triggering ? 0.5 : 1 }}
-            >
-              {triggering ? t("拉取中...") : t("立即拉取")} →
             </button>
             <button
               onClick={onBatchAnalyze}
@@ -877,6 +935,11 @@ function CrashguardPageInner() {
                 )}
                 {filteredItems.map((it, idx) => {
                   const active = selectedId === it.datadog_issue_id;
+                  const autoPrThreshold = autoPrQueue?.threshold ?? 0.7;
+                  const feasibility = typeof it.analysis_feasibility_score === "number"
+                    ? it.analysis_feasibility_score
+                    : null;
+                  const blocksAutoPr = !it.has_pr && feasibility !== null && feasibility < autoPrThreshold;
                   return (
                     <tr
                       key={it.datadog_issue_id}
@@ -950,6 +1013,13 @@ function CrashguardPageInner() {
                                 <Badge fg="#7C3AED" bg="rgba(167,139,250,0.12)">
                                   🤖 {t("已分析")}
                                 </Badge>
+                              )}
+                              {blocksAutoPr && (
+                                <span title={`${t("可行度低于自动 PR 阈值")}: ${(feasibility * 100).toFixed(0)}% < ${(autoPrThreshold * 100).toFixed(0)}%`}>
+                                  <Badge fg={D.warn} bg={D.warnBg}>
+                                    {t("PR 不自动生成")}
+                                  </Badge>
+                                </span>
                               )}
                             </div>
                             <div
@@ -1068,7 +1138,10 @@ function CrashguardPageInner() {
           onFollowupSubmit={() => startFollowup(selectedId!, followupText)}
           savingPatch={savingPatch}
           analyzing={analyzing}
-          onAnalyze={() => onAnalyze(selectedId!)}
+          onAnalyze={() => {
+            setReanalyzePrompt("");
+            setReanalyzeModal({ issueId: selectedId! });
+          }}
           onPatch={(patch) => onPatch(selectedId!, patch)}
           onClose={() => {
             setSelectedId(null);
@@ -1077,6 +1150,7 @@ function CrashguardPageInner() {
           }}
           creatingPr={creatingPr}
           onCreatePr={onCreatePr}
+          autoPrThreshold={autoPrQueue?.threshold ?? 0.7}
           t={t}
         />
       )}
@@ -1136,6 +1210,105 @@ function CrashguardPageInner() {
               100% { left: 100%; }
             }
           `}</style>
+        </div>
+      )}
+
+      {/* 重新分析 modal：让用户输入 prompt 引导 AI 分析方向 */}
+      {reanalyzeModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.45)" }}
+          onClick={() => setReanalyzeModal(null)}
+        >
+          <div
+            className="rounded-lg shadow-xl flex flex-col"
+            style={{
+              background: D.surface,
+              width: 640,
+              maxHeight: "85vh",
+              border: `1px solid ${D.border}`,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              className="flex items-center justify-between px-5 py-3"
+              style={{
+                borderBottom: `1px solid ${D.border}`,
+                background: "linear-gradient(135deg, #F5F3FF 0%, #FFFFFF 100%)",
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-base">🤖</span>
+                <div className="text-sm font-semibold" style={{ color: D.text1 }}>
+                  {t("重新分析")} · {t("引导 AI")}
+                </div>
+              </div>
+              <button
+                onClick={() => setReanalyzeModal(null)}
+                className="rounded px-2 py-1 text-sm"
+                style={{ color: D.text2 }}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-5 py-4">
+              <div className="text-xs mb-2" style={{ color: D.text2 }}>
+                {t("可选——告诉 AI 你想让它重点关注的方向；留空则跑默认分析。")}
+              </div>
+              <textarea
+                value={reanalyzePrompt}
+                onChange={(e) => setReanalyzePrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    submitReanalyze();
+                  }
+                }}
+                placeholder={t("例：重点排查空指针 / 优先看 OOM 路径 / 关注最近版本回归 ...")}
+                rows={6}
+                className="w-full rounded px-3 py-2 text-[13px] leading-relaxed"
+                style={{
+                  border: `1px solid ${D.borderStrong}`,
+                  background: D.surface,
+                  color: D.text1,
+                  outline: "none",
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+                autoFocus
+              />
+              <div className="text-[11px] mt-2" style={{ color: D.text3 }}>
+                ⌘/Ctrl + Enter {t("快速提交")}
+              </div>
+            </div>
+            <div
+              className="flex items-center justify-end gap-2 px-5 py-3"
+              style={{ borderTop: `1px solid ${D.border}` }}
+            >
+              <button
+                onClick={() => setReanalyzeModal(null)}
+                className="rounded px-3 py-1.5 text-xs font-medium"
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${D.borderStrong}`,
+                  color: D.text1,
+                }}
+              >
+                {t("取消")}
+              </button>
+              <button
+                onClick={submitReanalyze}
+                className="rounded px-3 py-1.5 text-xs font-semibold"
+                style={{
+                  background: "#7C3AED",
+                  color: "#FFFFFF",
+                  border: "1px solid #7C3AED",
+                }}
+              >
+                🚀 {reanalyzePrompt.trim() ? t("按引导分析") : t("默认分析")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1460,6 +1633,7 @@ function DetailDrawer({
   onClose,
   creatingPr,
   onCreatePr,
+  autoPrThreshold,
   t,
 }: {
   loading: boolean;
@@ -1476,6 +1650,7 @@ function DetailDrawer({
   onClose: () => void;
   creatingPr: number | null;
   onCreatePr: (analysisId: number, issueId: string) => void;
+  autoPrThreshold: number;
   t: (k: string) => string;
 }) {
   return (
@@ -1546,6 +1721,7 @@ function DetailDrawer({
               {(() => {
                 const ana = detail.analysis as any;
                 const anaId = ana?.id as number | undefined;
+                const feasibility = typeof ana?.feasibility_score === "number" ? ana.feasibility_score : null;
                 const prs = detail.pull_requests || [];
                 const openablePr = prs.find((p) => p.pr_url);
                 const isLoading = creatingPr === anaId;
@@ -1553,6 +1729,21 @@ function DetailDrawer({
                   return null; // 下方 PR 标签链已显示，不重复渲染
                 }
                 if (!anaId) return null;
+                if (feasibility !== null && feasibility < autoPrThreshold) {
+                  return (
+                    <span
+                      className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
+                      style={{
+                        background: D.warnBg,
+                        color: D.warn,
+                        border: `1px solid ${D.warn}`,
+                      }}
+                      title={`${t("可行度低于自动 PR 阈值")}: ${(feasibility * 100).toFixed(0)}% < ${(autoPrThreshold * 100).toFixed(0)}%`}
+                    >
+                      ⚠ {t("可信度较低，无法自动生成 PR")}
+                    </span>
+                  );
+                }
                 return (
                   <button
                     onClick={() => onCreatePr(anaId, detail.datadog_issue_id)}
@@ -1899,38 +2090,80 @@ function DetailDrawer({
               )}
             </Section>
 
-            {/* 追问会话 thread */}
-            {analyses && analyses.filter((a) => a.is_followup).length > 0 && (
-              <Section title={t("追问会话")}>
+            {/* 分析历史：每次分析（含 user prompt 引导）作为独立卡片，时间倒序 */}
+            {analyses && analyses.length > 0 && (
+              <Section title={`${t("分析历史")} (${analyses.length})`}>
                 <div className="space-y-3">
-                  {analyses.filter((a) => a.is_followup).map((a) => (
-                    <div key={a.run_id}
-                      className="rounded-md overflow-hidden"
-                      style={{ border: `1px solid ${D.border}` }}>
-                      <div className="px-3 py-2 text-[12px] font-medium"
-                        style={{ background: "rgba(167,139,250,0.08)", color: "#7C3AED",
-                                borderBottom: `1px solid ${D.border}` }}>
-                        💬 {t("追问")}：{a.followup_question}
-                      </div>
-                      <div className="px-3 py-2.5 text-[12.5px] leading-relaxed crashguard-md"
-                        style={{ color: D.text1 }}>
-                        {a.status === "success" ? (
-                          <MarkdownText>{a.answer || "—"}</MarkdownText>
-                        ) : a.status === "running" || a.status === "pending" ? (
-                          <span style={{ color: D.text2 }}>⏳ {t("AI 正在思考...")}</span>
-                        ) : a.status === "failed" ? (
-                          <span style={{ color: D.danger }}>❌ {a.error || t("失败")}</span>
-                        ) : (
-                          <span style={{ color: D.text3 }}>—</span>
-                        )}
-                      </div>
-                      {a.created_at && (
-                        <div className="px-3 pb-2 text-[10px] font-mono" style={{ color: D.text3 }}>
-                          {a.created_at.replace("T", " ").slice(0, 16)} · 🤖 {a.agent_model || a.agent_name || "agent"}
+                  {[...analyses].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")).map((a) => {
+                    const hasPrompt = Boolean((a.followup_question || "").trim());
+                    const isFollowup = Boolean(a.is_followup);
+                    const headerBg = hasPrompt ? "rgba(167,139,250,0.08)" : "rgba(184,146,46,0.06)";
+                    const headerColor = hasPrompt ? "#7C3AED" : D.accent;
+                    const headerIcon = hasPrompt ? "💬" : "🔍";
+                    const headerLabel = hasPrompt
+                      ? `${t("引导 prompt")}`
+                      : `${t("默认分析")}`;
+                    return (
+                      <div key={a.run_id}
+                        className="rounded-md overflow-hidden"
+                        style={{ border: `1px solid ${D.border}` }}>
+                        <div className="px-3 py-2 text-[12px] font-medium flex items-start gap-2"
+                          style={{ background: headerBg, color: headerColor,
+                                  borderBottom: `1px solid ${D.border}` }}>
+                          <span style={{ flexShrink: 0 }}>{headerIcon}</span>
+                          <div style={{ flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                            <span style={{ fontWeight: 600 }}>{headerLabel}：</span>
+                            <span>{hasPrompt ? a.followup_question : t("未指定方向，跑全量根因分析")}</span>
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  ))}
+                        <div className="px-3 py-2.5 text-[12.5px] leading-relaxed crashguard-md"
+                          style={{ color: D.text1 }}>
+                          {a.status === "success" ? (
+                            isFollowup && a.answer ? (
+                              <MarkdownText>{a.answer}</MarkdownText>
+                            ) : (
+                              <div className="space-y-2">
+                                {a.root_cause && (
+                                  <div>
+                                    <div className="text-[11px] uppercase tracking-wider mb-0.5"
+                                      style={{ color: D.text3 }}>{t("根因")}</div>
+                                    <MarkdownText>{a.root_cause}</MarkdownText>
+                                  </div>
+                                )}
+                                {a.fix_suggestion && (
+                                  <div>
+                                    <div className="text-[11px] uppercase tracking-wider mb-0.5 mt-1"
+                                      style={{ color: D.text3 }}>{t("修复建议")}</div>
+                                    <MarkdownText>{a.fix_suggestion}</MarkdownText>
+                                  </div>
+                                )}
+                                {!a.root_cause && !a.fix_suggestion && (
+                                  <span style={{ color: D.text3 }}>—</span>
+                                )}
+                              </div>
+                            )
+                          ) : a.status === "running" || a.status === "pending" ? (
+                            <span style={{ color: D.text2 }}>⏳ {t("AI 正在思考...")}</span>
+                          ) : a.status === "failed" ? (
+                            <span style={{ color: D.danger }}>❌ {a.error || t("失败")}</span>
+                          ) : (
+                            <span style={{ color: D.text3 }}>—</span>
+                          )}
+                        </div>
+                        <div className="px-3 pb-2 text-[10px] font-mono flex items-center gap-3 flex-wrap"
+                          style={{ color: D.text3 }}>
+                          {a.created_at && (
+                            <span>{a.created_at.replace("T", " ").slice(0, 16)}</span>
+                          )}
+                          <span>🤖 {a.agent_model || a.agent_name || "agent"}</span>
+                          {typeof a.feasibility_score === "number" && a.feasibility_score > 0 && (
+                            <span>{t("可行度")} {(a.feasibility_score * 100).toFixed(0)}%</span>
+                          )}
+                          {a.confidence && <span>{t("置信度")} {a.confidence}</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </Section>
             )}

@@ -23,6 +23,29 @@ logger = logging.getLogger("crashguard.scheduler")
 _TICK_INTERVAL_SEC = 60
 _last_fired: dict[str, str] = {}  # report_type → "YYYY-MM-DD HH:MM"
 _pr_sync_last_fired: str = ""    # "YYYY-MM-DD HH:MM" 防同分钟重跑
+_analyze_last_fired: str = ""    # 定时分析 tick 防同分钟重跑
+
+
+async def _run_analyze_tick(max_per_tick: int) -> dict:
+    """分批跑今日 attention 中未 success 的 issue，最多 max_per_tick 个。
+
+    设计目标：单次只跑 1-2 个 issue（~90s/个），避免一次性 20 个被 OS/网络 timeout 杀。
+    复用 _auto_analyze_attention 的去重 + 串行 + auto-PR 逻辑。
+    """
+    from datetime import date
+    from app.crashguard.services.daily_report import _auto_analyze_attention
+    from app.crashguard.workers.warmup import _collect_attention_ids
+
+    today = date.today()
+    full = await _collect_attention_ids(today)
+    if not full:
+        return {"picked": 0, "completed": 0, "remaining": 0}
+
+    # _auto_analyze_attention 内部还有 dedup 闸再过滤 success/running/pending —— 这里限量挑前 N 个传进去
+    # （内部会过滤掉已跑过的）
+    picked = full[: max(1, int(max_per_tick))]
+    completed = await _auto_analyze_attention(picked)
+    return {"picked": len(picked), "completed": completed, "remaining": max(0, len(full) - completed)}
 
 
 def _cron_matches(expr: str, now: datetime) -> bool:
@@ -76,9 +99,10 @@ async def _tick_once() -> None:
             continue
         if not _cron_matches(cron_expr, now):
             continue
+        # 先打 tag 再 send——异常时本分钟内不重试（避免日志风暴），下分钟 cron 不再 match
+        _last_fired[report_type] = tag
         try:
             res = await send_daily_report(report_type, target_date=now.date())
-            _last_fired[report_type] = tag
             logger.info(
                 "crashguard daily_report fired: type=%s ok=%s sent=%s reason=%s",
                 report_type, res.get("ok"), res.get("sent"), res.get("skipped_reason"),
@@ -100,6 +124,21 @@ async def _tick_once() -> None:
             )
         except Exception:
             logger.exception("crashguard pr_sync tick failed")
+
+    # AI 分析定时小步分批（独立 cron，默认 */5）
+    global _analyze_last_fired
+    analyze_cron = getattr(s, "analyze_cron", "") or ""
+    if analyze_cron and _analyze_last_fired != tag and _cron_matches(analyze_cron, now):
+        _analyze_last_fired = tag  # 先打 tag 防异常重试
+        max_per_tick = int(getattr(s, "analyze_max_per_tick", 1) or 1)
+        try:
+            res = await _run_analyze_tick(max_per_tick=max_per_tick)
+            logger.info(
+                "crashguard analyze tick fired: picked=%d completed=%d remaining=%d",
+                res.get("picked", 0), res.get("completed", 0), res.get("remaining", 0),
+            )
+        except Exception:
+            logger.exception("crashguard analyze tick failed")
 
 
 async def report_scheduler_loop() -> None:

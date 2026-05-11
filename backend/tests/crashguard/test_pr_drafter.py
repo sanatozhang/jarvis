@@ -179,3 +179,156 @@ def test_try_apply_real_diff_succeeds(tmp_path):
     ok, err = _try_apply_fix_diff(str(tmp_path), diff, "any")
     assert ok is True, err
     assert "WORLD" in f.read_text()
+
+
+# ---------------- P1: 自愈 cleanup + 宽松 dirty 检查 ----------------
+
+def _git_init_repo(tmp_path):
+    """在 tmp_path 里建一个最小 git repo（含一个 init commit）。"""
+    import subprocess as _sp
+    _sp.run(["git", "init", "-q", "-b", "main"], cwd=str(tmp_path), check=True)
+    _sp.run(["git", "config", "user.email", "t@t"], cwd=str(tmp_path), check=True)
+    _sp.run(["git", "config", "user.name", "t"], cwd=str(tmp_path), check=True)
+    (tmp_path / "README").write_text("init\n", encoding="utf-8")
+    _sp.run(["git", "add", "-A"], cwd=str(tmp_path), check=True)
+    _sp.run(["git", "commit", "-qm", "init"], cwd=str(tmp_path), check=True)
+
+
+def test_worktree_dirty_returns_false_when_clean(tmp_path):
+    from app.crashguard.services.pr_drafter import _worktree_dirty
+    _git_init_repo(tmp_path)
+    dirty, _ = _worktree_dirty(str(tmp_path))
+    assert dirty is False
+
+
+def test_worktree_dirty_returns_true_for_tracked_file_change(tmp_path):
+    """真文件改动必须阻塞 auto-PR（保护工程师工作）。"""
+    from app.crashguard.services.pr_drafter import _worktree_dirty
+    _git_init_repo(tmp_path)
+    (tmp_path / "README").write_text("dirty change\n", encoding="utf-8")
+    dirty, detail = _worktree_dirty(str(tmp_path))
+    assert dirty is True
+    assert "README" in detail
+
+
+def test_worktree_dirty_ignores_submodule_pointer_change(tmp_path):
+    """关键场景：只有 submodule pointer 漂移时不应阻塞——auto-PR 不动 submodule。"""
+    import subprocess as _sp
+    from app.crashguard.services.pr_drafter import _worktree_dirty
+    # 主 repo
+    _git_init_repo(tmp_path)
+    # 在另一个临时目录里造一个"被引用"的 submodule
+    sub = tmp_path.parent / f"{tmp_path.name}-sub"
+    sub.mkdir()
+    _sp.run(["git", "init", "-q", "-b", "main"], cwd=str(sub), check=True)
+    _sp.run(["git", "config", "user.email", "t@t"], cwd=str(sub), check=True)
+    _sp.run(["git", "config", "user.name", "t"], cwd=str(sub), check=True)
+    (sub / "x.txt").write_text("v1\n")
+    _sp.run(["git", "add", "-A"], cwd=str(sub), check=True)
+    _sp.run(["git", "commit", "-qm", "v1"], cwd=str(sub), check=True)
+    # 把它加为 submodule
+    _sp.run(
+        ["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "sub"],
+        cwd=str(tmp_path), check=True,
+    )
+    _sp.run(["git", "commit", "-qm", "add sub"], cwd=str(tmp_path), check=True)
+    # 在 submodule 里多一个 commit → 父 repo 的 submodule pointer 出现 dirty
+    (sub / "x.txt").write_text("v2\n")
+    _sp.run(["git", "add", "-A"], cwd=str(sub), check=True)
+    _sp.run(["git", "commit", "-qm", "v2"], cwd=str(sub), check=True)
+    # 父 repo 的 sub 目录指针不更新，仍指 v1——pull 一下让 worktree 看到漂移
+    _sp.run(["git", "-C", "sub", "fetch", "-q"], cwd=str(tmp_path), check=True)
+    _sp.run(["git", "-C", "sub", "checkout", "-q", "main"], cwd=str(tmp_path), check=True)
+    # 现在 git status 应该报 "M sub"（submodule pointer 改动）
+    dirty, detail = _worktree_dirty(str(tmp_path))
+    # 期望：忽略 submodule pointer 漂移 → 不算 dirty
+    assert dirty is False, f"submodule pointer dirty should be ignored, got: {detail}"
+
+
+def test_cleanup_resets_dirty_worktree_to_base(tmp_path):
+    """流程失败后留下脏文件 + 非主分支 → cleanup 应回到 main + 工作树干净 + 删未推送分支。"""
+    import subprocess as _sp
+    from app.crashguard.services.pr_drafter import _cleanup_repo_after_pr, _worktree_dirty
+    _git_init_repo(tmp_path)
+    # 模拟流程：切到临时分支，写脏文件
+    _sp.run(["git", "checkout", "-q", "-b", "crashguard/test/dummy"], cwd=str(tmp_path), check=True)
+    (tmp_path / "README").write_text("auto-PR dirty\n", encoding="utf-8")
+    (tmp_path / ".crashguard").mkdir(exist_ok=True)
+    (tmp_path / ".crashguard" / "tmp.md").write_text("garbage\n", encoding="utf-8")
+    # 进入 cleanup
+    _cleanup_repo_after_pr(
+        repo_path=str(tmp_path),
+        base_ref="main",
+        initial_branch="main",
+        branch_to_delete="crashguard/test/dummy",
+        pushed_to_remote=False,
+    )
+    # 验证：当前在 main、worktree 干净、临时分支已删
+    rc = _sp.run(["git", "branch", "--show-current"], cwd=str(tmp_path), capture_output=True, text=True)
+    assert rc.stdout.strip() == "main", f"should be on main, got: {rc.stdout}"
+    dirty, detail = _worktree_dirty(str(tmp_path))
+    assert dirty is False, f"worktree should be clean, got: {detail}"
+    branches = _sp.run(["git", "branch"], cwd=str(tmp_path), capture_output=True, text=True).stdout
+    assert "crashguard/test/dummy" not in branches
+
+
+def test_cleanup_keeps_pushed_branch(tmp_path):
+    """已 push 到远端的分支不能删——远端 PR 还指向它。"""
+    import subprocess as _sp
+    from app.crashguard.services.pr_drafter import _cleanup_repo_after_pr
+    _git_init_repo(tmp_path)
+    _sp.run(["git", "checkout", "-q", "-b", "crashguard/test/pushed"], cwd=str(tmp_path), check=True)
+    (tmp_path / "patch.txt").write_text("patch\n", encoding="utf-8")
+    _sp.run(["git", "add", "-A"], cwd=str(tmp_path), check=True)
+    _sp.run(["git", "commit", "-qm", "patch"], cwd=str(tmp_path), check=True)
+    _cleanup_repo_after_pr(
+        repo_path=str(tmp_path),
+        base_ref="main",
+        initial_branch="main",
+        branch_to_delete="crashguard/test/pushed",
+        pushed_to_remote=True,  # 标记已推送
+    )
+    # 已推送的分支必须保留
+    branches = _sp.run(["git", "branch"], cwd=str(tmp_path), capture_output=True, text=True).stdout
+    assert "crashguard/test/pushed" in branches
+
+
+# ---------------- P2: 进入前自愈（防进程被 SIGKILL 留下残骸） ----------------
+
+def test_pre_enter_heal_resets_stale_crashguard_branch(tmp_path):
+    """模拟"上次进程被 SIGKILL，三库卡在 crashguard/* 分支带脏 prompt.md"。
+    本次进入前 hook 必须自动清回 main，让 _worktree_dirty 检查通过。
+    """
+    import subprocess as _sp
+    from pathlib import Path
+    from app.crashguard.services.pr_drafter import _worktree_dirty
+
+    _git_init_repo(tmp_path)
+    # 模拟上次残骸：切到 crashguard 分支 + 写脏文件 + 留 prompt.md
+    _sp.run(["git", "checkout", "-q", "-b", "crashguard/flutter/stale-zombie"], cwd=str(tmp_path), check=True)
+    (tmp_path / "README").write_text("zombie change\n", encoding="utf-8")
+    (tmp_path / "prompt.md").write_text("agent leftover\n", encoding="utf-8")
+    (tmp_path / ".crashguard").mkdir()
+    (tmp_path / ".crashguard" / "tmp.json").write_text("{}", encoding="utf-8")
+
+    # 跑进入前自愈逻辑（提取的内联实现）—— 模拟 draft_pr_for_analysis 入口
+    def _heal(repo_path: str, branch: str):
+        from app.crashguard.services.pr_drafter import _run_git
+        if branch.startswith("crashguard/"):
+            _run_git(["git", "checkout", "--", "."], repo_path, timeout=15)
+            _run_git(["git", "clean", "-fd", "--", ".crashguard"], repo_path, timeout=10)
+            _run_git(["git", "clean", "-fd", "--", "prompt.md"], repo_path, timeout=10)
+            (Path(repo_path) / "prompt.md").unlink(missing_ok=True)
+            _run_git(["git", "checkout", "main"], repo_path, timeout=30)
+            _run_git(["git", "branch", "-D", branch], repo_path, timeout=10)
+
+    _heal(str(tmp_path), "crashguard/flutter/stale-zombie")
+
+    # 验证：回到 main + worktree 干净 + 脏分支没了 + prompt.md 没了
+    cur = _sp.run(["git", "branch", "--show-current"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
+    assert cur == "main"
+    dirty, _ = _worktree_dirty(str(tmp_path))
+    assert dirty is False
+    assert not (tmp_path / "prompt.md").exists()
+    branches = _sp.run(["git", "branch"], cwd=str(tmp_path), capture_output=True, text=True).stdout
+    assert "crashguard/flutter/stale-zombie" not in branches

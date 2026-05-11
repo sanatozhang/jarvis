@@ -12,6 +12,18 @@ from app.crashguard.config import get_crashguard_settings
 
 logger = logging.getLogger("crashguard.api")
 
+# fire-and-forget 后台任务强引用——asyncio.create_task() 返回值若不保留，
+# Python GC 可能在任务运行中将其回收 → 任务静默消失。用 set 保留 + done callback 释放。
+_BG_TASKS: set = set()
+
+
+def _spawn_bg(coro, name: str = "crashguard-bg"):
+    import asyncio
+    task = asyncio.create_task(coro, name=name)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return task
+
 
 def _require_enabled(request: Request) -> None:
     """Gate：crashguard 关闭时整个子模块返回 403。
@@ -80,19 +92,47 @@ async def trigger_pipeline(req: TriggerRequest) -> Any:
 
 @router.post("/warmup")
 async def trigger_warmup() -> Dict[str, Any]:
-    """立即跑一次"拉数 → 选 Top → 串行 auto-analyze（含 auto-PR）"。
+    """立即拉数（同步，几秒返回），AI 分析 fire-and-forget 后台跑。
 
-    与 /trigger 区别：trigger 只跑数据阶段；这里跑完整闭环（含 AI 分析触发）。
+    返回的 analyzed / auto_pr 字段保留兼容前端（值为 0/queued，后台真分析完成后入库）。
     """
+    import asyncio
+    from datetime import date as _date
+
     s = get_crashguard_settings()
     if not s.enabled:
         raise HTTPException(status_code=503, detail="crashguard 已被 kill switch 关闭")
-    from app.crashguard.workers.warmup import run_pipeline_and_auto_analyze
+    from app.crashguard.workers.warmup import (
+        run_ai_analysis_phase,
+        run_data_only,
+    )
     try:
-        return await run_pipeline_and_auto_analyze(reason="manual")
+        data = await run_data_only(reason="manual")
     except Exception as e:
-        logger.exception("manual warmup failed")
+        logger.exception("manual warmup data phase failed")
         raise HTTPException(status_code=500, detail=f"warmup failed: {e}")
+
+    # 数据阶段已完成（前端能看到新 issue），AI 分析后台跑——不阻塞响应
+    # ⚠️ 用 _spawn_bg 保留强引用，避免 asyncio.create_task 返回值丢失被 GC 回收
+    if not data.get("skipped"):
+        try:
+            today = _date.fromisoformat(data["today"])
+            _spawn_bg(
+                run_ai_analysis_phase(today=today, reason="manual-bg"),
+                name=f"ai-analysis-{today.isoformat()}",
+            )
+            logger.info("manual warmup: AI analysis dispatched in background for %s", today)
+        except Exception:
+            logger.exception("failed to schedule background AI analysis")
+
+    return {
+        "issues_processed": data.get("issues_processed", 0),
+        "top_n_count": data.get("top_n_count", 0),
+        "attention_count": 0,   # 真值在后台计算，前端通过 /auto-pr-queue 轮询
+        "analyzed": 0,
+        "auto_pr": {"scanned": 0, "attempted": 0, "created": 0, "skipped": 0, "failed": [], "queued": True},
+        "ai_background": not data.get("skipped"),
+    }
 
 
 @router.get("/auto-pr-queue")
@@ -240,6 +280,44 @@ async def auto_pr_queue() -> Dict[str, Any]:
     }
 
 
+@router.get("/latest-release")
+async def get_latest_release() -> Dict[str, Any]:
+    """获取各平台「线上最新版本」。
+
+    口径：
+      - 配置 `current_release.{flutter,android,ios}` 优先（手动覆盖）
+      - 否则按崩溃数据派生：版本累计 events ≥ `latest_version_min_events`（默认 300）后取最大 semver
+      - 都不满足返回 ""
+    """
+    from app.crashguard.services.version_util import resolve_effective_latest_release
+    from app.db.database import get_session
+
+    s = get_crashguard_settings()
+    overrides = {
+        "flutter": s.current_release_flutter,
+        "android": s.current_release_android,
+        "ios": s.current_release_ios,
+    }
+    result: Dict[str, str] = {}
+    async with get_session() as session:
+        for platform, override in overrides.items():
+            result[platform] = await resolve_effective_latest_release(
+                session=session,
+                platform=platform,
+                override=override,
+                min_events=s.latest_version_min_events,
+            )
+    return {
+        "versions": result,
+        "min_events_threshold": s.latest_version_min_events,
+        "source": {
+            p: ("config_override" if overrides[p].strip() else
+                ("derived" if result[p] else "unknown"))
+            for p in overrides
+        },
+    }
+
+
 @router.get("/health")
 async def health() -> Dict[str, Any]:
     """模块健康检查"""
@@ -301,8 +379,9 @@ async def get_top(
         # 批量补 PR 状态：每个 issue 取最新一条 PR
         issue_ids = [item["datadog_issue_id"] for item in top]
         pr_map: Dict[str, Dict[str, Any]] = {}
+        ana_map: Dict[str, Dict[str, Any]] = {}
         if issue_ids:
-            from app.crashguard.models import CrashPullRequest
+            from app.crashguard.models import CrashAnalysis, CrashPullRequest
             pr_rows = (await session.execute(
                 select(CrashPullRequest)
                 .where(CrashPullRequest.datadog_issue_id.in_(issue_ids))
@@ -316,6 +395,21 @@ async def get_top(
                     "pr_status": pr.pr_status or "draft",
                     "pr_repo": pr.repo or "",
                 })
+            ana_rows = (await session.execute(
+                select(CrashAnalysis)
+                .where(
+                    CrashAnalysis.datadog_issue_id.in_(issue_ids),
+                    CrashAnalysis.followup_question == "",
+                    CrashAnalysis.status == "success",
+                )
+                .order_by(CrashAnalysis.id.desc())
+            )).scalars().all()
+            for ana in ana_rows:
+                ana_map.setdefault(ana.datadog_issue_id, {
+                    "analysis_id": ana.id,
+                    "analysis_feasibility_score": float(ana.feasibility_score or 0.0),
+                    "analysis_confidence": ana.confidence or "",
+                })
 
     for item in top:
         item["datadog_url"] = _datadog_url_for(item["datadog_issue_id"])
@@ -325,6 +419,10 @@ async def get_top(
         item["pr_number"] = pr["pr_number"] if pr else None
         item["pr_status"] = pr["pr_status"] if pr else ""
         item["pr_repo"] = pr["pr_repo"] if pr else ""
+        ana = ana_map.get(item["datadog_issue_id"])
+        item["analysis_id"] = ana["analysis_id"] if ana else None
+        item["analysis_feasibility_score"] = ana["analysis_feasibility_score"] if ana else None
+        item["analysis_confidence"] = ana["analysis_confidence"] if ana else ""
     return {"date": target_date.isoformat(), "count": len(top), "issues": top}
 
 
@@ -472,19 +570,41 @@ async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) ->
     }
 
 
+class AnalyzeRequest(BaseModel):
+    user_prompt: str = Field(
+        default="",
+        max_length=4000,
+        description="可选——用户引导 prompt，会作为 followup_question 注入 AI；空串则跑默认分析",
+    )
+
+
 @router.post("/analyze/{issue_id}")
-async def analyze_issue(issue_id: str) -> Dict[str, Any]:
-    """异步触发分析。立即返回 run_id；前端轮询 GET /analyses/{run_id} 查结果。"""
+async def analyze_issue(
+    issue_id: str,
+    req: Optional[AnalyzeRequest] = None,
+) -> Dict[str, Any]:
+    """异步触发分析。立即返回 run_id；前端轮询 GET /analyses/{run_id} 查结果。
+
+    可选 body `{"user_prompt": "..."}` 引导 AI 分析方向（复用 followup_question 机制）。
+    """
     from app.crashguard.services.analyzer import start_analysis
 
+    user_prompt = (req.user_prompt or "").strip() if req else ""
     try:
-        run_id = await start_analysis(issue_id)
+        # UI「重新分析」按钮 = 用户主动按下 = 强制重跑（不命中去重窗口）
+        # 带 user_prompt 时函数内部已自动当 followup（绕过去重）；这里 force 是兜底
+        run_id = await start_analysis(
+            issue_id,
+            triggered_by="manual",
+            followup_question=user_prompt,
+            force=True,
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("start_analysis failed for %s", issue_id)
         raise HTTPException(status_code=500, detail=f"start_analysis failed: {e}")
-    return {"run_id": run_id, "status": "pending"}
+    return {"run_id": run_id, "status": "pending", "user_prompt": user_prompt}
 
 
 @router.get("/analyses/{run_id}")

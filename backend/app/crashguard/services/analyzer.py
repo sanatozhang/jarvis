@@ -26,7 +26,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -173,6 +173,8 @@ async def start_analysis(
     triggered_by: str = "manual",
     followup_question: str = "",
     parent_run_id: str = "",
+    force: bool = False,
+    dedup_hours: Optional[int] = None,
 ) -> str:
     """
     异步启动一次分析。立即返回 run_id；后台 task 跑完后更新同一行。
@@ -180,6 +182,9 @@ async def start_analysis(
     Args:
         followup_question: 非空时进入"追问模式"——prompt 会拼上前序所有分析作为 context
         parent_run_id: 追问基于的 run_id（默认取最新成功的）
+        force: True 时强制重跑（用户点 UI 重新分析 / 带 followup 引导 prompt 时）；
+               False 时若 dedup_hours 内已有 success 分析则复用其 run_id，避免重复烧 token
+        dedup_hours: 去重窗口（小时）。None 表示读 config crashguard.analysis_dedup_hours
 
     Raises:
         ValueError: issue 不存在
@@ -190,6 +195,34 @@ async def start_analysis(
         )).scalar_one_or_none()
         if issue is None:
             raise ValueError(f"issue {issue_id} not found")
+
+    # 去重闸：force=True 或 followup（用户主动引导）跳过；否则查最近 success 复用
+    has_followup = bool((followup_question or "").strip())
+    if not force and not has_followup:
+        if dedup_hours is None:
+            try:
+                from app.crashguard.config import get_crashguard_settings
+                dedup_hours = int(getattr(get_crashguard_settings(), "analysis_dedup_hours", 6) or 6)
+            except Exception:
+                dedup_hours = 6
+        if dedup_hours > 0:
+            cutoff = datetime.utcnow() - timedelta(hours=dedup_hours)
+            async with get_session() as session:
+                latest = (await session.execute(
+                    select(CrashAnalysis)
+                    .where(CrashAnalysis.datadog_issue_id == issue_id)
+                    .where(CrashAnalysis.status == "success")
+                    .where(CrashAnalysis.created_at >= cutoff)
+                    .order_by(CrashAnalysis.created_at.desc())
+                    .limit(1)
+                )).scalar_one_or_none()
+                if latest is not None:
+                    logger.info(
+                        "start_analysis dedup hit: issue=%s reusing run_id=%s (age=%.1fh)",
+                        issue_id, latest.analysis_run_id,
+                        (datetime.utcnow() - latest.created_at).total_seconds() / 3600.0,
+                    )
+                    return latest.analysis_run_id
 
     run_id = str(uuid.uuid4())
     async with get_session() as session:

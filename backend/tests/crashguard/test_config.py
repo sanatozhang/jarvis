@@ -36,3 +36,26 @@ def test_env_overrides_yaml(monkeypatch):
     s = get_crashguard_settings()
     assert s.datadog_api_key == "test-key"
     assert s.enabled is False
+
+
+def test_datadog_split_queries_load_from_yaml(monkeypatch):
+    """fatal / non_fatal 双路 query 应允许通过 config.yaml 覆盖。"""
+    monkeypatch.delenv("CRASHGUARD_DATADOG_QUERY_FATAL", raising=False)
+    monkeypatch.delenv("CRASHGUARD_DATADOG_QUERY_NONFATAL", raising=False)
+
+    from unittest.mock import patch
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    with patch("app.crashguard.config._load_yaml", return_value={
+        "crashguard": {
+            "datadog": {
+                "query_fatal": "@error.is_crash:true",
+                "query_non_fatal": "@type:error -@error.is_crash:true",
+            }
+        }
+    }):
+        s = get_crashguard_settings()
+
+    assert s.datadog_query_fatal == "@error.is_crash:true"
+    assert s.datadog_query_nonfatal == "@type:error -@error.is_crash:true"

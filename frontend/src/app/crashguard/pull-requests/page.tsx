@@ -58,6 +58,8 @@ export default function CrashPullRequestsPage() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [queue, setQueue] = useState<AutoPrQueueResponse | null>(null);
+  // 每秒自增的 tick，强制 re-render 让"分析中"的 elapsed 实时跳动
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const [backfilling, setBackfilling] = useState(false);
   const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
 
@@ -117,6 +119,14 @@ export default function CrashPullRequestsPage() {
       clearInterval(id);
     };
   }, [reloadKey]);
+
+  // 仅在有 running 任务时每秒驱动 nowTick——让 elapsed 走起来
+  useEffect(() => {
+    const hasRunning = (queue?.running?.length ?? 0) > 0;
+    if (!hasRunning) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [queue?.running?.length]);
 
   const onBackfill = async () => {
     if (!confirm("将对所有未建过 PR 的 success 分析（feasibility≥阈值）补建 draft PR。继续？")) return;
@@ -236,6 +246,48 @@ export default function CrashPullRequestsPage() {
               <div style={{ marginTop: 10, padding: "6px 10px", background: D.infoBg, borderRadius: 6, fontSize: 12, color: D.text1 }}>
                 {backfillMsg}
               </div>
+            )}
+            {queue.running.length > 0 && (
+              <details open style={{ marginTop: 10, fontSize: 12 }}>
+                <summary style={{ cursor: "pointer", color: D.text2 }}>
+                  🤖 {t("正在分析的 issue")} ({queue.running.length})
+                </summary>
+                <div style={{ marginTop: 6, maxHeight: 200, overflowY: "auto" }}>
+                  {queue.running.map((r, i) => {
+                    const elapsedSec = r.started_at
+                      ? Math.max(0, Math.floor((nowTick - new Date(r.started_at).getTime()) / 1000))
+                      : 0;
+                    const mins = Math.floor(elapsedSec / 60);
+                    const secs = elapsedSec % 60;
+                    const elapsedStr = mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`;
+                    return (
+                      <div key={i}
+                        style={{
+                          padding: "5px 8px", marginBottom: 4,
+                          background: D.infoBg, borderRadius: 4,
+                          display: "flex", alignItems: "center", gap: 8,
+                          fontSize: 12,
+                        }}>
+                        <span style={{
+                          padding: "1px 6px", borderRadius: 3, fontSize: 10,
+                          background: D.info, color: "#FFF", fontWeight: 600,
+                        }}>
+                          {(r.platform || "?").toUpperCase()}
+                        </span>
+                        <span style={{ color: D.text1, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {r.title || r.datadog_issue_id}
+                        </span>
+                        <span style={{
+                          color: elapsedSec > 90 ? D.warn : D.info,
+                          fontFamily: "monospace", fontWeight: 600, fontSize: 11,
+                        }}>
+                          ⏱ {elapsedStr}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
             )}
             {queue.recent_failures.length > 0 && (
               <details style={{ marginTop: 10, fontSize: 12 }}>

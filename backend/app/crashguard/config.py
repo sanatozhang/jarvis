@@ -93,6 +93,20 @@ class CrashguardSettings(BaseSettings):
     # 周期 pipeline cron（与早晚报解耦）；默认每 4 小时整点
     pipeline_cron: str = "0 */4 * * *"
 
+    # 「线上最新版本」手动覆盖（按平台），留空则按崩溃数据自动派生
+    current_release_flutter: str = ""
+    current_release_android: str = ""
+    current_release_ios: str = ""
+    # 数据派生阈值：某版本累计 events 不足该值则不视作"线上版本"（过滤灰度/测试包）
+    latest_version_min_events: int = 300
+    # AI 分析去重窗口（小时）：自动触发场景下，若 issue 在该窗口内已有 success 分析，
+    # 直接复用——避免 warmup/cron/batch 多入口重复烧 token。UI 重新分析按钮始终强制重跑。
+    analysis_dedup_hours: int = 6
+    # AI 分析定时小步分批：避免一次跑 20 个被杀。每 N 分钟 tick 一次，每次最多 K 个。
+    # 默认每 5 分钟 1 个 → 20 个 issue 约 100 分钟跑完；崩溃只损失当前 1 个，下 tick 自动续跑。
+    analyze_cron: str = "*/5 * * * *"
+    analyze_max_per_tick: int = 1
+
     model_config = {
         "env_prefix": "CRASHGUARD_",
         "env_file": str(PROJECT_ROOT / ".env"),
@@ -151,6 +165,12 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["datadog_tracks"] = ",".join(v) if isinstance(v, list) else str(v)
         if "query" in d:
             flat["datadog_query"] = d["query"]
+        if "query_fatal" in d:
+            flat["datadog_query_fatal"] = d["query_fatal"]
+        if "query_nonfatal" in d:
+            flat["datadog_query_nonfatal"] = d["query_nonfatal"]
+        if "query_non_fatal" in d:
+            flat["datadog_query_nonfatal"] = d["query_non_fatal"]
         if "window_hours" in d:
             flat["datadog_window_hours"] = int(d["window_hours"])
     if "feishu" in cfg:
@@ -183,6 +203,23 @@ def _yaml_overrides() -> Dict[str, Any]:
         flat["warmup_on_startup"] = bool(cfg["warmup_on_startup"])
     if "pipeline_cron" in cfg:
         flat["pipeline_cron"] = str(cfg["pipeline_cron"])
+    if "current_release" in cfg:
+        cr = cfg["current_release"] or {}
+        if isinstance(cr, dict):
+            if "flutter" in cr:
+                flat["current_release_flutter"] = str(cr["flutter"] or "")
+            if "android" in cr:
+                flat["current_release_android"] = str(cr["android"] or "")
+            if "ios" in cr:
+                flat["current_release_ios"] = str(cr["ios"] or "")
+    if "latest_version_min_events" in cfg:
+        flat["latest_version_min_events"] = int(cfg["latest_version_min_events"])
+    if "analysis_dedup_hours" in cfg:
+        flat["analysis_dedup_hours"] = int(cfg["analysis_dedup_hours"])
+    if "analyze_cron" in cfg:
+        flat["analyze_cron"] = str(cfg["analyze_cron"])
+    if "analyze_max_per_tick" in cfg:
+        flat["analyze_max_per_tick"] = int(cfg["analyze_max_per_tick"])
     return flat
 
 

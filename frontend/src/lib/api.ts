@@ -857,6 +857,9 @@ export interface CrashTopItem extends CrashTopItemAnalysisFlag {
   pr_number?: number | null;
   pr_status?: "" | "draft" | "open" | "merged" | "closed";
   pr_repo?: string;
+  analysis_id?: number | null;
+  analysis_feasibility_score?: number | null;
+  analysis_confidence?: string;
 }
 
 export interface CrashTopResponse {
@@ -994,10 +997,10 @@ export interface CrashAnalysisStatus {
   created_at?: string | null;
 }
 
-export const startCrashAnalysis = (issueId: string) =>
+export const startCrashAnalysis = (issueId: string, userPrompt = "") =>
   request<CrashAnalyzeResponse>(`/crash/analyze/${encodeURIComponent(issueId)}`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({ user_prompt: userPrompt }),
   });
 
 export const fetchCrashAnalysisStatus = (runId: string) =>
@@ -1209,7 +1212,20 @@ export interface CrashPrSyncResult {
 
 export interface ApproveCrashPrResult {
   ok: boolean;
+  error?: string;
   reason?: string;
+  total?: number;
+  succeeded?: number;
+  failed?: number;
+  prs?: {
+    ok: boolean;
+    error?: string;
+    pr_url?: string;
+    pr_number?: number | null;
+    pr_status?: "draft" | "open" | "merged" | "closed";
+    branch_name?: string;
+    repo?: string;
+  }[];
   pr_id?: number;
   pr_url?: string;
   pr_number?: number | null;
@@ -1260,9 +1276,9 @@ export const auditCleanup = (keep_days = 30) =>
     body: JSON.stringify({ keep_days }),
   });
 
-// 兼容老调用：异步启动 + 轮询，最长 8 分钟。
-export const analyzeCrashIssue = async (issueId: string): Promise<CrashAnalysisStatus> => {
-  const start = await startCrashAnalysis(issueId);
+// 兼容老调用：异步启动 + 轮询，最长 8 分钟。userPrompt 可选——传入则当作 followup 引导 AI。
+export const analyzeCrashIssue = async (issueId: string, userPrompt = ""): Promise<CrashAnalysisStatus> => {
+  const start = await startCrashAnalysis(issueId, userPrompt);
   const runId = start.run_id;
   const deadline = Date.now() + 8 * 60 * 1000;
   let delay = 3000;
@@ -1291,6 +1307,15 @@ export const fetchCrashIssue = (issueId: string, target_date?: string) => {
 
 export const fetchCrashHealth = () => request<CrashHealth>("/crash/health");
 
+export interface CrashLatestRelease {
+  versions: { flutter: string; android: string; ios: string };
+  min_events_threshold: number;
+  source: { flutter: string; android: string; ios: string };
+}
+
+export const fetchCrashLatestRelease = () =>
+  request<CrashLatestRelease>("/crash/latest-release");
+
 // Lightweight feature flag check — used by Sidebar to conditionally show entry
 export async function fetchCrashEnabled(): Promise<boolean> {
   try {
@@ -1309,6 +1334,17 @@ export const triggerCrashPipeline = (latest_release: string, recent_versions: st
 
 // 完整闭环：拉数 → Top10 选取 → 串行 auto-analyze（含 auto-PR 钩子）
 export const triggerCrashWarmup = () =>
-  request<{ issues_processed: number; attention_count: number; analyzed: number }>(
+  request<{
+    issues_processed: number;
+    attention_count: number;
+    analyzed: number;
+    auto_pr?: {
+      scanned: number;
+      attempted: number;
+      created: number;
+      skipped: number;
+      failed: { analysis_id: string; error: string }[];
+    };
+  }>(
     "/crash/warmup", { method: "POST" }
   );

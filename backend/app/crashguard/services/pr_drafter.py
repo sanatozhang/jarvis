@@ -222,6 +222,82 @@ def _run_git(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str
         return 1, "", str(e)
 
 
+def _default_base_ref(repo_path: str) -> str:
+    """解析远端默认分支，避免把所有移动端仓库都硬编码成 origin/main。"""
+    rc, stdout, _ = _run_git(
+        ["git", "rev-parse", "--abbrev-ref", "origin/HEAD"],
+        repo_path,
+        timeout=15,
+    )
+    ref = stdout.strip()
+    if rc == 0 and ref.startswith("origin/") and ref != "origin/HEAD":
+        return ref
+
+    for fallback in ("origin/main", "origin/master"):
+        rc, _, _ = _run_git(
+            ["git", "rev-parse", "--verify", fallback],
+            repo_path,
+            timeout=15,
+        )
+        if rc == 0:
+            return fallback
+    return "origin/main"
+
+
+def _worktree_dirty(repo_path: str) -> tuple[bool, str]:
+    """返回工作树是否有未提交改动；自动 PR 不应覆盖工程师本地改动。
+
+    口径：忽略 submodule pointer 改动——auto-PR 不动 submodule，单纯的 submodule
+    pointer dirty（工程师在 submodule 里 commit 了但父 repo 还没提交 pointer）
+    不会和 auto-PR 流程冲突，无需阻塞。
+    """
+    rc, stdout, stderr = _run_git(
+        ["git", "status", "--porcelain", "--ignore-submodules=all"],
+        repo_path, timeout=15,
+    )
+    if rc != 0:
+        return True, f"git status failed: {stderr}"
+    return bool(stdout.strip()), stdout.strip()
+
+
+def _cleanup_repo_after_pr(
+    repo_path: str,
+    base_ref: str,
+    initial_branch: str,
+    branch_to_delete: str,
+    pushed_to_remote: bool,
+) -> None:
+    """自愈：流程结束后把 sub-repo 恢复到 base_ref 干净态。
+
+    底层逻辑：本流程失败后，工作树会残留 AI agent 写的代码改动 / .crashguard/ 临时文件 /
+    新建分支。若不清理，下次触发 `_worktree_dirty` 直接拒绝——一次失败永久失败。
+
+    保守策略：
+      - 只 reset 已跟踪文件（保留 submodule pointer 等用户改动）
+      - 清理 .crashguard/ 临时文件
+      - 切回原分支（流程进入前所在分支），如失败则回退 base_ref
+      - 仅删除本流程**未推送到远端**的临时分支；已 push 的保留（PR 用得着）
+    """
+    try:
+        # 1. 回滚跟踪文件改动（不动 untracked + submodule pointer 由 --ignore-submodules 自然不动）
+        _run_git(["git", "checkout", "--", "."], repo_path, timeout=15)
+        # 2. 清 .crashguard/ 临时文件（保留其它 untracked）
+        _run_git(["git", "clean", "-fd", "--", ".crashguard"], repo_path, timeout=10)
+        # 3. 切回原 branch；失败回退 base_ref
+        target = initial_branch or base_ref.replace("origin/", "")
+        rc, _, _ = _run_git(["git", "checkout", target], repo_path, timeout=30)
+        if rc != 0:
+            _run_git(
+                ["git", "checkout", base_ref.replace("origin/", "")],
+                repo_path, timeout=30,
+            )
+        # 4. 删本次创建的临时分支（已 push 的保留——远端 PR 仍指向它）
+        if branch_to_delete and not pushed_to_remote:
+            _run_git(["git", "branch", "-D", branch_to_delete], repo_path, timeout=10)
+    except Exception:
+        logger.exception("post-pr cleanup failed (non-fatal, manual reset may be needed)")
+
+
 def _normalize_diff_for_apply(raw_diff: str, sub_repo_dirname: str) -> str:
     """把 AI 输出的 diff 路径前缀统一掉，避免 apply 找不到文件。
 
@@ -339,7 +415,15 @@ async def _run_implementation_agent(
         changed.append(path)
     if not changed:
         return False, [], "agent produced no source changes"
-    return True, changed, ""
+    # 兜底校验：agent 偶尔在 impl_report.json 写残缺路径（首字母被剥离等模型 hallucination），
+    # 这种路径 git add 会炸 "pathspec did not match any files"。落 add 前先确认文件真存在。
+    real = [f for f in changed if (Path(repo_path) / f).exists()]
+    if not real:
+        return False, [], f"agent reported changed files but none exist on disk: {changed[:5]}"
+    if len(real) != len(changed):
+        missing = [f for f in changed if f not in real]
+        logger.warning("filtered out %d non-existent paths from impl_report: %s", len(missing), missing[:3])
+    return True, real, ""
 
 
 def _try_apply_fix_diff(
@@ -522,183 +606,245 @@ async def draft_pr_for_analysis(
     # Per-repo 锁：防止 daily auto + UI 手动并发触发同一 repo，撞 git index
     repo_lock = await _acquire_repo_lock(repo_path)
     async with repo_lock:
-      # Bug #3 fix：fetch 提到 180s（首次 fetch 慢）
-      rc, _, err = _run_git(["git", "fetch", "origin"], repo_path, timeout=180)
-      if rc != 0:
-        return {"ok": False, "error": f"git fetch failed: {err}"}
+      # 记录进入前所在分支，finally 用来恢复
+      rc_init, init_out, _ = _run_git(
+          ["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_path, timeout=10,
+      )
+      initial_branch = (init_out or "").strip() if rc_init == 0 else ""
+      if initial_branch in ("HEAD", ""):
+          initial_branch = "main"  # detached 兜底
+      base_ref = ""
+      pushed_to_remote = False
 
-      # Bug #2 fix：先把目标分支（本地 + 远程）清掉，避免「already exists」
-      # 失败不致命——分支不存在 git branch -D 就报 not found，忽略即可。
-      _run_git(["git", "checkout", "main"], repo_path, timeout=15)
-      _run_git(["git", "branch", "-D", branch], repo_path, timeout=10)
-
-      rc, _, err = _run_git(["git", "checkout", "-b", branch, "origin/main"], repo_path, timeout=30)
-      if rc != 0:
-          return {"ok": False, "error": f"git checkout origin/main failed: {err}"}
-
-      # === 三档优先级：实施 agent（最优）→ git apply ana.fix_diff（旧路径）→ md 兜底 ===
-      sub_repo_dirname = os.path.basename(repo_path.rstrip("/"))
-      patch_applied = False
-      changed_files: list[str] = []
-      impl_source = ""  # "agent" / "diff" / "" (md fallback)
-      last_failure_reason = ""  # 用于 audit / md fallback 日志
-
-      # 优先 1：实施 agent 直接在真 repo 里 Edit 文件
+      # === 进入前自愈：上次流程可能被 SIGKILL 杀掉（OS OOM / 长 AI 超时），
+      # finally cleanup 来不及跑，留下 crashguard/* 临时分支 + 脏 prompt.md ===
+      # 检测：当前在 crashguard/* 分支 OR 有 prompt.md 残留 → 自动清理回 main
       try:
-          impl_ok, impl_files, impl_err = await _run_implementation_agent(
-              repo_path, ana, issue,
-          )
-      except Exception as exc:
-          impl_ok, impl_files, impl_err = False, [], f"impl agent crash: {exc}"
-      if impl_ok:
-          patch_applied = True
-          impl_source = "agent"
-          changed_files = impl_files
-          logger.info(
-              "implementation agent changed %d file(s) in %s on %s: %s",
-              len(impl_files), sub_repo_dirname, branch, impl_files[:5],
-          )
-      else:
-          last_failure_reason = impl_err
-          logger.info("implementation agent skipped/failed: %s", impl_err)
-          # 实施 agent 可能改了部分文件却没产合规 diff——清理工作树回到 origin/main 干净态
-          _run_git(["git", "checkout", "."], repo_path, timeout=15)
-          _run_git(["git", "clean", "-fd", "--", ":(exclude).crashguard"], repo_path, timeout=15)
-
-          # 优先 2：旧路径——尝试 git apply ana.fix_diff（向后兼容）
-          if (ana.fix_diff or "").strip():
-              applied2, apply_err2 = _try_apply_fix_diff(
-                  repo_path, ana.fix_diff or "", sub_repo_dirname,
-              )
-              if applied2:
-                  patch_applied = True
-                  impl_source = "diff"
-                  logger.info("fix_diff text applied to %s on %s", sub_repo_dirname, branch)
-              else:
-                  last_failure_reason = apply_err2
-                  logger.warning("fix_diff apply failed: %s", apply_err2)
-
-      if patch_applied:
-          # 精准 add：实施 agent 路径下用 changed_files；fix_diff 路径下用 -A（diff 已在 apply）
-          if impl_source == "agent" and changed_files:
-              rc, _, err = _run_git(
-                  ["git", "add", "--"] + changed_files, repo_path,
-              )
-          else:
-              rc, _, err = _run_git(["git", "add", "-A"], repo_path)
-          if rc != 0:
-              return {"ok": False, "error": f"git add (post-apply) failed: {err}"}
-          via = "implementation agent" if impl_source == "agent" else "fix_diff text"
-          file_summary = ", ".join(changed_files[:5]) if changed_files else "see diff"
-          commit_message = (
-              f"fix(crashguard): {(issue.title or ana.datadog_issue_id)[:60]}\n\n"
-              f"AI-generated patch via {via} for crash issue {ana.datadog_issue_id}.\n"
-              f"Files: {file_summary}\n"
-              f"Confidence: {ana.confidence or 'low'} · Feasibility: {ana.feasibility_score:.2f}\n"
-              f"Reviewer must verify diff correctness before merge."
-          )
-          pr_title = f"[Crashguard][{platform}] {(issue.title or 'crash fix')[:80]}"
-      else:
-          if last_failure_reason:
+          if initial_branch.startswith("crashguard/"):
               logger.warning(
-                  "crashguard implementation failed, falling back to md doc: %s",
-                  last_failure_reason,
+                  "pre-enter heal: repo %s left on stale branch %s (previous process killed); auto-reset",
+                  repo_path, initial_branch,
               )
-          # 回退：写 .crashguard/fixes/<id>.md（保留旧行为）
-          fix_doc_relpath = f".crashguard/fixes/{ana.datadog_issue_id}.md"
-          fix_doc_content = _build_pr_body(issue, ana, frontend_url, patch_applied=False) + "\n"
-          doc_abs = Path(repo_path) / fix_doc_relpath
-          doc_abs.parent.mkdir(parents=True, exist_ok=True)
-          doc_abs.write_text(fix_doc_content, encoding="utf-8")
-          rc, _, err = _run_git(["git", "add", "-f", fix_doc_relpath], repo_path)
-          if rc != 0:
-              return {"ok": False, "error": f"git add (md fallback) failed: {err}"}
-          commit_message = f"docs(crashguard): draft fix for {ana.datadog_issue_id}"
-          pr_title = (
-              f"[Crashguard][{platform}][needs manual patch] "
-              f"{(issue.title or 'crash fix')[:70]}"
-          )
-
-      pr_body = _build_pr_body(issue, ana, frontend_url, patch_applied=patch_applied)
-
-      rc, _, err = _run_git(
-          ["git", "commit", "-m", commit_message, "--no-verify"], repo_path, timeout=30,
-      )
-      if rc != 0:
-          return {"ok": False, "error": f"git commit failed: {err}"}
-      rc, _, err = _run_git(
-          ["git", "push", "-u", "origin", branch], repo_path, timeout=120,
-      )
-      if rc != 0:
-          return {"ok": False, "error": f"git push failed: {err}"}
-
-      # gh pr create --draft（硬编码 --draft）
-      rc, stdout, err = _run_git(
-          [
-              "gh", "pr", "create",
-              "--draft",
-              "--title", pr_title,
-              "--body", pr_body,
-              "--head", branch,
-          ],
-          repo_path,
-          timeout=120,
-      )
-      if rc != 0:
-          return {"ok": False, "error": f"gh pr create failed: {err}", "branch_name": branch}
-      pr_url = stdout.strip().splitlines()[-1] if stdout else ""
-      pr_number = None
-      m = re.search(r"/pull/(\d+)", pr_url)
-      if m:
-          pr_number = int(m.group(1))
-
-      async with get_session() as session:
-          row = CrashPullRequest(
-              analysis_id=analysis_id,
-              datadog_issue_id=ana.datadog_issue_id,
-              repo=repo_logical or platform,
-              branch_name=branch,
-              pr_url=pr_url,
-              pr_number=pr_number,
-              pr_status="draft",
-              triggered_by="human_approved",
-              approved_by=approver or "human",
-              approved_at=datetime.utcnow(),
-              created_at=datetime.utcnow(),
-          )
-          session.add(row)
-          await session.commit()
-
-      logger.info("crashguard draft PR created: %s (analysis=%d)", pr_url, analysis_id)
-      try:
-          from app.crashguard.services.audit import write_audit
-          await write_audit(
-              op="pr_draft",
-              target_id=str(analysis_id),
-              success=True,
-              detail={
-                  "pr_url": pr_url,
-                  "branch": branch,
-                  "approver": approver,
-                  "repo": repo_logical or platform,
-                  "patch_applied": patch_applied,
-                  "impl_source": impl_source,
-                  "changed_files": changed_files,
-                  "fallback_reason": last_failure_reason if not patch_applied else "",
-              },
-          )
+              _run_git(["git", "checkout", "--", "."], repo_path, timeout=15)
+              _run_git(["git", "clean", "-fd", "--", ".crashguard"], repo_path, timeout=10)
+              # 删除 implementation agent 留下的 prompt.md（沟槽：根目录残留）
+              _run_git(["git", "clean", "-fd", "--", "prompt.md"], repo_path, timeout=10)
+              from pathlib import Path as _P
+              (_P(repo_path) / "prompt.md").unlink(missing_ok=True)
+              # 切回 main，删脏分支
+              _run_git(["git", "checkout", "main"], repo_path, timeout=30)
+              _run_git(["git", "branch", "-D", initial_branch], repo_path, timeout=10)
+              initial_branch = "main"
+          else:
+              # 仅清残留 prompt.md（即使在 main 上也可能有）
+              from pathlib import Path as _P
+              (_P(repo_path) / "prompt.md").unlink(missing_ok=True)
       except Exception:
-          pass
-      return {
-          "ok": True,
-          "pr_url": pr_url,
-          "pr_number": pr_number,
-          "branch_name": branch,
-          "repo": repo_logical or platform,
-          "patch_applied": patch_applied,
-          "impl_source": impl_source,
-          "changed_files": changed_files,
-      }
+          logger.exception("pre-enter heal failed (non-fatal, continuing)")
+
+      try:
+        dirty, dirty_detail = _worktree_dirty(repo_path)
+        if dirty:
+          return {
+              "ok": False,
+              "error": "repo worktree is dirty; refuse to auto-create PR",
+              "repo": repo_logical or platform,
+              "detail": dirty_detail[:500],
+          }
+
+        # Bug #3 fix：fetch 提到 180s（首次 fetch 慢）
+        rc, _, err = _run_git(["git", "fetch", "origin"], repo_path, timeout=180)
+        if rc != 0:
+          return {"ok": False, "error": f"git fetch failed: {err}"}
+        base_ref = _default_base_ref(repo_path)
+
+        # Bug #2 fix：先把目标分支（本地）清掉，避免「already exists」
+        rc, _, err = _run_git(["git", "checkout", "--detach", base_ref], repo_path, timeout=30)
+        if rc != 0:
+            return {"ok": False, "error": f"git checkout {base_ref} failed: {err}"}
+        _run_git(["git", "branch", "-D", branch], repo_path, timeout=10)
+
+        rc, _, err = _run_git(["git", "checkout", "-b", branch, base_ref], repo_path, timeout=30)
+        if rc != 0:
+            return {"ok": False, "error": f"git checkout {base_ref} failed: {err}"}
+
+        # === 三档优先级：实施 agent（最优）→ git apply ana.fix_diff（旧路径）→ md 兜底 ===
+        sub_repo_dirname = os.path.basename(repo_path.rstrip("/"))
+        patch_applied = False
+        changed_files: list[str] = []
+        impl_source = ""  # "agent" / "diff" / "" (md fallback)
+        last_failure_reason = ""  # 用于 audit / md fallback 日志
+
+        # 优先 1：实施 agent 直接在真 repo 里 Edit 文件
+        try:
+            impl_ok, impl_files, impl_err = await _run_implementation_agent(
+                repo_path, ana, issue,
+            )
+        except Exception as exc:
+            impl_ok, impl_files, impl_err = False, [], f"impl agent crash: {exc}"
+        if impl_ok:
+            patch_applied = True
+            impl_source = "agent"
+            changed_files = impl_files
+            logger.info(
+                "implementation agent changed %d file(s) in %s on %s: %s",
+                len(impl_files), sub_repo_dirname, branch, impl_files[:5],
+            )
+        else:
+            last_failure_reason = impl_err
+            logger.info("implementation agent skipped/failed: %s", impl_err)
+            # 实施 agent 可能改了部分文件却没产合规 diff——清理工作树回到 origin/main 干净态
+            _run_git(["git", "checkout", "."], repo_path, timeout=15)
+            _run_git(["git", "clean", "-fd", "--", ":(exclude).crashguard"], repo_path, timeout=15)
+
+            # 优先 2：旧路径——尝试 git apply ana.fix_diff（向后兼容）
+            if (ana.fix_diff or "").strip():
+                applied2, apply_err2 = _try_apply_fix_diff(
+                    repo_path, ana.fix_diff or "", sub_repo_dirname,
+                )
+                if applied2:
+                    patch_applied = True
+                    impl_source = "diff"
+                    logger.info("fix_diff text applied to %s on %s", sub_repo_dirname, branch)
+                else:
+                    last_failure_reason = apply_err2
+                    logger.warning("fix_diff apply failed: %s", apply_err2)
+
+        if patch_applied:
+            # 精准 add：实施 agent 路径下用 changed_files；fix_diff 路径下用 -A（diff 已在 apply）
+            if impl_source == "agent" and changed_files:
+                rc, _, err = _run_git(
+                    ["git", "add", "--"] + changed_files, repo_path,
+                )
+            else:
+                rc, _, err = _run_git(["git", "add", "-A"], repo_path)
+            if rc != 0:
+                return {"ok": False, "error": f"git add (post-apply) failed: {err}"}
+            via = "implementation agent" if impl_source == "agent" else "fix_diff text"
+            file_summary = ", ".join(changed_files[:5]) if changed_files else "see diff"
+            commit_message = (
+                f"fix(crashguard): {(issue.title or ana.datadog_issue_id)[:60]}\n\n"
+                f"AI-generated patch via {via} for crash issue {ana.datadog_issue_id}.\n"
+                f"Files: {file_summary}\n"
+                f"Confidence: {ana.confidence or 'low'} · Feasibility: {ana.feasibility_score:.2f}\n"
+                f"Reviewer must verify diff correctness before merge."
+            )
+            pr_title = f"[Crashguard][{platform}] {(issue.title or 'crash fix')[:80]}"
+        else:
+            if last_failure_reason:
+                logger.warning(
+                    "crashguard implementation failed, falling back to md doc: %s",
+                    last_failure_reason,
+                )
+            # 回退：写 .crashguard/fixes/<id>.md（保留旧行为）
+            fix_doc_relpath = f".crashguard/fixes/{ana.datadog_issue_id}.md"
+            fix_doc_content = _build_pr_body(issue, ana, frontend_url, patch_applied=False) + "\n"
+            doc_abs = Path(repo_path) / fix_doc_relpath
+            doc_abs.parent.mkdir(parents=True, exist_ok=True)
+            doc_abs.write_text(fix_doc_content, encoding="utf-8")
+            rc, _, err = _run_git(["git", "add", "-f", fix_doc_relpath], repo_path)
+            if rc != 0:
+                return {"ok": False, "error": f"git add (md fallback) failed: {err}"}
+            commit_message = f"docs(crashguard): draft fix for {ana.datadog_issue_id}"
+            pr_title = (
+                f"[Crashguard][{platform}][needs manual patch] "
+                f"{(issue.title or 'crash fix')[:70]}"
+            )
+
+        pr_body = _build_pr_body(issue, ana, frontend_url, patch_applied=patch_applied)
+
+        rc, _, err = _run_git(
+            ["git", "commit", "-m", commit_message, "--no-verify"], repo_path, timeout=30,
+        )
+        if rc != 0:
+            return {"ok": False, "error": f"git commit failed: {err}"}
+        rc, _, err = _run_git(
+            ["git", "push", "-u", "origin", branch], repo_path, timeout=120,
+        )
+        if rc != 0:
+            return {"ok": False, "error": f"git push failed: {err}"}
+        pushed_to_remote = True
+
+        # gh pr create --draft（硬编码 --draft）
+        rc, stdout, err = _run_git(
+            [
+                "gh", "pr", "create",
+                "--draft",
+                "--title", pr_title,
+                "--body", pr_body,
+                "--head", branch,
+            ],
+            repo_path,
+            timeout=120,
+        )
+        if rc != 0:
+            return {"ok": False, "error": f"gh pr create failed: {err}", "branch_name": branch}
+        pr_url = stdout.strip().splitlines()[-1] if stdout else ""
+        pr_number = None
+        m = re.search(r"/pull/(\d+)", pr_url)
+        if m:
+            pr_number = int(m.group(1))
+
+        triggered_by = "auto_verified" if (approver or "").lower() in {"auto", "backfill"} else "human_approved"
+        async with get_session() as session:
+            row = CrashPullRequest(
+                analysis_id=analysis_id,
+                datadog_issue_id=ana.datadog_issue_id,
+                repo=repo_logical or platform,
+                branch_name=branch,
+                pr_url=pr_url,
+                pr_number=pr_number,
+                pr_status="draft",
+                triggered_by=triggered_by,
+                approved_by=approver or "human",
+                approved_at=datetime.utcnow(),
+                created_at=datetime.utcnow(),
+            )
+            session.add(row)
+            await session.commit()
+
+        logger.info("crashguard draft PR created: %s (analysis=%d)", pr_url, analysis_id)
+        try:
+            from app.crashguard.services.audit import write_audit
+            await write_audit(
+                op="pr_draft",
+                target_id=str(analysis_id),
+                success=True,
+                detail={
+                    "pr_url": pr_url,
+                    "branch": branch,
+                    "approver": approver,
+                    "triggered_by": triggered_by,
+                    "repo": repo_logical or platform,
+                    "patch_applied": patch_applied,
+                    "impl_source": impl_source,
+                    "changed_files": changed_files,
+                    "fallback_reason": last_failure_reason if not patch_applied else "",
+                },
+            )
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "pr_url": pr_url,
+            "pr_number": pr_number,
+            "branch_name": branch,
+            "repo": repo_logical or platform,
+            "triggered_by": triggered_by,
+            "patch_applied": patch_applied,
+            "impl_source": impl_source,
+            "changed_files": changed_files,
+        }
+      finally:
+        # 自愈：无论成功/失败，把 sub-repo 拉回 base_ref + 删除未推送的临时分支
+        # 即使本次失败也保证下次能重试，而不是被"上次残骸"永久卡住
+        _cleanup_repo_after_pr(
+            repo_path=repo_path,
+            base_ref=base_ref or "origin/main",
+            initial_branch=initial_branch,
+            branch_to_delete=branch,
+            pushed_to_remote=pushed_to_remote,
+        )
 
 
 async def draft_prs_multi(

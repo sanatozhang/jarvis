@@ -110,6 +110,13 @@ crashguard:
     morning_cron: "0 7 * * *"
     evening_cron: "0 17 * * *"
 
+  # AI 分析定时小步分批：避免一次串行 20 个 issue 被 OS/网络杀掉
+  # 默认每 5 分钟 1 个 → 20 个约 100 分钟跑完；中途崩了只丢当前 1 个，下 tick 自动续跑
+  analyze_cron: "*/5 * * * *"
+  analyze_max_per_tick: 1
+  # 自动去重窗口：同 issue N 小时内已有 success 分析则复用，省 token
+  analysis_dedup_hours: 6
+
   thresholds:
     surge_multiplier: 1.5              # 飙升判定阈值（倍数）
     surge_min_events: 10               # 飙升最小事件数

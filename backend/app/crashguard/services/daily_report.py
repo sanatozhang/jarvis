@@ -33,6 +33,17 @@ from app.db.database import get_session
 
 logger = logging.getLogger("crashguard.daily_report")
 
+# fire-and-forget 后台任务强引用集合——防止 asyncio.create_task 返回值丢失被 GC 回收
+_BG_TASKS: set = set()
+
+
+def _spawn_bg(coro, name: str = "daily-report-bg"):
+    import asyncio as _asyncio
+    task = _asyncio.create_task(coro, name=name)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return task
+
 
 REPORT_TYPES = ("morning", "evening")
 
@@ -883,8 +894,33 @@ async def _auto_analyze_attention(issue_ids: List[str]) -> int:
         return 0
     logger.info("auto_analyze: %d pending issues, running serially...", len(pending))
 
+    # 取去重窗口（小时）；防多个触发器（warmup + cron + UI）并发烧 token
+    try:
+        s = get_crashguard_settings()
+        dedup_hours = int(getattr(s, "analysis_dedup_hours", 6) or 6)
+    except Exception:
+        dedup_hours = 6
+
     completed = 0
     for idx, iid in enumerate(pending, 1):
+        # 二次去重：进入串行循环时（每个 iid 之前），可能在等待期间另一入口已经分析完。
+        # 仅前置过滤（871-878）不够——那里一次性查 in_clause，循环中 DB 状态会变。
+        if dedup_hours > 0:
+            async with get_session() as session:
+                recent = (await session.execute(
+                    select(CrashAnalysis).where(
+                        CrashAnalysis.datadog_issue_id == iid,
+                        CrashAnalysis.status == "success",
+                        CrashAnalysis.followup_question == "",
+                        CrashAnalysis.created_at >= datetime.utcnow() - timedelta(hours=dedup_hours),
+                    ).limit(1)
+                )).scalar_one_or_none()
+                if recent is not None:
+                    logger.info(
+                        "auto_analyze [%d/%d] dedup hit: %s skipped (success at %s, within %dh)",
+                        idx, len(pending), iid, recent.created_at, dedup_hours,
+                    )
+                    continue
         try:
             logger.info("auto_analyze [%d/%d] analyzing %s", idx, len(pending), iid)
             await analyze_issue(iid)  # 串行：含 _maybe_auto_draft_pr hook
@@ -978,34 +1014,72 @@ async def send_daily_report(
                         "skipped_reason": "already_sent_by_other_instance",
                         "persisted_id": existing.id if existing else None,
                     }
-                # state == "locking" 或空 — 另一实例正在跑，本实例放弃这次（避免双发）
-                try:
-                    from app.crashguard.services.audit import write_audit
-                    await write_audit(
-                        op="daily_report",
-                        target_id=report_type,
-                        success=False,
-                        error="lock_contended",
-                        detail="another instance holds the lock",
+                # state == "locking" 或空 — 检查是否为孤儿死锁（持有者已 crash）
+                # 底层逻辑：locking 状态超过 LOCK_TTL_MIN 仍未变为真 message_id，
+                # 说明上次持有者异常终止（curl 超时 / 进程崩溃），可安全接管。
+                LOCK_TTL_MIN = 10
+                is_stale = False
+                if existing and existing.created_at:
+                    age_sec = (datetime.utcnow() - existing.created_at).total_seconds()
+                    if age_sec > LOCK_TTL_MIN * 60:
+                        is_stale = True
+                if is_stale:
+                    # 接管：把孤儿行的 created_at 刷新，继续往下走
+                    existing.created_at = datetime.utcnow()
+                    await session.commit()
+                    logger.warning(
+                        "daily_report: taking over stale lock (age > %dmin) for %s/%s",
+                        LOCK_TTL_MIN, target_date, report_type,
                     )
-                except Exception:
-                    pass
-                return {
-                    "ok": False,
-                    "sent": False,
-                    "skipped_reason": "lock_contended",
-                }
+                    # 落 audit 记录接管事件
+                    try:
+                        from app.crashguard.services.audit import write_audit
+                        await write_audit(
+                            op="daily_report",
+                            target_id=report_type,
+                            success=True,
+                            detail=f"took over stale lock (age>{LOCK_TTL_MIN}min)",
+                        )
+                    except Exception:
+                        pass
+                    # 不 return，跳出 IntegrityError 分支继续往下走 send 流程
+                else:
+                    try:
+                        from app.crashguard.services.audit import write_audit
+                        await write_audit(
+                            op="daily_report",
+                            target_id=report_type,
+                            success=False,
+                            error="lock_contended",
+                            detail="another instance holds the lock",
+                        )
+                    except Exception:
+                        pass
+                    return {
+                        "ok": False,
+                        "sent": False,
+                        "skipped_reason": "lock_contended",
+                    }
 
     text, payload = await compose_report(report_type, target_date, top_n=top_n)
 
-    # 关注点 issue 自动 AI 分析（fire-and-forget，不阻塞推送）
+    # 关注点 issue 自动 AI 分析（真 fire-and-forget——不能 await，否则 20 个串行 AI 分析
+    # 会阻塞飞书推送 20-30 分钟，导致早晚报 cron 触发后永远 timeout）
     auto_queued = 0
     try:
         attention_ids = payload.get("attention_issue_ids") or []
         if attention_ids:
-            auto_queued = await _auto_analyze_attention(attention_ids)
+            _spawn_bg(
+                _auto_analyze_attention(attention_ids),
+                name=f"daily-report-analyze-{report_type}-{target_date.isoformat()}",
+            )
+            auto_queued = len(attention_ids)
+            logger.info(
+                "daily_report: dispatched %d attention issues for AI analysis in background",
+                len(attention_ids),
+            )
     except Exception:
-        logger.exception("auto-analyze attention failed (non-fatal)")
+        logger.exception("auto-analyze attention dispatch failed (non-fatal)")
 
     # 优先用飞书 interactive card；失败回退到 text
     sent = False
