@@ -397,7 +397,12 @@ def _classify_changed_files(
     parent: list[str] = []
     sub_map: dict[str, dict] = {}
     for raw in changed_files:
-        f = raw.replace("\\", "/").lstrip("./")
+        # 注意：`lstrip("./")` 是 strip 字符集（任何 . 或 /），不是 strip prefix！
+        # 之前误用导致 `.DS_Store` → `DS_Store`、`.gitignore` → `gitignore`，
+        # 后续 `git add` 拿不到原始文件名 → "pathspec did not match any files"
+        f = raw.replace("\\", "/")
+        while f.startswith("./"):
+            f = f[2:]
         placed = False
         for sm in sm_sorted:
             sp = sm.get("path", "").rstrip("/")
@@ -1042,8 +1047,15 @@ async def draft_pr_for_analysis(
                     if len(ln) < 4:
                         continue
                     pth = ln[3:].strip().strip('"')
-                    if pth and not pth.startswith(".crashguard/") and pth != "prompt.md":
-                        changed_files.append(pth)
+                    if not pth:
+                        continue
+                    if pth.startswith(".crashguard/") or pth == "prompt.md":
+                        continue
+                    # 系统垃圾过滤：macOS .DS_Store / 编辑器临时文件不进 PR
+                    base = os.path.basename(pth)
+                    if base == ".DS_Store" or base.endswith(".swp") or base.endswith("~"):
+                        continue
+                    changed_files.append(pth)
 
         # === Submodule 分桶：把 submodule 内的改动路由到 submodule 自己的 repo 开 PR ===
         submodules_meta = _parse_gitmodules(repo_path)
