@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Dict, List, Tuple, Type
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
@@ -196,6 +196,37 @@ class CrashguardSettings(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    @model_validator(mode="after")
+    def _backfill_repo_paths_from_jarvis_env(self):
+        """老 jarvis 约定 (CODE_REPO_APP / CODE_REPO_PATH) 兜底。
+
+        底层逻辑：jarvis 主流用 CODE_REPO_APP 指向 Flutter 主仓库（Android/iOS native
+        作为 git submodule 在子目录里），crashguard 出现晚一些用 CRASHGUARD_REPO_PATH_*。
+        两套约定并存让运营每次部署得记两遍，**owner 意识做法是自动兜底**：
+        - repo_path_flutter 空 → CRASHGUARD_REPO_PATH_FLUTTER → CODE_REPO_APP → CODE_REPO_PATH
+        - repo_path_android 空 → CRASHGUARD_REPO_PATH_ANDROID → CODE_REPO_ANDROID → repo_path_flutter
+        - repo_path_ios     空 → CRASHGUARD_REPO_PATH_IOS → CODE_REPO_IOS → repo_path_flutter
+        Android/iOS 兜底到 flutter 因为 pr_drafter 的 submodule 路由会自己分辨子目录。
+        """
+        import os
+        if not self.repo_path_flutter:
+            self.repo_path_flutter = (
+                os.environ.get("CODE_REPO_APP")
+                or os.environ.get("CODE_REPO_PATH")
+                or ""
+            )
+        if not self.repo_path_android:
+            self.repo_path_android = (
+                os.environ.get("CODE_REPO_ANDROID")
+                or self.repo_path_flutter
+            )
+        if not self.repo_path_ios:
+            self.repo_path_ios = (
+                os.environ.get("CODE_REPO_IOS")
+                or self.repo_path_flutter
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

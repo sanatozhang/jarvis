@@ -22,13 +22,18 @@ services:
       # 不持久化会导致每次 `docker compose up` 都要重新登录
       - gh-auth:/root/.config/gh
       # ---- Crashguard 源码仓库（auto-PR 必需）----
-      # 底层逻辑：.env 已写 CRASHGUARD_REPO_PATH_* 宿主绝对路径。
-      # 这里用 ${VAR} 透传：bind mount 把宿主路径以**同名路径**挂进容器，
-      # 这样 pr_drafter 读到的 s.repo_path_flutter 在容器内同样可访问。
-      # 优势：.env 不动、代码不动、零迁移。某变量未设时 mount /dev/null 不报错。
-      - "${CRASHGUARD_REPO_PATH_FLUTTER:-/dev/null}:${CRASHGUARD_REPO_PATH_FLUTTER:-/tmp/.no_flutter}"
-      - "${CRASHGUARD_REPO_PATH_ANDROID:-/dev/null}:${CRASHGUARD_REPO_PATH_ANDROID:-/tmp/.no_android}"
-      - "${CRASHGUARD_REPO_PATH_IOS:-/dev/null}:${CRASHGUARD_REPO_PATH_IOS:-/tmp/.no_ios}"
+      # 底层逻辑：透传宿主路径以**同名路径**挂进容器，pr_drafter 读到的 s.repo_path_* 直接可访问。
+      # 兼容两套 env 约定：
+      #   - 新：CRASHGUARD_REPO_PATH_{FLUTTER,ANDROID,IOS}
+      #   - 老（主 jarvis）：CODE_REPO_APP（Flutter，主仓库）/ CODE_REPO_ANDROID / CODE_REPO_IOS / CODE_REPO_PATH（legacy）
+      # 任一变量设值即挂载；多个同时设也无害（同名 bind mount 幂等）。未设变量回落 /dev/null。
+      - "${CRASHGUARD_REPO_PATH_FLUTTER:-/dev/null}:${CRASHGUARD_REPO_PATH_FLUTTER:-/tmp/.no_cg_flutter}"
+      - "${CRASHGUARD_REPO_PATH_ANDROID:-/dev/null}:${CRASHGUARD_REPO_PATH_ANDROID:-/tmp/.no_cg_android}"
+      - "${CRASHGUARD_REPO_PATH_IOS:-/dev/null}:${CRASHGUARD_REPO_PATH_IOS:-/tmp/.no_cg_ios}"
+      - "${CODE_REPO_APP:-/dev/null}:${CODE_REPO_APP:-/tmp/.no_code_app}"
+      - "${CODE_REPO_ANDROID:-/dev/null}:${CODE_REPO_ANDROID:-/tmp/.no_code_android}"
+      - "${CODE_REPO_IOS:-/dev/null}:${CODE_REPO_IOS:-/tmp/.no_code_ios}"
+      - "${CODE_REPO_PATH:-/dev/null}:${CODE_REPO_PATH:-/tmp/.no_code_path}"
       # git push 需要 ssh key —— 透传宿主的 .ssh（只读防误改）
       - "${HOME}/.ssh:/root/.ssh:ro"
     env_file:
