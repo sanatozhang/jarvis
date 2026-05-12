@@ -89,6 +89,10 @@ class CrashguardSettings(BaseSettings):
     # Schedule
     morning_cron: str = "0 7 * * *"
     evening_cron: str = "0 17 * * *"
+    # 晚报数据窗口（小时）。早报固定用 datadog_window_hours=24h，晚报用此值。
+    # 默认 10h = 早报到晚报之间的工作日内增量；基线 = SHoW 上周同 weekday 同 10h 段。
+    # 设计意图：早报=昨日 24h 总览，晚报=日内增量信号，两份卡片**不再冗余**。
+    evening_window_hours: int = 10
 
     # Top N + thresholds
     max_top_n: int = 20
@@ -163,6 +167,21 @@ class CrashguardSettings(BaseSettings):
     # 注：Plaud RUM 未 setUser，users_affected 全 0（已知 data hole），用 sessions 代理 user
     # （24h 内典型 1-3 sessions/user，相关性高）。卡片文案显示「受影响会话 ≥ N」。
     hourly_alert_min_sessions: int = 60
+
+    # === 核心指标报警（10 分钟粒度 crash-free sessions % 监控）===
+    # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增/新增；核心指标补的是
+    # "整体健康度"颗粒度——即使没有单 issue 飙升，整体 crash-free 跌穿基线也要报警。
+    # 用 Datadog Mobile RUM 原生口径：(1 - crashed_sessions/total_sessions) * 100。
+    # 对比基线：当前 10min 窗口 vs 前 1h 平均 crash_free_pct。
+    core_metric_enabled: bool = True
+    core_metric_cron: str = "*/10 * * * *"
+    # 报警触发阈值：crash_free_pct 相对前 1h 变化绝对值 >= N pp（percentage points）
+    # 例：基线 99.5%，当前 99.0% → 变化 0.5 pp，>=0.3 触发
+    core_metric_change_threshold_pp: float = 0.3
+    # 绝对量级阈值：当前 10min 窗口 total_sessions < N 不告警（小流量噪声）
+    core_metric_min_sessions: int = 100
+    # 监控平台白名单（小写逗号串），空 = 不限制
+    core_metric_platforms: str = "android,ios"
 
     model_config = {
         "env_prefix": "CRASHGUARD_",
@@ -242,6 +261,8 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["morning_cron"] = f["morning_cron"]
         if "evening_cron" in f:
             flat["evening_cron"] = f["evening_cron"]
+        if "evening_window_hours" in f:
+            flat["evening_window_hours"] = int(f["evening_window_hours"])
     if "repo_paths" in cfg:
         rp = cfg["repo_paths"] or {}
         if "flutter" in rp:
@@ -294,6 +315,20 @@ def _yaml_overrides() -> Dict[str, Any]:
                 flat["hourly_alert_max_items"] = int(ha["max_items"])
             if "min_sessions" in ha:
                 flat["hourly_alert_min_sessions"] = int(ha["min_sessions"])
+    if "core_metric" in cfg:
+        cm = cfg["core_metric"] or {}
+        if isinstance(cm, dict):
+            if "enabled" in cm:
+                flat["core_metric_enabled"] = bool(cm["enabled"])
+            if "cron" in cm:
+                flat["core_metric_cron"] = str(cm["cron"])
+            if "change_threshold_pp" in cm:
+                flat["core_metric_change_threshold_pp"] = float(cm["change_threshold_pp"])
+            if "min_sessions" in cm:
+                flat["core_metric_min_sessions"] = int(cm["min_sessions"])
+            if "platforms" in cm:
+                v = cm["platforms"]
+                flat["core_metric_platforms"] = ",".join(v) if isinstance(v, list) else str(v)
     return flat
 
 

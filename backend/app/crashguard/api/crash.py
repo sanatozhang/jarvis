@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -370,8 +370,13 @@ async def health() -> Dict[str, Any]:
     }
 
 
-def _datadog_url_for(issue_id: str) -> str:
-    """Datadog Error Tracking issue 跳转链接（RUM track 路径）。"""
+def _datadog_url_for(issue_id: str, window_hours: int = 24) -> str:
+    """Datadog Error Tracking issue 跳转链接（RUM track 路径）。
+
+    window_hours: 显式传入时附 `from_ts/to_ts`（毫秒），让 Datadog UI 默认窗口对齐我们的口径；
+    不传则 Datadog 自动 fallback "Past 14 Days"（UI 默认）—— 这就是你看到 14 天数据的原因。
+    """
+    import time as _time
     s = get_crashguard_settings()
     site = (s.datadog_site or "datadoghq.com").strip()
     if site == "datadoghq.com":
@@ -380,7 +385,57 @@ def _datadog_url_for(issue_id: str) -> str:
         host = site
     else:
         host = f"app.{site}"
-    return f"https://{host}/rum/error-tracking/issue/{issue_id}"
+    base = f"https://{host}/rum/error-tracking/issue/{issue_id}"
+    if window_hours and window_hours > 0:
+        to_ms = int(_time.time() * 1000)
+        from_ms = to_ms - int(window_hours) * 3600 * 1000
+        return f"{base}?from_ts={from_ms}&to_ts={to_ms}&live=true"
+    return base
+
+
+# 支持的时间窗口档位（小时）。1d / 7d / 14d / 30d
+_ALLOWED_WINDOW_HOURS = {24, 168, 336, 720}
+
+
+async def _aggregate_snapshots_window(
+    session, issue_ids: List[str], target_date: date, window_hours: int,
+) -> Dict[str, Dict[str, int]]:
+    """跨 N 天 CrashSnapshot 聚合 events / users / sessions。
+
+    window_hours=24 → 只取 target_date 当天（与默认 pick_top_n 行为一致，由 caller 跳过此路径）。
+    window_hours=N*24 → 取 [target_date - (N-1) days, target_date] 闭区间 sum。
+
+    返回 {issue_id: {events_count, users_affected, sessions_affected}}。缺失的 issue 不返回。
+    """
+    from sqlalchemy import select, func
+    from app.crashguard.models import CrashSnapshot
+
+    if not issue_ids or window_hours <= 24:
+        return {}
+    days = max(1, window_hours // 24)
+    start_date = target_date - timedelta(days=days - 1)
+    rows = (await session.execute(
+        select(
+            CrashSnapshot.datadog_issue_id,
+            func.sum(CrashSnapshot.events_count).label("events"),
+            func.sum(CrashSnapshot.users_affected).label("users"),
+            func.sum(CrashSnapshot.sessions_affected).label("sessions"),
+        )
+        .where(
+            CrashSnapshot.datadog_issue_id.in_(issue_ids),
+            CrashSnapshot.snapshot_date >= start_date,
+            CrashSnapshot.snapshot_date <= target_date,
+        )
+        .group_by(CrashSnapshot.datadog_issue_id)
+    )).all()
+    return {
+        r[0]: {
+            "events_count": int(r[1] or 0),
+            "users_affected": int(r[2] or 0),
+            "sessions_affected": int(r[3] or 0),
+        }
+        for r in rows
+    }
 
 
 @router.get("/top")
@@ -398,6 +453,7 @@ async def get_top(
     status: str = "",
     search: str = "",
     sort_by: str = "events",  # events / impact / users / new_first
+    window_hours: int = Query(24, description="时间窗口（小时）：24 / 168 / 336 / 720 = 1d/7d/14d/30d"),
 ) -> Dict[str, Any]:
     """读取指定日期的 issue 列表（首页用，**跳过早晚报 dedup**，列今日全集）。
 
@@ -407,13 +463,16 @@ async def get_top(
     - status: "open" / "investigating" / "resolved_by_pr" / "ignored" / "wontfix" / "" (=全部)
     - search: title 子串匹配（大小写不敏感）
     - sort_by: events(默认) / impact / users / new_first
+    - window_hours: 时间窗口。**24 直接读今日 snapshot；>24 跨多天 sum CrashSnapshot**。
+      三维标签（is_new_in_version / is_regression / is_surge）始终按今日 snapshot 固定，
+      不随窗口漂移——窗口拉长只影响 events/users/sessions 数值。
     - 分页：传 `page` 启用；未传则旧行为（按 limit 截取头 N 条，page_size 忽略）
 
     返回:
       issues[]（仅当前页）, total, page, page_size, total_pages,
       aggregates: {p0_count, surge_count, new_count, fatal_count, non_fatal_count,
                    total_events, total_users}
-      date
+      date, window_hours
     """
     from app.db.database import get_session
     from app.crashguard.services.ranker import pick_top_n
@@ -433,6 +492,9 @@ async def get_top(
     status_norm = (status or "").strip().lower()
     search_norm = (search or "").strip().lower()
     sort_norm = (sort_by or "events").strip().lower()
+    # 时间窗口归一化：未匹配档位 → 退回 24h（颗粒度对齐 Datadog 首页默认）
+    if window_hours not in _ALLOWED_WINDOW_HOURS:
+        window_hours = 24
 
     async with get_session() as session:
         # 分页模式 → 拉全集 + skip_dedup；非分页（旧调用方）→ 沿用截断 + dedup
@@ -444,6 +506,21 @@ async def get_top(
             fatality=fatality_norm if not paginated else "",  # 分页路径下统一在外层过滤
             skip_dedup=paginated,
         )
+
+        # window_hours > 24 → 用跨天 sum 覆盖当日 snapshot 的 events/users/sessions（标签不动）
+        if window_hours > 24 and items:
+            agg_map = await _aggregate_snapshots_window(
+                session,
+                issue_ids=[it["datadog_issue_id"] for it in items],
+                target_date=target_date,
+                window_hours=window_hours,
+            )
+            for it in items:
+                agg = agg_map.get(it["datadog_issue_id"])
+                if agg:
+                    it["events_count"] = agg["events_count"]
+                    it["users_affected"] = agg["users_affected"]
+                    it["sessions_affected"] = agg["sessions_affected"]
 
         # 后端过滤（仅分页路径用；非分页路径已由 pick_top_n 处理 fatality）
         if paginated:
@@ -529,7 +606,7 @@ async def get_top(
                 })
 
     for item in page_items:
-        item["datadog_url"] = _datadog_url_for(item["datadog_issue_id"])
+        item["datadog_url"] = _datadog_url_for(item["datadog_issue_id"], window_hours=window_hours)
         pr = pr_map.get(item["datadog_issue_id"])
         item["has_pr"] = pr is not None
         item["pr_url"] = pr["pr_url"] if pr else ""
@@ -543,6 +620,7 @@ async def get_top(
 
     out: Dict[str, Any] = {
         "date": target_date.isoformat(),
+        "window_hours": window_hours,
         "count": len(page_items),
         "issues": page_items,
         "total": total,
@@ -556,10 +634,16 @@ async def get_top(
 
 
 @router.get("/issues/{issue_id}")
-async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) -> Dict[str, Any]:
+async def get_issue_detail(
+    issue_id: str,
+    target_date: Optional[date] = None,
+    window_hours: int = Query(24, description="时间窗口：24/168/336/720 = 1d/7d/14d/30d"),
+) -> Dict[str, Any]:
     """
     单 issue 详情：基础属性 + 当日快照 + 代表性堆栈。
-    AI 分析（root_cause / fix_suggestion）由 Plan 2 接入；当前返回空字段。
+
+    window_hours：影响 `total_events` / `total_users_affected` 的口径（CrashSnapshot 跨 N 天 sum）
+    和 datadog_url 的 from_ts/to_ts。24h 默认对齐 Datadog 首页 "Past 1 Day"。
     """
     from sqlalchemy import select
     from app.db.database import get_session
@@ -568,6 +652,8 @@ async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) ->
 
     if target_date is None:
         target_date = date.today()
+    if window_hours not in _ALLOWED_WINDOW_HOURS:
+        window_hours = 24
 
     async with get_session() as session:
         issue = (await session.execute(
@@ -649,6 +735,26 @@ async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) ->
             "created_at": analysis.created_at.isoformat() if analysis.created_at else None,
         }
 
+    # 窗口聚合：window_hours > 24 时跨多天 sum；否则用 issue 上原始字段（max-ever）
+    window_total_events = int(issue.total_events or 0)
+    window_total_users = int(issue.total_users_affected or 0)
+    window_total_sessions = 0
+    if window_hours > 24:
+        async with get_session() as session:
+            agg = await _aggregate_snapshots_window(
+                session, [issue_id], target_date, window_hours,
+            )
+            if issue_id in agg:
+                window_total_events = agg[issue_id]["events_count"]
+                window_total_users = agg[issue_id]["users_affected"]
+                window_total_sessions = agg[issue_id]["sessions_affected"]
+    else:
+        # 24h：直接读今日 snapshot（如有），与 Datadog "Past 1 Day" 对齐
+        if snap is not None:
+            window_total_events = int(snap.events_count or 0)
+            window_total_users = int(snap.users_affected or 0)
+            window_total_sessions = int(getattr(snap, "sessions_affected", 0) or 0)
+
     # 关联的 PR 列表（最多 5 条，最新在前）
     pull_requests: List[Dict[str, Any]] = []
     async with get_session() as session:
@@ -675,7 +781,8 @@ async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) ->
 
     return {
         "datadog_issue_id": issue.datadog_issue_id,
-        "datadog_url": _datadog_url_for(issue.datadog_issue_id),
+        "datadog_url": _datadog_url_for(issue.datadog_issue_id, window_hours=window_hours),
+        "window_hours": window_hours,
         "stack_fingerprint": issue.stack_fingerprint,
         "title": issue.title or "",
         "platform": issue.platform or "",
@@ -687,8 +794,12 @@ async def get_issue_detail(issue_id: str, target_date: Optional[date] = None) ->
         "last_seen_at": issue.last_seen_at.isoformat() if issue.last_seen_at else None,
         "first_seen_version": issue.first_seen_version or "",
         "last_seen_version": issue.last_seen_version or "",
-        "total_events": issue.total_events or 0,
-        "total_users_affected": issue.total_users_affected or 0,
+        "total_events": window_total_events,
+        "total_users_affected": window_total_users,
+        "total_sessions_affected": window_total_sessions,
+        # legacy 历史最大值口径（保留以便回看，前端不再展示）
+        "lifetime_max_events": int(issue.total_events or 0),
+        "lifetime_max_users": int(issue.total_users_affected or 0),
         "representative_stack": issue.representative_stack or "",
         "tags": tags,
         "status": issue.status or "open",
@@ -980,6 +1091,199 @@ async def approve_pr(analysis_id: int, req: ApprovePrRequest) -> Dict[str, Any]:
     return result
 
 
+class RetryFailedPrsRequest(BaseModel):
+    limit: int = Field(50, ge=1, le=200, description="本次最多重试多少个 analysis")
+    dry_run: bool = Field(False)
+    lookback_days: int = Field(
+        30, ge=1, le=180,
+        description="audit_log 回溯窗口（天）",
+    )
+    issue_ids: Optional[List[str]] = Field(
+        None,
+        description="可选——只重试这些 datadog_issue_id；空 = 全表扫描",
+    )
+    diagnose_only: bool = Field(
+        False,
+        description="True 时仅返回候选清单 + audit_log 调试信息，不实际触发 PR",
+    )
+
+
+@router.post("/retry-failed-prs")
+async def retry_failed_prs(req: RetryFailedPrsRequest) -> Dict[str, Any]:
+    """
+    重试"PR 创建失败"的 analysis。
+
+    底层逻辑：PR 创建是 analysis success 后的独立后置步骤，PR 失败不会回退
+    `CrashAnalysis.status`。所以 batch-analyze 的去重凭证（status=success）
+    会把这些 issue 当"已分析"跳过——它们需要单独入口重新触发 PR。
+
+    **候选源（audit_log 反查，比拍脑袋枚举 CrashAnalysis 准）**:
+        crash_audit_logs WHERE op IN ('pr_draft', 'auto_draft_pr')
+            AND success=false
+            AND error != 'below_threshold'   -- 排除 feasibility 跳过的
+            AND created_at >= now() - lookback_days
+        DISTINCT target_id (= analysis_id)
+
+    再二次确认：对应 analysis_id 没有非空 `CrashPullRequest.pr_url`（不重复开 PR）。
+    feasibility 阈值由 `draft_prs_multi` 内部自行处理；显式重试场景下不再前置过滤。
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import select, desc
+    from app.crashguard.models import CrashAnalysis, CrashAuditLog, CrashPullRequest
+    from app.crashguard.services.pr_drafter import draft_prs_multi
+    from app.db.database import get_session
+
+    s = get_crashguard_settings()
+    if not s.pr_enabled and not req.diagnose_only:
+        raise HTTPException(
+            status_code=400,
+            detail="pr_enabled is false; 先在 config 打开 PR 总开关",
+        )
+
+    since = datetime.utcnow() - timedelta(days=req.lookback_days)
+
+    async with get_session() as session:
+        # 1) 从 audit_log 反查失败 PR 尝试
+        audit_rows = (await session.execute(
+            select(CrashAuditLog).where(
+                CrashAuditLog.op.in_(["pr_draft", "auto_draft_pr"]),
+                CrashAuditLog.success == False,  # noqa: E712 — SQLA 必须 ==
+                CrashAuditLog.created_at >= since,
+            ).order_by(desc(CrashAuditLog.created_at))
+        )).scalars().all()
+
+        # 去重：同一 analysis_id 取最近一条；过滤 below_threshold
+        failed_ana_ids: List[int] = []
+        seen_ana: set = set()
+        audit_samples: Dict[int, Dict[str, Any]] = {}
+        for a in audit_rows:
+            err = (a.error or "").strip()
+            if err == "below_threshold":
+                continue
+            try:
+                ana_id = int(a.target_id)
+            except (ValueError, TypeError):
+                continue
+            if ana_id in seen_ana:
+                continue
+            seen_ana.add(ana_id)
+            failed_ana_ids.append(ana_id)
+            audit_samples[ana_id] = {
+                "op": a.op,
+                "error_excerpt": err[:200],
+                "audit_at": a.created_at.isoformat() if a.created_at else None,
+            }
+
+        # 2) 已有非空 pr_url 的 analysis_id 集合（视作 PR 已创建过，跳过）
+        with_pr_rows = (await session.execute(
+            select(CrashPullRequest.analysis_id).where(CrashPullRequest.pr_url != "")
+        )).all()
+        analyses_with_pr = {row[0] for row in with_pr_rows}
+
+        # 3) 拉对应 analysis 行做最终过滤
+        if not failed_ana_ids:
+            return {
+                "scanned": 0,
+                "candidates": [],
+                "summary": {"total": 0, "succeeded": 0, "failed": 0},
+                "lookback_days": req.lookback_days,
+                "diagnose": {
+                    "audit_rows_in_window": len(audit_rows),
+                    "reason": "no failed pr_draft audit rows; gh auth fix may not be the issue, OR audit_log empty",
+                },
+            }
+
+        ana_rows = (await session.execute(
+            select(CrashAnalysis).where(CrashAnalysis.id.in_(failed_ana_ids))
+        )).scalars().all()
+        ana_by_id = {r.id: r for r in ana_rows}
+
+        candidates: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        for ana_id in failed_ana_ids:
+            ana = ana_by_id.get(ana_id)
+            if ana is None:
+                skipped.append({"analysis_id": ana_id, "reason": "analysis_not_found"})
+                continue
+            if req.issue_ids and ana.datadog_issue_id not in set(req.issue_ids):
+                continue
+            if ana_id in analyses_with_pr:
+                skipped.append({
+                    "analysis_id": ana_id,
+                    "datadog_issue_id": ana.datadog_issue_id,
+                    "reason": "pr_already_created",
+                })
+                continue
+            if (ana.status or "") != "success":
+                skipped.append({
+                    "analysis_id": ana_id,
+                    "datadog_issue_id": ana.datadog_issue_id,
+                    "reason": f"analysis_status={ana.status}",
+                })
+                continue
+            entry = {
+                "analysis_id": ana_id,
+                "datadog_issue_id": ana.datadog_issue_id,
+                "feasibility": float(ana.feasibility_score or 0.0),
+                "last_audit": audit_samples.get(ana_id, {}),
+            }
+            candidates.append(entry)
+            if len(candidates) >= req.limit:
+                break
+
+    if req.diagnose_only:
+        return {
+            "scanned": len(candidates),
+            "candidates": candidates,
+            "skipped": skipped,
+            "lookback_days": req.lookback_days,
+            "summary": {"total": len(candidates), "succeeded": 0, "failed": 0},
+            "diagnose": {
+                "audit_rows_in_window": len(audit_rows),
+                "distinct_failed_analyses": len(failed_ana_ids),
+                "already_has_pr": len([s for s in skipped if s.get("reason") == "pr_already_created"]),
+                "analysis_missing": len([s for s in skipped if s.get("reason") == "analysis_not_found"]),
+            },
+        }
+
+    succeeded: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+    for cand in candidates:
+        try:
+            result = await draft_prs_multi(
+                analysis_id=cand["analysis_id"], approver="retry", dry_run=req.dry_run,
+            )
+            prs = result.get("prs", [])
+            out = {
+                **cand,
+                "ok": bool(result.get("ok")),
+                "total": result.get("total", 0),
+                "succeeded": result.get("succeeded", 0),
+                "failed_count": result.get("failed", 0),
+                "pr_urls": [p.get("pr_url") for p in prs if p.get("pr_url")],
+                "errors": [p.get("error") for p in prs if not p.get("ok") and p.get("error")][:3],
+            }
+            (succeeded if out["ok"] else failed).append(out)
+        except Exception as exc:
+            logger.exception("retry-failed-prs failed for analysis_id=%d", cand["analysis_id"])
+            failed.append({**cand, "ok": False, "error": str(exc)[:300]})
+
+    return {
+        "scanned": len(candidates),
+        "lookback_days": req.lookback_days,
+        "dry_run": req.dry_run,
+        "succeeded": succeeded,
+        "failed": failed,
+        "skipped": skipped,
+        "summary": {
+            "total": len(candidates),
+            "succeeded": len(succeeded),
+            "failed": len(failed),
+            "skipped": len(skipped),
+        },
+    }
+
+
 _ALLOWED_STATUS = {"open", "investigating", "resolved_by_pr", "ignored", "wontfix"}
 
 
@@ -1023,7 +1327,7 @@ async def patch_issue(issue_id: str, patch: IssuePatch) -> Dict[str, Any]:
 @router.get("/reports/history")
 async def list_reports_history(
     days: int = Query(30, ge=1, le=180),
-    report_type: Optional[str] = Query(None, regex="^(morning|evening|hourly_alert)$"),
+    report_type: Optional[str] = Query(None, regex="^(morning|evening|hourly_alert|core_metric_alert)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     # 兼容旧前端：保留 limit 但忽略（用 page_size 代替）
@@ -1037,7 +1341,7 @@ async def list_reports_history(
     from datetime import datetime, timedelta, date as _date
     from sqlalchemy import select, desc
     from app.db.database import get_session
-    from app.crashguard.models import CrashDailyReport, CrashHourlyAlert
+    from app.crashguard.models import CrashDailyReport, CrashHourlyAlert, CrashMetricAlert
     import json as _json
 
     today = _date.today()
@@ -1046,6 +1350,7 @@ async def list_reports_history(
 
     daily_rows: List[Any] = []
     hourly_rows: List[Any] = []
+    metric_rows: List[Any] = []
 
     async with get_session() as session:
         # daily reports
@@ -1066,6 +1371,14 @@ async def list_reports_history(
                 .order_by(desc(CrashHourlyAlert.hour_utc))
             )
             hourly_rows = (await session.execute(stmt2)).scalars().all()
+        # core metric alerts
+        if report_type in (None, "core_metric_alert"):
+            stmt3 = (
+                select(CrashMetricAlert)
+                .where(CrashMetricAlert.window_start >= since_dt)
+                .order_by(desc(CrashMetricAlert.window_start))
+            )
+            metric_rows = (await session.execute(stmt3)).scalars().all()
 
     items: List[Dict[str, Any]] = []
     for r in daily_rows:
@@ -1108,6 +1421,22 @@ async def list_reports_history(
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "summary": "",
             "attention_total": int(a.new_count or 0) + int(a.surge_count or 0),
+        })
+    for m in metric_rows:
+        items.append({
+            "kind": "core_metric_alert",
+            "id": m.id,
+            "sort_key": m.window_start.isoformat() if m.window_start else None,
+            "report_date": m.window_start.date().isoformat() if m.window_start else None,
+            "report_type": "core_metric_alert",
+            "window_start": m.window_start.isoformat() if m.window_start else None,
+            "platforms_alerted": m.platforms_alerted or "",
+            "direction": m.direction or "",
+            "top_n": 0, "new_count": 0, "regression_count": 0, "surge_count": 0,
+            "feishu_message_id": m.feishu_message_id or "",
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+            "summary": "",
+            "attention_total": 0,
         })
 
     # 按时间 desc 排序后分页
@@ -1205,14 +1534,87 @@ async def get_hourly_alert_detail(alert_id: int) -> Dict[str, Any]:
     }
 
 
+@router.get("/alerts/core-metric/{alert_id}")
+async def get_core_metric_alert_detail(alert_id: int) -> Dict[str, Any]:
+    """核心指标告警详情：渲染 markdown + 完整 payload。"""
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.db.database import get_session
+    from app.crashguard.models import CrashMetricAlert
+    import json as _json
+
+    async with get_session() as session:
+        row = (await session.execute(
+            select(CrashMetricAlert).where(CrashMetricAlert.id == alert_id)
+        )).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="core metric alert not found")
+        try:
+            payload = _json.loads(row.alert_payload or "{}")
+        except Exception:
+            payload = {}
+
+    sg_label = "—"
+    if row.window_start:
+        sg_dt = row.window_start + timedelta(hours=8)
+        sg_label = sg_dt.strftime("%Y-%m-%d %H:%M SGT")
+    threshold_pp = payload.get("threshold_pp", 0.3)
+    items = payload.get("items") or []
+
+    lines: List[str] = [
+        f"# 📉 核心指标告警 · {sg_label}",
+        "",
+        (f"> 10 分钟窗口 · 触发 **{len(items)}** 平台 · "
+         f"阈值 ±{threshold_pp:.2f} pp（vs 前 1h 加权均值）"),
+        "",
+        "## 平台明细",
+        "",
+    ]
+    for it in items:
+        arrow = "🔻" if it.get("direction") == "down" else "🔺"
+        delta = it.get("delta_pp", 0.0)
+        sign = "+" if delta >= 0 else ""
+        lines.append(
+            f"- **{(it.get('platform') or '').upper()}** · "
+            f"crash-free **{it.get('crash_free_pct', 0):.2f}%** "
+            f"(基线 {it.get('baseline_pct', 0):.2f}%) · "
+            f"{arrow} **{sign}{delta:.2f} pp** · "
+            f"会话 {it.get('total_sessions', 0)} / 崩溃 {it.get('crashed_sessions', 0)}"
+        )
+    if not items:
+        lines.append("_无平台触发_")
+
+    return {
+        "id": row.id,
+        "kind": "core_metric_alert",
+        "window_start": row.window_start.isoformat() if row.window_start else None,
+        "direction": row.direction or "",
+        "platforms_alerted": row.platforms_alerted or "",
+        "feishu_message_id": row.feishu_message_id or "",
+        "markdown": "\n".join(lines),
+        "payload": payload,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
 @router.get("/reports/{report_id}")
-async def get_report_detail(report_id: int) -> Dict[str, Any]:
-    """单份历史报告的完整 markdown + payload"""
+async def get_report_detail(
+    report_id: int,
+    window_hours: int = Query(24, description="渲染时展示窗口：24/168/336/720 = 1d/7d/14d/30d"),
+) -> Dict[str, Any]:
+    """单份历史报告的完整 markdown + payload
+
+    window_hours: 仅影响每 issue 的 events 数字（跨 N 天 CrashSnapshot sum）；
+    SHoW-24h 基线对比逻辑不受影响（基线本身就是 24h 维度）。
+    """
     from sqlalchemy import select
     from app.db.database import get_session
     from app.crashguard.services.daily_report import compose_report
     from app.crashguard.models import CrashDailyReport
     import json as _json
+
+    if window_hours not in _ALLOWED_WINDOW_HOURS:
+        window_hours = 24
 
     async with get_session() as session:
         row = (await session.execute(
@@ -1228,7 +1630,8 @@ async def get_report_detail(report_id: int) -> Dict[str, Any]:
     # 历史报告未存全量 markdown，重新基于落库时的当日数据 compose 一次
     try:
         text, _ = await compose_report(
-            row.report_type, row.report_date, top_n=int(row.top_n or 5)
+            row.report_type, row.report_date, top_n=int(row.top_n or 5),
+            view_window_hours=window_hours,
         )
     except Exception:
         text = "_报告内容已过期，无法重新生成（数据已轮转）_"
@@ -1237,6 +1640,7 @@ async def get_report_detail(report_id: int) -> Dict[str, Any]:
         "id": row.id,
         "report_date": row.report_date.isoformat() if row.report_date else None,
         "report_type": row.report_type,
+        "window_hours": window_hours,
         "markdown": text,
         "payload": payload,
         "created_at": row.created_at.isoformat() if row.created_at else None,

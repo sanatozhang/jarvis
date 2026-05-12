@@ -819,6 +819,105 @@ class DatadogClient:
             out[platform] = {"version": top_ver, "users": top_users}
         return out
 
+    async def crash_free_sessions_by_platform(
+        self,
+        start_ms: int,
+        end_ms: int,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        指定时间窗口内每个平台的 crash-free sessions 比例（Datadog Mobile RUM 原生口径）。
+
+        口径：
+            total_sessions   = CARDINALITY(@session.id) WHERE @type:session
+            crashed_sessions = CARDINALITY(@session.id) WHERE @type:session @session.has_crash:true
+            crash_free_pct   = (1 - crashed/total) * 100   （total=0 时返回 100.0）
+
+        返回:
+            {
+              "android": {"total_sessions": 1234, "crashed_sessions": 5, "crash_free_pct": 99.59},
+              "ios":     {"total_sessions": 987,  "crashed_sessions": 3, "crash_free_pct": 99.70}
+            }
+            某平台无数据时该 key 缺失。失败返回 {}。
+        """
+        try:
+            return await asyncio.to_thread(
+                self._sync_crash_free_sessions, start_ms, end_ms,
+            )
+        except Exception as exc:
+            logger.warning("crash_free_sessions_by_platform failed: %s", exc)
+            return {}
+
+    def _sync_crash_free_sessions(
+        self, start_ms: int, end_ms: int,
+    ) -> Dict[str, Dict[str, Any]]:
+        from datadog_api_client import ApiClient
+        from datadog_api_client.exceptions import ApiException
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        def _agg(query: str) -> Dict[str, int]:
+            body = RUMAggregateRequest(
+                filter=RUMQueryFilter(
+                    query=query,
+                    _from=str(int(start_ms)),
+                    to=str(int(end_ms)),
+                ),
+                compute=[RUMCompute(
+                    aggregation=RUMAggregationFunction.CARDINALITY,
+                    metric="@session.id",
+                    type=RUMComputeType.TOTAL,
+                )],
+                group_by=[RUMGroupBy(facet="@os.name", limit=30)],
+            )
+            conf = self._build_configuration()
+            with ApiClient(conf) as api_client:
+                rum = RUMApi(api_client)
+                try:
+                    resp = rum.aggregate_rum_events(body=body)
+                except ApiException as exc:
+                    if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                        self._record_rate_limit_event()
+                    raise
+            out: Dict[str, int] = {}
+            for b in (getattr(getattr(resp, "data", None), "buckets", None) or []):
+                by = getattr(b, "by", {}) or {}
+                os_name = (by.get("@os.name") or "").strip().lower()
+                if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                    key = "ios"
+                elif os_name.startswith("android"):
+                    key = "android"
+                else:
+                    continue
+                comp = getattr(b, "computes", {}) or {}
+                try:
+                    val = int(next(iter(comp.values())))
+                except (StopIteration, TypeError, ValueError):
+                    val = 0
+                out[key] = out.get(key, 0) + max(0, val)
+            return out
+
+        total = _agg("@type:session")
+        crashed = _agg("@type:session @session.has_crash:true")
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for plat in set(total.keys()) | set(crashed.keys()):
+            t = total.get(plat, 0)
+            c = crashed.get(plat, 0)
+            if t <= 0:
+                continue
+            cf_pct = (1.0 - (c / t)) * 100.0
+            result[plat] = {
+                "total_sessions": t,
+                "crashed_sessions": c,
+                "crash_free_pct": round(cf_pct, 4),
+            }
+        return result
+
     def _sync_search_rum_events(self, issue_id: str, lookback_days: int, limit: int):
         """单页拉，limit 上限 1000（Datadog RUM API 单页最大）。"""
         from datadog_api_client import ApiClient

@@ -245,6 +245,52 @@ class CrashHourlyAlert(Base):
     )
 
 
+class CrashMetricSnapshot(Base):
+    """10 分钟窗口的核心指标（crash-free sessions %）按平台快照。
+
+    每个 (window_start, platform) 一条；upsert by unique 索引。
+    用于：(1) 给当前 tick 比 rolling 1h baseline；(2) 长期 trend 回看。
+    """
+    __tablename__ = "crash_metric_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    window_start = Column(DateTime, nullable=False, index=True)  # 10 分钟窗口起点（UTC，floor 到 10min）
+    platform = Column(String(16), nullable=False, index=True)    # android / ios / flutter / all
+    total_sessions = Column(Integer, default=0)
+    crashed_sessions = Column(Integer, default=0)
+    crash_free_pct = Column(Float, default=100.0)                # (1 - crashed/total) * 100
+    captured_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "window_start", "platform",
+            name="uq_crash_metric_snapshots_window_platform",
+        ),
+        Index("ix_crash_metric_snapshots_window", "window_start"),
+    )
+
+
+class CrashMetricAlert(Base):
+    """核心指标报警发送幂等表。
+
+    一条 = 一次告警；window_start 是触发时的 10 分钟窗口起点。
+    UNIQUE(window_start) 防多机重复发送（DB 抢锁兜底）。
+    """
+    __tablename__ = "crash_metric_alerts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    window_start = Column(DateTime, nullable=False)
+    platforms_alerted = Column(String(64), default="")           # 触发平台逗号串 "android,ios"
+    direction = Column(String(8), default="")                    # up / down / mixed
+    feishu_message_id = Column(String(128), default="")
+    alert_payload = Column(Text, default="{}")                   # JSON
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("window_start", name="uq_crash_metric_alerts_window"),
+    )
+
+
 class CrashAuditLog(Base):
     """运维 audit log：记录每次报告生成 / PR 创建 / 预热的成功失败结果。"""
     __tablename__ = "crash_audit_logs"

@@ -109,6 +109,12 @@ crashguard:
     admin_open_ids: []                                      # 一键 PR approve 白名单
     morning_cron: "0 7 * * *"
     evening_cron: "0 17 * * *"
+    # 早晚报差异化窗口（A+B 方案）：
+    #   morning_cron 07:00 → 昨日 24h 总览（用 datadog.window_hours，默认 24）
+    #   evening_cron 17:00 → 日内增量（用 evening_window_hours，默认 10h = 07~17）
+    # 基线均为 SHoW（上周同 weekday 同窗口段），晚报需依赖 Datadog 实时拉数据
+    # （CrashSnapshot 日级颗粒度不支持 10h 段；实时失败则退化为无基线，宁缺勿误报）
+    evening_window_hours: 10
 
   # AI 分析定时小步分批：避免一次串行 20 个 issue 被 OS/网络杀掉
   # 默认每 5 分钟 1 个 → 20 个约 100 分钟跑完；中途崩了只丢当前 1 个，下 tick 自动续跑
@@ -129,6 +135,19 @@ crashguard:
     min_baseline_events: 20        # 上周同 3h 块 < 20 件则跳过百分比判定（小基数噪声）
     max_items: 10                  # 卡片最多展示前 N 项
     min_sessions: 60               # 受影响会话 < 60 不告警（脏数据过滤；Plaud RUM 无 user 字段，sessions 代理 user）
+
+  # 核心指标报警（crash-free sessions % 健康度，10 分钟粒度）
+  # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增；本告警补"系统级健康度"颗粒度。
+  # 用 Datadog Mobile RUM 原生 crash-free sessions % 口径；对比基线 = 前 1h 加权均值。
+  # 卡片不含 PR 修复内容；点击 web view 跳 /crashguard/reports?type=core_metric_alert
+  core_metric:
+    enabled: true
+    cron: "*/10 * * * *"           # 每 10 分钟一次
+    change_threshold_pp: 0.3       # crash-free % 变化绝对值 >= N pp 触发（pp=百分点）
+    min_sessions: 100              # 当前 10min 窗口 sessions < N 不告警（小流量噪声）
+    platforms:                     # 监控平台白名单
+      - android
+      - ios
 
   thresholds:
     surge_multiplier: 1.5              # 飙升判定阈值（倍数）

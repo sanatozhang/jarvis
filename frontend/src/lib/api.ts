@@ -970,6 +970,9 @@ export interface CrashHealth {
   feishu_target_set: boolean;
 }
 
+// 时间窗口档位（小时）。1d / 7d / 14d / 30d
+export type CrashWindowHours = 24 | 168 | 336 | 720;
+
 export const fetchCrashTop = (
   limit = 40,
   target_date?: string,
@@ -983,6 +986,7 @@ export const fetchCrashTop = (
     status?: string;
     search?: string;
     sort_by?: CrashSortBy;
+    window_hours?: CrashWindowHours;
   },
 ) => {
   const q = new URLSearchParams({ limit: String(limit) });
@@ -995,6 +999,7 @@ export const fetchCrashTop = (
   if (opts?.status) q.set("status", opts.status);
   if (opts?.search) q.set("search", opts.search);
   if (opts?.sort_by) q.set("sort_by", opts.sort_by);
+  if (opts?.window_hours) q.set("window_hours", String(opts.window_hours));
   return request<CrashTopResponse>(`/crash/top?${q.toString()}`);
 };
 
@@ -1216,15 +1221,18 @@ export const fetchCrashReportHistory = (opts?: {
   }>(`/crash/reports/history${q ? "?" + q : ""}`);
 };
 
-export const fetchCrashReportDetail = (id: number) =>
-  request<{
+export const fetchCrashReportDetail = (id: number, window_hours?: CrashWindowHours) => {
+  const qs = window_hours ? `?window_hours=${window_hours}` : "";
+  return request<{
     id: number;
     report_date: string | null;
     report_type: string;
+    window_hours?: number;
     markdown: string;
     payload: Record<string, unknown>;
     created_at: string | null;
-  }>(`/crash/reports/${id}`);
+  }>(`/crash/reports/${id}${qs}`);
+};
 
 export const fetchCrashHourlyAlertDetail = (id: number) =>
   request<{
@@ -1356,9 +1364,14 @@ export const analyzeCrashIssue = async (issueId: string, userPrompt = ""): Promi
   };
 };
 
-export const fetchCrashIssue = (issueId: string, target_date?: string) => {
+export const fetchCrashIssue = (
+  issueId: string,
+  target_date?: string,
+  window_hours?: CrashWindowHours,
+) => {
   const q = new URLSearchParams();
   if (target_date) q.set("target_date", target_date);
+  if (window_hours) q.set("window_hours", String(window_hours));
   const qs = q.toString();
   return request<CrashIssueDetail>(`/crash/issues/${encodeURIComponent(issueId)}${qs ? "?" + qs : ""}`);
 };

@@ -178,12 +178,18 @@ function CrashguardPageInner() {
     const n = parseInt(v || "", 10);
     return Number.isFinite(n) && n > 0 ? n : 1;
   };
+  // 时间窗口：24/168/336/720 小时 = 1d/7d/14d/30d；默认 24h 与 Datadog 首页对齐
+  const parseWindow = (v: string | null): 24 | 168 | 336 | 720 => {
+    const n = parseInt(v || "", 10);
+    return n === 168 || n === 336 || n === 720 ? (n as 168 | 336 | 720) : 24;
+  };
 
   const platformFilter = parsePlatform(searchParams?.get("platform") || null);
   const fatalityFilter = parseFatality(searchParams?.get("fatality") || null);
   const statusFilter = parseStatus(searchParams?.get("status") || null);
   const sortBy = parseSort(searchParams?.get("sort") || null);
   const page = parsePageNum(searchParams?.get("page") || null);
+  const windowHours = parseWindow(searchParams?.get("win") || null);
   // search 不走 URL 立即同步——避免每个字符都 push history；用 debounced 内部 state
   const [search, setSearch] = useState<string>(searchParams?.get("search") || "");
   const debouncedSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -210,6 +216,7 @@ function CrashguardPageInner() {
         sort: CrashSortBy;
         page: number;
         search: string;
+        win: 24 | 168 | 336 | 720;
       }>,
     ) => {
       const params = new URLSearchParams(Array.from(searchParams?.entries() || []));
@@ -224,6 +231,7 @@ function CrashguardPageInner() {
       if ("sort" in patch) setOrDel("sort", patch.sort, patch.sort === "events" || !patch.sort);
       if ("page" in patch) setOrDel("page", patch.page ? String(patch.page) : undefined, patch.page === 1 || !patch.page);
       if ("search" in patch) setOrDel("search", patch.search, !patch.search);
+      if ("win" in patch) setOrDel("win", patch.win ? String(patch.win) : undefined, patch.win === 24 || !patch.win);
       const qs = params.toString();
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
@@ -235,6 +243,7 @@ function CrashguardPageInner() {
   const setStatusFilter = (v: "all" | CrashStatus) => updateListQuery({ status: v, page: 1 });
   const setSortBy = (v: CrashSortBy) => updateListQuery({ sort: v, page: 1 });
   const setPage = (v: number) => updateListQuery({ page: v });
+  const setWindowHours = (v: 24 | 168 | 336 | 720) => updateListQuery({ win: v, page: 1 });
 
   // search 输入 debounce 300ms → push 到 URL
   useEffect(() => {
@@ -318,6 +327,7 @@ function CrashguardPageInner() {
           search: searchParams?.get("search") || "",
           sort_by: sortBy,
           kinds: "all",
+          window_hours: windowHours,
         }),
         fetchCrashHealth(),
       ]);
@@ -333,7 +343,7 @@ function CrashguardPageInner() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, fatalityFilter, platformFilter, statusFilter, sortBy, searchParams]);
+  }, [page, fatalityFilter, platformFilter, statusFilter, sortBy, windowHours, searchParams]);
 
   const loadDetail = async (issueId: string) => {
     setDetailLoading(true);
@@ -344,7 +354,7 @@ function CrashguardPageInner() {
     syncSelectedToUrl(issueId);
     try {
       const [d, list] = await Promise.all([
-        fetchCrashIssue(issueId),
+        fetchCrashIssue(issueId, undefined, windowHours),
         fetchCrashAnalyses(issueId).catch(() => ({ analyses: [] as CrashAnalysisRecord[] })),
       ]);
       setDetail(d);
@@ -393,7 +403,7 @@ function CrashguardPageInner() {
       }
       if (selectedId === issueId) {
         const [fresh, list] = await Promise.all([
-          fetchCrashIssue(issueId),
+          fetchCrashIssue(issueId, undefined, windowHours),
           fetchCrashAnalyses(issueId).catch(() => ({ analyses: [] as CrashAnalysisRecord[] })),
         ]);
         setDetail(fresh);
@@ -428,7 +438,7 @@ function CrashguardPageInner() {
         const count = prUrls.length;
         setToast({ msg: count > 1 ? `${t("修复 PR 已创建")} x${count}` : t("修复 PR 已创建"), type: "success" });
         if (selectedId === issueId) {
-          const fresh = await fetchCrashIssue(issueId);
+          const fresh = await fetchCrashIssue(issueId, undefined, windowHours);
           setDetail(fresh);
         }
         // 顺便刷新列表（让行内 has_pr / pr_url 同步）
@@ -821,19 +831,6 @@ function CrashguardPageInner() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={loadTop}
-              disabled={loading}
-              className="rounded px-3 py-1.5 text-xs font-medium"
-              style={{
-                background: "transparent",
-                border: `1px solid ${D.borderStrong}`,
-                color: D.text1,
-                opacity: loading ? 0.5 : 1,
-              }}
-            >
-              {loading ? t("加载中...") : t("刷新")}
-            </button>
-            <button
               onClick={onBatchAnalyze}
               disabled={batching}
               className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
@@ -922,6 +919,35 @@ function CrashguardPageInner() {
                 </span>
               )}
             </a>
+          </div>
+        </div>
+
+        {/* 时间窗口选择（与 Datadog UI 时间档对齐：1d/7d/14d/30d）*/}
+        <div className="px-6 mt-3 flex items-center justify-between gap-2 flex-wrap">
+          <div className="text-xs" style={{ color: D.text2 }}>
+            ⏱ {t("时间窗口")}：
+            {([
+              [24, t("近 1 天")],
+              [168, t("近 7 天")],
+              [336, t("近 14 天")],
+              [720, t("近 30 天")],
+            ] as [24 | 168 | 336 | 720, string][]).map(([w, label]) => (
+              <button
+                key={w}
+                onClick={() => setWindowHours(w)}
+                className="ml-1 rounded px-2 py-0.5 text-xs"
+                style={{
+                  background: windowHours === w ? D.accent + "33" : "transparent",
+                  border: `1px solid ${windowHours === w ? D.accent : D.border}`,
+                  color: windowHours === w ? D.text1 : D.text2,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="text-xs" style={{ color: D.text2 }}>
+            {t("数据口径：Datadog Mobile RUM · 跨多日 sum CrashSnapshot")}
           </div>
         </div>
 

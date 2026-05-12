@@ -25,6 +25,7 @@ _last_fired: dict[str, str] = {}  # report_type → "YYYY-MM-DD HH:MM"
 _pr_sync_last_fired: str = ""    # "YYYY-MM-DD HH:MM" 防同分钟重跑
 _analyze_last_fired: str = ""    # 定时分析 tick 防同分钟重跑
 _hourly_alert_last_fired: str = ""  # 进程级幂等；DB UNIQUE(hour_utc) 兜多机
+_core_metric_last_fired: str = ""   # 10min tick 进程级幂等；DB UNIQUE(window_start) 兜多机
 
 
 async def _run_analyze_tick(max_per_tick: int) -> dict:
@@ -157,6 +158,23 @@ async def _tick_once() -> None:
                 )
             except Exception:
                 logger.exception("crashguard hourly_alert tick failed")
+
+    # 核心指标告警（crash-free sessions %，10 分钟粒度）
+    global _core_metric_last_fired
+    if getattr(s, "core_metric_enabled", False):
+        cm_cron = getattr(s, "core_metric_cron", "") or ""
+        if cm_cron and _core_metric_last_fired != tag and _cron_matches(cm_cron, now):
+            _core_metric_last_fired = tag
+            try:
+                from app.crashguard.services.core_metric_alerter import run_core_metric_tick
+                res = await run_core_metric_tick()
+                logger.info(
+                    "crashguard core_metric tick fired: alerted=%s direction=%s reason=%s",
+                    res.get("alerted"), res.get("direction"),
+                    res.get("reason") or res.get("skipped") or res.get("error", ""),
+                )
+            except Exception:
+                logger.exception("crashguard core_metric tick failed")
 
 
 async def report_scheduler_loop() -> None:

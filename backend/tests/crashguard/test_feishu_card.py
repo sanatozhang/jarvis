@@ -26,8 +26,12 @@ def test_build_daily_card_no_anomaly_turquoise_template():
     )
     assert card["header"]["template"] == "turquoise"
     assert "🌇" in card["header"]["title"]["content"]
-    # 平稳措辞
-    summary_div = card["elements"][0]
+    # 速报命名 + 顶部口径 banner（新增 element[0]）
+    assert "速报" in card["header"]["title"]["content"]
+    scope_div = card["elements"][0]
+    assert "数据口径" in scope_div["text"]["content"]
+    # 平稳措辞挪到 element[1]
+    summary_div = card["elements"][1]
     assert "数据平稳" in summary_div["text"]["content"]
 
 

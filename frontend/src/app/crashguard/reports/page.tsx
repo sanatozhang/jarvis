@@ -9,6 +9,7 @@ import {
   fetchCrashReportDetail,
   fetchCrashHourlyAlertDetail,
   type CrashReportHistoryItem,
+  type CrashWindowHours,
 } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
@@ -63,6 +64,12 @@ function CrashReportsHistoryInner() {
   const [openItem, setOpenItem] = useState<CrashReportHistoryItem | null>(null);
   const [detailMd, setDetailMd] = useState<string>("");
   const [detailLoading, setDetailLoading] = useState(false);
+  // 详情 modal 内的展示窗口（与首页选定档位独立；初始读首页 ?win= 同步）
+  const initialWin = ((): CrashWindowHours => {
+    const n = parseInt(searchParams.get("win") || "", 10);
+    return n === 168 || n === 336 || n === 720 ? (n as CrashWindowHours) : 24;
+  })();
+  const [detailWindow, setDetailWindow] = useState<CrashWindowHours>(initialWin);
 
   // 写 query（router.replace 不进历史栈）
   const updateQuery = useCallback(
@@ -152,24 +159,40 @@ function CrashReportsHistoryInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoOpenAlertId]);
 
-  const onOpen = async (it: CrashReportHistoryItem) => {
-    setOpenItem(it);
-    setDetailLoading(true);
-    setDetailMd("");
-    try {
-      if (it.kind === "hourly_alert") {
-        const r = await fetchCrashHourlyAlertDetail(it.id);
-        setDetailMd(r.markdown);
-      } else {
-        const r = await fetchCrashReportDetail(it.id);
-        setDetailMd(r.markdown);
+  const loadDetail = useCallback(
+    async (it: CrashReportHistoryItem, win: CrashWindowHours) => {
+      setDetailLoading(true);
+      setDetailMd("");
+      try {
+        if (it.kind === "hourly_alert") {
+          // hourly alert 是即时告警，无跨日聚合语义；忽略 win
+          const r = await fetchCrashHourlyAlertDetail(it.id);
+          setDetailMd(r.markdown);
+        } else {
+          const r = await fetchCrashReportDetail(it.id, win);
+          setDetailMd(r.markdown);
+        }
+      } catch (e) {
+        setDetailMd(`_加载失败：${String(e)}_`);
+      } finally {
+        setDetailLoading(false);
       }
-    } catch (e) {
-      setDetailMd(`_加载失败：${String(e)}_`);
-    } finally {
-      setDetailLoading(false);
-    }
+    },
+    [],
+  );
+
+  const onOpen = (it: CrashReportHistoryItem) => {
+    setOpenItem(it);
+    loadDetail(it, detailWindow);
   };
+
+  // 切换窗口时若 modal 已打开且是早晚报，则重新拉取
+  useEffect(() => {
+    if (openItem && openItem.kind !== "hourly_alert") {
+      loadDetail(openItem, detailWindow);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailWindow]);
 
   const renderItem = (it: CrashReportHistoryItem) => {
     const isAlert = it.kind === "hourly_alert";
@@ -177,7 +200,7 @@ function CrashReportsHistoryInner() {
     const icon = isAlert ? "🚨" : isMorning ? "🌅" : "🌇";
     const title = isAlert
       ? `${(it.hour_utc || "").replace("T", " ").slice(0, 16)} UTC · ${t("实时告警")}`
-      : `${it.report_date} · ${isMorning ? "早报" : "晚报"}`;
+      : `${it.report_date} · ${isMorning ? t("日报（昨日 24h）") : t("日内增量（vs 上周同段）")}`;
     const total = it.attention_total;
     const hasAnomaly = total > 0;
     return (
@@ -314,9 +337,9 @@ function CrashReportsHistoryInner() {
               {k === "all"
                 ? t("全部")
                 : k === "morning"
-                ? "🌅 早报"
+                ? "🌅 日报"
                 : k === "evening"
-                ? "🌇 晚报"
+                ? "🌇 日内增量"
                 : "🚨 实时告警"}
             </button>
           ))}
@@ -461,6 +484,34 @@ function CrashReportsHistoryInner() {
               <strong style={{ fontSize: 15 }}>
                 {openItem.kind === "hourly_alert" ? t("告警详情") : t("报告详情")}
               </strong>
+              {/* 早晚报详情：时间窗口切换；hourly_alert 不需要（即时告警无跨日聚合）*/}
+              {openItem.kind !== "hourly_alert" && (
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <span style={{ fontSize: 11, color: D.text2 }}>{t("展示窗口")}：</span>
+                  {([
+                    [24, t("近 1 天")],
+                    [168, t("近 7 天")],
+                    [336, t("近 14 天")],
+                    [720, t("近 30 天")],
+                  ] as [CrashWindowHours, string][]).map(([w, label]) => (
+                    <button
+                      key={w}
+                      onClick={() => setDetailWindow(w)}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: 4,
+                        border: `1px solid ${detailWindow === w ? D.accent : D.border}`,
+                        background: detailWindow === w ? D.accent + "22" : "transparent",
+                        color: detailWindow === w ? D.text1 : D.text2,
+                        fontSize: 11,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <button
                 onClick={() => setOpenItem(null)}
                 style={{

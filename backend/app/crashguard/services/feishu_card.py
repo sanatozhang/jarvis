@@ -50,10 +50,30 @@ def build_daily_card(
 
     # 卡片头部颜色：异常用 red，平稳用 turquoise
     template = "red" if has_anomaly else "turquoise"
-    title_emoji = "🌅" if is_morning else "🌇"
-    title_text = f"{title_emoji} Crashguard {'早报' if is_morning else '晚报'}  {target_date}"
+    # 早晚报差异化（A+B 方案）：
+    #   早报 = "Crashguard 日报"（昨日 24h 总览）
+    #   晚报 = "Crashguard 速报"（日内增量 vs 上周同段）—— 两字对仗，明确区分
+    evening_window_h = int(payload.get("data_window_hours") or 10)
+    if is_morning:
+        title_text = f"🌅 Crashguard 日报 · {target_date}"
+        scope_md = (
+            f"📊 **数据口径**：过去 **24h**（昨日总览） · "
+            f"基线：**上周同 weekday 同 24h 段**（SHoW-24h）"
+        )
+    else:
+        title_text = f"🌇 Crashguard 速报 · {target_date}"
+        scope_md = (
+            f"📊 **数据口径**：过去 **{evening_window_h}h**（日内增量） · "
+            f"基线：**上周同 weekday 同 {evening_window_h}h 段**（SHoW-{evening_window_h}h）"
+        )
 
     elements: List[Dict[str, Any]] = []
+
+    # 数据口径 banner（顶部置顶，让群里人 2 秒识别本卡片是日报还是速报）
+    elements.append({
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": scope_md},
+    })
 
     # 顶部摘要小标签
     summary_md = (
@@ -218,6 +238,80 @@ def build_hourly_alert_card(
                 "url": btn_url,
             },
         ],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": template,
+            "title": {"tag": "plain_text", "content": title_text},
+        },
+        "elements": elements,
+    }
+
+
+def build_core_metric_alert_card(
+    window_start: datetime,
+    items: List[Dict[str, Any]],
+    threshold_pp: float = 0.3,
+    frontend_base_url: str = "http://localhost:3000",
+    alert_id: int | None = None,
+) -> Dict[str, Any]:
+    """核心指标报警卡片（crash-free sessions % 健康度告警）。
+
+    items: [{platform, crash_free_pct, baseline_pct, delta_pp, direction,
+             total_sessions, crashed_sessions}, ...]
+    direction down=crash-free 跌（坏消息，红）；up=反弹（信号意义，黄）。
+    """
+    from datetime import timedelta as _td
+    sg_dt = window_start + _td(hours=8)
+    window_label = sg_dt.strftime("%Y-%m-%d %H:%M SGT")
+
+    has_down = any(it.get("direction") == "down" for it in items)
+    template = "red" if has_down else "yellow"
+    title_text = f"📉 Crashguard 核心指标告警 · {window_label}"
+
+    elements: List[Dict[str, Any]] = []
+    summary_md = (
+        f"**Σ** 10 分钟窗口 · 触发 **{len(items)}** 平台  ·  "
+        f"阈值 ±{threshold_pp:.2f} pp（vs 前 1h 加权均值）"
+    )
+    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": summary_md}})
+    elements.append({"tag": "hr"})
+
+    for it in items:
+        pe = _platform_emoji(it.get("platform", ""))
+        direction = it.get("direction", "")
+        arrow = "🔻" if direction == "down" else "🔺"
+        delta = it.get("delta_pp", 0.0)
+        sign = "+" if delta >= 0 else ""
+        platform_label = (it.get("platform") or "").upper() or "?"
+        line = (
+            f"{pe} **{platform_label}**  ·  "
+            f"crash-free **{it.get('crash_free_pct', 0):.2f}%** "
+            f"(基线 {it.get('baseline_pct', 0):.2f}%)  ·  "
+            f"{arrow} **{sign}{delta:.2f} pp**\n"
+            f"  会话 {it.get('total_sessions', 0)} · "
+            f"崩溃 {it.get('crashed_sessions', 0)}"
+        )
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": line}})
+    elements.append({"tag": "hr"})
+
+    if alert_id is not None:
+        btn_url = (
+            f"{frontend_base_url.rstrip('/')}/crashguard/reports"
+            f"?type=core_metric_alert&alert_id={alert_id}"
+        )
+    else:
+        btn_url = f"{frontend_base_url.rstrip('/')}/crashguard/reports?type=core_metric_alert"
+    elements.append({
+        "tag": "action",
+        "actions": [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📊 在 Web 端查看"},
+            "type": "primary",
+            "url": btn_url,
+        }],
     })
 
     return {

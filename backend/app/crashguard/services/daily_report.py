@@ -166,12 +166,22 @@ async def compose_report(
     report_type: str,
     target_date: date | None = None,
     top_n: int = 5,
+    view_window_hours: int = 24,
 ) -> Tuple[str, Dict[str, Any]]:
-    """生成 4 段 + 分平台 markdown 报告。"""
+    """生成 4 段 + 分平台 markdown 报告。
+
+    view_window_hours: **每 issue 的 events 数字展示窗口**（24/168/336/720 = 1d/7d/14d/30d）。
+        24 = 默认，与 cron 实际发送的报告一致。
+        > 24 = 仅"渲染时口径"，把每 issue 的 events 替换为跨 N 天 CrashSnapshot sum，
+              方便回看长期累计；**不影响 SHoW-24h 基线对比逻辑**（基线本身就是 24h vs 24h）。
+    """
     if report_type not in REPORT_TYPES:
         raise ValueError(f"invalid report_type: {report_type}")
     if target_date is None:
         target_date = date.today()
+    # 归一窗口档位
+    if view_window_hours not in (24, 168, 336, 720):
+        view_window_hours = 24
     # SHoW-24h 基线：上周同 weekday 的 24h 快照（控时区+周内双周期偏置）
     baseline_date = target_date - timedelta(days=7)
     # 业务硬约束：每平台 Top 上限 5（不可配置，避免 UI 上限漂移）
@@ -196,15 +206,46 @@ async def compose_report(
             r[0]: int(r[1] or 0) for r in baseline_rows
         }
 
+        # view_window_hours > 24：批量算每 issue 的跨 N 天 events sum，覆盖 snap.events_count
+        # 注意：snap 是 SQLA 对象，session 关闭后改 .events_count 不会持久化，仅影响渲染。
+        if view_window_hours > 24 and today_rows:
+            from sqlalchemy import func
+            days = view_window_hours // 24
+            window_start = target_date - timedelta(days=days - 1)
+            issue_ids = [snap.datadog_issue_id for snap, _ in today_rows]
+            agg_rows = (await session.execute(
+                select(
+                    CrashSnapshot.datadog_issue_id,
+                    func.sum(CrashSnapshot.events_count).label("ev"),
+                )
+                .where(
+                    CrashSnapshot.datadog_issue_id.in_(issue_ids),
+                    CrashSnapshot.snapshot_date >= window_start,
+                    CrashSnapshot.snapshot_date <= target_date,
+                )
+                .group_by(CrashSnapshot.datadog_issue_id)
+            )).all()
+            window_events: Dict[str, int] = {r[0]: int(r[1] or 0) for r in agg_rows}
+            for snap, _ in today_rows:
+                if snap.datadog_issue_id in window_events:
+                    snap.events_count = window_events[snap.datadog_issue_id]
+
     # 拉每个平台的 24h 总 sessions + distinct crash sessions（含 ANR），
     # 用于以 Datadog 官方口径算 crash-free rate；失败返回空 dict 不致命。
     s_cfg = get_crashguard_settings()
+    # 早晚报差异化窗口（A+B 方案）：
+    #   morning → datadog_window_hours (24h) 昨日总览
+    #   evening → evening_window_hours (10h) 日内增量 vs 上周同段
+    if report_type == "evening":
+        data_window_hours = max(1, int(getattr(s_cfg, "evening_window_hours", 10) or 10))
+    else:
+        data_window_hours = max(1, int(s_cfg.datadog_window_hours or 24))
     total_sessions_by_plat: Dict[str, int] = {}
     distinct_crash_sessions_by_plat: Dict[str, int] = {}
     crash_breakdown_by_plat: Dict[str, Dict[str, int]] = {}
-    # SHoW-24h 实时双窗口拉数（fatal/non_fatal × today/baseline = 4 次，含 5min 缓存）
-    # today    窗口 = [now-24h, now]
-    # baseline 窗口 = [now-192h, now-168h]   ← 7 天前同时刻往前 24h
+    # SHoW 实时双窗口拉数（fatal/non_fatal × today/baseline = 4 次，含 5min 缓存）
+    # today    窗口 = [now-Nh, now]
+    # baseline 窗口 = [now-(168+N)h, now-168h]   ← 7 天前同时刻往前 N h
     # 关键收益：严格对齐 weekday + 时区双周期，规避 vs 昨日的周末效应假警。
     realtime_today_events: Dict[str, int] = {}
     realtime_baseline_events: Dict[str, int] = {}
@@ -216,21 +257,21 @@ async def compose_report(
                 app_key=s_cfg.datadog_app_key,
                 site=s_cfg.datadog_site,
             )
-            raw_total = await client.count_sessions_by_platform(window_hours=s_cfg.datadog_window_hours)
+            raw_total = await client.count_sessions_by_platform(window_hours=data_window_hours)
             total_sessions_by_plat = {k.upper(): v for k, v in (raw_total or {}).items()}
             raw_crash = await client.count_distinct_crash_sessions_by_platform(
-                window_hours=s_cfg.datadog_window_hours
+                window_hours=data_window_hours
             )
             distinct_crash_sessions_by_plat = {k.upper(): v for k, v in (raw_crash or {}).items()}
             raw_breakdown = await client.fetch_crash_breakdown_by_platform(
-                window_hours=s_cfg.datadog_window_hours
+                window_hours=data_window_hours
             )
             crash_breakdown_by_plat = {k.upper(): v for k, v in (raw_breakdown or {}).items()}
 
-            # 方案 A：dual-window × dual-fatality 拉 events
+            # dual-window × dual-fatality 拉 events
             import time as _t
             now_ms = int(_t.time() * 1000)
-            win_ms = max(1, int(s_cfg.datadog_window_hours)) * 3600 * 1000
+            win_ms = data_window_hours * 3600 * 1000
             for q in (s_cfg.datadog_query_fatal, s_cfg.datadog_query_nonfatal):
                 try:
                     today_pull = await client.list_issues_for_window(
@@ -261,9 +302,13 @@ async def compose_report(
         except Exception:
             logger.exception("count_sessions failed (non-fatal)")
 
-    # 方案 A：用实时窗口数据覆盖 baseline_events
+    # 用实时窗口数据覆盖 baseline_events
     if realtime_baseline_events:
         baseline_events = realtime_baseline_events
+    elif report_type == "evening":
+        # 晚报 10h 窗口下，CrashSnapshot 日级 baseline 颗粒度不对齐，强制清空避免假警
+        # 实时拉失败时退化到"无基线"，宁可少报警也别误报
+        baseline_events = {}
     # 方案 A：用实时窗口数据覆盖 today snapshot 的 events_count（in-memory mutation，session 已关）
     # 这样后续所有 snap.events_count 引用都自动用对齐窗口数据，不必逐处改写。
     if realtime_today_events:
@@ -285,17 +330,42 @@ async def compose_report(
 
     # 输出
     s = get_crashguard_settings()
-    window_h = s.datadog_window_hours
-    title = "🌅 Crashguard 早报" if report_type == "morning" else "🌇 Crashguard 晚报"
+    is_evening = report_type == "evening"
+    # 卡片/markdown 标题（晚报改名"速报"，与"日报"对仗，明确区分）
+    title = (
+        f"🌇 Crashguard 速报"
+        if is_evening
+        else "🌅 Crashguard 日报"
+    )
+    # 顶置口径 banner（quote 形式让群/web 端醒目展示，2 秒可识别）
+    if view_window_hours > 24:
+        view_label = {168: "近 7 天", 336: "近 14 天", 720: "近 30 天"}.get(view_window_hours, "")
+        scope_banner = (
+            f"> 📊 **展示窗口**：{view_label}（CrashSnapshot 跨日累计） · "
+            f"基线对比仍按发送时 SHoW 口径"
+        )
+    elif is_evening:
+        scope_banner = (
+            f"> 📊 **数据口径**：过去 **{data_window_hours}h**（日内增量） · "
+            f"基线：**上周同 weekday 同 {data_window_hours}h 段**（SHoW-{data_window_hours}h）"
+        )
+    else:
+        scope_banner = (
+            f"> 📊 **数据口径**：过去 **24h**（昨日总览） · "
+            f"基线：**上周同 weekday 同 24h 段**（SHoW-24h）"
+        )
+    window_caption = scope_banner
     lines: List[str] = [
         f"# {title} — {target_date.isoformat()}",
-        f"_数据窗口：最近 **{window_h}** 小时（Datadog 拉取范围）；同比基线：昨日同窗口_",
+        window_caption,
         "",
     ]
 
     payload: Dict[str, Any] = {
         "report_date": target_date.isoformat(),
         "report_type": report_type,
+        # 卡片头部 banner 用：标注本次报告的实际拉取窗口
+        "data_window_hours": data_window_hours,
         "platforms": {},
     }
 
