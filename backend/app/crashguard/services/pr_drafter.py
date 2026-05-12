@@ -245,14 +245,17 @@ def _default_base_ref(repo_path: str) -> str:
 
 
 def _worktree_dirty(repo_path: str) -> tuple[bool, str]:
-    """返回工作树是否有未提交改动；自动 PR 不应覆盖工程师本地改动。
+    """返回工作树是否有**已跟踪文件**未提交改动；自动 PR 不应覆盖工程师本地改动。
 
-    口径：忽略 submodule pointer 改动——auto-PR 不动 submodule，单纯的 submodule
-    pointer dirty（工程师在 submodule 里 commit 了但父 repo 还没提交 pointer）
-    不会和 auto-PR 流程冲突，无需阻塞。
+    口径（owner 三板斧砍掉假阻塞）：
+    - 忽略 submodule pointer 改动（`--ignore-submodules=all`）
+    - 忽略 untracked 文件（`-uno`）—— auto-PR 不动 untracked 路径，
+      102 上仓库常残留 `.DS_Store / .cursor/ / .jenkins_*/` 等系统垃圾，
+      不属于"工程师在改"的信号，不该阻塞 PR
+    - 只看：modified (M)、staged (A/D/R/C) 等跟踪文件状态
     """
     rc, stdout, stderr = _run_git(
-        ["git", "status", "--porcelain", "--ignore-submodules=all"],
+        ["git", "status", "--porcelain", "--ignore-submodules=all", "-uno"],
         repo_path, timeout=15,
     )
     if rc != 0:
