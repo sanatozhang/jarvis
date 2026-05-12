@@ -40,6 +40,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# git safe.directory：容器 root 访问宿主用户拥有的 bind-mounted 仓库会触发
+# "fatal: detected dubious ownership"。crashguard pr_drafter 在 /Users/mac/... 等
+# 宿主路径上跑 git——加通配把这层防御关掉（容器内本来就只有 root，没有权限边界）。
+RUN git config --system --add safe.directory '*'
+
 # Install Codex CLI globally
 RUN npm install -g @openai/codex 2>/dev/null || echo "Codex install skipped (optional)"
 
