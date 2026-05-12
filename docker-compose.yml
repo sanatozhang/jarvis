@@ -17,6 +17,20 @@ services:
       # docker compose exec -it backend claude login
       - claude-auth:/root/.claude
       - lark-cli-auth:/root/.lark-cli        # 飞书 CLI 凭证持久化
+      # GitHub CLI 凭证持久化（crashguard auto-PR 必需）；首次部署执行：
+      # docker compose exec -it backend gh auth login
+      # 不持久化会导致每次 `docker compose up` 都要重新登录
+      - gh-auth:/root/.config/gh
+      # ---- Crashguard 源码仓库（auto-PR 必需）----
+      # 底层逻辑：.env 已写 CRASHGUARD_REPO_PATH_* 宿主绝对路径。
+      # 这里用 ${VAR} 透传：bind mount 把宿主路径以**同名路径**挂进容器，
+      # 这样 pr_drafter 读到的 s.repo_path_flutter 在容器内同样可访问。
+      # 优势：.env 不动、代码不动、零迁移。某变量未设时 mount /dev/null 不报错。
+      - "${CRASHGUARD_REPO_PATH_FLUTTER:-/dev/null}:${CRASHGUARD_REPO_PATH_FLUTTER:-/tmp/.no_flutter}"
+      - "${CRASHGUARD_REPO_PATH_ANDROID:-/dev/null}:${CRASHGUARD_REPO_PATH_ANDROID:-/tmp/.no_android}"
+      - "${CRASHGUARD_REPO_PATH_IOS:-/dev/null}:${CRASHGUARD_REPO_PATH_IOS:-/tmp/.no_ios}"
+      # git push 需要 ssh key —— 透传宿主的 .ssh（只读防误改）
+      - "${HOME}/.ssh:/root/.ssh:ro"
     env_file:
       - .env
     environment:
@@ -25,6 +39,8 @@ services:
       # crashguard 早晚报 cron 用 datetime.now() 本地时间。容器默认 UTC 会导致
       # "0 7 * * *" 在北京 15:00 才触发——必须显式设北京时区。
       - TZ=Asia/Shanghai
+      # Crashguard 仓库路径直接从 env_file (.env) 读取 CRASHGUARD_REPO_PATH_*，
+      # 上面的 volume bind mount 透传同名宿主路径，无需在此重复声明。
     depends_on:
       - redis
     restart: unless-stopped
@@ -55,3 +71,4 @@ volumes:
   redis-data:
   claude-auth:
   lark-cli-auth:
+  gh-auth:
