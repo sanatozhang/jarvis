@@ -21,9 +21,10 @@ FROM python:3.12-slim AS production
 
 WORKDIR /app
 
-# System deps for grep, unzip, git, node (for codex CLI)
+# System deps for grep, unzip, git, ssh (git push via ssh), node (for codex CLI)
+# openssh-client: crashguard pr_drafter 走 git@github.com:... ssh 协议，slim 镜像默认不带
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    grep coreutils unzip git curl ca-certificates gnupg \
+    grep coreutils unzip git openssh-client curl ca-certificates gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20 (needed for Codex CLI)
