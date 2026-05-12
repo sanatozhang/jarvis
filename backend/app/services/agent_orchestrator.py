@@ -128,6 +128,7 @@ class AgentOrchestrator:
         previous_analysis: Optional[Dict[str, Any]] = None,
         followup_question: str = "",
         condensation_context: Optional[Dict[str, Any]] = None,
+        logs_corrupted: bool = False,
     ) -> AnalysisResult:
         """
         Full analysis pipeline with automatic model fallback:
@@ -186,6 +187,7 @@ class AgentOrchestrator:
             few_shot_examples=few_shot_examples,
             context_files=context_files,
             condensation_context=condensation_context,
+            logs_corrupted=logs_corrupted,
         )
         _write_prompt_meta(workspace, prompt_meta)
         logger.info(

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.crashguard.services.version_util import (
     collect_recent_versions,
     derive_latest_release_from_crashes,
+    derive_top_user_version_from_crashes,
     max_version,
     parse_semver,
     resolve_effective_latest_release,
@@ -148,3 +149,78 @@ async def test_derive_returns_empty_when_no_data(patched_session):
             session=s, platform="flutter", min_events=300,
         )
     assert v == ""
+
+
+# ---------------------------------------------------------------------------
+# 「用户量最大版本」fallback —— 从 crash_issues.top_app_version 加权聚合
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_derive_top_user_version_picks_weighted_max(patched_session):
+    """跨 issue 加权聚合：3.17.0 的总贡献 = 1000*0.6 + 500*0.5 = 850 > 3.16.0 的 1000*0.4 + 500*0.5 = 650
+    ⚠️ 权重源是 total_events（total_users_affected 当前 = 0，已知 data hole）"""
+    from app.crashguard.models import CrashIssue
+
+    async with patched_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="i1", platform="android",
+            top_app_version="3.17.0 (60%), 3.16.0 (40%)",
+            total_events=1000,
+        ))
+        s.add(CrashIssue(
+            datadog_issue_id="i2", platform="android",
+            top_app_version="3.17.0 (50%), 3.16.0 (50%)",
+            total_events=500,
+        ))
+        await s.commit()
+        out = await derive_top_user_version_from_crashes(s, platform="android")
+    assert out is not None
+    assert out["version"] == "3.17.0"
+    assert out["users"] == 850  # round(1000*0.6 + 500*0.5)
+
+
+@pytest.mark.asyncio
+async def test_derive_top_user_version_returns_none_on_empty(patched_session):
+    async with patched_session() as s:
+        out = await derive_top_user_version_from_crashes(s, platform="ios")
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_derive_top_user_version_skips_malformed_entries(patched_session):
+    """top_app_version 解析失败的条目应当 silent skip，不污染聚合"""
+    from app.crashguard.models import CrashIssue
+
+    async with patched_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="i1", platform="ios",
+            top_app_version="garbage_no_percent, 3.17.0 (80%)",
+            total_events=1000,
+        ))
+        s.add(CrashIssue(
+            datadog_issue_id="i2", platform="ios",
+            top_app_version="",  # 空值
+            total_events=500,
+        ))
+        await s.commit()
+        out = await derive_top_user_version_from_crashes(s, platform="ios")
+    assert out is not None
+    assert out["version"] == "3.17.0"
+    assert out["users"] == 800   # 仅 i1 的 80% 贡献
+
+
+@pytest.mark.asyncio
+async def test_derive_top_user_version_case_insensitive_platform(patched_session):
+    """DB 里 platform 大小写不一时应识别"""
+    from app.crashguard.models import CrashIssue
+
+    async with patched_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="i1", platform="ANDROID",
+            top_app_version="3.17.0 (100%)",
+            total_events=1234,
+        ))
+        await s.commit()
+        out = await derive_top_user_version_from_crashes(s, platform="android")
+    assert out == {"version": "3.17.0", "users": 1234}

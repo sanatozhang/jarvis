@@ -717,6 +717,108 @@ class DatadogClient:
                 out[key]["app_hang"] = out[key].get("app_hang", 0) + count
         return out
 
+    async def top_user_version_by_platform(
+        self,
+        window_hours: int = 24,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        最近 N 小时内，每个平台「用户量最大」的 app 版本。
+
+        口径（session 维度——`@usr.id` 在 Plaud RUM 上几乎为空，session 是更准的代理；
+              24h 内同一用户通常 1-3 个 session，session 维度与用户维度高度相关）：
+            filter   = @type:session
+            compute  = CARDINALITY(@session.id)
+            group_by = @os.name × @application.version
+            window   = now-{window_hours}h → now
+
+        返回:
+            {
+              "android": {"version": "3.16.0-634", "users": 12345},
+              "ios":     {"version": "3.17.0-712", "users": 9876}
+            }
+            ↑ "users" 字段在 session-代理 口径下实际是 distinct session 数。
+            某平台无数据时该 key 缺失。失败返回 {}。
+        """
+        try:
+            return await asyncio.to_thread(
+                self._sync_top_user_version_by_platform, window_hours
+            )
+        except Exception as exc:
+            logger.warning("top_user_version_by_platform failed: %s", exc)
+            return {}
+
+    def _sync_top_user_version_by_platform(
+        self, window_hours: int
+    ) -> Dict[str, Dict[str, Any]]:
+        from datadog_api_client import ApiClient
+        from datadog_api_client.exceptions import ApiException
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        body = RUMAggregateRequest(
+            filter=RUMQueryFilter(
+                query="@type:session",
+                _from=f"now-{max(1, int(window_hours))}h",
+                to="now",
+            ),
+            compute=[RUMCompute(
+                aggregation=RUMAggregationFunction.CARDINALITY,
+                metric="@session.id",
+                type=RUMComputeType.TOTAL,
+            )],
+            group_by=[
+                RUMGroupBy(facet="@os.name", limit=30),
+                RUMGroupBy(facet="version", limit=50),
+            ],
+        )
+        conf = self._build_configuration()
+        with ApiClient(conf) as api_client:
+            rum = RUMApi(api_client)
+            try:
+                resp = rum.aggregate_rum_events(body=body)
+            except ApiException as exc:
+                if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
+                raise
+
+        # bucket: { platform: { version: users } }
+        agg: Dict[str, Dict[str, int]] = {"android": {}, "ios": {}}
+        for b in (getattr(getattr(resp, "data", None), "buckets", None) or []):
+            by = getattr(b, "by", {}) or {}
+            os_name = (by.get("@os.name") or "").strip().lower()
+            # RUM session 的 app 版本 facet 在 Plaud 数据下叫 `version`（短名）。
+            # `@application.version` 在 Datadog UI / 文档里有提，但 Plaud RUM SDK 上报到的字段是 `version`。
+            version = (by.get("version") or "").strip()
+            if not version:
+                continue
+            comp = getattr(b, "computes", {}) or {}
+            try:
+                users = int(next(iter(comp.values())))
+            except (StopIteration, TypeError, ValueError):
+                users = 0
+            if users <= 0:
+                continue
+            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                key = "ios"
+            elif os_name.startswith("android"):
+                key = "android"
+            else:
+                continue  # 只关心 android / ios（Flutter 也跑在这俩上）
+            agg[key][version] = agg[key].get(version, 0) + users
+
+        out: Dict[str, Dict[str, Any]] = {}
+        for platform, versions in agg.items():
+            if not versions:
+                continue
+            top_ver, top_users = max(versions.items(), key=lambda kv: kv[1])
+            out[platform] = {"version": top_ver, "users": top_users}
+        return out
+
     def _sync_search_rum_events(self, issue_id: str, lookback_days: int, limit: int):
         """单页拉，limit 上限 1000（Datadog RUM API 单页最大）。"""
         from datadog_api_client import ApiClient

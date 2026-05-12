@@ -22,6 +22,12 @@ CHACHA20_KEY = b"plaud2023_log_chacha20_key_32bit"  # exactly 32 bytes
 CHACHA20_NONCE = b"\x01" * 12
 BLOCK_SIZE = 8192
 
+# .plaud 文件首 4 字节固定 magic（明文，未参与 ChaCha20）。
+# 上传链路偶发会在文件头注入 CRLF（浏览器/邮件附件按文本模式处理）→ ChaCha20 流偏移 → 解密变垃圾。
+# 入口处对齐到这个 magic，前面的杂字节剥掉。
+_PLAUD_MAGIC = b"\x03\xfd\x56\xff"
+_PLAUD_MAGIC_SCAN_BYTES = 16
+
 
 class _ChaCha20:
     """Pure-Python ChaCha20 (matches the Flutter / HTML / Python originals)."""
@@ -132,6 +138,31 @@ def decrypt_plaud_bytes(encrypted: bytes) -> bytes:
     return bytes(result)
 
 
+def _strip_pollution_prefix(data: bytes, source_name: str = "") -> bytes:
+    """剥离 .plaud 文件头部的污染前缀（如 CRLF 注入）。
+
+    通过查找 _PLAUD_MAGIC 在前 _PLAUD_MAGIC_SCAN_BYTES 字节内的位置：
+    - offset == 0：干净，原样返回
+    - offset > 0：剥掉前面的杂字节，日志告警（说明上传链路存在污染）
+    - 找不到 magic：原样返回（让下游解密照常 fail，错误信息更明确）
+    """
+    if len(data) < len(_PLAUD_MAGIC):
+        return data
+    if data.startswith(_PLAUD_MAGIC):
+        return data
+    scan_window = data[:_PLAUD_MAGIC_SCAN_BYTES]
+    offset = scan_window.find(_PLAUD_MAGIC)
+    if offset <= 0:
+        return data
+    stripped_prefix = data[:offset]
+    logger.warning(
+        "[plaud] ⚠️ Stripped %d-byte pollution prefix %s before magic (file=%s). "
+        "Upstream upload likely injected CRLF/whitespace.",
+        offset, stripped_prefix.hex(), source_name or "?",
+    )
+    return data[offset:]
+
+
 def decrypt_plaud_file(plaud_path: Path, output_dir: Optional[Path] = None) -> Optional[Path]:
     """
     Decrypt a .plaud file → extract ZIP → return path to plaud.log.
@@ -144,6 +175,9 @@ def decrypt_plaud_file(plaud_path: Path, output_dir: Optional[Path] = None) -> O
         encrypted = plaud_path.read_bytes()
         logger.info("[plaud] Reading %s: %d bytes, magic: %s",
                      plaud_path.name, len(encrypted), encrypted[:8].hex() if encrypted else "empty")
+
+        # 上传链路偶发会在文件头注入 CRLF/空白；解密前先对齐 magic
+        encrypted = _strip_pollution_prefix(encrypted, source_name=plaud_path.name)
 
         decrypted = decrypt_plaud_bytes(encrypted)
         logger.info("[plaud] Decrypted %d bytes → %d bytes, first 4 bytes: %s",

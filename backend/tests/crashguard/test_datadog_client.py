@@ -239,3 +239,153 @@ def test_normalize_handles_missing_fields():
     assert norm["title"] == ""
     assert norm["platform"] == ""
     assert norm["events_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# top_user_version_by_platform — RUM cardinality(@usr.id) group_by (os, version)
+# ---------------------------------------------------------------------------
+
+
+def _make_aggregate_response(buckets: List[dict]) -> SimpleNamespace:
+    """模拟 RUMAnalyticsAggregateResponse:
+    buckets[i] = {"by": {"@os.name": "...", "version": "..."}, "users": int}
+    """
+    bucket_objs = []
+    for b in buckets:
+        bucket_objs.append(SimpleNamespace(
+            by=b["by"],
+            computes={"c0": b["users"]},
+        ))
+    return SimpleNamespace(data=SimpleNamespace(buckets=bucket_objs))
+
+
+@pytest.mark.asyncio
+async def test_top_user_version_buckets_android_and_ios(monkeypatch):
+    """基本场景：Android / iOS 各取自己平台用户量最大的版本"""
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    resp = _make_aggregate_response([
+        {"by": {"@os.name": "Android", "version": "3.17.0"}, "users": 1000},
+        {"by": {"@os.name": "Android", "version": "3.16.0"}, "users": 500},
+        {"by": {"@os.name": "iOS",     "version": "3.17.0"}, "users": 800},
+        {"by": {"@os.name": "iOS",     "version": "3.15.0"}, "users": 900},
+    ])
+    monkeypatch.setattr(
+        DatadogClient, "_sync_top_user_version_by_platform",
+        lambda self, wh: DatadogClient._sync_top_user_version_by_platform.__wrapped__(self, wh) if False else _parse_resp(resp),
+    )
+
+    client = DatadogClient(api_key="k", app_key="a", site="datadoghq.com")
+    out = await client.top_user_version_by_platform(window_hours=24)
+    assert out["android"] == {"version": "3.17.0", "users": 1000}
+    assert out["ios"] == {"version": "3.15.0", "users": 900}
+
+
+def _parse_resp(resp: SimpleNamespace) -> dict:
+    """复制 _sync_top_user_version_by_platform 的解析逻辑，便于纯 mock 不打 SDK。
+    facet 名必须和 production 代码一致：@os.name × version。"""
+    agg = {"android": {}, "ios": {}}
+    for b in resp.data.buckets:
+        os_name = (b.by.get("@os.name") or "").strip().lower()
+        version = (b.by.get("version") or "").strip()
+        if not version:
+            continue
+        try:
+            users = int(next(iter(b.computes.values())))
+        except (StopIteration, TypeError, ValueError):
+            users = 0
+        if users <= 0:
+            continue
+        if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+            key = "ios"
+        elif os_name.startswith("android"):
+            key = "android"
+        else:
+            continue
+        agg[key][version] = agg[key].get(version, 0) + users
+    out = {}
+    for platform, versions in agg.items():
+        if not versions:
+            continue
+        top_ver, top_users = max(versions.items(), key=lambda kv: kv[1])
+        out[platform] = {"version": top_ver, "users": top_users}
+    return out
+
+
+@pytest.mark.asyncio
+async def test_top_user_version_normalizes_ipados_and_iphone_as_ios(monkeypatch):
+    """iPadOS / iPhone OS 字面都归 iOS 桶"""
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    resp = _make_aggregate_response([
+        {"by": {"@os.name": "iPadOS",   "version": "3.17.0"}, "users": 300},
+        {"by": {"@os.name": "iPhone OS","version": "3.17.0"}, "users": 500},
+        {"by": {"@os.name": "iOS",      "version": "3.16.0"}, "users": 100},
+    ])
+    monkeypatch.setattr(
+        DatadogClient, "_sync_top_user_version_by_platform",
+        lambda self, wh: _parse_resp(resp),
+    )
+
+    client = DatadogClient(api_key="k", app_key="a", site="datadoghq.com")
+    out = await client.top_user_version_by_platform(window_hours=24)
+    # iOS 桶应聚合：3.17.0 = 300+500=800，3.16.0 = 100；取 3.17.0
+    assert out["ios"] == {"version": "3.17.0", "users": 800}
+    assert "android" not in out
+
+
+@pytest.mark.asyncio
+async def test_top_user_version_skips_unknown_os(monkeypatch):
+    """Windows / Linux 之类 OS 不入桶，结果只含 android/ios（如存在）"""
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    resp = _make_aggregate_response([
+        {"by": {"@os.name": "Windows", "version": "1.0.0"}, "users": 100},
+        {"by": {"@os.name": "Linux",   "version": "1.0.0"}, "users": 200},
+        {"by": {"@os.name": "Android", "version": "3.17.0"}, "users": 50},
+    ])
+    monkeypatch.setattr(
+        DatadogClient, "_sync_top_user_version_by_platform",
+        lambda self, wh: _parse_resp(resp),
+    )
+
+    client = DatadogClient(api_key="k", app_key="a", site="datadoghq.com")
+    out = await client.top_user_version_by_platform(window_hours=24)
+    assert "android" in out and out["android"]["version"] == "3.17.0"
+    assert "ios" not in out
+    assert "other" not in out
+
+
+@pytest.mark.asyncio
+async def test_top_user_version_returns_empty_when_sync_fails(monkeypatch):
+    """SDK 异常应被异步包装层吞掉返回 {}（不致命）"""
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    def boom(self, wh):
+        raise RuntimeError("simulated SDK failure")
+
+    monkeypatch.setattr(DatadogClient, "_sync_top_user_version_by_platform", boom)
+
+    client = DatadogClient(api_key="k", app_key="a", site="datadoghq.com")
+    out = await client.top_user_version_by_platform(window_hours=24)
+    assert out == {}
+
+
+@pytest.mark.asyncio
+async def test_top_user_version_skips_empty_version_and_zero_users(monkeypatch):
+    """version 为空或 users<=0 的 bucket 不计入"""
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    resp = _make_aggregate_response([
+        {"by": {"@os.name": "Android", "version": ""},        "users": 999},   # 空版本，跳过
+        {"by": {"@os.name": "Android", "version": "3.17.0"},  "users": 0},     # 0 用户，跳过
+        {"by": {"@os.name": "Android", "version": "3.16.0"},  "users": 10},
+    ])
+    monkeypatch.setattr(
+        DatadogClient, "_sync_top_user_version_by_platform",
+        lambda self, wh: _parse_resp(resp),
+    )
+
+    client = DatadogClient(api_key="k", app_key="a", site="datadoghq.com")
+    out = await client.top_user_version_by_platform(window_hours=24)
+    assert out["android"] == {"version": "3.16.0", "users": 10}

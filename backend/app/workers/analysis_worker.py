@@ -237,6 +237,10 @@ async def run_analysis_pipeline(
             log_parse_issues.append(reason)
 
     has_logs = len(log_paths) > 0
+    # 区分两种 "no logs" 场景：
+    #   (a) 本来就没上传文件 → has_logs=False, logs_corrupted=False（让 AI 走"凭描述分析"模式）
+    #   (b) 上传了文件但全部解密失败 → has_logs=False, logs_corrupted=True（让 AI 显式让用户重传，禁止瞎猜根因）
+    logs_corrupted = bool(downloaded_files) and not has_logs
 
     # Extract log metadata (app version, OS, UID, device model, etc.)
     log_metadata: Dict[str, Any] = {}
@@ -251,9 +255,10 @@ async def run_analysis_pipeline(
         if log_parse_issues:
             logger.warning("Log parse issues: %s", log_parse_issues)
         if downloaded_files:
-            logger.warning("Had %d files but none produced usable logs", len(downloaded_files))
+            logger.warning("Had %d files but none produced usable logs (logs_corrupted=True)", len(downloaded_files))
         if on_progress:
-            await on_progress(40, "无日志文件，将基于描述和代码分析...")
+            msg = "日志文件损坏（解密失败），将提示用户重传" if logs_corrupted else "无日志文件，将基于描述和代码分析..."
+            await on_progress(40, msg)
 
     # --- Step 4: Match rules ---
     if on_progress:
@@ -326,6 +331,7 @@ async def run_analysis_pipeline(
         agent_override=agent_override,
         problem_date=problem_date,
         has_logs=has_logs,
+        logs_corrupted=logs_corrupted,
         on_progress=on_progress,
         previous_analysis=previous_analysis,
         followup_question=followup_question,

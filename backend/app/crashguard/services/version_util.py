@@ -121,6 +121,63 @@ async def resolve_effective_latest_release(
     )
 
 
+async def derive_top_user_version_from_crashes(
+    session: AsyncSession,
+    platform: str,
+) -> Optional[dict]:
+    """
+    fallback：从 crash_issues.top_app_version 字段加权聚合「用户量最大版本」。
+
+    每个 issue 的 top_app_version 格式: "3.16.0-634 (60%), 3.15.1-631 (30%)"
+    我们把 (% × total_events) 当 issue 维度的版本影响贡献，跨 issue 求和后取最大。
+
+    ⚠️ 用 `total_events` 而非 `total_users_affected`——后者目前全部为 0
+    （Datadog Error Tracking 不直接返回 users，Plan 2.5 RUM Events API 才补，
+    见 `models.py:71` 注释）。events 数是用户影响范围的合理代理。
+
+    Returns:
+        {"version": str, "users": int} 或 None（无数据）。
+        ↑ "users" 字段在 events-代理 口径下实际是加权 events 数。
+    """
+    from app.crashguard.models import CrashIssue
+
+    if not platform:
+        return None
+
+    stmt = (
+        select(CrashIssue.top_app_version, CrashIssue.total_events)
+        .where(func.lower(CrashIssue.platform) == platform.lower())
+    )
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        return None
+
+    bucket: dict[str, float] = {}
+    pattern = re.compile(r"^(.+?)\s*\(([\d.]+)%\)\s*$")
+    for top_av, total_events in rows:
+        top_av = (top_av or "").strip()
+        events = int(total_events or 0)
+        if not top_av or events <= 0:
+            continue
+        for part in top_av.split(","):
+            m = pattern.match(part.strip())
+            if not m:
+                continue
+            ver = m.group(1).strip()
+            try:
+                pct = float(m.group(2)) / 100.0
+            except ValueError:
+                continue
+            if not ver or pct <= 0:
+                continue
+            bucket[ver] = bucket.get(ver, 0.0) + events * pct
+
+    if not bucket:
+        return None
+    top_ver, top_events = max(bucket.items(), key=lambda kv: kv[1])
+    return {"version": top_ver, "users": int(round(top_events))}
+
+
 def collect_recent_versions(
     all_versions: Iterable[str],
     latest: str,

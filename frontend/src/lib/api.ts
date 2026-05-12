@@ -1311,6 +1311,9 @@ export interface CrashLatestRelease {
   versions: { flutter: string; android: string; ios: string };
   min_events_threshold: number;
   source: { flutter: string; android: string; ios: string };
+  // 用户量最大版本（仅 android / ios；Flutter 也跑在这俩上）
+  top_user_versions?: Partial<Record<"android" | "ios", { version: string; users: number }>>;
+  top_user_versions_source?: Partial<Record<"android" | "ios", string>>;
 }
 
 export const fetchCrashLatestRelease = () =>

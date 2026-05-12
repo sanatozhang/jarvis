@@ -657,6 +657,7 @@ const EN: Record<string, string> = {
   "注册时间": "Registered",
   "管理员": "Admin",
   "用户": "User",
+  "用户量最大": "Top by users",
 
   // Escalation
   "转交工程师": "Escalate to Engineer",

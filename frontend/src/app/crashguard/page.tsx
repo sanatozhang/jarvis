@@ -142,6 +142,13 @@ function CrashguardPageInner() {
   const [autoPrQueue, setAutoPrQueue] = useState<AutoPrQueueResponse | null>(null);
   const [latestRelease, setLatestRelease] = useState<{ flutter: string; android: string; ios: string } | null>(null);
   const [latestReleaseSource, setLatestReleaseSource] = useState<{ flutter: string; android: string; ios: string } | null>(null);
+  // 用户量最大版本（仅 android / ios，24h Datadog RUM 派生 / crash_issues fallback）
+  const [topUserVersion, setTopUserVersion] = useState<
+    Partial<Record<"android" | "ios", { version: string; users: number }>> | null
+  >(null);
+  const [topUserVersionSource, setTopUserVersionSource] = useState<
+    Partial<Record<"android" | "ios", string>> | null
+  >(null);
   // 首次进入若空数据 → 自动 bootstrap（拉数 + AI 分析），避免用户面对空白
   const [bootstrapping, setBootstrapping] = useState(false);
   const [bootstrapElapsed, setBootstrapElapsed] = useState(0);
@@ -549,6 +556,8 @@ function CrashguardPageInner() {
         if (cancelled) return;
         setLatestRelease(r.versions);
         setLatestReleaseSource(r.source as any);
+        setTopUserVersion(r.top_user_versions ?? null);
+        setTopUserVersionSource(r.top_user_versions_source ?? null);
       })
       .catch(() => {
         // 接口不通 → 不显示，比错显 3.16.0 强
@@ -673,6 +682,31 @@ function CrashguardPageInner() {
                       <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
                       <strong>{latestRelease[k]}</strong>
                       <span style={{ color: D.text3, fontSize: 11 }}>{tag}</span>
+                    </span>
+                  );
+                });
+              })()}
+            </span>
+            <span className="text-sm" style={{ color: D.text1 }}>
+              · {t("用户量最大")}{" "}
+              {(() => {
+                if (!topUserVersion) return <strong style={{ color: D.text3 }}>—</strong>;
+                const order: Array<"ios" | "android"> = ["ios", "android"];
+                const visible = order.filter((k) => {
+                  if (platformFilter !== "all" && platformFilter !== k && platformFilter !== "flutter") return false;
+                  return Boolean(topUserVersion[k]?.version);
+                });
+                if (visible.length === 0) return <strong style={{ color: D.text3 }}>—</strong>;
+                return visible.map((k, i) => {
+                  const v = topUserVersion[k]!;
+                  const src = topUserVersionSource?.[k];
+                  const tag = src === "datadog_rum" ? "·RUM" : src === "crash_issues_fallback" ? "·崩溃回落" : "";
+                  return (
+                    <span key={k}>
+                      {i > 0 && <span style={{ color: D.text3 }}> · </span>}
+                      <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
+                      <strong>{v.version}</strong>
+                      <span style={{ color: D.text3, fontSize: 11 }}> ({compactNumber(v.users)} {t("用户")}){tag}</span>
                     </span>
                   );
                 });

@@ -74,6 +74,7 @@ class BaseAgent(ABC):
         few_shot_examples: Optional[List[Dict[str, Any]]] = None,
         context_files: Optional[Dict[str, str]] = None,
         condensation_context: Optional[Dict[str, Any]] = None,
+        logs_corrupted: bool = False,
     ) -> str:
         prompt, _meta = BaseAgent.build_prompt_with_meta(
             issue=issue,
@@ -87,6 +88,7 @@ class BaseAgent(ABC):
             few_shot_examples=few_shot_examples,
             context_files=context_files,
             condensation_context=condensation_context,
+            logs_corrupted=logs_corrupted,
         )
         return prompt
 
@@ -103,6 +105,7 @@ class BaseAgent(ABC):
         few_shot_examples: Optional[List[Dict[str, Any]]] = None,
         context_files: Optional[Dict[str, str]] = None,
         condensation_context: Optional[Dict[str, Any]] = None,
+        logs_corrupted: bool = False,
     ) -> tuple[str, Dict[str, Any]]:
         """Build the master prompt for the agent.
 
@@ -208,7 +211,33 @@ code/         ← 代码仓库（如果存在），可搜索代码定位问题
 output/       ← 请将 result.json 写入此目录
 ```"""
         else:
-            role_and_principles = f"""你是 Plaud 产品和技术专家，专门帮助客服团队解答用户疑问。
+            if logs_corrupted:
+                # 区分 "未提供日志" 与 "提供了但解密失败" —— 后者必须告诉客服去要重传，
+                # 而不是让 AI 凭工单一句话瞎猜根因。
+                role_and_principles = f"""你是 Plaud 产品和技术专家，专门帮助客服团队解答用户疑问。
+**⚠️ 警告：本工单上传了日志文件，但服务端解密失败，可能是上传过程中文件损坏。**
+你的分析结果将直接展示给客服人员，他们会复制你生成的回复模板发送给用户。
+
+## 重要原则（日志损坏场景）
+
+1. **明确告知**：在 user_reply 里必须明确告诉用户「我们收到了日志，但文件似乎在上传过程中损坏，无法读取」
+2. **请求重传**：引导用户重新通过 APP「设置 > 意见反馈 / 发送日志」上传一次，避免改名 / 转发 / 邮件附件
+3. **不要瞎猜根因**：在没有日志的前提下，**禁止**编造具体的技术根因（如「队列卡住」「上传中断」等都是猜测）；只能给出"已收到反馈、正在排查"的礼貌占位
+4. **confidence 强制设为 "low"**：因为根因无法确认
+5. **needs_engineer = true**：让工程师介入手动排查
+6. **结果必须写文件**：分析完成后必须将 JSON 结果写入 output/result.json"""
+
+                extraction_section = """## 日志情况（关键）
+
+**本工单上传了日志文件，但服务端解密时发现文件头被污染（疑似上传链路注入了非法字节），导致解密失败。**
+
+行动建议：
+- user_reply 必须包含「请重新通过 APP 内『发送日志』功能上传一次，避免邮件附件 / 改名 / 转发」
+- 不要在 user_reply 里基于空气猜测技术根因
+- root_cause 字段写「日志文件损坏，无法读取，需要用户重新上传」
+- confidence: low；needs_engineer: true"""
+            else:
+                role_and_principles = f"""你是 Plaud 产品和技术专家，专门帮助客服团队解答用户疑问。
 **注意：本工单没有提供日志文件**，你需要基于问题描述、代码仓库和产品知识来分析和回答。
 你的分析结果将直接展示给客服人员，他们会复制你生成的回复模板发送给用户。
 
@@ -221,7 +250,7 @@ output/       ← 请将 result.json 写入此目录
 5. **结果必须写文件**：分析完成后必须将 JSON 结果写入 output/result.json
 6. **无法确认时说明**：如果没有日志无法确认根因，在回复中说明需要用户提供日志进一步排查"""
 
-            extraction_section = """## 日志情况
+                extraction_section = """## 日志情况
 
 **本工单未提供日志文件。** 请仅基于问题描述、图片（如有）、代码和规则进行分析。
 如果问题需要日志才能定位，请在 user_reply 中引导用户提供日志。"""

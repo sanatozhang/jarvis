@@ -68,6 +68,8 @@ async def submit_feedback(
         upload_dir.mkdir(parents=True, exist_ok=True)
         images_dir.mkdir(parents=True, exist_ok=True)
 
+        from app.services.decrypt import _PLAUD_MAGIC, _PLAUD_MAGIC_SCAN_BYTES
+
         saved_files = []
         for f in log_files:
             if f.filename and f.size and f.size > 0:
@@ -76,6 +78,36 @@ async def submit_feedback(
                 dest_dir = images_dir if is_image else upload_dir
                 dest = dest_dir / f.filename
                 content = await f.read()
+
+                # 方案 B：上传边界对 .plaud 文件做 magic 校验
+                # - 干净 → 原样保存
+                # - 头部污染（CRLF 注入等，但 magic 还在前 16 字节内）→ 自动剥离，保存干净版本 + 日志告警
+                # - 完全无 magic → 400 拒收，让用户重传
+                if ext == ".plaud" and not is_image:
+                    if not content.startswith(_PLAUD_MAGIC):
+                        scan = content[:_PLAUD_MAGIC_SCAN_BYTES]
+                        offset = scan.find(_PLAUD_MAGIC)
+                        if offset > 0:
+                            polluted_prefix = content[:offset]
+                            logger.warning(
+                                "Upload pollution detected on %s: stripped %d-byte prefix %s before plaud magic",
+                                f.filename, offset, polluted_prefix.hex(),
+                            )
+                            content = content[offset:]
+                        elif offset < 0:
+                            logger.error(
+                                "Upload reject %s: not a valid .plaud file (head=%s)",
+                                f.filename, content[:16].hex(),
+                            )
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f".plaud 文件 {f.filename} 不是有效的 Plaud 加密日志（缺少 magic 字节）。"
+                                    "请通过 APP 内『设置 > 意见反馈 / 发送日志』直接上传，"
+                                    "避免转发、邮件附件、改后缀等可能破坏文件的操作。"
+                                ),
+                            )
+
                 with open(dest, "wb") as out:
                     out.write(content)
                 saved_files.append({

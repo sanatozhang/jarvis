@@ -282,14 +282,22 @@ async def auto_pr_queue() -> Dict[str, Any]:
 
 @router.get("/latest-release")
 async def get_latest_release() -> Dict[str, Any]:
-    """获取各平台「线上最新版本」。
+    """获取各平台「线上最新版本」+「用户量最大版本」。
 
-    口径：
+    最新版本口径：
       - 配置 `current_release.{flutter,android,ios}` 优先（手动覆盖）
       - 否则按崩溃数据派生：版本累计 events ≥ `latest_version_min_events`（默认 300）后取最大 semver
       - 都不满足返回 ""
+
+    用户量最大版本口径（仅 android / ios，flutter 也跑在这俩上）：
+      - Datadog RUM @type:session 24h 窗口，cardinality(@usr.id) group by (@os.name, @application.version)
+      - 失败/无数据时回落 crash_issues.top_app_version 加权聚合
     """
-    from app.crashguard.services.version_util import resolve_effective_latest_release
+    from app.crashguard.services.datadog_client import DatadogClient
+    from app.crashguard.services.version_util import (
+        derive_top_user_version_from_crashes,
+        resolve_effective_latest_release,
+    )
     from app.db.database import get_session
 
     s = get_crashguard_settings()
@@ -307,6 +315,36 @@ async def get_latest_release() -> Dict[str, Any]:
                 override=override,
                 min_events=s.latest_version_min_events,
             )
+
+    # 用户量最大版本：优先 Datadog RUM，失败回落 crash_issues 聚合
+    top_user: Dict[str, Dict[str, Any]] = {}
+    top_user_source: Dict[str, str] = {}
+    if s.datadog_api_key:
+        try:
+            client = DatadogClient(
+                api_key=s.datadog_api_key,
+                app_key=s.datadog_app_key,
+                site=s.datadog_site,
+            )
+            top_user = await client.top_user_version_by_platform(window_hours=24)
+            for p in ("android", "ios"):
+                if top_user.get(p):
+                    top_user_source[p] = "datadog_rum"
+        except Exception as exc:
+            logger.warning("top_user_version_by_platform fetch failed: %s", exc)
+
+    # Fallback：crash_issues.top_app_version 加权聚合
+    async with get_session() as session:
+        for p in ("android", "ios"):
+            if top_user.get(p):
+                continue
+            fallback = await derive_top_user_version_from_crashes(session, platform=p)
+            if fallback:
+                top_user[p] = fallback
+                top_user_source[p] = "crash_issues_fallback"
+            else:
+                top_user_source[p] = "unknown"
+
     return {
         "versions": result,
         "min_events_threshold": s.latest_version_min_events,
@@ -315,6 +353,8 @@ async def get_latest_release() -> Dict[str, Any]:
                 ("derived" if result[p] else "unknown"))
             for p in overrides
         },
+        "top_user_versions": top_user,           # {"android": {"version":"...","users":N}, "ios": {...}}
+        "top_user_versions_source": top_user_source,
     }
 
 

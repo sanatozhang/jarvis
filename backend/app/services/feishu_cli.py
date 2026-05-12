@@ -749,8 +749,8 @@ async def create_escalation_group(
     from app.db import database as db_mod
 
     now = datetime.now().strftime("%Y%m%d")
-    category = problem_type or "未知"
-    group_name = f"Appllo工单跟进-{category}-{now}"
+    category = problem_type or "Unknown"
+    group_name = f"Appllo-Ticket-{category}-{now}"
 
     # Collect members: oncall + fixed members + triggering user
     oncall_emails = await db_mod.get_current_oncall()
@@ -819,18 +819,18 @@ async def create_escalation_group(
         # Resolve oncall emails to open_ids for @mentions
         oncall_id_map = await _emails_to_open_id_map(oncall_emails) if oncall_emails else {}
 
-        msg_lines = ["🔔 工单转交工程师处理"]
+        msg_lines = ["🔔 Ticket Escalated to Engineering"]
         if appllo_url:
-            msg_lines.append(f"工单链接: {appllo_url}")
+            msg_lines.append(f"Ticket Link: {appllo_url}")
         else:
-            msg_lines.append(f"工单ID: {issue_id}")
-        msg_lines.append(f"问题描述: {description[:300]}")
+            msg_lines.append(f"Ticket ID: {issue_id}")
+        msg_lines.append(f"Issue Description: {description[:300]}")
         if problem_type:
-            msg_lines.append(f"问题分类: {problem_type}")
+            msg_lines.append(f"Issue Category: {problem_type}")
         if zendesk_id:
             msg_lines.append(f"Zendesk: {zendesk_id}")
         if issue_link:
-            msg_lines.append(f"飞书工单: {issue_link}")
+            msg_lines.append(f"Feishu Ticket: {issue_link}")
 
         # @mention oncall members
         if oncall_id_map:
@@ -838,16 +838,16 @@ async def create_escalation_group(
                 f'<at user_id="{oid}">{email.split("@")[0]}</at>'
                 for email, oid in oncall_id_map.items()
             )
-            msg_lines.append(f"\n{at_tags} 辛苦关注并持续跟进解决问题")
+            msg_lines.append(f"\n{at_tags} please follow up and drive this to resolution.")
 
         # Problem routing guide
         msg_lines.append(
-            "\n📋 问题对接人:\n"
-            "• BE问题 → jacky.yang@plaud.ai\n"
-            "• 语音识别不准确 → ruixin@plaud.ai\n"
-            "• Summary/Ask 相关 → luke@plaud.ai\n"
-            "• 支付会员相关 → walker.li@plaud.ai\n"
-            "• 总结内容与转写/录音不一致 → pillar@plaud.ai"
+            "\n📋 Issue Owners:\n"
+            "• Backend issues → jacky.yang@plaud.ai\n"
+            "• Speech recognition inaccuracy → ruixin@plaud.ai\n"
+            "• Summary / Ask related → luke@plaud.ai\n"
+            "• Payment & membership → walker.li@plaud.ai\n"
+            "• Summary inconsistent with transcript/recording → pillar@plaud.ai"
         )
 
         try:
@@ -856,16 +856,16 @@ async def create_escalation_group(
             logger.warning("Failed to post issue info to group: %s", e)
 
     # 5. Send individual DM notifications (always runs as fallback)
-    notify_lines = ["🔔 工单已转交工程师处理"]
+    notify_lines = ["🔔 Ticket Escalated to Engineering"]
     if appllo_url:
-        notify_lines.append(f"工单链接: {appllo_url}")
+        notify_lines.append(f"Ticket Link: {appllo_url}")
     else:
-        notify_lines.append(f"工单: {issue_id}")
-    notify_lines.append(f"问题: {description[:100]}")
+        notify_lines.append(f"Ticket: {issue_id}")
+    notify_lines.append(f"Issue: {description[:100]}")
     if share_link:
-        notify_lines.append(f"处理群: {share_link}")
+        notify_lines.append(f"Follow-up Group: {share_link}")
     if issue_link:
-        notify_lines.append(f"飞书工单: {issue_link}")
+        notify_lines.append(f"Feishu Ticket: {issue_link}")
     notify_text = "\n".join(notify_lines)
 
     for email in all_emails:
@@ -900,15 +900,15 @@ async def notify_oncall(
         return False
 
     text_lines = [
-        f"🔔 工单需要工程师处理",
-        f"工单: {issue_id}",
-        f"问题: {description[:200]}",
-        f"原因: {reason}",
+        f"🔔 Ticket Needs Engineering Attention",
+        f"Ticket: {issue_id}",
+        f"Issue: {description[:200]}",
+        f"Reason: {reason}",
     ]
     if zendesk_id:
         text_lines.append(f"Zendesk: {zendesk_id}")
     if link:
-        text_lines.append(f"详情: {link}")
+        text_lines.append(f"Details: {link}")
     text = "\n".join(text_lines)
 
     sent = 0
