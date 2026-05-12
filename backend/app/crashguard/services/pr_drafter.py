@@ -992,12 +992,21 @@ async def draft_pr_for_analysis(
         base_ref = _default_base_ref(repo_path)
 
         # Bug #2 fix：先把目标分支（本地）清掉，避免「already exists」
-        rc, _, err = _run_git(["git", "checkout", "--detach", base_ref], repo_path, timeout=30)
+        # `-c submodule.recurse=false` 防 git checkout 递归到 untracked 嵌套 .git
+        # 目录（例如 .jenkins_ios_cache 里 Swift Package checkout 含坏 HEAD），
+        # 否则报：'fatal: bad object HEAD ... git status --porcelain=2 failed in submodule'
+        rc, _, err = _run_git(
+            ["git", "-c", "submodule.recurse=false", "checkout", "--detach", base_ref],
+            repo_path, timeout=30,
+        )
         if rc != 0:
             return {"ok": False, "error": f"git checkout {base_ref} failed: {err}"}
         _run_git(["git", "branch", "-D", branch], repo_path, timeout=10)
 
-        rc, _, err = _run_git(["git", "checkout", "-b", branch, base_ref], repo_path, timeout=30)
+        rc, _, err = _run_git(
+            ["git", "-c", "submodule.recurse=false", "checkout", "-b", branch, base_ref],
+            repo_path, timeout=30,
+        )
         if rc != 0:
             return {"ok": False, "error": f"git checkout {base_ref} failed: {err}"}
 
