@@ -149,4 +149,7 @@ crashguard:
     ios: ""
 
   pr_dedup_days: 30                    # 同一 issue+platform N 天内只允许一个 draft PR
-  frontend_base_url: "http://localhost:3000"  # 飞书消息链接前缀
+  # frontend_base_url 已留空 → 启动时自动探测本机出口 IP（多机部署友好）
+  # Docker 部署请显式设 env：CRASHGUARD_FRONTEND_BASE_URL=http://10.0.52.x:3000
+  # 或 HOST_IP=10.0.52.x（自动补 :3000）
+  # frontend_base_url: ""

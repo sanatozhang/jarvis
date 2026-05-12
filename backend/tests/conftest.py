@@ -45,18 +45,45 @@ async def client(db_engine, db_session):
     get_settings.cache_clear()
 
     # Patch get_settings to avoid reading real config/env
+    # 注意：还得 patch 已 import 模块里的 local 名（from app.config import get_settings 是早绑定，
+    # 当 crashguard 测试先跑，它已 import linear_webhook 等模块时，那些模块的 get_settings
+    # 已绑定到原函数；只 patch app.config.get_settings 不够，必须同步 patch 各 api 模块的 local 名）。
     with patch("app.config.get_settings") as mock_settings:
         settings = _make_test_settings()
         mock_settings.return_value = settings
 
-        # Patch init_db to no-op (we already created tables)
-        with patch("app.db.database.init_db", new_callable=AsyncMock):
-            # Import app AFTER patching
-            from app.main import app
+        # 同步 patch 各 api 模块里的 get_settings local 名（防早绑定测试污染）
+        api_modules_with_local_get_settings = (
+            "app.api.linear_webhook",
+            "app.api.feedback",
+            "app.api.issues",
+            "app.api.tasks",
+            "app.api.rules",
+            "app.api.reports",
+            "app.api.oncall",
+            "app.api.users",
+            "app.api.analytics",
+            "app.api.local",
+        )
+        local_patches = []
+        import sys
+        for mod_name in api_modules_with_local_get_settings:
+            if mod_name in sys.modules and hasattr(sys.modules[mod_name], "get_settings"):
+                p = patch(f"{mod_name}.get_settings", return_value=settings)
+                local_patches.append(p)
+                p.start()
+        try:
+            # Patch init_db to no-op (we already created tables)
+            with patch("app.db.database.init_db", new_callable=AsyncMock):
+                # Import app AFTER patching
+                from app.main import app
 
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as ac:
-                yield ac
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                    yield ac
+        finally:
+            for p in local_patches:
+                p.stop()
 
     db_mod._engine = original_engine
     db_mod._session_factory = original_factory

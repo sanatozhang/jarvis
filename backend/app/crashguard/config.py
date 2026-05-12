@@ -15,6 +15,39 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 from app.config import PROJECT_ROOT, _load_yaml
 
 
+def _autodetect_frontend_base_url() -> str:
+    """探测本机出口 IP，构造默认 frontend URL。
+
+    底层逻辑：多机部署（10.0.52.100 / 102 / ...）若不显式配置 frontend_base_url，
+    飞书消息里的链接会回环到 localhost——其他人点开打不到当前部署的页面。
+    用 UDP socket connect 8.8.8.8（不真发包，仅触发路由表查询）拿到本机出口 IP。
+
+    ⚠️ Docker 容器里 socket 拿到的是 bridge 网段（172.x.x.x），对外不可达。
+    Docker 部署必须显式设 env：`CRASHGUARD_FRONTEND_BASE_URL=http://10.0.52.x:3000`，
+    本函数仅作 native dev / 单机部署的便利默认。
+    """
+    import os
+    import socket
+    # 优先读 env：HOST_IP / DEPLOY_HOST （docker-compose 可注入宿主 IP）
+    for key in ("CRASHGUARD_HOST_IP", "HOST_IP", "DEPLOY_HOST"):
+        v = (os.environ.get(key) or "").strip()
+        if v:
+            if v.startswith("http://") or v.startswith("https://"):
+                return v
+            return f"http://{v}:3000"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.3)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and ip != "127.0.0.1":
+            return f"http://{ip}:3000"
+    except Exception:
+        pass
+    return "http://localhost:3000"
+
+
 class _YamlSource(PydanticBaseSettingsSource):
     """从 config.yaml crashguard 段读取的低优先级 source"""
 
@@ -78,7 +111,10 @@ class CrashguardSettings(BaseSettings):
     feishu_target_email: str = ""
     feishu_admin_open_ids: List[str] = Field(default_factory=list)
     # 飞书消息中链接前缀（指向 frontend）
-    frontend_base_url: str = "http://localhost:3000"
+    # 优先级：env CRASHGUARD_FRONTEND_BASE_URL > yaml.frontend_base_url > env HOST_IP 派生
+    #        > 本机出口 IP 自动探测 > http://localhost:3000
+    # 多机部署/Docker：建议显式 env 设值，避免容器内拿 bridge IP
+    frontend_base_url: str = Field(default_factory=_autodetect_frontend_base_url)
 
     # 半自动 PR 仓库映射（按平台覆盖，未设回落 jarvis code_repo_app）
     repo_path_flutter: str = ""
