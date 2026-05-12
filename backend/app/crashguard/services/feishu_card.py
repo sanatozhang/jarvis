@@ -322,3 +322,73 @@ def build_core_metric_alert_card(
         },
         "elements": elements,
     }
+
+
+def build_job_health_alert_card(
+    items: List[Dict[str, Any]],
+    cooldown_minutes: int = 30,
+    frontend_base_url: str = "http://localhost:3000",
+) -> Dict[str, Any]:
+    """定时任务健康度告警卡片。
+
+    items: [{job_name, health (failing/stale), consecutive_failures, last_error,
+             last_fired_at, last_success_at, ...}]
+    health=stale → 超期未跑；health=failing → 连续 ≥3 次失败
+    """
+    title_text = f"⚙️ Crashguard 定时任务异常 · {len(items)} 项需关注"
+    elements: List[Dict[str, Any]] = []
+
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": (
+                f"📊 **检测窗口**：每 5 分钟扫描心跳表 · "
+                f"同任务节流 **{cooldown_minutes} 分钟**（避免刷屏）"
+            ),
+        },
+    })
+    elements.append({"tag": "hr"})
+
+    for it in items:
+        h = it.get("health", "")
+        health_emoji = "🔴" if h == "failing" else "⏰"
+        health_label = "连续失败" if h == "failing" else "超期未跑"
+        last_err = (it.get("last_error") or "")
+        err_line = f"\n  ⚠️ 最近错误：`{last_err}`" if last_err and h == "failing" else ""
+        last_success = it.get("last_success_at") or "—"
+        cf = it.get("consecutive_failures") or 0
+        interval = it.get("interval_minutes")
+        interval_str = f"{interval}min" if interval else "—"
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"{health_emoji} **{it.get('job_name')}** · {health_label}\n"
+                    f"  连续失败 **{cf}** 次 · 预期间隔 {interval_str}\n"
+                    f"  上次成功：{last_success}{err_line}"
+                ),
+            },
+        })
+    elements.append({"tag": "hr"})
+
+    btn_url = f"{frontend_base_url.rstrip('/')}/crashguard/jobs"
+    elements.append({
+        "tag": "action",
+        "actions": [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📊 查看任务监控"},
+            "type": "primary",
+            "url": btn_url,
+        }],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "red",
+            "title": {"tag": "plain_text", "content": title_text},
+        },
+        "elements": elements,
+    }

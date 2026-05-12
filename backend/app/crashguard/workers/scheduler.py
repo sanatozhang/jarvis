@@ -26,6 +26,7 @@ _pr_sync_last_fired: str = ""    # "YYYY-MM-DD HH:MM" 防同分钟重跑
 _analyze_last_fired: str = ""    # 定时分析 tick 防同分钟重跑
 _hourly_alert_last_fired: str = ""  # 进程级幂等；DB UNIQUE(hour_utc) 兜多机
 _core_metric_last_fired: str = ""   # 10min tick 进程级幂等；DB UNIQUE(window_start) 兜多机
+_job_health_last_fired: str = ""    # 兜底告警 tick 进程级幂等
 
 
 async def _run_analyze_tick(max_per_tick: int) -> dict:
@@ -96,6 +97,7 @@ async def _tick_once() -> None:
         ("morning", s.morning_cron),
         ("evening", s.evening_cron),
     )
+    from app.crashguard.services.job_heartbeat import record_heartbeat
     for report_type, cron_expr in schedule:
         if _last_fired.get(report_type) == tag:
             continue
@@ -103,12 +105,16 @@ async def _tick_once() -> None:
             continue
         # 先打 tag 再 send——异常时本分钟内不重试（避免日志风暴），下分钟 cron 不再 match
         _last_fired[report_type] = tag
+        job_name = "morning_daily" if report_type == "morning" else "evening_daily"
         try:
-            res = await send_daily_report(report_type, target_date=now.date())
-            logger.info(
-                "crashguard daily_report fired: type=%s ok=%s sent=%s reason=%s",
-                report_type, res.get("ok"), res.get("sent"), res.get("skipped_reason"),
-            )
+            async with record_heartbeat(job_name) as hb:
+                res = await send_daily_report(report_type, target_date=now.date())
+                hb.set_summary(res)
+                hb.set_status_from_result(res)
+                logger.info(
+                    "crashguard daily_report fired: type=%s ok=%s sent=%s reason=%s",
+                    report_type, res.get("ok"), res.get("sent"), res.get("skipped_reason"),
+                )
         except Exception:
             logger.exception("crashguard daily_report tick failed: type=%s", report_type)
 
@@ -116,14 +122,19 @@ async def _tick_once() -> None:
     global _pr_sync_last_fired
     pr_cron = getattr(s, "pr_sync_cron", "") or ""
     if pr_cron and _pr_sync_last_fired != tag and _cron_matches(pr_cron, now):
+        _pr_sync_last_fired = tag
         try:
-            from app.crashguard.services.pr_sync import sync_all_open_prs
-            res = await sync_all_open_prs()
-            _pr_sync_last_fired = tag
-            logger.info(
-                "crashguard pr_sync fired: checked=%d changed=%d errors=%d",
-                res.get("checked", 0), res.get("changed", 0), res.get("errors", 0),
-            )
+            async with record_heartbeat("pr_sync") as hb:
+                from app.crashguard.services.pr_sync import sync_all_open_prs
+                res = await sync_all_open_prs()
+                hb.set_summary(res)
+                if res.get("errors", 0) > 0:
+                    hb.status = "failed"
+                    hb.error = f"errors={res.get('errors')}"
+                logger.info(
+                    "crashguard pr_sync fired: checked=%d changed=%d errors=%d",
+                    res.get("checked", 0), res.get("changed", 0), res.get("errors", 0),
+                )
         except Exception:
             logger.exception("crashguard pr_sync tick failed")
 
@@ -134,11 +145,15 @@ async def _tick_once() -> None:
         _analyze_last_fired = tag  # 先打 tag 防异常重试
         max_per_tick = int(getattr(s, "analyze_max_per_tick", 1) or 1)
         try:
-            res = await _run_analyze_tick(max_per_tick=max_per_tick)
-            logger.info(
-                "crashguard analyze tick fired: picked=%d completed=%d remaining=%d",
-                res.get("picked", 0), res.get("completed", 0), res.get("remaining", 0),
-            )
+            async with record_heartbeat("analyze_tick") as hb:
+                res = await _run_analyze_tick(max_per_tick=max_per_tick)
+                hb.set_summary(res)
+                if res.get("picked", 0) == 0:
+                    hb.status = "skipped"
+                logger.info(
+                    "crashguard analyze tick fired: picked=%d completed=%d remaining=%d",
+                    res.get("picked", 0), res.get("completed", 0), res.get("remaining", 0),
+                )
         except Exception:
             logger.exception("crashguard analyze tick failed")
 
@@ -149,13 +164,16 @@ async def _tick_once() -> None:
         if hourly_cron and _hourly_alert_last_fired != tag and _cron_matches(hourly_cron, now):
             _hourly_alert_last_fired = tag  # 先打 tag 防异常重试
             try:
-                from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
-                res = await run_hourly_alert_tick()
-                logger.info(
-                    "crashguard hourly_alert tick fired: alerted=%s new=%s surge=%s reason=%s",
-                    res.get("alerted"), res.get("new"), res.get("surge"),
-                    res.get("reason") or res.get("skipped") or res.get("error", ""),
-                )
+                async with record_heartbeat("hourly_alert") as hb:
+                    from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+                    res = await run_hourly_alert_tick()
+                    hb.set_summary(res)
+                    hb.set_status_from_result(res)
+                    logger.info(
+                        "crashguard hourly_alert tick fired: alerted=%s new=%s surge=%s reason=%s",
+                        res.get("alerted"), res.get("new"), res.get("surge"),
+                        res.get("reason") or res.get("skipped") or res.get("error", ""),
+                    )
             except Exception:
                 logger.exception("crashguard hourly_alert tick failed")
 
@@ -166,8 +184,11 @@ async def _tick_once() -> None:
         if cm_cron and _core_metric_last_fired != tag and _cron_matches(cm_cron, now):
             _core_metric_last_fired = tag
             try:
-                from app.crashguard.services.core_metric_alerter import run_core_metric_tick
-                res = await run_core_metric_tick()
+                async with record_heartbeat("core_metric") as hb:
+                    from app.crashguard.services.core_metric_alerter import run_core_metric_tick
+                    res = await run_core_metric_tick()
+                    hb.set_summary(res)
+                    hb.set_status_from_result(res)
                 logger.info(
                     "crashguard core_metric tick fired: alerted=%s direction=%s reason=%s",
                     res.get("alerted"), res.get("direction"),
@@ -175,6 +196,26 @@ async def _tick_once() -> None:
                 )
             except Exception:
                 logger.exception("crashguard core_metric tick failed")
+
+    # 定时任务健康度兜底告警（每 5min 扫描 heartbeat 表）
+    global _job_health_last_fired
+    if getattr(s, "job_health_alert_enabled", True):
+        jh_cron = getattr(s, "job_health_alert_cron", "") or ""
+        if jh_cron and _job_health_last_fired != tag and _cron_matches(jh_cron, now):
+            _job_health_last_fired = tag
+            try:
+                async with record_heartbeat("job_health_alert") as hb:
+                    from app.crashguard.services.job_health_alerter import run_job_health_check
+                    res = await run_job_health_check()
+                    hb.set_summary(res)
+                    hb.set_status_from_result(res)
+                    logger.info(
+                        "crashguard job_health_alert fired: alerted=%s unhealthy=%s",
+                        res.get("alerted"),
+                        res.get("unhealthy_jobs") or res.get("skipped") or res.get("error", ""),
+                    )
+            except Exception:
+                logger.exception("crashguard job_health_alert tick failed")
 
 
 async def report_scheduler_loop() -> None:

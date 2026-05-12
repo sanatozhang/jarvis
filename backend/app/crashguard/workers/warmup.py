@@ -338,8 +338,11 @@ async def warmup_on_startup() -> None:
         await asyncio.sleep(_WARMUP_DELAY_SEC)
     except asyncio.CancelledError:
         return
+    from app.crashguard.services.job_heartbeat import record_heartbeat
     try:
-        await run_pipeline_and_auto_analyze(reason="warmup")
+        async with record_heartbeat("warmup") as hb:
+            res = await run_pipeline_and_auto_analyze(reason="warmup")
+            hb.set_summary(res)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -389,7 +392,10 @@ async def pipeline_scheduler_loop() -> None:
                     if _pipeline_last_fired != tag and _cron_matches(cron, now):
                         _pipeline_last_fired = tag
                         try:
-                            await run_pipeline_and_auto_analyze(reason="cron")
+                            from app.crashguard.services.job_heartbeat import record_heartbeat
+                            async with record_heartbeat("pipeline") as hb:
+                                res = await run_pipeline_and_auto_analyze(reason="cron")
+                                hb.set_summary(res)
                         except Exception:
                             logger.exception("pipeline cron tick failed")
         except asyncio.CancelledError:

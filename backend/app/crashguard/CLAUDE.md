@@ -114,6 +114,57 @@ lint-imports                             # 隔离合约 lint
 python -m scripts.check_crash_decoupling # DB 外键自检
 ```
 
+## 定时任务全图（运营对照）
+
+7 个 cron + 1 个启动一次性任务，全部走 `crash_job_heartbeats` 表心跳记录，前端 `/crashguard/jobs` 可视化。
+
+| # | 任务（job_name） | Cron 默认 | 触发条件 | 关键阈值 | kill switch |
+|---|------|----------|---------|----------|-------------|
+| 1 | `core_metric` 核心指标告警 | `*/10 * * * *` | 当前 10min crash-free % vs 前 1h 加权均值 | `change_threshold_pp=0.3` pp / `min_sessions=100` / `platforms="android,ios"` | `core_metric_enabled` |
+| 2 | `analyze_tick` AI 分析 tick | `*/5 * * * *` | 今日 attention pool 未 success 的 issue | `analyze_max_per_tick=1` / `analysis_dedup_hours=6` | `enabled` |
+| 3 | `hourly_alert` 小时级告警 (SHoW-3h) | `5 */3 * * *` | 过去 3h fatal events vs 上周同 3h 块 | `growth_threshold_pct=10`%/`min_baseline_events=20`/`min_sessions=60`/`max_items=10` | `hourly_alert_enabled` |
+| 4 | `pr_sync` PR 状态同步 | `*/30 * * * *` | DB 内 draft/open PR 拉 GitHub 现态 | 无阈值 | `enabled` |
+| 5 | `pipeline` 数据 pipeline | `0 */4 * * *` | 全量拉 Datadog → snapshot + issue upsert + auto-analyze + auto-PR | `datadog_window_hours=24`/`pr_dedup_days=30`/`feasibility_pr_threshold=0.7` | `enabled` |
+| 6 | `morning_daily` 日报 | `0 7 * * *` | 昨日 24h 总览，SHoW-24h 基线 | `daily_surge_threshold=+10%`/`daily_drop_threshold=-10%`/`daily_attention_min_events=100` | `feishu_enabled` |
+| 7 | `evening_daily` 速报 | `0 17 * * *` | 日内 10h 增量，SHoW-Nh 基线 | 同上 + `evening_window_hours=10`，DB fallback baseline 强制清空 | `feishu_enabled` |
+| ✱ | `warmup` 启动一次性 | 无（启动后延后 N 秒） | 重启后补一遍 pipeline + auto-analyze | `warmup_on_startup=true` | `enabled` |
+
+### 可观测性闭环（治本，不靠人盯）
+
+| 层 | 实现 | 位置 |
+|----|------|------|
+| 数据底座 | `crash_job_heartbeats` 表：每 tick 写一行（job_name/fired_at/status/duration_ms/summary/error） | `models.py::CrashJobHeartbeat` |
+| 通用包装器 | `record_heartbeat(job_name)` async context manager，自动捕异常 → status=failed | `services/job_heartbeat.py` |
+| 状态 API | `GET /api/crash/jobs/status` 返回每任务的 cron/上次/下次/连续失败数/健康度 | `api/crash.py` |
+| 历史 API | `GET /api/crash/jobs/{job_name}/heartbeats?limit=50` | 同上 |
+| 前端页面 | `/crashguard/jobs` 表格，每 30s 自动刷新；超期/连续失败红色高亮 | `frontend/src/app/crashguard/jobs/page.tsx` |
+| 健康度判定 | `stale`（last_success_at 超过 2× 预期间隔）/ `failing`（连续 ≥3 次失败）/ `degraded`（近 50 次中 ≥10 次失败）/ `ok` | `api/crash.py::jobs_status` |
+| 失败告警（待落） | 任一任务 `health` ∈ (`failing`, `stale`) → 飞书告警（下一 sprint） | TBD |
+
+### 多实例去重 + kill switch
+
+| 层 | 机制 |
+|----|------|
+| 进程级 | `_last_fired` dict 同分钟不重跑 |
+| 实例级 | `scheduler_enabled` 标志位（多机部署只让一台跑 cron） |
+| DB 级 | `UNIQUE(report_date, report_type)` / `UNIQUE(hour_utc)` / `UNIQUE(window_start)` |
+
+```yaml
+enabled: true              # 总开关
+pr_enabled: true           # PR 创建总开关
+feishu_enabled: true       # 飞书消息开关
+scheduler_enabled: true    # 该实例是否跑 cron
+```
+
+### 容器内必备 env
+
+```bash
+TZ=Asia/Shanghai             # 否则早报延迟 8h
+CRASHGUARD_DATADOG_API_KEY   # 必填
+CRASHGUARD_DATADOG_APP_KEY   # 必填
+CRASHGUARD_FRONTEND_BASE_URL # Docker 必填，否则拿 bridge IP
+```
+
 ## 未来拆分预案
 
 1. `backend/app/crashguard/` 整体迁移到独立 repo

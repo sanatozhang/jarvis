@@ -38,6 +38,9 @@ from app.db.database import get_session
 
 logger = logging.getLogger("crashguard.analyzer")
 
+# fire-and-forget auto-PR 任务强引用 set——避免 Python GC 在任务运行中回收
+_AUTO_PR_TASKS: set = set()
+
 
 @dataclass
 class AnalysisOutput:
@@ -415,7 +418,11 @@ async def _persist_to_run(run_id: str, output: AnalysisOutput, is_followup: bool
 
     if analysis_id_for_pr is not None:
         try:
-            asyncio.create_task(_maybe_auto_draft_pr(analysis_id_for_pr, feasibility_for_pr))
+            # 保留强引用 + done_callback 释放，防止 Python GC 回收 fire-and-forget 任务
+            # （之前 crash.py 已踩过同款坑，_BG_TASKS set 是统一抓手）
+            task = asyncio.create_task(_maybe_auto_draft_pr(analysis_id_for_pr, feasibility_for_pr))
+            _AUTO_PR_TASKS.add(task)
+            task.add_done_callback(_AUTO_PR_TASKS.discard)
         except RuntimeError:
             # 没有事件循环（同步入口），直接同步跑一次
             try:
@@ -425,11 +432,23 @@ async def _persist_to_run(run_id: str, output: AnalysisOutput, is_followup: bool
 
 
 async def _maybe_auto_draft_pr(analysis_id: int, feasibility: float) -> None:
-    """根分析成功后的自动 PR 勾子。检查阈值 + 写 audit log，PR 失败不影响分析主流程。"""
+    """根分析成功后的自动 PR 勾子。检查阈值 + 写 audit log，PR 失败不影响分析主流程。
+
+    所有"不建 PR"的分支都写 audit log（含 pr_enabled=false 的静默关闭），
+    便于事后排查"为啥没建 PR"——不能再有看不见的退出路径。
+    """
     from app.crashguard.config import get_crashguard_settings
     from app.crashguard.services.audit import write_audit
     s = get_crashguard_settings()
     if not s.pr_enabled:
+        # 盲点修复：pr_enabled=false 也写 audit log，否则运营完全看不到
+        await write_audit(
+            op="auto_draft_pr",
+            target_id=str(analysis_id),
+            success=False,
+            detail=f"feasibility={feasibility:.2f}",
+            error="pr_enabled_off",
+        )
         return
     threshold = float(getattr(s, "feasibility_pr_threshold", 0.7) or 0.7)
     if feasibility < threshold:

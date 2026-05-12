@@ -1234,6 +1234,53 @@ export const fetchCrashReportDetail = (id: number, window_hours?: CrashWindowHou
   }>(`/crash/reports/${id}${qs}`);
 };
 
+export interface CrashJobStatusItem {
+  name: string;
+  label: string;
+  desc: string;
+  cron: string;
+  enabled: boolean;
+  interval_minutes: number | null;
+  next_fire_at: string | null;
+  last_fired_at: string | null;
+  last_status: "success" | "failed" | "skipped" | null;
+  last_duration_ms: number;
+  last_error: string;
+  last_summary: Record<string, unknown>;
+  last_success_at: string | null;
+  fail_count_in_recent_50: number;
+  consecutive_failures: number;
+  stale: boolean;
+  health: "ok" | "degraded" | "failing" | "stale";
+}
+
+export const fetchCrashJobsStatus = () =>
+  request<{
+    items: CrashJobStatusItem[];
+    server_time_local: string;
+    server_time_utc: string;
+  }>("/crash/jobs/status");
+
+export interface CrashJobHeartbeatItem {
+  id: number;
+  fired_at: string | null;
+  status: "success" | "failed" | "skipped";
+  duration_ms: number;
+  error: string;
+  summary: Record<string, unknown>;
+}
+
+export const fetchCrashJobHeartbeats = (jobName: string, limit = 50) =>
+  request<{ job_name: string; items: CrashJobHeartbeatItem[]; total: number }>(
+    `/crash/jobs/${encodeURIComponent(jobName)}/heartbeats?limit=${limit}`,
+  );
+
+export const triggerCrashJobNow = (jobName: string) =>
+  request<{ ok: boolean; job_name: string; result: Record<string, unknown> }>(
+    `/crash/jobs/${encodeURIComponent(jobName)}/run-now`,
+    { method: "POST", body: "{}" },
+  );
+
 export const fetchCrashHourlyAlertDetail = (id: number) =>
   request<{
     id: number;

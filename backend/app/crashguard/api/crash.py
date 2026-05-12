@@ -1887,3 +1887,443 @@ async def audit_cleanup(req: AuditCleanupRequest) -> Dict[str, Any]:
     except Exception:
         pass
     return {"deleted": deleted, "keep_days": req.keep_days, "cutoff": cutoff.isoformat()}
+
+
+# === Job Heartbeats / Cron 任务观测 ===
+
+# job_name → (cron 配置字段名, 显示名, 任务说明)
+_JOB_META: List[Dict[str, str]] = [
+    {"name": "core_metric", "cron_field": "core_metric_cron",
+     "label": "核心指标告警",
+     "desc": "10min crash-free sessions % vs 前 1h 加权均值",
+     "enabled_field": "core_metric_enabled"},
+    {"name": "hourly_alert", "cron_field": "hourly_alert_cron",
+     "label": "小时级告警 (SHoW-3h)",
+     "desc": "单 issue 突增/新增告警，每 3h 第 5min 触发",
+     "enabled_field": "hourly_alert_enabled"},
+    {"name": "analyze_tick", "cron_field": "analyze_cron",
+     "label": "AI 分析 tick",
+     "desc": "今日 attention 池小步分批跑 AI 分析", "enabled_field": ""},
+    {"name": "pr_sync", "cron_field": "pr_sync_cron",
+     "label": "PR 状态同步",
+     "desc": "GitHub 现态回填到 crash_pull_requests", "enabled_field": ""},
+    {"name": "pipeline", "cron_field": "pipeline_cron",
+     "label": "数据 pipeline",
+     "desc": "Datadog 全量拉取 + snapshot/issue upsert", "enabled_field": ""},
+    {"name": "morning_daily", "cron_field": "morning_cron",
+     "label": "日报 (07:00)",
+     "desc": "昨日 24h 总览，SHoW-24h 基线",
+     "enabled_field": "feishu_enabled"},
+    {"name": "evening_daily", "cron_field": "evening_cron",
+     "label": "速报 (17:00)",
+     "desc": "日内 N 小时增量，SHoW-Nh 基线",
+     "enabled_field": "feishu_enabled"},
+    {"name": "warmup", "cron_field": "",
+     "label": "启动 warmup",
+     "desc": "后端重启后一次性补 pipeline + auto-analyze", "enabled_field": ""},
+    {"name": "job_health_alert", "cron_field": "job_health_alert_cron",
+     "label": "任务健康度兜底告警",
+     "desc": "每 5min 扫心跳表，任一任务连续失败/超期 → 飞书告警",
+     "enabled_field": "job_health_alert_enabled"},
+]
+
+
+def _next_fire_time(cron_expr: str, now_dt) -> Optional[str]:
+    """对极简 cron 算下一个触发时刻。仅支持 M H * * * 或 */N。"""
+    from datetime import datetime, timedelta
+    parts = (cron_expr or "").split()
+    if len(parts) != 5:
+        return None
+    minute_f, hour_f, dom_f, month_f, dow_f = parts
+    if dom_f != "*" or month_f != "*" or dow_f != "*":
+        return None
+
+    def _step(f: str) -> Optional[int]:
+        if f.startswith("*/"):
+            try:
+                return int(f[2:])
+            except ValueError:
+                return None
+        return None
+
+    def _fixed(f: str) -> Optional[int]:
+        if f == "*":
+            return None
+        try:
+            return int(f)
+        except ValueError:
+            return None
+
+    cur = (now_dt or datetime.now()).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    # 暴力扫描 24h + 60min = 1440 步上限
+    for _ in range(60 * 24 + 60):
+        m_ok = (minute_f == "*"
+                or (_step(minute_f) is not None and cur.minute % _step(minute_f) == 0)
+                or (_fixed(minute_f) is not None and cur.minute == _fixed(minute_f)))
+        h_ok = (hour_f == "*"
+                or (_step(hour_f) is not None and cur.hour % _step(hour_f) == 0)
+                or (_fixed(hour_f) is not None and cur.hour == _fixed(hour_f)))
+        if m_ok and h_ok:
+            return cur.isoformat()
+        cur += timedelta(minutes=1)
+    return None
+
+
+@router.get("/jobs/status")
+async def jobs_status() -> Dict[str, Any]:
+    """所有定时任务的 cron + 上次心跳 + 下次预计时间 + 健康度判定。"""
+    from datetime import datetime, timedelta
+    from sqlalchemy import select, desc, func
+    from app.db.database import get_session
+    from app.crashguard.models import CrashJobHeartbeat
+    import json as _json
+
+    s = get_crashguard_settings()
+    now = datetime.now()
+    now_utc = datetime.utcnow()
+
+    items: List[Dict[str, Any]] = []
+    async with get_session() as session:
+        for meta in _JOB_META:
+            jn = meta["name"]
+            cron_expr = getattr(s, meta["cron_field"], "") if meta["cron_field"] else ""
+            enabled_flag = (
+                bool(getattr(s, meta["enabled_field"], True))
+                if meta["enabled_field"] else True
+            )
+
+            # 上次心跳（含 failed/skipped）
+            last_row = (await session.execute(
+                select(CrashJobHeartbeat)
+                .where(CrashJobHeartbeat.job_name == jn)
+                .order_by(desc(CrashJobHeartbeat.fired_at))
+                .limit(1)
+            )).scalars().first()
+            # 上次成功心跳
+            last_success_row = (await session.execute(
+                select(CrashJobHeartbeat)
+                .where(
+                    CrashJobHeartbeat.job_name == jn,
+                    CrashJobHeartbeat.status == "success",
+                )
+                .order_by(desc(CrashJobHeartbeat.fired_at))
+                .limit(1)
+            )).scalars().first()
+            # 最近 50 次中失败数（健康度判定）
+            recent = (await session.execute(
+                select(CrashJobHeartbeat)
+                .where(CrashJobHeartbeat.job_name == jn)
+                .order_by(desc(CrashJobHeartbeat.fired_at))
+                .limit(50)
+            )).scalars().all()
+            fail_count_50 = sum(1 for r in recent if r.status == "failed")
+            consecutive_failures = 0
+            for r in recent:
+                if r.status == "failed":
+                    consecutive_failures += 1
+                else:
+                    break
+
+            # 是否超期（last_success_at 超过 2× 预期间隔）
+            interval_minutes = _interval_minutes_from_cron(cron_expr)
+            stale = False
+            if interval_minutes and last_success_row is not None and last_success_row.fired_at:
+                age_minutes = (now_utc - last_success_row.fired_at).total_seconds() / 60.0
+                if age_minutes > 2 * interval_minutes:
+                    stale = True
+            elif interval_minutes and last_success_row is None and last_row is not None:
+                stale = True  # 从来没成功过
+
+            last_summary: Dict[str, Any] = {}
+            if last_row and last_row.summary:
+                try:
+                    last_summary = _json.loads(last_row.summary or "{}")
+                except Exception:
+                    last_summary = {}
+
+            items.append({
+                "name": jn,
+                "label": meta["label"],
+                "desc": meta["desc"],
+                "cron": cron_expr,
+                "enabled": enabled_flag,
+                "interval_minutes": interval_minutes,
+                "next_fire_at": _next_fire_time(cron_expr, now) if cron_expr else None,
+                "last_fired_at": last_row.fired_at.isoformat() if last_row and last_row.fired_at else None,
+                "last_status": last_row.status if last_row else None,
+                "last_duration_ms": int(last_row.duration_ms or 0) if last_row else 0,
+                "last_error": (last_row.error or "")[:300] if last_row else "",
+                "last_summary": last_summary,
+                "last_success_at": (
+                    last_success_row.fired_at.isoformat()
+                    if last_success_row and last_success_row.fired_at else None
+                ),
+                "fail_count_in_recent_50": fail_count_50,
+                "consecutive_failures": consecutive_failures,
+                "stale": stale,
+                # 健康度综合判定（前端用色块）
+                "health": (
+                    "stale" if stale
+                    else "failing" if consecutive_failures >= 3
+                    else "degraded" if fail_count_50 >= 10
+                    else "ok"
+                ),
+            })
+
+    return {
+        "items": items,
+        "server_time_local": now.isoformat(),
+        "server_time_utc": now_utc.isoformat(),
+    }
+
+
+def _interval_minutes_from_cron(cron_expr: str) -> Optional[int]:
+    """从极简 cron 推算"两次触发预期间隔分钟数"，用于 stale 判定。"""
+    parts = (cron_expr or "").split()
+    if len(parts) != 5:
+        return None
+    minute_f, hour_f, *_ = parts
+    if minute_f.startswith("*/"):
+        try:
+            return max(1, int(minute_f[2:]))
+        except ValueError:
+            return None
+    if hour_f.startswith("*/"):
+        try:
+            return max(1, int(hour_f[2:])) * 60
+        except ValueError:
+            return None
+    if minute_f != "*" and hour_f != "*":
+        # 固定时刻 (e.g. "0 7 * * *") → 一天一次
+        return 24 * 60
+    return None
+
+
+@router.get("/jobs/{job_name}/heartbeats")
+async def list_job_heartbeats(
+    job_name: str,
+    limit: int = Query(50, ge=1, le=500),
+) -> Dict[str, Any]:
+    """单任务最近 N 条心跳历史。"""
+    from sqlalchemy import select, desc
+    from app.db.database import get_session
+    from app.crashguard.models import CrashJobHeartbeat
+    import json as _json
+
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(CrashJobHeartbeat)
+            .where(CrashJobHeartbeat.job_name == job_name)
+            .order_by(desc(CrashJobHeartbeat.fired_at))
+            .limit(limit)
+        )).scalars().all()
+
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        try:
+            summary = _json.loads(r.summary or "{}")
+        except Exception:
+            summary = {}
+        items.append({
+            "id": r.id,
+            "fired_at": r.fired_at.isoformat() if r.fired_at else None,
+            "status": r.status,
+            "duration_ms": int(r.duration_ms or 0),
+            "error": (r.error or "")[:500],
+            "summary": summary,
+        })
+    return {"job_name": job_name, "items": items, "total": len(items)}
+
+
+@router.post("/jobs/{job_name}/run-now")
+async def trigger_job_now(job_name: str) -> Dict[str, Any]:
+    """手动触发指定 job 立即跑一次。
+
+    - 复用 cron tick 同一份核心函数 → 行为与定时调度完全一致
+    - 同样 wrap heartbeat（job_name 不变），summary 里加 triggered_by="manual"
+    - 部分任务支持 force=True 跳过节流（hourly_alert / core_metric）
+    - warmup / pipeline 共享 run_pipeline_and_auto_analyze
+    """
+    from app.crashguard.services.job_heartbeat import record_heartbeat
+
+    try:
+        async with record_heartbeat(job_name) as hb:
+            res: Dict[str, Any]
+            if job_name == "core_metric":
+                from app.crashguard.services.core_metric_alerter import run_core_metric_tick
+                res = await run_core_metric_tick(force=True)
+            elif job_name == "hourly_alert":
+                from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+                res = await run_hourly_alert_tick(force=True)
+            elif job_name == "analyze_tick":
+                from app.crashguard.workers.scheduler import _run_analyze_tick
+                s = get_crashguard_settings()
+                res = await _run_analyze_tick(
+                    max_per_tick=int(getattr(s, "analyze_max_per_tick", 1) or 1)
+                )
+            elif job_name == "pr_sync":
+                from app.crashguard.services.pr_sync import sync_all_open_prs
+                res = await sync_all_open_prs()
+            elif job_name in ("pipeline", "warmup"):
+                from app.crashguard.workers.warmup import run_pipeline_and_auto_analyze
+                res = await run_pipeline_and_auto_analyze(reason="manual")
+            elif job_name == "morning_daily":
+                from app.crashguard.services.daily_report import send_daily_report
+                res = await send_daily_report("morning")
+            elif job_name == "evening_daily":
+                from app.crashguard.services.daily_report import send_daily_report
+                res = await send_daily_report("evening")
+            elif job_name == "job_health_alert":
+                from app.crashguard.services.job_health_alerter import run_job_health_check
+                res = await run_job_health_check()
+            else:
+                raise HTTPException(status_code=400, detail=f"unknown job: {job_name}")
+
+            res = res if isinstance(res, dict) else {"raw": str(res)}
+            res["triggered_by"] = "manual"
+            hb.set_summary(res)
+            hb.set_status_from_result(res)
+            return {"ok": True, "job_name": job_name, "result": res}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("manual run-now failed for job=%s", job_name)
+        raise HTTPException(status_code=500, detail=f"run-now failed: {exc}")
+
+
+@router.get("/pr-diagnose")
+async def pr_diagnose() -> Dict[str, Any]:
+    """一站式 PR 创建失败排查接口（102 部署后 curl 这个就知道哪里卡住）。
+
+    检查 5 大盲点：
+      1. kill switch 状态（enabled / pr_enabled / feishu_enabled）
+      2. 仓库路径配置 + 路径在容器内是否存在
+      3. gh CLI 是否安装且认证
+      4. 最近 20 条 pr_draft / auto_draft_pr audit log（成败 + 错误摘要）
+      5. 最近 success 分析中"feasibility ≥ 阈值但没建 PR"的 issue 数量
+    """
+    import os
+    import shutil
+    import subprocess
+    from datetime import datetime, timedelta
+    from sqlalchemy import select, desc, func
+    from app.db.database import get_session
+    from app.crashguard.models import CrashAnalysis, CrashAuditLog, CrashPullRequest
+
+    s = get_crashguard_settings()
+    out: Dict[str, Any] = {}
+
+    # 1. kill switches
+    out["kill_switches"] = {
+        "enabled": s.enabled,
+        "pr_enabled": s.pr_enabled,
+        "feishu_enabled": s.feishu_enabled,
+        "scheduler_enabled": getattr(s, "scheduler_enabled", True),
+    }
+    out["feasibility_pr_threshold"] = float(getattr(s, "feasibility_pr_threshold", 0.7) or 0.7)
+
+    # 2. 仓库路径
+    repo_paths = {
+        "flutter": getattr(s, "repo_path_flutter", "") or os.environ.get("CRASHGUARD_REPO_PATH_FLUTTER", ""),
+        "android": getattr(s, "repo_path_android", "") or os.environ.get("CRASHGUARD_REPO_PATH_ANDROID", ""),
+        "ios": getattr(s, "repo_path_ios", "") or os.environ.get("CRASHGUARD_REPO_PATH_IOS", ""),
+    }
+    out["repo_paths"] = {}
+    for plat, p in repo_paths.items():
+        info: Dict[str, Any] = {"configured": bool(p), "path": p}
+        if p:
+            info["exists"] = os.path.isdir(p)
+            info["is_git_repo"] = os.path.isdir(os.path.join(p, ".git")) if info["exists"] else False
+        out["repo_paths"][plat] = info
+
+    # 3. gh CLI
+    gh_path = shutil.which("gh")
+    gh_info: Dict[str, Any] = {"available": gh_path is not None, "path": gh_path or ""}
+    if gh_path:
+        try:
+            r = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True, text=True, timeout=10,
+            )
+            gh_info["auth_returncode"] = r.returncode
+            # gh auth status 的输出在 stderr
+            gh_info["auth_output"] = (r.stderr or r.stdout)[-500:]
+        except Exception as exc:
+            gh_info["auth_error"] = str(exc)[:200]
+    out["gh_cli"] = gh_info
+
+    # 4. 最近 audit logs
+    since_24h = datetime.utcnow() - timedelta(days=7)
+    async with get_session() as session:
+        audit_rows = (await session.execute(
+            select(CrashAuditLog).where(
+                CrashAuditLog.op.in_(["pr_draft", "auto_draft_pr"]),
+                CrashAuditLog.created_at >= since_24h,
+            ).order_by(desc(CrashAuditLog.created_at)).limit(20)
+        )).scalars().all()
+        audit_list: List[Dict[str, Any]] = []
+        # 错误聚合
+        error_buckets: Dict[str, int] = {}
+        success_count = fail_count = 0
+        for a in audit_rows:
+            err = (a.error or "").strip()
+            if a.success:
+                success_count += 1
+            else:
+                fail_count += 1
+                bucket = err[:50] or "(empty)"
+                error_buckets[bucket] = error_buckets.get(bucket, 0) + 1
+            audit_list.append({
+                "op": a.op,
+                "target_id": a.target_id,
+                "success": bool(a.success),
+                "error": err[:200],
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            })
+
+        # 5. success 分析 vs PR 行 gap
+        threshold = float(getattr(s, "feasibility_pr_threshold", 0.7) or 0.7)
+        eligible = (await session.execute(
+            select(func.count(CrashAnalysis.id)).where(
+                CrashAnalysis.status == "success",
+                CrashAnalysis.followup_question == "",
+                CrashAnalysis.feasibility_score >= threshold,
+            )
+        )).scalar() or 0
+        with_pr = (await session.execute(
+            select(func.count(func.distinct(CrashPullRequest.analysis_id)))
+            .where(CrashPullRequest.pr_url != "")
+        )).scalar() or 0
+
+    out["audit_logs_last_7d"] = {
+        "total": len(audit_rows),
+        "success": success_count,
+        "failed": fail_count,
+        "error_buckets": error_buckets,
+        "recent_sample": audit_list[:10],
+    }
+    out["analysis_vs_pr_gap"] = {
+        "eligible_success_analyses": int(eligible),
+        "analyses_with_pr_created": int(with_pr),
+        "gap": max(0, int(eligible) - int(with_pr)),
+        "hint": "gap > 0 即未建 PR 的合格分析；用 /api/crash/retry-failed-prs 重试",
+    }
+
+    # 综合判定
+    blockers: List[str] = []
+    if not s.enabled:
+        blockers.append("crashguard kill switch (enabled=false)")
+    if not s.pr_enabled:
+        blockers.append("PR kill switch (pr_enabled=false)")
+    if not any(v.get("exists") for v in out["repo_paths"].values()):
+        blockers.append("no repo path configured / exists in container")
+    if not gh_info["available"]:
+        blockers.append("gh CLI not installed in container")
+    elif gh_info.get("auth_returncode", 1) != 0:
+        blockers.append("gh CLI not authenticated (gh auth login)")
+    out["blockers"] = blockers
+    out["next_steps"] = (
+        "若 blockers 非空 → 先解决 blockers；"
+        "blockers 为空但 audit_logs 仍有 fail → 看 error_buckets，对症"
+    )
+    return out

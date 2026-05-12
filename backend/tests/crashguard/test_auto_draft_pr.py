@@ -8,7 +8,8 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_skip_when_pr_disabled():
-    """pr_enabled=False → 直接返回，不调 draft_pr，不写 audit"""
+    """pr_enabled=False → 不调 draft_pr，但写 audit (error=pr_enabled_off)
+    避免静默关闭后运营完全看不到为什么 PR 没建。"""
     from app.crashguard.services import analyzer
 
     fake_settings = type("S", (), {
@@ -19,12 +20,14 @@ async def test_skip_when_pr_disabled():
          patch("app.crashguard.services.audit.write_audit", new_callable=AsyncMock) as audit_mock, \
          patch("app.crashguard.services.pr_drafter.draft_prs_multi",
                new_callable=AsyncMock) as draft_mock:
-        # 注意：fake settings 通过 import 路径替换
         import app.crashguard.config as cfg
         with patch.object(cfg, "get_crashguard_settings", return_value=fake_settings):
             await analyzer._maybe_auto_draft_pr(analysis_id=42, feasibility=0.95)
 
-    audit_mock.assert_not_called()
+    audit_mock.assert_called_once()
+    kwargs = audit_mock.call_args.kwargs
+    assert kwargs.get("error") == "pr_enabled_off"
+    assert kwargs.get("success") is False
     draft_mock.assert_not_called()
 
 

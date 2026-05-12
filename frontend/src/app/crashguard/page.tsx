@@ -919,6 +919,19 @@ function CrashguardPageInner() {
                 </span>
               )}
             </a>
+            <a
+              href="/crashguard/jobs"
+              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              style={{
+                background: "transparent",
+                border: `1px solid ${D.borderStrong}`,
+                color: D.text1,
+                textDecoration: "none",
+              }}
+              title={t("查看 cron 任务进度、下次调度时间与失败历史")}
+            >
+              📊 {t("任务监控")}
+            </a>
           </div>
         </div>
 

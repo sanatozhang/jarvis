@@ -183,6 +183,13 @@ class CrashguardSettings(BaseSettings):
     # 监控平台白名单（小写逗号串），空 = 不限制
     core_metric_platforms: str = "android,ios"
 
+    # === 定时任务健康度兜底告警 ===
+    # 底层逻辑：cron 类任务静默失败是最大盲点。每 5 分钟扫一遍 heartbeat 表，
+    # 任一任务 health ∈ (failing, stale) 且距上次告警 > cooldown 分钟 → 聚合发飞书
+    job_health_alert_enabled: bool = True
+    job_health_alert_cron: str = "*/5 * * * *"
+    job_health_alert_cooldown_minutes: int = 30   # 同任务告警节流窗口
+
     model_config = {
         "env_prefix": "CRASHGUARD_",
         "env_file": str(PROJECT_ROOT / ".env"),
@@ -329,6 +336,15 @@ def _yaml_overrides() -> Dict[str, Any]:
             if "platforms" in cm:
                 v = cm["platforms"]
                 flat["core_metric_platforms"] = ",".join(v) if isinstance(v, list) else str(v)
+    if "job_health_alert" in cfg:
+        jha = cfg["job_health_alert"] or {}
+        if isinstance(jha, dict):
+            if "enabled" in jha:
+                flat["job_health_alert_enabled"] = bool(jha["enabled"])
+            if "cron" in jha:
+                flat["job_health_alert_cron"] = str(jha["cron"])
+            if "cooldown_minutes" in jha:
+                flat["job_health_alert_cooldown_minutes"] = int(jha["cooldown_minutes"])
     return flat
 
 

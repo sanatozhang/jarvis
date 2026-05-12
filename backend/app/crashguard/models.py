@@ -291,6 +291,29 @@ class CrashMetricAlert(Base):
     )
 
 
+class CrashJobHeartbeat(Base):
+    """定时任务心跳表 —— 每个 tick 写一条。
+
+    底层逻辑：cron 类失败不会自动告警，靠人盯前端不可靠。心跳表是"运营级可观测性"的底座：
+    - status / duration / error 三件套，前端表格 / 告警 / 复盘都从这一张表派生
+    - last_success_at 单独索引，方便快速判定"X 任务多久没成功了"
+    - JSON summary 存任务自报数据（如 alerted=true, items=5），无需 join 其它表
+    """
+    __tablename__ = "crash_job_heartbeats"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_name = Column(String(32), nullable=False, index=True)     # core_metric / hourly_alert / morning_daily / ...
+    fired_at = Column(DateTime, default=datetime.utcnow, index=True)
+    status = Column(String(16), default="success")                # success / failed / skipped
+    duration_ms = Column(Integer, default=0)
+    summary = Column(Text, default="{}")                          # JSON: tick 自报的关键统计
+    error = Column(Text, default="")
+
+    __table_args__ = (
+        Index("ix_crash_job_heartbeats_job_fired", "job_name", "fired_at"),
+    )
+
+
 class CrashAuditLog(Base):
     """运维 audit log：记录每次报告生成 / PR 创建 / 预热的成功失败结果。"""
     __tablename__ = "crash_audit_logs"
