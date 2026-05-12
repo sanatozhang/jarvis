@@ -222,6 +222,32 @@ def _run_git(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str
         return 1, "", str(e)
 
 
+def _clear_stale_git_locks(repo_path: str) -> list[str]:
+    """清理 .git/*.lock stale 残留。
+
+    底层逻辑：crashguard 是单实例 worker（scheduler_enabled 兜底防多机），不存在
+    真并发 git 进程；任何 .git/index.lock / shallow.lock / config.lock 都是上次
+    流程崩溃 / 超时残留。pr_drafter 开流程前主动清理，避免"一次失败永久失败"。
+
+    返回清理掉的 lock 文件列表（用于 logging / debug）。
+    """
+    import glob
+    cleaned: list[str] = []
+    git_dir = os.path.join(repo_path, ".git")
+    if not os.path.isdir(git_dir):
+        return cleaned
+    # index.lock 是最常见；shallow.lock / config.lock / packed-refs.lock 等也清
+    for pat in ("index.lock", "shallow.lock", "config.lock", "packed-refs.lock",
+                "HEAD.lock", "refs/**/*.lock"):
+        for f in glob.glob(os.path.join(git_dir, pat), recursive=True):
+            try:
+                os.remove(f)
+                cleaned.append(f)
+            except OSError:
+                pass
+    return cleaned
+
+
 def _resolve_remote_name(repo_path: str) -> str:
     """解析当前 repo 的"主"远端名。默认 origin；不存在则取 git remote 第一个。
 
@@ -939,6 +965,14 @@ async def draft_pr_for_analysis(
           logger.exception("pre-enter heal failed (non-fatal, continuing)")
 
       try:
+        # 流程入口主动清 stale lock，避免上次崩溃留下的 .git/index.lock 永久阻塞
+        cleaned_locks = _clear_stale_git_locks(repo_path)
+        if cleaned_locks:
+            logger.warning(
+                "cleared stale git locks before pr flow: %s",
+                ", ".join(cleaned_locks),
+            )
+
         dirty, dirty_detail = _worktree_dirty(repo_path)
         if dirty:
           return {
