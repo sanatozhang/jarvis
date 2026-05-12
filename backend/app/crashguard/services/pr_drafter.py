@@ -545,8 +545,9 @@ async def _create_one_draft_pr(
         return {"ok": False, "error": f"git add failed: {err}", "repo": repo_logical,
                 "branch_name": branch}, pushed
 
+    # `git commit` 在大仓库 + pre-commit hook 跳过情况下仍可能 > 30s，提到 120s
     rc, _, err = _run_git(
-        ["git", "commit", "-m", commit_message, "--no-verify"], cwd, timeout=30,
+        ["git", "commit", "-m", commit_message, "--no-verify"], cwd, timeout=120,
     )
     if rc != 0:
         return {"ok": False, "error": f"git commit failed: {err}", "repo": repo_logical,
