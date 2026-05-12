@@ -222,18 +222,41 @@ def _run_git(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str
         return 1, "", str(e)
 
 
-def _default_base_ref(repo_path: str) -> str:
-    """解析远端默认分支，避免把所有移动端仓库都硬编码成 origin/main。"""
+def _resolve_remote_name(repo_path: str) -> str:
+    """解析当前 repo 的"主"远端名。默认 origin；不存在则取 git remote 第一个。
+
+    底层逻辑：仓库不一定叫 origin（102 上 Plaud Flutter 仓库的 remote 叫 'merge'）。
+    硬编码 origin 会让 fetch/push 全挂——这是 owner 意识缺位的硬编码，自适应才对。
+    """
     rc, stdout, _ = _run_git(
-        ["git", "rev-parse", "--abbrev-ref", "origin/HEAD"],
+        ["git", "remote"], repo_path, timeout=10,
+    )
+    if rc != 0:
+        return "origin"
+    remotes = [r.strip() for r in (stdout or "").splitlines() if r.strip()]
+    if not remotes:
+        return "origin"
+    if "origin" in remotes:
+        return "origin"
+    return remotes[0]
+
+
+def _default_base_ref(repo_path: str) -> str:
+    """解析远端默认分支，避免把所有移动端仓库都硬编码成 origin/main。
+
+    远端名通过 _resolve_remote_name 自适应（102 Plaud 仓库 remote 叫 'merge'）。
+    """
+    remote = _resolve_remote_name(repo_path)
+    rc, stdout, _ = _run_git(
+        ["git", "rev-parse", "--abbrev-ref", f"{remote}/HEAD"],
         repo_path,
         timeout=15,
     )
     ref = stdout.strip()
-    if rc == 0 and ref.startswith("origin/") and ref != "origin/HEAD":
+    if rc == 0 and ref.startswith(f"{remote}/") and ref != f"{remote}/HEAD":
         return ref
 
-    for fallback in ("origin/main", "origin/master"):
+    for fallback in (f"{remote}/main", f"{remote}/master"):
         rc, _, _ = _run_git(
             ["git", "rev-parse", "--verify", fallback],
             repo_path,
@@ -241,7 +264,7 @@ def _default_base_ref(repo_path: str) -> str:
         )
         if rc == 0:
             return fallback
-    return "origin/main"
+    return f"{remote}/main"
 
 
 def _worktree_dirty(repo_path: str) -> tuple[bool, str]:
@@ -449,7 +472,8 @@ async def _create_one_draft_pr(
                 return {"ok": False, "error": f"submodule git stash failed: {err}",
                         "repo": repo_logical, "branch_name": branch}, pushed
             stash_pushed = True
-        rc, _, err = _run_git(["git", "fetch", "origin"], cwd, timeout=180)
+        remote_name = _resolve_remote_name(cwd)
+        rc, _, err = _run_git(["git", "fetch", remote_name], cwd, timeout=180)
         if rc != 0:
             if stash_pushed:
                 _run_git(["git", "stash", "pop"], cwd, timeout=15)
@@ -496,7 +520,8 @@ async def _create_one_draft_pr(
         return {"ok": False, "error": f"git commit failed: {err}", "repo": repo_logical,
                 "branch_name": branch}, pushed
 
-    rc, _, err = _run_git(["git", "push", "-u", "origin", branch], cwd, timeout=120)
+    push_remote = _resolve_remote_name(cwd)
+    rc, _, err = _run_git(["git", "push", "-u", push_remote, branch], cwd, timeout=120)
     if rc != 0:
         return {"ok": False, "error": f"git push failed: {err}", "repo": repo_logical,
                 "branch_name": branch}, pushed
@@ -918,7 +943,9 @@ async def draft_pr_for_analysis(
           }
 
         # Bug #3 fix：fetch 提到 180s（首次 fetch 慢）
-        rc, _, err = _run_git(["git", "fetch", "origin"], repo_path, timeout=180)
+        # remote 名自适应：102 Plaud 仓库 remote 叫 'merge' 不叫 'origin'
+        main_remote = _resolve_remote_name(repo_path)
+        rc, _, err = _run_git(["git", "fetch", main_remote], repo_path, timeout=180)
         if rc != 0:
           return {"ok": False, "error": f"git fetch failed: {err}"}
         base_ref = _default_base_ref(repo_path)
