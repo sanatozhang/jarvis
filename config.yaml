@@ -117,6 +117,19 @@ crashguard:
   # 自动去重窗口：同 issue N 小时内已有 success 分析则复用，省 token
   analysis_dedup_hours: 6
 
+  # Hourly 实时告警（SHoW = Same Hour-of-Week 同周同时对比）
+  # 底层逻辑：Plaud 用户 JP/US/EU 分布，hourly 流量有日内+周内双重周期。
+  # 用上周同 weekday 同小时做基线，10% 增长才是真信号（避开时区轮替造成的自然涨幅）。
+  # 早晚报和此告警都**不含**修复 PR 内容；PR 状态查看走前端 /crashguard。
+  hourly_alert:
+    enabled: true
+    cron: "5 */3 * * *"            # 每 3 小时第 5 分钟（SHoW-3h；ingest 延迟 3-5 分钟）
+    growth_threshold_pct: 10       # 超过基线 10% 触发上涨告警
+    new_window_days: 30            # 近 30 天首次出现 = 新增告警
+    min_baseline_events: 20        # 上周同 3h 块 < 20 件则跳过百分比判定（小基数噪声）
+    max_items: 10                  # 卡片最多展示前 N 项
+    min_sessions: 60               # 受影响会话 < 60 不告警（脏数据过滤；Plaud RUM 无 user 字段，sessions 代理 user）
+
   thresholds:
     surge_multiplier: 1.5              # 飙升判定阈值（倍数）
     surge_min_events: 10               # 飙升最小事件数

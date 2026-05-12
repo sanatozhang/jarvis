@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import MarkdownText from "@/components/MarkdownText";
 import {
   fetchCrashReportHistory,
   fetchCrashReportDetail,
+  fetchCrashHourlyAlertDetail,
   type CrashReportHistoryItem,
 } from "@/lib/api";
 import { useT } from "@/lib/i18n";
@@ -23,18 +25,71 @@ const D = {
   warn: "#D97706",
   warnBg: "rgba(217,119,6,0.10)",
   danger: "#DC2626",
+  dangerBg: "rgba(220,38,38,0.08)",
 } as const;
 
-export default function CrashReportsHistoryPage() {
+type FilterKey = "all" | "morning" | "evening" | "hourly_alert";
+
+const PAGE_SIZE = 20;
+const FILTER_VALUES: FilterKey[] = ["all", "morning", "evening", "hourly_alert"];
+
+function parseFilter(v: string | null): FilterKey {
+  return FILTER_VALUES.includes((v || "") as FilterKey) ? (v as FilterKey) : "all";
+}
+function parseDays(v: string | null): number {
+  const n = parseInt(v || "", 10);
+  return [7, 30, 90, 180].includes(n) ? n : 30;
+}
+function parsePage(v: string | null): number {
+  const n = parseInt(v || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+function CrashReportsHistoryInner() {
   const t = useT();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // URL → state（深链入口）
+  const filter = parseFilter(searchParams.get("type"));
+  const days = parseDays(searchParams.get("days"));
+  const page = parsePage(searchParams.get("page"));
+
   const [items, setItems] = useState<CrashReportHistoryItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "morning" | "evening">("all");
-  const [days, setDays] = useState(30);
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openItem, setOpenItem] = useState<CrashReportHistoryItem | null>(null);
   const [detailMd, setDetailMd] = useState<string>("");
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // 写 query（router.replace 不进历史栈）
+  const updateQuery = useCallback(
+    (patch: { type?: FilterKey; days?: number; page?: number }) => {
+      const next = new URLSearchParams(searchParams.toString());
+      const setOrDel = (key: string, val: string, isDefault: boolean) => {
+        if (isDefault) next.delete(key);
+        else next.set(key, val);
+      };
+      if (patch.type !== undefined) {
+        setOrDel("type", patch.type, patch.type === "all");
+      }
+      if (patch.days !== undefined) {
+        setOrDel("days", String(patch.days), patch.days === 30);
+      }
+      if (patch.page !== undefined) {
+        setOrDel("page", String(patch.page), patch.page === 1);
+      }
+      const qs = next.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const setFilter = (v: FilterKey) => updateQuery({ type: v, page: 1 });
+  const setDays = (v: number) => updateQuery({ days: v, page: 1 });
+  const setPage = (v: number) => updateQuery({ page: v });
 
   useEffect(() => {
     let cancelled = false;
@@ -42,11 +97,14 @@ export default function CrashReportsHistoryPage() {
     fetchCrashReportHistory({
       days,
       report_type: filter === "all" ? undefined : filter,
-      limit: 100,
+      page,
+      page_size: PAGE_SIZE,
     })
       .then((r) => {
         if (!cancelled) {
           setItems(r.items);
+          setTotal(r.total);
+          setTotalPages(r.total_pages || 1);
           setError(null);
         }
       })
@@ -59,15 +117,53 @@ export default function CrashReportsHistoryPage() {
     return () => {
       cancelled = true;
     };
-  }, [filter, days]);
+  }, [filter, days, page]);
 
-  const onOpen = async (id: number) => {
-    setOpenId(id);
+  // 深链：?alert_id={id} 直接打开对应告警 modal（不依赖 list 命中，老告警跨页也能开）
+  const [autoOpenAlertId, setAutoOpenAlertId] = useState<number | null>(() => {
+    const v = parseInt(searchParams.get("alert_id") || "", 10);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  });
+  useEffect(() => {
+    if (autoOpenAlertId === null) return;
+    const aid = autoOpenAlertId;
+    setAutoOpenAlertId(null);
+    // 构造最小 item 触发 modal（kind=hourly_alert → onOpen 走详情接口）
+    const stub: CrashReportHistoryItem = {
+      kind: "hourly_alert",
+      id: aid,
+      report_date: null,
+      report_type: "hourly_alert",
+      top_n: 0,
+      new_count: 0,
+      regression_count: 0,
+      surge_count: 0,
+      feishu_message_id: "",
+      created_at: null,
+      summary: "",
+      attention_total: 0,
+    };
+    onOpen(stub);
+    // 摘掉 alert_id query（modal 已打开，无需再触发）
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("alert_id");
+    const qs = next.toString();
+    router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenAlertId]);
+
+  const onOpen = async (it: CrashReportHistoryItem) => {
+    setOpenItem(it);
     setDetailLoading(true);
     setDetailMd("");
     try {
-      const r = await fetchCrashReportDetail(id);
-      setDetailMd(r.markdown);
+      if (it.kind === "hourly_alert") {
+        const r = await fetchCrashHourlyAlertDetail(it.id);
+        setDetailMd(r.markdown);
+      } else {
+        const r = await fetchCrashReportDetail(it.id);
+        setDetailMd(r.markdown);
+      }
     } catch (e) {
       setDetailMd(`_加载失败：${String(e)}_`);
     } finally {
@@ -75,14 +171,108 @@ export default function CrashReportsHistoryPage() {
     }
   };
 
+  const renderItem = (it: CrashReportHistoryItem) => {
+    const isAlert = it.kind === "hourly_alert";
+    const isMorning = it.report_type === "morning";
+    const icon = isAlert ? "🚨" : isMorning ? "🌅" : "🌇";
+    const title = isAlert
+      ? `${(it.hour_utc || "").replace("T", " ").slice(0, 16)} UTC · ${t("实时告警")}`
+      : `${it.report_date} · ${isMorning ? "早报" : "晚报"}`;
+    const total = it.attention_total;
+    const hasAnomaly = total > 0;
+    return (
+      <div
+        key={`${it.kind}-${it.id}`}
+        onClick={() => onOpen(it)}
+        style={{
+          background: D.surface,
+          border: `1px solid ${isAlert && hasAnomaly ? D.danger : D.border}`,
+          borderRadius: 8,
+          padding: "14px 18px",
+          marginBottom: 8,
+          cursor: "pointer",
+          transition: "border-color 0.15s",
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.borderColor = D.accent)}
+        onMouseLeave={(e) =>
+          (e.currentTarget.style.borderColor = isAlert && hasAnomaly ? D.danger : D.border)
+        }
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 22 }}>{icon}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{title}</div>
+            <div style={{ fontSize: 12, color: D.text2, marginTop: 2 }}>
+              {isAlert ? (
+                <>
+                  <span style={{ color: hasAnomaly ? D.danger : D.ok }}>
+                    {t("异常")} {total} {t("项")}
+                  </span>{" "}
+                  （{t("新增")} {it.new_count} · {t("上涨")} {it.surge_count}）
+                </>
+              ) : (
+                <>
+                  Top {it.top_n} ·{" "}
+                  <span style={{ color: hasAnomaly ? D.danger : D.ok }}>
+                    {t("关注点")} {total} {t("项")}
+                  </span>{" "}
+                  （{t("新增")} {it.new_count} · {t("突增")} {it.surge_count} · {t("下降")}{" "}
+                  {it.regression_count}）
+                </>
+              )}
+            </div>
+          </div>
+          {it.feishu_message_id ? (
+            <span
+              style={{
+                padding: "3px 8px",
+                borderRadius: 4,
+                background: "rgba(22,163,74,0.10)",
+                color: D.ok,
+                fontSize: 11,
+              }}
+            >
+              {t("已推送飞书")}
+            </span>
+          ) : isAlert && !hasAnomaly ? (
+            <span
+              style={{
+                padding: "3px 8px",
+                borderRadius: 4,
+                background: D.surfaceAlt,
+                color: D.text2,
+                fontSize: 11,
+              }}
+            >
+              {t("无异常")}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text1 }}>
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 32px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 16,
+          }}
+        >
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0 }}>📋 早晚报历史</h1>
+            <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0 }}>📋 {t("报告与告警历史")}</h1>
             <p style={{ color: D.text2, fontSize: 13, marginTop: 4 }}>
-              {t("最近")} {days} {t("天")} · {items.length} {t("份报告")}
+              {t("最近")} {days} {t("天")} · {total} {t("条")}
+              {totalPages > 1 && (
+                <>
+                  {" · "}
+                  {t("第 X / Y 页").replace("X", String(page)).replace("Y", String(totalPages))}
+                </>
+              )}
             </p>
           </div>
           <Link
@@ -107,7 +297,7 @@ export default function CrashReportsHistoryPage() {
           }}
         >
           <span style={{ color: D.text2, fontSize: 13 }}>{t("类型")}：</span>
-          {(["all", "morning", "evening"] as const).map((k) => (
+          {(["all", "morning", "evening", "hourly_alert"] as const).map((k) => (
             <button
               key={k}
               onClick={() => setFilter(k)}
@@ -121,7 +311,13 @@ export default function CrashReportsHistoryPage() {
                 cursor: "pointer",
               }}
             >
-              {k === "all" ? t("全部") : k === "morning" ? "🌅 早报" : "🌇 晚报"}
+              {k === "all"
+                ? t("全部")
+                : k === "morning"
+                ? "🌅 早报"
+                : k === "evening"
+                ? "🌇 晚报"
+                : "🚨 实时告警"}
             </button>
           ))}
           <span style={{ flex: 1 }} />
@@ -146,7 +342,9 @@ export default function CrashReportsHistoryPage() {
         </div>
 
         {loading && (
-          <div style={{ color: D.text2, padding: 24, textAlign: "center" }}>{t("加载中…")}</div>
+          <div style={{ color: D.text2, padding: 24, textAlign: "center" }}>
+            {t("加载中…")}
+          </div>
         )}
         {error && (
           <div
@@ -170,63 +368,63 @@ export default function CrashReportsHistoryPage() {
         )}
 
         {/* 列表 */}
-        {!loading &&
-          items.map((it) => {
-            const total = it.attention_total;
-            const hasAttn = total > 0;
-            return (
-              <div
-                key={it.id}
-                onClick={() => onOpen(it.id)}
-                style={{
-                  background: D.surface,
-                  border: `1px solid ${D.border}`,
-                  borderRadius: 8,
-                  padding: "14px 18px",
-                  marginBottom: 8,
-                  cursor: "pointer",
-                  transition: "border-color 0.15s",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = D.accent)}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = D.border)}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span style={{ fontSize: 22 }}>{it.report_type === "morning" ? "🌅" : "🌇"}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>
-                      {it.report_date} · {it.report_type === "morning" ? "早报" : "晚报"}
-                    </div>
-                    <div style={{ fontSize: 12, color: D.text2, marginTop: 2 }}>
-                      Top {it.top_n} ·{" "}
-                      <span style={{ color: hasAttn ? D.danger : D.ok }}>
-                        关注点 {total} 项
-                      </span>{" "}
-                      （新增 {it.new_count} · 突增 {it.surge_count} · 下降 {it.regression_count}）
-                    </div>
-                  </div>
-                  {it.feishu_message_id && (
-                    <span
-                      style={{
-                        padding: "3px 8px",
-                        borderRadius: 4,
-                        background: "rgba(22,163,74,0.10)",
-                        color: D.ok,
-                        fontSize: 11,
-                      }}
-                    >
-                      已推送飞书
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+        {!loading && items.map(renderItem)}
+
+        {/* 分页器 */}
+        {!loading && totalPages > 1 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 12,
+              marginTop: 16,
+              padding: "12px 0",
+            }}
+          >
+            <button
+              onClick={() => setPage(Math.max(1, page - 1))}
+              disabled={page <= 1}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 6,
+                border: `1px solid ${D.border}`,
+                background: D.surface,
+                color: page <= 1 ? D.text3 : D.text1,
+                fontSize: 13,
+                cursor: page <= 1 ? "not-allowed" : "pointer",
+                opacity: page <= 1 ? 0.5 : 1,
+              }}
+            >
+              ← {t("上一页")}
+            </button>
+            <span style={{ fontSize: 13, color: D.text2 }}>
+              {page} / {totalPages}
+            </span>
+            <button
+              onClick={() => setPage(Math.min(totalPages, page + 1))}
+              disabled={page >= totalPages}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 6,
+                border: `1px solid ${D.border}`,
+                background: D.surface,
+                color: page >= totalPages ? D.text3 : D.text1,
+                fontSize: 13,
+                cursor: page >= totalPages ? "not-allowed" : "pointer",
+                opacity: page >= totalPages ? 0.5 : 1,
+              }}
+            >
+              {t("下一页")} →
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 详情 modal */}
-      {openId !== null && (
+      {openItem !== null && (
         <div
-          onClick={() => setOpenId(null)}
+          onClick={() => setOpenItem(null)}
           style={{
             position: "fixed",
             inset: 0,
@@ -260,10 +458,18 @@ export default function CrashReportsHistoryPage() {
                 alignItems: "center",
               }}
             >
-              <strong style={{ fontSize: 15 }}>{t("报告详情")}</strong>
+              <strong style={{ fontSize: 15 }}>
+                {openItem.kind === "hourly_alert" ? t("告警详情") : t("报告详情")}
+              </strong>
               <button
-                onClick={() => setOpenId(null)}
-                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: D.text2 }}
+                onClick={() => setOpenItem(null)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  fontSize: 18,
+                  color: D.text2,
+                }}
               >
                 ✕
               </button>
@@ -281,5 +487,19 @@ export default function CrashReportsHistoryPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function CrashReportsHistoryPage() {
+  return (
+    <Suspense
+      fallback={
+        <div style={{ background: D.bg, minHeight: "100vh", color: D.text2, padding: 24 }}>
+          加载中…
+        </div>
+      }
+    >
+      <CrashReportsHistoryInner />
+    </Suspense>
   );
 }

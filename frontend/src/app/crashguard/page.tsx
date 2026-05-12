@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { useT } from "@/lib/i18n";
 import { Toast } from "@/components/Toast";
@@ -23,9 +23,12 @@ import {
   type AutoPrQueueResponse,
   type CrashAnalysisRecord,
   type CrashTopItem,
+  type CrashTopAggregates,
   type CrashIssueDetail,
+  type CrashSortBy,
   type CrashStatus,
 } from "@/lib/api";
+import { getBatchTopN } from "@/lib/crashguard-prefs";
 
 // jarvis 主站浅色金调（Firebase-style 布局 + 主题对齐）
 const D = {
@@ -134,11 +137,13 @@ function CrashguardPageInner() {
     reportType: "morning" | "evening";
     error?: string;
   } | null>(null);
-  const [platformFilter, setPlatformFilter] = useState<string>("all");
+  // 分页 + 后端过滤（全部经 URL query 同步，支持深链）
+  const [aggregates, setAggregates] = useState<CrashTopAggregates | null>(null);
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const PAGE_SIZE = 40;
+  // tier filter 留在客户端（UI 显示用；当前页结果上的二次过滤）
   const [tierFilter, setTierFilter] = useState<"all" | "P0" | "P1">("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | CrashStatus>("all");
-  // C 路线：fatality 过滤——默认 fatal（首页关注真崩溃，非致命单独切换）
-  const [fatalityFilter, setFatalityFilter] = useState<"all" | "fatal" | "non_fatal">("fatal");
   const [autoPrQueue, setAutoPrQueue] = useState<AutoPrQueueResponse | null>(null);
   const [latestRelease, setLatestRelease] = useState<{ flutter: string; android: string; ios: string } | null>(null);
   const [latestReleaseSource, setLatestReleaseSource] = useState<{ flutter: string; android: string; ios: string } | null>(null);
@@ -153,11 +158,35 @@ function CrashguardPageInner() {
   const [bootstrapping, setBootstrapping] = useState(false);
   const [bootstrapElapsed, setBootstrapElapsed] = useState(0);
   const [bootstrapDone, setBootstrapDone] = useState(false);
-  const [sortBy, setSortBy] = useState<"impact" | "events" | "users" | "new_first">("impact");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+
+  // URL → state（深链入口；与 reports 页相同思路）
+  const parsePlatform = (v: string | null): string =>
+    ["all", "android", "ios", "flutter", "browser"].includes(v || "") ? (v as string) : "all";
+  const parseFatality = (v: string | null): "all" | "fatal" | "non_fatal" =>
+    v === "all" || v === "non_fatal" ? v : "fatal"; // 默认 fatal
+  const parseStatus = (v: string | null): "all" | CrashStatus =>
+    ["all", "open", "investigating", "resolved_by_pr", "ignored", "wontfix"].includes(v || "")
+      ? (v as "all" | CrashStatus)
+      : "all";
+  const parseSort = (v: string | null): CrashSortBy =>
+    v === "impact" || v === "users" || v === "new_first" ? v : "events"; // 默认 events
+  const parsePageNum = (v: string | null): number => {
+    const n = parseInt(v || "", 10);
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  };
+
+  const platformFilter = parsePlatform(searchParams?.get("platform") || null);
+  const fatalityFilter = parseFatality(searchParams?.get("fatality") || null);
+  const statusFilter = parseStatus(searchParams?.get("status") || null);
+  const sortBy = parseSort(searchParams?.get("sort") || null);
+  const page = parsePageNum(searchParams?.get("page") || null);
+  // search 不走 URL 立即同步——避免每个字符都 push history；用 debounced 内部 state
+  const [search, setSearch] = useState<string>(searchParams?.get("search") || "");
+  const debouncedSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // URL ↔ 选中态双向同步：?issue=<id> deep link
   const syncSelectedToUrl = (issueId: string | null) => {
@@ -170,6 +199,57 @@ function CrashguardPageInner() {
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   };
+
+  // 列表 filter / sort / page / search 写 URL（router.replace 不堆历史栈）
+  const updateListQuery = useCallback(
+    (
+      patch: Partial<{
+        platform: string;
+        fatality: "all" | "fatal" | "non_fatal";
+        status: "all" | CrashStatus;
+        sort: CrashSortBy;
+        page: number;
+        search: string;
+      }>,
+    ) => {
+      const params = new URLSearchParams(Array.from(searchParams?.entries() || []));
+      const setOrDel = (key: string, val: string | undefined, isDefault: boolean) => {
+        if (val === undefined) return;
+        if (isDefault) params.delete(key);
+        else params.set(key, val);
+      };
+      if ("platform" in patch) setOrDel("platform", patch.platform, patch.platform === "all" || !patch.platform);
+      if ("fatality" in patch) setOrDel("fatality", patch.fatality, patch.fatality === "fatal" || !patch.fatality);
+      if ("status" in patch) setOrDel("status", patch.status, patch.status === "all" || !patch.status);
+      if ("sort" in patch) setOrDel("sort", patch.sort, patch.sort === "events" || !patch.sort);
+      if ("page" in patch) setOrDel("page", patch.page ? String(patch.page) : undefined, patch.page === 1 || !patch.page);
+      if ("search" in patch) setOrDel("search", patch.search, !patch.search);
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [router, pathname, searchParams],
+  );
+
+  const setPlatformFilter = (v: string) => updateListQuery({ platform: v, page: 1 });
+  const setFatalityFilter = (v: "all" | "fatal" | "non_fatal") => updateListQuery({ fatality: v, page: 1 });
+  const setStatusFilter = (v: "all" | CrashStatus) => updateListQuery({ status: v, page: 1 });
+  const setSortBy = (v: CrashSortBy) => updateListQuery({ sort: v, page: 1 });
+  const setPage = (v: number) => updateListQuery({ page: v });
+
+  // search 输入 debounce 300ms → push 到 URL
+  useEffect(() => {
+    if (debouncedSearchRef.current) clearTimeout(debouncedSearchRef.current);
+    debouncedSearchRef.current = setTimeout(() => {
+      const cur = searchParams?.get("search") || "";
+      if (search !== cur) {
+        updateListQuery({ search, page: 1 });
+      }
+    }, 300);
+    return () => {
+      if (debouncedSearchRef.current) clearTimeout(debouncedSearchRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
   const [detail, setDetail] = useState<CrashIssueDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [analyses, setAnalyses] = useState<CrashAnalysisRecord[]>([]);
@@ -178,7 +258,6 @@ function CrashguardPageInner() {
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
   const [datadogConfigured, setDatadogConfigured] = useState<boolean | null>(null);
   const [savingPatch, setSavingPatch] = useState(false);
-  const [search, setSearch] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   // 重新分析 modal：允许用户输入引导 prompt
   const [reanalyzeModal, setReanalyzeModal] = useState<{ issueId: string } | null>(null);
@@ -192,69 +271,69 @@ function CrashguardPageInner() {
     return Array.from(set).filter(Boolean).sort();
   }, [items]);
 
+  // 客户端二次过滤：仅 tier（保留 UI 即时性，不影响 backend 分页结果总数）
   const filteredItems = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const filtered = items.filter((i) => {
-      if (platformFilter !== "all" && (i.platform || "").toLowerCase() !== platformFilter) return false;
-      if (tierFilter !== "all" && i.tier !== tierFilter) return false;
-      if (statusFilter !== "all" && i.status !== statusFilter) return false;
-      if (fatalityFilter !== "all" && (i.fatality || "fatal") !== fatalityFilter) return false;
-      if (q && !(i.title.toLowerCase().includes(q) || i.datadog_issue_id.toLowerCase().includes(q))) return false;
-      return true;
-    });
-    const sorted = [...filtered];
-    sorted.sort((a, b) => {
-      if (sortBy === "events") return (b.events_count || 0) - (a.events_count || 0);
-      if (sortBy === "users") return (b.users_affected || 0) - (a.users_affected || 0);
-      if (sortBy === "new_first") {
-        const score = (x: typeof a) =>
-          (x.is_new_in_version ? 100 : 0) + (x.is_regression ? 50 : 0) + (x.is_surge ? 25 : 0);
-        const ds = score(b) - score(a);
-        if (ds !== 0) return ds;
-        return (b.crash_free_impact_score || 0) - (a.crash_free_impact_score || 0);
-      }
-      // impact (default)
-      return (b.crash_free_impact_score || 0) - (a.crash_free_impact_score || 0);
-    });
-    return sorted;
-  }, [items, platformFilter, tierFilter, statusFilter, fatalityFilter, search, sortBy]);
+    if (tierFilter === "all") return items;
+    return items.filter((i) => i.tier === tierFilter);
+  }, [items, tierFilter]);
 
+  // 头部统计：优先用后端 aggregates；本地回落保兜底（loading 期间 UI 不抽）
   const totals = useMemo(() => {
+    if (aggregates) {
+      return {
+        events: aggregates.total_events,
+        sessions: aggregates.total_sessions,
+        p0: aggregates.p0_count,
+        surge: aggregates.surge_count,
+        fatalEvents: 0, // 不在 aggregates 里单独统计（按需后端加）
+        nonFatalEvents: 0,
+        fatalCount: aggregates.fatal_count,
+        nonFatalCount: aggregates.non_fatal_count,
+      };
+    }
     const events = items.reduce((s, i) => s + (i.events_count || 0), 0);
     const sessions = items.reduce((s, i) => s + (i.sessions_affected || 0), 0);
     const p0 = items.filter((i) => i.tier === "P0").length;
     const surge = items.filter((i) => i.is_surge).length;
-    // C 路线：fatal/non_fatal 拆分
     const fatalItems = items.filter((i) => (i.fatality || "fatal") === "fatal");
     const nonFatalItems = items.filter((i) => i.fatality === "non_fatal");
-    const fatalEvents = fatalItems.reduce((s, i) => s + (i.events_count || 0), 0);
-    const nonFatalEvents = nonFatalItems.reduce((s, i) => s + (i.events_count || 0), 0);
     return {
       events, sessions, p0, surge,
-      fatalEvents, nonFatalEvents,
+      fatalEvents: fatalItems.reduce((s, i) => s + (i.events_count || 0), 0),
+      nonFatalEvents: nonFatalItems.reduce((s, i) => s + (i.events_count || 0), 0),
       fatalCount: fatalItems.length, nonFatalCount: nonFatalItems.length,
     };
-  }, [items]);
+  }, [items, aggregates]);
 
-  const loadTop = async () => {
+  const loadTop = useCallback(async () => {
     setLoading(true);
     try {
-      // C 路线：fatal/non_fatal 各拉 40 条独立 Top（合并 80 条），互不挤压；
-      // 否则单路 Top 80 会被高 events 的 non_fatal 挤掉真崩溃排名。
-      const [fatalResp, nonFatalResp, h] = await Promise.all([
-        fetchCrashTop(40, undefined, { fatality: "fatal", kinds: "all" }),
-        fetchCrashTop(40, undefined, { fatality: "non_fatal", kinds: "all" }),
+      const [resp, h] = await Promise.all([
+        fetchCrashTop(PAGE_SIZE, undefined, {
+          page,
+          page_size: PAGE_SIZE,
+          fatality: fatalityFilter === "all" ? "" : fatalityFilter,
+          platform: platformFilter === "all" ? "" : platformFilter,
+          status: statusFilter === "all" ? "" : statusFilter,
+          search: searchParams?.get("search") || "",
+          sort_by: sortBy,
+          kinds: "all",
+        }),
         fetchCrashHealth(),
       ]);
-      setItems([...fatalResp.issues, ...nonFatalResp.issues]);
-      setDate(fatalResp.date || nonFatalResp.date);
+      setItems(resp.issues);
+      setDate(resp.date);
+      setAggregates(resp.aggregates || null);
+      setTotalCount(resp.total ?? resp.issues.length);
+      setTotalPages(resp.total_pages || 1);
       setDatadogConfigured(h.datadog_configured);
     } catch (e: any) {
       setToast({ msg: e.message || "load failed", type: "error" });
     } finally {
       setLoading(false);
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, fatalityFilter, platformFilter, statusFilter, sortBy, searchParams]);
 
   const loadDetail = async (issueId: string) => {
     setDetailLoading(true);
@@ -454,11 +533,25 @@ function CrashguardPageInner() {
     }
   };
 
+  // Batch top N（从 localStorage 读，设置页可改；跨页广播自动同步）
+  const [batchTopN, setBatchTopNState] = useState<number>(20);
+  useEffect(() => {
+    setBatchTopNState(getBatchTopN());
+    const onChange = (e: Event) => {
+      const ce = e as CustomEvent<number>;
+      if (typeof ce.detail === "number") setBatchTopNState(ce.detail);
+    };
+    window.addEventListener("crashguard:batch_top_n_changed", onChange as EventListener);
+    return () =>
+      window.removeEventListener("crashguard:batch_top_n_changed", onChange as EventListener);
+  }, []);
+
   const onBatchAnalyze = async () => {
-    if (!confirm(t("批量启动 AI 分析（仅未分析过的 Top N）。继续？"))) return;
+    const n = batchTopN;
+    if (!confirm(t("批量启动 AI 分析（仅未分析过的 Top N）。继续？").replace("Top N", `Top ${n}`))) return;
     setBatching(true);
     try {
-      const res = await batchAnalyzeCrash();
+      const res = await batchAnalyzeCrash(n);
       setToast({
         msg: `${t("批量启动")}: ${t("已调度")}=${res.scheduled.length} | ${t("跳过")}=${res.skipped.length}`,
         type: "success",
@@ -471,9 +564,10 @@ function CrashguardPageInner() {
     }
   };
 
+  // 列表筛选/分页/排序 任意变化 → 重新拉
   useEffect(() => {
     loadTop();
-  }, []);
+  }, [loadTop]);
 
   // 自动刷新：每次打开页面都先展示本地数据（loadTop 已完成），再异步拉服务端最新
   // 设计要点：
@@ -651,75 +745,79 @@ function CrashguardPageInner() {
           </div>
         </div>
 
-        {/* Latest release banner */}
+        {/* Latest release banner — two rows: latest-release / top-by-users */}
         <div
-          className="flex items-center justify-between px-6 py-3 mx-6 mt-4 rounded-lg"
+          className="flex items-start justify-between px-6 py-3 mx-6 mt-4 rounded-lg"
           style={{ background: D.surface, border: `1px solid ${D.border}` }}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
             <span
-              className="inline-flex items-center justify-center h-7 w-7 rounded-full text-xs"
+              className="inline-flex items-center justify-center h-7 w-7 rounded-full text-xs flex-shrink-0 mt-0.5"
               style={{ background: D.warnBg, color: D.warn }}
             >
               ⚠
             </span>
-            <span className="text-sm" style={{ color: D.text1 }}>
-              {t("最新版本")}{" "}
-              {(() => {
-                if (!latestRelease) return <strong style={{ color: D.text3 }}>—</strong>;
-                const order: Array<keyof typeof latestRelease> = ["flutter", "ios", "android"];
-                const visible = order.filter((k) => {
-                  if (platformFilter !== "all" && k !== platformFilter) return false;
-                  return Boolean(latestRelease[k]);
-                });
-                if (visible.length === 0) return <strong style={{ color: D.text3 }}>—</strong>;
-                return visible.map((k, i) => {
-                  const src = latestReleaseSource?.[k];
-                  const tag = src === "config_override" ? "·配置" : src === "derived" ? "·派生" : "";
-                  return (
-                    <span key={k}>
-                      {i > 0 && <span style={{ color: D.text3 }}> · </span>}
-                      <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
-                      <strong>{latestRelease[k]}</strong>
-                      <span style={{ color: D.text3, fontSize: 11 }}>{tag}</span>
-                    </span>
-                  );
-                });
-              })()}
-            </span>
-            <span className="text-sm" style={{ color: D.text1 }}>
-              · {t("用户量最大")}{" "}
-              {(() => {
-                if (!topUserVersion) return <strong style={{ color: D.text3 }}>—</strong>;
-                const order: Array<"ios" | "android"> = ["ios", "android"];
-                const visible = order.filter((k) => {
-                  if (platformFilter !== "all" && platformFilter !== k && platformFilter !== "flutter") return false;
-                  return Boolean(topUserVersion[k]?.version);
-                });
-                if (visible.length === 0) return <strong style={{ color: D.text3 }}>—</strong>;
-                return visible.map((k, i) => {
-                  const v = topUserVersion[k]!;
-                  const src = topUserVersionSource?.[k];
-                  const tag = src === "datadog_rum" ? "·RUM" : src === "crash_issues_fallback" ? "·崩溃回落" : "";
-                  return (
-                    <span key={k}>
-                      {i > 0 && <span style={{ color: D.text3 }}> · </span>}
-                      <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
-                      <strong>{v.version}</strong>
-                      <span style={{ color: D.text3, fontSize: 11 }}> ({compactNumber(v.users)} {t("用户")}){tag}</span>
-                    </span>
-                  );
-                });
-              })()}
-            </span>
-            <span className="text-sm" style={{ color: D.text2 }}>
-              · {totals.sessions.toLocaleString()} {t("受影响会话")} · {totals.events.toLocaleString()} {t("总事件")}
-            </span>
-            {datadogConfigured === false && (
-              <span className="text-sm" style={{ color: D.danger }}>
-                · {t("Datadog 未配置")}
+            <div className="flex flex-col gap-1 min-w-0">
+              {/* Row 1: Latest release */}
+              <span className="text-sm" style={{ color: D.text1 }}>
+                {t("最新版本")}{" "}
+                {(() => {
+                  if (!latestRelease) return <strong style={{ color: D.text3 }}>—</strong>;
+                  const order: Array<keyof typeof latestRelease> = ["flutter", "ios", "android"];
+                  const visible = order.filter((k) => {
+                    if (platformFilter !== "all" && k !== platformFilter) return false;
+                    return Boolean(latestRelease[k]);
+                  });
+                  if (visible.length === 0) return <strong style={{ color: D.text3 }}>—</strong>;
+                  return visible.map((k, i) => {
+                    const src = latestReleaseSource?.[k];
+                    const tag = src === "config_override" ? "·配置" : src === "derived" ? "·派生" : "";
+                    return (
+                      <span key={k}>
+                        {i > 0 && <span style={{ color: D.text3 }}> · </span>}
+                        <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
+                        <strong>{latestRelease[k]}</strong>
+                        <span style={{ color: D.text3, fontSize: 11 }}>{tag}</span>
+                      </span>
+                    );
+                  });
+                })()}
               </span>
-            )}
+              {/* Row 2: Top by users + totals */}
+              <span className="text-sm" style={{ color: D.text1 }}>
+                {t("用户量最大")}{" "}
+                {(() => {
+                  if (!topUserVersion) return <strong style={{ color: D.text3 }}>—</strong>;
+                  const order: Array<"ios" | "android"> = ["ios", "android"];
+                  const visible = order.filter((k) => {
+                    if (platformFilter !== "all" && platformFilter !== k && platformFilter !== "flutter") return false;
+                    return Boolean(topUserVersion[k]?.version);
+                  });
+                  if (visible.length === 0) return <strong style={{ color: D.text3 }}>—</strong>;
+                  return visible.map((k, i) => {
+                    const v = topUserVersion[k]!;
+                    const src = topUserVersionSource?.[k];
+                    const tag = src === "datadog_rum" ? "·RUM" : src === "crash_issues_fallback" ? "·崩溃回落" : "";
+                    return (
+                      <span key={k}>
+                        {i > 0 && <span style={{ color: D.text3 }}> · </span>}
+                        <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
+                        <strong>{v.version}</strong>
+                        <span style={{ color: D.text3, fontSize: 11 }}> ({compactNumber(v.users)} {t("用户")}){tag}</span>
+                      </span>
+                    );
+                  });
+                })()}
+                <span style={{ color: D.text2 }}>
+                  {" · "}{totals.sessions.toLocaleString()} {t("受影响会话")} · {totals.events.toLocaleString()} {t("总事件")}
+                </span>
+                {datadogConfigured === false && (
+                  <span style={{ color: D.danger }}>
+                    {" · "}{t("Datadog 未配置")}
+                  </span>
+                )}
+              </span>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -747,7 +845,7 @@ function CrashguardPageInner() {
               }}
               title={t("对今日 Top N（未分析过的）批量启动 AI 分析")}
             >
-              {batching ? t("批量分析中...") : `🤖 ${t("批量分析 Top N")}`}
+              {batching ? t("批量分析中...") : `🤖 ${t("批量分析 Top")} ${batchTopN}`}
             </button>
             <button
               onClick={() => onPreviewReport("morning")}
@@ -1156,6 +1254,46 @@ function CrashguardPageInner() {
                 })}
               </tbody>
             </table>
+
+            {/* Pagination footer */}
+            {totalPages > 1 && (
+              <div
+                className="flex items-center justify-center gap-3 py-4 border-t"
+                style={{ borderColor: D.border }}
+              >
+                <button
+                  onClick={() => setPage(Math.max(1, page - 1))}
+                  disabled={page <= 1 || loading}
+                  className="rounded px-3 py-1.5 text-xs"
+                  style={{
+                    border: `1px solid ${D.border}`,
+                    background: D.surface,
+                    color: page <= 1 ? D.text3 : D.text1,
+                    cursor: page <= 1 ? "not-allowed" : "pointer",
+                    opacity: page <= 1 ? 0.5 : 1,
+                  }}
+                >
+                  ← {t("上一页")}
+                </button>
+                <span className="text-xs" style={{ color: D.text2 }}>
+                  {page} / {totalPages}  ·  {totalCount} {t("条")}
+                </span>
+                <button
+                  onClick={() => setPage(Math.min(totalPages, page + 1))}
+                  disabled={page >= totalPages || loading}
+                  className="rounded px-3 py-1.5 text-xs"
+                  style={{
+                    border: `1px solid ${D.border}`,
+                    background: D.surface,
+                    color: page >= totalPages ? D.text3 : D.text1,
+                    cursor: page >= totalPages ? "not-allowed" : "pointer",
+                    opacity: page >= totalPages ? 0.5 : 1,
+                  }}
+                >
+                  {t("下一页")} →
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

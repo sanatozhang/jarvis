@@ -298,6 +298,267 @@ def _cleanup_repo_after_pr(
         logger.exception("post-pr cleanup failed (non-fatal, manual reset may be needed)")
 
 
+def _parse_gitmodules(repo_path: str) -> list[dict]:
+    """解析 .gitmodules → [{"path": "<sub_rel>", "url": "<remote>"}, ...]。
+
+    底层逻辑：crashguard agent 在父 repo 工作树 Edit 文件时，可能落在 submodule 路径下
+    （如 plaud-android 的 nicebuildSDK/、plaud-ios 的 PLAUD/PenSubmodules/）。需要识别
+    submodule 边界，把改动路由到 submodule 自己的 GitHub repo 开独立 PR，而不是把
+    submodule 源码 commit 进父 repo。
+    """
+    gm_path = os.path.join(repo_path, ".gitmodules")
+    if not os.path.isfile(gm_path):
+        return []
+    out: list[dict] = []
+    cur: dict = {}
+    try:
+        with open(gm_path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if line.startswith("[submodule"):
+                    if cur.get("path"):
+                        out.append(cur)
+                    cur = {}
+                elif "=" in line:
+                    k, _, v = line.partition("=")
+                    k, v = k.strip(), v.strip()
+                    if k in ("path", "url"):
+                        cur[k] = v
+        if cur.get("path"):
+            out.append(cur)
+    except Exception as exc:
+        logger.warning("parse .gitmodules failed: %s", exc)
+        return []
+    return [x for x in out if x.get("path")]
+
+
+def _submodule_init_state(repo_path: str, sub_rel_path: str) -> tuple[bool, str]:
+    """检查 <repo_path>/<sub_rel_path> 处的 submodule 是否已 init。
+
+    init 判定：submodule 目录内有 `.git`（文件指针或目录都行）且 `git rev-parse --git-dir`
+    在该目录内成功。未 init 时父 repo 容易把它当普通目录，导致 `git add -A` 把 submodule
+    源码当普通文件 commit 进父 repo——这是用户反馈的核心 bug。
+    """
+    abs_sub = os.path.join(repo_path, sub_rel_path)
+    if not os.path.isdir(abs_sub):
+        return False, f"{sub_rel_path}: directory missing (submodule not checked out)"
+    git_marker = os.path.join(abs_sub, ".git")
+    if not os.path.exists(git_marker):
+        return False, f"{sub_rel_path}/.git not found (run: git submodule update --init {sub_rel_path})"
+    rc, _, err = _run_git(["git", "rev-parse", "--git-dir"], abs_sub, timeout=10)
+    if rc != 0:
+        return False, f"{sub_rel_path}: not a git repo ({err[:80]})"
+    return True, ""
+
+
+def _classify_changed_files(
+    repo_path: str, changed_files: list[str], submodules: list[dict],
+) -> dict:
+    """把 changed_files 按 submodule 边界分桶。
+
+    返回:
+      {
+        "parent": [<相对 repo_path>],
+        "submodules": {
+          "<sub_rel>": {"abs_path", "url", "initialized", "init_detail", "files": [<相对 submodule 根>]},
+          ...
+        }
+      }
+
+    长 path 优先匹配（如 PLAUD/PenSubmodules）防嵌套误分。
+    """
+    sm_sorted = sorted(submodules, key=lambda x: len(x.get("path", "")), reverse=True)
+    parent: list[str] = []
+    sub_map: dict[str, dict] = {}
+    for raw in changed_files:
+        f = raw.replace("\\", "/").lstrip("./")
+        placed = False
+        for sm in sm_sorted:
+            sp = sm.get("path", "").rstrip("/")
+            if not sp:
+                continue
+            if f == sp or f.startswith(sp + "/"):
+                rel = f[len(sp) + 1:] if f.startswith(sp + "/") else ""
+                entry = sub_map.setdefault(sp, {
+                    "abs_path": os.path.join(repo_path, sp),
+                    "url": sm.get("url", ""),
+                    "files": [],
+                })
+                if rel:
+                    entry["files"].append(rel)
+                placed = True
+                break
+        if not placed:
+            parent.append(f)
+    for sm_path, info in sub_map.items():
+        ok, detail = _submodule_init_state(repo_path, sm_path)
+        info["initialized"] = ok
+        info["init_detail"] = detail
+    return {"parent": parent, "submodules": sub_map}
+
+
+def _build_commit_msg(
+    issue: "CrashIssue", ana: "CrashAnalysis", impl_source: str, files: list[str],
+) -> str:
+    via = "implementation agent" if impl_source == "agent" else "fix_diff text"
+    file_summary = ", ".join(files[:5]) if files else "see diff"
+    return (
+        f"fix(crashguard): {(issue.title or ana.datadog_issue_id)[:60]}\n\n"
+        f"AI-generated patch via {via} for crash issue {ana.datadog_issue_id}.\n"
+        f"Files: {file_summary}\n"
+        f"Confidence: {ana.confidence or 'low'} · Feasibility: {ana.feasibility_score:.2f}\n"
+        f"Reviewer must verify diff correctness before merge."
+    )
+
+
+async def _create_one_draft_pr(
+    *,
+    cwd: str,
+    branch: str,
+    files_to_add: Optional[list[str]],
+    commit_message: str,
+    pr_title: str,
+    pr_body: str,
+    analysis_id: int,
+    repo_logical: str,
+    approver: str,
+    change_kind: str,
+    prep_branch: bool,
+) -> tuple[dict, bool]:
+    """单仓库 PR 内核：在 cwd 里 add → commit → push → gh pr create --draft → 写 DB。
+
+    prep_branch=True 时（submodule 场景），先把脏工作树 stash 起来、fetch origin、checkout
+    到 base_ref 的新临时分支、再 pop stash——把改动迁移到一个干净的 PR base 上。
+
+    返回 (result_dict, pushed_bool)。pushed_bool 用于上层 cleanup 决定是否删本地分支。
+    """
+    pushed = False
+
+    if prep_branch:
+        rc, status_out, _ = _run_git(["git", "status", "--porcelain"], cwd, timeout=10)
+        has_dirty = bool((status_out or "").strip())
+        stash_pushed = False
+        if has_dirty:
+            rc, _, err = _run_git(
+                ["git", "stash", "push", "-u", "-m", f"crashguard-{branch}"], cwd, timeout=30,
+            )
+            if rc != 0:
+                return {"ok": False, "error": f"submodule git stash failed: {err}",
+                        "repo": repo_logical, "branch_name": branch}, pushed
+            stash_pushed = True
+        rc, _, err = _run_git(["git", "fetch", "origin"], cwd, timeout=180)
+        if rc != 0:
+            if stash_pushed:
+                _run_git(["git", "stash", "pop"], cwd, timeout=15)
+            return {"ok": False, "error": f"submodule git fetch failed: {err}",
+                    "repo": repo_logical, "branch_name": branch}, pushed
+        sub_base = _default_base_ref(cwd)
+        rc, _, err = _run_git(["git", "checkout", "--detach", sub_base], cwd, timeout=30)
+        if rc != 0:
+            if stash_pushed:
+                _run_git(["git", "stash", "pop"], cwd, timeout=15)
+            return {"ok": False, "error": f"submodule checkout {sub_base} failed: {err}",
+                    "repo": repo_logical, "branch_name": branch}, pushed
+        _run_git(["git", "branch", "-D", branch], cwd, timeout=10)
+        rc, _, err = _run_git(["git", "checkout", "-b", branch, sub_base], cwd, timeout=30)
+        if rc != 0:
+            if stash_pushed:
+                _run_git(["git", "stash", "pop"], cwd, timeout=15)
+            return {"ok": False, "error": f"submodule checkout -b {branch} failed: {err}",
+                    "repo": repo_logical, "branch_name": branch}, pushed
+        if stash_pushed:
+            rc, _, err = _run_git(["git", "stash", "pop"], cwd, timeout=30)
+            if rc != 0:
+                _run_git(["git", "stash", "drop"], cwd, timeout=10)
+                return {"ok": False, "error": (
+                    f"submodule stash pop conflict (agent edits diverge from submodule's "
+                    f"origin/main, manual merge needed): {err[:200]}"),
+                    "repo": repo_logical, "branch_name": branch}, pushed
+
+    if files_to_add is None:
+        rc, _, err = _run_git(["git", "add", "-A"], cwd)
+    else:
+        if not files_to_add:
+            return {"ok": False, "error": "no files to add", "repo": repo_logical,
+                    "branch_name": branch}, pushed
+        rc, _, err = _run_git(["git", "add", "--"] + files_to_add, cwd)
+    if rc != 0:
+        return {"ok": False, "error": f"git add failed: {err}", "repo": repo_logical,
+                "branch_name": branch}, pushed
+
+    rc, _, err = _run_git(
+        ["git", "commit", "-m", commit_message, "--no-verify"], cwd, timeout=30,
+    )
+    if rc != 0:
+        return {"ok": False, "error": f"git commit failed: {err}", "repo": repo_logical,
+                "branch_name": branch}, pushed
+
+    rc, _, err = _run_git(["git", "push", "-u", "origin", branch], cwd, timeout=120)
+    if rc != 0:
+        return {"ok": False, "error": f"git push failed: {err}", "repo": repo_logical,
+                "branch_name": branch}, pushed
+    pushed = True
+
+    rc, stdout, err = _run_git(
+        ["gh", "pr", "create", "--draft", "--title", pr_title, "--body", pr_body,
+         "--head", branch],
+        cwd, timeout=120,
+    )
+    if rc != 0:
+        return {"ok": False, "error": f"gh pr create failed: {err}",
+                "branch_name": branch, "repo": repo_logical, "pushed": pushed}, pushed
+    pr_url = stdout.strip().splitlines()[-1] if stdout else ""
+    pr_number = None
+    m = re.search(r"/pull/(\d+)", pr_url)
+    if m:
+        pr_number = int(m.group(1))
+
+    triggered_by = "auto_verified" if (approver or "").lower() in {"auto", "backfill"} else "human_approved"
+    async with get_session() as session:
+        ana_row = (await session.execute(
+            select(CrashAnalysis).where(CrashAnalysis.id == analysis_id)
+        )).scalar_one_or_none()
+        if ana_row is not None:
+            row = CrashPullRequest(
+                analysis_id=analysis_id,
+                datadog_issue_id=ana_row.datadog_issue_id,
+                repo=repo_logical,
+                branch_name=branch,
+                pr_url=pr_url,
+                pr_number=pr_number,
+                pr_status="draft",
+                triggered_by=triggered_by,
+                approved_by=approver or "human",
+                approved_at=datetime.utcnow(),
+                created_at=datetime.utcnow(),
+            )
+            session.add(row)
+            await session.commit()
+
+    logger.info(
+        "crashguard draft PR created: %s (repo=%s analysis=%d kind=%s)",
+        pr_url, repo_logical, analysis_id, change_kind,
+    )
+    return {
+        "ok": True, "pr_url": pr_url, "pr_number": pr_number, "branch_name": branch,
+        "repo": repo_logical, "triggered_by": triggered_by, "patch_applied": True,
+        "change_kind": change_kind, "pushed": pushed,
+    }, pushed
+
+
+def _post_pr_cleanup_submodule(sm_abs: str, branch: str, pushed: bool) -> None:
+    """submodule 流程结束后把 worktree 拉回 base_ref；已 push 的 branch 保留。"""
+    try:
+        _run_git(["git", "reset", "--hard", "HEAD"], sm_abs, timeout=15)
+        _run_git(["git", "clean", "-fd", "--", ".crashguard"], sm_abs, timeout=10)
+        base_ref = _default_base_ref(sm_abs)
+        _run_git(["git", "checkout", "--detach", base_ref], sm_abs, timeout=30)
+        if branch and not pushed:
+            _run_git(["git", "branch", "-D", branch], sm_abs, timeout=10)
+    except Exception:
+        logger.exception("submodule cleanup failed for %s (non-fatal)", sm_abs)
+
+
 def _normalize_diff_for_apply(raw_diff: str, sub_repo_dirname: str) -> str:
     """把 AI 输出的 diff 路径前缀统一掉，避免 apply 找不到文件。
 
@@ -615,6 +876,7 @@ async def draft_pr_for_analysis(
           initial_branch = "main"  # detached 兜底
       base_ref = ""
       pushed_to_remote = False
+      affected_submodules: list[str] = []
 
       # === 进入前自愈：上次流程可能被 SIGKILL 杀掉（OS OOM / 长 AI 超时），
       # finally cleanup 来不及跑，留下 crashguard/* 临时分支 + 脏 prompt.md ===
@@ -740,113 +1002,197 @@ async def draft_pr_for_analysis(
                 "patch_applied": False,
             }
 
-        # 精准 add：实施 agent 路径下用 changed_files；fix_diff 路径下用 -A（diff 已在 apply）
-        if impl_source == "agent" and changed_files:
-            rc, _, err = _run_git(
-                ["git", "add", "--"] + changed_files, repo_path,
+        # === fix_diff 路径下 changed_files 还没填，从 git status 补抽 ===
+        if impl_source == "diff" and not changed_files:
+            rc_st, out_st, _ = _run_git(
+                ["git", "status", "--porcelain"], repo_path, timeout=10,
             )
-        else:
-            rc, _, err = _run_git(["git", "add", "-A"], repo_path)
-        if rc != 0:
-            return {"ok": False, "error": f"git add (post-apply) failed: {err}"}
-        via = "implementation agent" if impl_source == "agent" else "fix_diff text"
-        file_summary = ", ".join(changed_files[:5]) if changed_files else "see diff"
-        commit_message = (
-            f"fix(crashguard): {(issue.title or ana.datadog_issue_id)[:60]}\n\n"
-            f"AI-generated patch via {via} for crash issue {ana.datadog_issue_id}.\n"
-            f"Files: {file_summary}\n"
-            f"Confidence: {ana.confidence or 'low'} · Feasibility: {ana.feasibility_score:.2f}\n"
-            f"Reviewer must verify diff correctness before merge."
-        )
+            if rc_st == 0:
+                for ln in out_st.splitlines():
+                    if len(ln) < 4:
+                        continue
+                    pth = ln[3:].strip().strip('"')
+                    if pth and not pth.startswith(".crashguard/") and pth != "prompt.md":
+                        changed_files.append(pth)
+
+        # === Submodule 分桶：把 submodule 内的改动路由到 submodule 自己的 repo 开 PR ===
+        submodules_meta = _parse_gitmodules(repo_path)
+        classified = _classify_changed_files(repo_path, changed_files, submodules_meta)
+        parent_files = classified["parent"]
+        sub_buckets = classified["submodules"]
+
+        # Defense A：submodule 有 edit 但未 init → 立即失败，拒绝把 submodule 源码 commit 进父 repo
+        for sm_path, info in sub_buckets.items():
+            if info["files"] and not info["initialized"]:
+                err_msg = (
+                    f"submodule_not_initialized: '{sm_path}' has "
+                    f"{len(info['files'])} edited files but submodule is not "
+                    f"initialized. Detail: {info['init_detail']}. Refusing to commit "
+                    f"submodule source into parent repo."
+                )
+                logger.warning(
+                    "PR aborted: %s (repo=%s ana=%d)",
+                    err_msg, repo_logical or platform, analysis_id,
+                )
+                try:
+                    from app.crashguard.services.audit import write_audit
+                    await write_audit(
+                        op="pr_draft",
+                        target_id=str(analysis_id),
+                        success=False,
+                        error=err_msg,
+                        detail={
+                            "repo": repo_logical or platform,
+                            "submodule": sm_path,
+                            "submodule_files_sample": info["files"][:10],
+                            "init_detail": info["init_detail"],
+                        },
+                    )
+                except Exception:
+                    pass
+                return {
+                    "ok": False, "error": err_msg,
+                    "repo": repo_logical or platform,
+                    "submodule_path": sm_path,
+                }
+
+        if not parent_files and not any(info["files"] for info in sub_buckets.values()):
+            return {
+                "ok": False,
+                "error": "no_real_patch: no files routed to parent or any submodule",
+                "repo": repo_logical or platform,
+            }
+
         pr_title = f"[Crashguard][{platform}] {(issue.title or 'crash fix')[:80]}"
-
         pr_body = _build_pr_body(issue, ana, frontend_url, patch_applied=patch_applied)
+        all_pr_results: list[dict] = []
+        # finally 块用：清理这些 submodule worktree
+        affected_submodules.clear()
 
-        rc, _, err = _run_git(
-            ["git", "commit", "-m", commit_message, "--no-verify"], repo_path, timeout=30,
-        )
-        if rc != 0:
-            return {"ok": False, "error": f"git commit failed: {err}"}
-        rc, _, err = _run_git(
-            ["git", "push", "-u", "origin", branch], repo_path, timeout=120,
-        )
-        if rc != 0:
-            return {"ok": False, "error": f"git push failed: {err}"}
-        pushed_to_remote = True
-
-        # gh pr create --draft（硬编码 --draft）
-        rc, stdout, err = _run_git(
-            [
-                "gh", "pr", "create",
-                "--draft",
-                "--title", pr_title,
-                "--body", pr_body,
-                "--head", branch,
-            ],
-            repo_path,
-            timeout=120,
-        )
-        if rc != 0:
-            return {"ok": False, "error": f"gh pr create failed: {err}", "branch_name": branch}
-        pr_url = stdout.strip().splitlines()[-1] if stdout else ""
-        pr_number = None
-        m = re.search(r"/pull/(\d+)", pr_url)
-        if m:
-            pr_number = int(m.group(1))
-
-        triggered_by = "auto_verified" if (approver or "").lower() in {"auto", "backfill"} else "human_approved"
-        async with get_session() as session:
-            row = CrashPullRequest(
+        # === 父 repo PR（如果有 parent_files）===
+        if parent_files:
+            parent_files_arg = parent_files if impl_source == "agent" else None
+            parent_result, parent_pushed = await _create_one_draft_pr(
+                cwd=repo_path,
+                branch=branch,
+                files_to_add=parent_files_arg,
+                commit_message=_build_commit_msg(issue, ana, impl_source, parent_files),
+                pr_title=pr_title,
+                pr_body=pr_body,
                 analysis_id=analysis_id,
-                datadog_issue_id=ana.datadog_issue_id,
-                repo=repo_logical or platform,
-                branch_name=branch,
-                pr_url=pr_url,
-                pr_number=pr_number,
-                pr_status="draft",
-                triggered_by=triggered_by,
-                approved_by=approver or "human",
-                approved_at=datetime.utcnow(),
-                created_at=datetime.utcnow(),
+                repo_logical=repo_logical or platform,
+                approver=approver,
+                change_kind="parent",
+                prep_branch=False,
             )
-            session.add(row)
-            await session.commit()
+            if parent_pushed:
+                pushed_to_remote = True
+            all_pr_results.append(parent_result)
+            if not parent_result.get("ok"):
+                # 父 PR 失败直接返回——不再尝试 submodule，避免父代码改没推上去却 submodule 已推
+                return parent_result
 
-        logger.info("crashguard draft PR created: %s (analysis=%d)", pr_url, analysis_id)
+        # === Submodule PR：每个 submodule 一个独立 PR 到 submodule 自己的 GitHub repo ===
+        for sm_path, info in sub_buckets.items():
+            if not info["files"]:
+                continue
+            sm_abs = info["abs_path"]
+            sm_logical = (
+                f"{repo_logical or platform}-{os.path.basename(sm_path.rstrip('/'))}"
+            )
+            sm_branch = _safe_branch_name(ana.datadog_issue_id, sm_logical)
+
+            # Submodule 级别独立 dedup
+            since_sm = datetime.utcnow() - timedelta(days=s.pr_dedup_days)
+            async with get_session() as session:
+                existing_sm = (await session.execute(
+                    select(CrashPullRequest).where(
+                        CrashPullRequest.datadog_issue_id == ana.datadog_issue_id,
+                        CrashPullRequest.repo == sm_logical,
+                        CrashPullRequest.created_at >= since_sm,
+                    )
+                )).scalars().first()
+            if existing_sm is not None:
+                logger.info(
+                    "submodule PR dedup hit %s: existing=%s",
+                    sm_logical, existing_sm.pr_url,
+                )
+                all_pr_results.append({
+                    "ok": False, "error": f"dup_within_{s.pr_dedup_days}d",
+                    "repo": sm_logical, "submodule_path": sm_path,
+                    "existing_pr_url": existing_sm.pr_url,
+                    "existing_branch": existing_sm.branch_name,
+                })
+                continue
+
+            sm_lock = await _acquire_repo_lock(sm_abs)
+            async with sm_lock:
+                affected_submodules.append(sm_abs)
+                sm_result, _ = await _create_one_draft_pr(
+                    cwd=sm_abs,
+                    branch=sm_branch,
+                    files_to_add=info["files"],
+                    commit_message=_build_commit_msg(
+                        issue, ana, impl_source, info["files"],
+                    ),
+                    pr_title=f"[Crashguard][{sm_logical}] {(issue.title or 'crash fix')[:80]}",
+                    pr_body=pr_body,
+                    analysis_id=analysis_id,
+                    repo_logical=sm_logical,
+                    approver=approver,
+                    change_kind="submodule",
+                    prep_branch=True,
+                )
+                # 给 result 加 submodule_path 字段方便前端/审计
+                sm_result.setdefault("submodule_path", sm_path)
+                all_pr_results.append(sm_result)
+
+        if not all_pr_results:
+            return {
+                "ok": False,
+                "error": "no PR built after classification",
+                "repo": repo_logical or platform,
+            }
+
+        primary = all_pr_results[0]
+        extras = all_pr_results[1:]
+
+        # 审计
         try:
             from app.crashguard.services.audit import write_audit
+            succeeded_n = sum(1 for r in all_pr_results if r.get("ok"))
             await write_audit(
                 op="pr_draft",
                 target_id=str(analysis_id),
-                success=True,
+                success=primary.get("ok", False),
                 detail={
-                    "pr_url": pr_url,
-                    "branch": branch,
+                    "primary_pr_url": primary.get("pr_url"),
+                    "primary_repo": primary.get("repo"),
+                    "extras_count": len(extras),
+                    "extras_repos": [r.get("repo") for r in extras],
+                    "succeeded_total": succeeded_n,
+                    "failed_total": len(all_pr_results) - succeeded_n,
                     "approver": approver,
-                    "triggered_by": triggered_by,
-                    "repo": repo_logical or platform,
-                    "patch_applied": patch_applied,
                     "impl_source": impl_source,
-                    "changed_files": changed_files,
-                    "fallback_reason": last_failure_reason if not patch_applied else "",
+                    "parent_files": parent_files,
+                    "submodule_buckets": {
+                        k: {"files": v["files"], "url": v.get("url", "")}
+                        for k, v in sub_buckets.items() if v["files"]
+                    },
                 },
             )
         except Exception:
             pass
-        return {
-            "ok": True,
-            "pr_url": pr_url,
-            "pr_number": pr_number,
-            "branch_name": branch,
-            "repo": repo_logical or platform,
-            "triggered_by": triggered_by,
-            "patch_applied": patch_applied,
-            "impl_source": impl_source,
-            "changed_files": changed_files,
-        }
+
+        out = dict(primary)
+        out["impl_source"] = impl_source
+        out["patch_applied"] = patch_applied
+        out["changed_files"] = changed_files
+        if extras:
+            out["extra_prs"] = extras
+        return out
       finally:
-        # 自愈：无论成功/失败，把 sub-repo 拉回 base_ref + 删除未推送的临时分支
-        # 即使本次失败也保证下次能重试，而不是被"上次残骸"永久卡住
+        # 自愈：父 repo + 所有受影响 submodule 全部拉回 base_ref + 删除未推送的临时分支
         _cleanup_repo_after_pr(
             repo_path=repo_path,
             base_ref=base_ref or "origin/main",
@@ -854,6 +1200,10 @@ async def draft_pr_for_analysis(
             branch_to_delete=branch,
             pushed_to_remote=pushed_to_remote,
         )
+        for sm_abs in affected_submodules:
+            # branch 名根据 sm_logical 派生，cleanup 时按目录 reset 即可（branch 名我们没追踪
+            # pushed_to_remote 区分；reset 不删 branch，留给下次重跑覆盖）
+            _post_pr_cleanup_submodule(sm_abs, "", pushed=True)
 
 
 async def draft_prs_multi(
@@ -888,15 +1238,23 @@ async def draft_prs_multi(
     candidates = _resolve_candidate_repos(
         issue.platform or "", fix_text, issue.representative_stack or "",
     )
+    def _flatten(primary: Dict[str, Any], repo_name: str) -> list[Dict[str, Any]]:
+        """把 draft_pr_for_analysis 的单结果（可能含 extra_prs）摊平成 list。"""
+        primary.setdefault("repo", repo_name)
+        extras = primary.pop("extra_prs", None) or []
+        return [primary] + list(extras)
+
     if not candidates:
         # 退回单仓库默认逻辑
         single = await draft_pr_for_analysis(analysis_id, approver=approver, dry_run=dry_run)
+        flat = _flatten(single, "")
+        succeeded = sum(1 for r in flat if r.get("ok"))
         return {
-            "ok": single.get("ok", False),
-            "prs": [single],
-            "total": 1,
-            "succeeded": 1 if single.get("ok") else 0,
-            "failed": 0 if single.get("ok") else 1,
+            "ok": succeeded > 0,
+            "prs": flat,
+            "total": len(flat),
+            "succeeded": succeeded,
+            "failed": len(flat) - succeeded,
         }
 
     results: list[Dict[str, Any]] = []
@@ -908,12 +1266,13 @@ async def draft_prs_multi(
             )
         except Exception as exc:
             r = {"ok": False, "error": f"exception: {exc}", "repo": repo_name}
-        r.setdefault("repo", repo_name)
-        results.append(r)
-        logger.info(
-            "draft_prs_multi: repo=%s ok=%s pr=%s",
-            repo_name, r.get("ok"), r.get("pr_url", r.get("error", "")),
-        )
+        for sub_r in _flatten(r, repo_name):
+            results.append(sub_r)
+            logger.info(
+                "draft_prs_multi: repo=%s ok=%s pr=%s",
+                sub_r.get("repo"), sub_r.get("ok"),
+                sub_r.get("pr_url", sub_r.get("error", "")),
+            )
 
     succeeded = sum(1 for r in results if r.get("ok"))
     return {

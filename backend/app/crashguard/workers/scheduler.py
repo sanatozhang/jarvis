@@ -24,6 +24,7 @@ _TICK_INTERVAL_SEC = 60
 _last_fired: dict[str, str] = {}  # report_type → "YYYY-MM-DD HH:MM"
 _pr_sync_last_fired: str = ""    # "YYYY-MM-DD HH:MM" 防同分钟重跑
 _analyze_last_fired: str = ""    # 定时分析 tick 防同分钟重跑
+_hourly_alert_last_fired: str = ""  # 进程级幂等；DB UNIQUE(hour_utc) 兜多机
 
 
 async def _run_analyze_tick(max_per_tick: int) -> dict:
@@ -139,6 +140,23 @@ async def _tick_once() -> None:
             )
         except Exception:
             logger.exception("crashguard analyze tick failed")
+
+    # Hourly alert（SHoW 对比；独立 cron，默认每小时第 5 分钟）
+    global _hourly_alert_last_fired
+    if getattr(s, "hourly_alert_enabled", False):
+        hourly_cron = getattr(s, "hourly_alert_cron", "") or ""
+        if hourly_cron and _hourly_alert_last_fired != tag and _cron_matches(hourly_cron, now):
+            _hourly_alert_last_fired = tag  # 先打 tag 防异常重试
+            try:
+                from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+                res = await run_hourly_alert_tick()
+                logger.info(
+                    "crashguard hourly_alert tick fired: alerted=%s new=%s surge=%s reason=%s",
+                    res.get("alerted"), res.get("new"), res.get("surge"),
+                    res.get("reason") or res.get("skipped") or res.get("error", ""),
+                )
+            except Exception:
+                logger.exception("crashguard hourly_alert tick failed")
 
 
 async def report_scheduler_loop() -> None:

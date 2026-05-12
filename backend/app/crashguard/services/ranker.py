@@ -38,6 +38,7 @@ async def pick_top_n(
     dedup_days: int = 7,
     kinds: tuple = ("crash", "anr"),
     fatality: str = "",
+    skip_dedup: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     返回 Top N issue（dict 形式）。
@@ -47,6 +48,11 @@ async def pick_top_n(
     - P1: 剩余席位按 crash_free_impact_score DESC 填满
     - 同 issue 在 dedup_days 内已推送过 → 跳过（is_surge 例外）
 
+    skip_dedup=True 时关闭"7 天内已推过则跳过"逻辑——首页分页要看今日全集，
+    不能因为早晚报推送过就消失（日报调用路径继续传 False 保留原语义）。
+
+    n=0 或 n<0 视作不截断：返回全部候选（含 P0+P1）按 tier+score 完整排序后的列表。
+
     返回字段: datadog_issue_id, title, platform, events_count, users_affected,
              crash_free_impact_score, is_new_in_version, is_regression, is_surge,
              tier ('P0' / 'P1')
@@ -55,7 +61,7 @@ async def pick_top_n(
 
     # 1. 取最近 dedup_days 内已推过的 issue ids
     recently_reported: set = set()
-    if dedup_days > 0:
+    if dedup_days > 0 and not skip_dedup:
         since = today - timedelta(days=dedup_days)
         report_rows = (await session.execute(
             select(CrashDailyReport).where(CrashDailyReport.report_date >= since)
@@ -126,6 +132,13 @@ async def pick_top_n(
     p1.sort(key=lambda e: e["crash_free_impact_score"], reverse=True)
 
     selected: List[Dict[str, Any]] = []
+    if n is None or n <= 0:
+        # 不截断：P0 全部 + P1 全部，tier 标签保留
+        for e in p0:
+            selected.append({**e, "tier": "P0"})
+        for e in p1:
+            selected.append({**e, "tier": "P1"})
+        return selected
     for e in p0[:n]:
         selected.append({**e, "tier": "P0"})
     remaining = n - len(selected)

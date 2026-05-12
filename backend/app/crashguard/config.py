@@ -86,8 +86,9 @@ class CrashguardSettings(BaseSettings):
     repo_path_ios: str = ""
     # PR 去重窗口（同一 issue+platform 30 天内只允许一个 draft PR）
     pr_dedup_days: int = 30
-    # PR 状态同步 cron（拉 GitHub 现态回填 DB）；默认每 15 分钟
-    pr_sync_cron: str = "*/15 * * * *"
+    # PR 状态同步 cron（拉 GitHub 现态回填 DB）；默认每 30 分钟
+    # 关闭/合并后 30min 内同步到 jarvis，DRAFT → CLOSED 不会残留
+    pr_sync_cron: str = "*/30 * * * *"
     # 启动后延迟一次性跑 pipeline + auto-analyze（避免重启等到 07:00 才开始）
     warmup_on_startup: bool = True
     # 周期 pipeline cron（与早晚报解耦）；默认每 4 小时整点
@@ -106,6 +107,26 @@ class CrashguardSettings(BaseSettings):
     # 默认每 5 分钟 1 个 → 20 个 issue 约 100 分钟跑完；崩溃只损失当前 1 个，下 tick 自动续跑。
     analyze_cron: str = "*/5 * * * *"
     analyze_max_per_tick: int = 1
+
+    # === 3h 告警（SHoW-3h 同周同 3 小时块对比）===
+    # 每 3 小时拉 Datadog，对比上周同 weekday 同 3h 块 events，超过阈值或新增 issue 发飞书告警。
+    # 3h 块对齐到 UTC 00/03/06/09/12/15/18/21；小时颗粒度噪声大，工作日/周末活跃差异大时
+    # 3 小时块是 P&L 平衡点。早晚报和此告警都不含 PR 修复内容。
+    hourly_alert_enabled: bool = True
+    # cron 每 3 小时块的第 5 分钟触发：Datadog ingest 延迟 3-5 分钟，避开数据未到位
+    hourly_alert_cron: str = "5 */3 * * *"
+    # 上涨阈值（百分比，默认 10%）
+    hourly_alert_growth_threshold_pct: float = 10.0
+    # 「新增」窗口：最近 N 天首次出现的 issue 视为新增
+    hourly_alert_new_window_days: int = 30
+    # SHoW 基线最小 events（< 此值不参与百分比计算，防小基数噪声）
+    hourly_alert_min_baseline_events: int = 20
+    # 卡片最多展示 issue 数（聚合 digest）
+    hourly_alert_max_items: int = 10
+    # 绝对量级阈值：单 issue 在窗口内 sessions_affected < 此值不入告警（脏数据/极低频噪声过滤）
+    # 注：Plaud RUM 未 setUser，users_affected 全 0（已知 data hole），用 sessions 代理 user
+    # （24h 内典型 1-3 sessions/user，相关性高）。卡片文案显示「受影响会话 ≥ N」。
+    hourly_alert_min_sessions: int = 60
 
     model_config = {
         "env_prefix": "CRASHGUARD_",
@@ -220,6 +241,23 @@ def _yaml_overrides() -> Dict[str, Any]:
         flat["analyze_cron"] = str(cfg["analyze_cron"])
     if "analyze_max_per_tick" in cfg:
         flat["analyze_max_per_tick"] = int(cfg["analyze_max_per_tick"])
+    if "hourly_alert" in cfg:
+        ha = cfg["hourly_alert"] or {}
+        if isinstance(ha, dict):
+            if "enabled" in ha:
+                flat["hourly_alert_enabled"] = bool(ha["enabled"])
+            if "cron" in ha:
+                flat["hourly_alert_cron"] = str(ha["cron"])
+            if "growth_threshold_pct" in ha:
+                flat["hourly_alert_growth_threshold_pct"] = float(ha["growth_threshold_pct"])
+            if "new_window_days" in ha:
+                flat["hourly_alert_new_window_days"] = int(ha["new_window_days"])
+            if "min_baseline_events" in ha:
+                flat["hourly_alert_min_baseline_events"] = int(ha["min_baseline_events"])
+            if "max_items" in ha:
+                flat["hourly_alert_max_items"] = int(ha["max_items"])
+            if "min_sessions" in ha:
+                flat["hourly_alert_min_sessions"] = int(ha["min_sessions"])
     return flat
 
 

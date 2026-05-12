@@ -862,11 +862,30 @@ export interface CrashTopItem extends CrashTopItemAnalysisFlag {
   analysis_confidence?: string;
 }
 
+export interface CrashTopAggregates {
+  p0_count: number;
+  surge_count: number;
+  new_count: number;
+  fatal_count: number;
+  non_fatal_count: number;
+  total_events: number;
+  total_users: number;
+  total_sessions: number;
+}
+
 export interface CrashTopResponse {
   date: string;
   count: number;
   issues: CrashTopItem[];
+  total: number;
+  aggregates?: CrashTopAggregates;
+  // 分页字段（仅当 page 传参时返回）
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
 }
+
+export type CrashSortBy = "events" | "impact" | "users" | "new_first";
 
 export interface CrashSnapshot {
   snapshot_date?: string;
@@ -954,12 +973,28 @@ export interface CrashHealth {
 export const fetchCrashTop = (
   limit = 40,
   target_date?: string,
-  opts?: { fatality?: CrashFatality | ""; kinds?: string },
+  opts?: {
+    fatality?: CrashFatality | "";
+    kinds?: string;
+    // 新分页 + 后端过滤参数（首页用）
+    page?: number;
+    page_size?: number;
+    platform?: string;
+    status?: string;
+    search?: string;
+    sort_by?: CrashSortBy;
+  },
 ) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (target_date) q.set("target_date", target_date);
   if (opts?.fatality) q.set("fatality", opts.fatality);
   if (opts?.kinds) q.set("kinds", opts.kinds);
+  if (opts?.page !== undefined) q.set("page", String(opts.page));
+  if (opts?.page_size !== undefined) q.set("page_size", String(opts.page_size));
+  if (opts?.platform) q.set("platform", opts.platform);
+  if (opts?.status) q.set("status", opts.status);
+  if (opts?.search) q.set("search", opts.search);
+  if (opts?.sort_by) q.set("sort_by", opts.sort_by);
   return request<CrashTopResponse>(`/crash/top?${q.toString()}`);
 };
 
@@ -1143,9 +1178,12 @@ export const fetchCrashAuditSummary = (hours = 48) =>
   request<CrashAuditSummary>(`/crash/audit-summary?hours=${hours}`);
 
 export interface CrashReportHistoryItem {
+  kind: "daily" | "hourly_alert";
   id: number;
+  sort_key?: string | null;
   report_date: string | null;
-  report_type: "morning" | "evening";
+  report_type: "morning" | "evening" | "hourly_alert";
+  hour_utc?: string | null;
   top_n: number;
   new_count: number;
   regression_count: number;
@@ -1158,17 +1196,24 @@ export interface CrashReportHistoryItem {
 
 export const fetchCrashReportHistory = (opts?: {
   days?: number;
-  report_type?: "morning" | "evening";
-  limit?: number;
+  report_type?: "morning" | "evening" | "hourly_alert";
+  page?: number;
+  page_size?: number;
 }) => {
   const qs = new URLSearchParams();
   if (opts?.days) qs.set("days", String(opts.days));
   if (opts?.report_type) qs.set("report_type", opts.report_type);
-  if (opts?.limit) qs.set("limit", String(opts.limit));
+  if (opts?.page) qs.set("page", String(opts.page));
+  if (opts?.page_size) qs.set("page_size", String(opts.page_size));
   const q = qs.toString();
-  return request<{ items: CrashReportHistoryItem[]; total: number; days: number }>(
-    `/crash/reports/history${q ? "?" + q : ""}`
-  );
+  return request<{
+    items: CrashReportHistoryItem[];
+    total: number;
+    page: number;
+    page_size: number;
+    total_pages: number;
+    days: number;
+  }>(`/crash/reports/history${q ? "?" + q : ""}`);
 };
 
 export const fetchCrashReportDetail = (id: number) =>
@@ -1180,6 +1225,19 @@ export const fetchCrashReportDetail = (id: number) =>
     payload: Record<string, unknown>;
     created_at: string | null;
   }>(`/crash/reports/${id}`);
+
+export const fetchCrashHourlyAlertDetail = (id: number) =>
+  request<{
+    id: number;
+    kind: "hourly_alert";
+    hour_utc: string | null;
+    new_count: number;
+    surge_count: number;
+    feishu_message_id: string;
+    markdown: string;
+    payload: Record<string, unknown>;
+    created_at: string | null;
+  }>(`/crash/alerts/hourly/${id}`);
 
 export interface CrashPullRequestItem {
   id: number;

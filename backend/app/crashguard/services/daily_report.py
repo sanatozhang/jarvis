@@ -1,11 +1,15 @@
 """
-Crashguard 早晚报（v2）：4 段 + 分平台 + vs 昨日变化率。
+Crashguard 早晚报（v2）：4 段 + 分平台 + vs 上周同时段变化率。
+
+底层逻辑：Plaud 用户分布 JP 40% / US 30% / EU 20%，跨时区+跨 weekday 流量差异大。
+vs 昨日 24h 会被周末效应（周末用户活跃显著低）污染——周一对比周日天然 +30%，假警频出。
+改用「7 天前同时刻往前 24h」做基线，控住 weekday + 时区双重周期，与 hourly alert 同口径。
 
 结构：
   📱 Android / 🍎 iOS / 🐦 Flutter 各自一节，每节 4 段：
     1. 数据快照（主版本 events / 全版本 events / 平均 crash-free 率）
-    2. 新增 / 突增（>= +10% vs 昨日，或 is_new_in_version）
-    3. 下降（<= -10% vs 昨日）
+    2. 新增 / 突增（>= +10% vs 上周同时段，或 is_new_in_version）
+    3. 下降（<= -10% vs 上周同时段）
     4. Top 5（按 crash_free_impact_score）
 
 外部入口：
@@ -120,11 +124,15 @@ def _parse_top_app_version(s: str) -> List[Tuple[str, float]]:
     return out
 
 
-def _delta_pct(today: int, yesterday: Optional[int]) -> Optional[float]:
-    """ratio = (today - yesterday) / yesterday；昨日为 None / 0 时返回 None。"""
-    if yesterday is None or yesterday == 0:
+def _delta_pct(today: int, baseline: Optional[int]) -> Optional[float]:
+    """ratio = (today - baseline) / baseline；基线为 None / 0 时返回 None。
+
+    baseline 含义：默认是「上周同时段 24h」(SHoW-24h)；如 SHoW 数据缺失，调用方可
+    传 fallback 数据。返回 None = 无法计算（基线缺失），不应作为告警依据。
+    """
+    if baseline is None or baseline == 0:
         return None
-    return (today - yesterday) / yesterday
+    return (today - baseline) / baseline
 
 
 def _classify_platform(raw: str) -> Optional[str]:
@@ -164,7 +172,8 @@ async def compose_report(
         raise ValueError(f"invalid report_type: {report_type}")
     if target_date is None:
         target_date = date.today()
-    yesterday = target_date - timedelta(days=1)
+    # SHoW-24h 基线：上周同 weekday 的 24h 快照（控时区+周内双周期偏置）
+    baseline_date = target_date - timedelta(days=7)
     # 业务硬约束：每平台 Top 上限 5（不可配置，避免 UI 上限漂移）
     top_n = min(max(1, int(top_n)), 5)
     # 阈值从 config 读（可在 config.yaml 覆盖）
@@ -178,13 +187,13 @@ async def compose_report(
             .where(CrashSnapshot.snapshot_date == target_date)
         )).all()
 
-        # 昨日 snap → dict（DB fallback：实时拉失败时降级用）
-        yesterday_rows = (await session.execute(
+        # 基线 snap → dict（DB fallback：实时拉失败时降级用）
+        baseline_rows = (await session.execute(
             select(CrashSnapshot.datadog_issue_id, CrashSnapshot.events_count)
-            .where(CrashSnapshot.snapshot_date == yesterday)
+            .where(CrashSnapshot.snapshot_date == baseline_date)
         )).all()
-        yesterday_events: Dict[str, int] = {
-            r[0]: int(r[1] or 0) for r in yesterday_rows
+        baseline_events: Dict[str, int] = {
+            r[0]: int(r[1] or 0) for r in baseline_rows
         }
 
     # 拉每个平台的 24h 总 sessions + distinct crash sessions（含 ANR），
@@ -193,10 +202,12 @@ async def compose_report(
     total_sessions_by_plat: Dict[str, int] = {}
     distinct_crash_sessions_by_plat: Dict[str, int] = {}
     crash_breakdown_by_plat: Dict[str, Dict[str, int]] = {}
-    # 方案 A：实时双窗口拉数（C 路线下 = fatal/non_fatal × today/yesterday = 4 次，含 5min 缓存）
-    # 关键收益：today/yesterday 都从 `now` 反推，严格对齐 24h 边界，不受 pipeline 跑点影响。
+    # SHoW-24h 实时双窗口拉数（fatal/non_fatal × today/baseline = 4 次，含 5min 缓存）
+    # today    窗口 = [now-24h, now]
+    # baseline 窗口 = [now-192h, now-168h]   ← 7 天前同时刻往前 24h
+    # 关键收益：严格对齐 weekday + 时区双周期，规避 vs 昨日的周末效应假警。
     realtime_today_events: Dict[str, int] = {}
-    realtime_yesterday_events: Dict[str, int] = {}
+    realtime_baseline_events: Dict[str, int] = {}
     if s_cfg.datadog_api_key:
         try:
             from app.crashguard.services.datadog_client import DatadogClient
@@ -232,14 +243,17 @@ async def compose_report(
                             realtime_today_events[iid] = int(
                                 it.get("attributes", {}).get("events_count", 0) or 0
                             )
-                    yest_pull = await client.list_issues_for_window(
-                        start_ms=now_ms - 2 * win_ms, end_ms=now_ms - win_ms,
+                    # SHoW-24h 基线：7 天前同时刻往前 24h
+                    week_ago_end_ms = now_ms - 7 * 24 * 3600 * 1000
+                    week_ago_start_ms = week_ago_end_ms - win_ms
+                    baseline_pull = await client.list_issues_for_window(
+                        start_ms=week_ago_start_ms, end_ms=week_ago_end_ms,
                         tracks=s_cfg.datadog_tracks, query=q,
                     )
-                    for it in yest_pull:
+                    for it in baseline_pull:
                         iid = it.get("id") or ""
                         if iid:
-                            realtime_yesterday_events[iid] = int(
+                            realtime_baseline_events[iid] = int(
                                 it.get("attributes", {}).get("events_count", 0) or 0
                             )
                 except Exception:
@@ -247,9 +261,9 @@ async def compose_report(
         except Exception:
             logger.exception("count_sessions failed (non-fatal)")
 
-    # 方案 A：用实时窗口数据覆盖 yesterday_events
-    if realtime_yesterday_events:
-        yesterday_events = realtime_yesterday_events
+    # 方案 A：用实时窗口数据覆盖 baseline_events
+    if realtime_baseline_events:
+        baseline_events = realtime_baseline_events
     # 方案 A：用实时窗口数据覆盖 today snapshot 的 events_count（in-memory mutation，session 已关）
     # 这样后续所有 snap.events_count 引用都自动用对齐窗口数据，不必逐处改写。
     if realtime_today_events:
@@ -477,7 +491,7 @@ async def compose_report(
             surges: List[Tuple[CrashSnapshot, CrashIssue, Optional[float]]] = []
             for snap, issue in f_rows:
                 events_today = int(snap.events_count or 0)
-                yt = yesterday_events.get(snap.datadog_issue_id)
+                yt = baseline_events.get(snap.datadog_issue_id)
                 delta = _delta_pct(events_today, yt)
                 is_new = bool(snap.is_new_in_version)
                 is_surge = (
@@ -507,7 +521,7 @@ async def compose_report(
             drops: List[Tuple[CrashSnapshot, CrashIssue, float]] = []
             for snap, issue in f_rows:
                 events_today = int(snap.events_count or 0)
-                yt = yesterday_events.get(snap.datadog_issue_id)
+                yt = baseline_events.get(snap.datadog_issue_id)
                 delta = _delta_pct(events_today, yt)
                 yt_int = int(yt or 0)
                 yt_satisfies = yt_int >= attention_min_events
@@ -542,7 +556,7 @@ async def compose_report(
 
             # § 2 渲染
             lines.append(
-                f"#### 🆕 新增 / 突增（>= +{int(surge_threshold * 100)}% vs 昨日，"
+                f"#### 🆕 新增 / 突增（>= +{int(surge_threshold * 100)}% vs 上周同时段，"
                 f"突增需 events ≥ {attention_min_events}）"
             )
             if not surges:
@@ -566,7 +580,7 @@ async def compose_report(
             lines.append("")
 
             # § 3 渲染
-            lines.append(f"#### 📉 下降（<= {int(drop_threshold * 100)}% vs 昨日）")
+            lines.append(f"#### 📉 下降（<= {int(drop_threshold * 100)}% vs 上周同时段）")
             if not drops:
                 lines.append("- _无_")
             else:
@@ -583,7 +597,7 @@ async def compose_report(
             lines.append(f"#### 🔥 Top {len(top5)}")
             for i, (snap, issue) in enumerate(top5, 1):
                 events_today = int(snap.events_count or 0)
-                yt = yesterday_events.get(snap.datadog_issue_id)
+                yt = baseline_events.get(snap.datadog_issue_id)
                 delta = _delta_pct(events_today, yt)
                 lines.append(_line_for_issue(
                     snap.datadog_issue_id,
@@ -658,7 +672,7 @@ async def compose_report(
                 )
         if fatal_surges:
             attn_lines.append("")
-            attn_lines.append(f"### 📈 突增 (>= +10% vs 昨日, {len(fatal_surges)} 项)")
+            attn_lines.append(f"### 📈 突增 (>= +10% vs 上周同时段, {len(fatal_surges)} 项)")
             for item in sorted(fatal_surges, key=lambda x: -(x["delta"] or 0))[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
@@ -670,7 +684,7 @@ async def compose_report(
                 )
         if fatal_drops:
             attn_lines.append("")
-            attn_lines.append(f"### 📉 下降 (<= -10% vs 昨日, {len(fatal_drops)} 项)")
+            attn_lines.append(f"### 📉 下降 (<= -10% vs 上周同时段, {len(fatal_drops)} 项)")
             for item in sorted(fatal_drops, key=lambda x: x["delta"] or 0)[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
@@ -696,39 +710,13 @@ async def compose_report(
         if retro_md:
             retro_lines = retro_md.split("\n")
 
-    # C 路线：今日自动修复 PR 高亮段（早报 = 过去 24h；晚报 = 过去 12h，避免与早报重叠）
-    auto_pr_lines: List[str] = []
-    try:
-        lookback_h = 24 if report_type == "morning" else 12
-        recent_prs = await _recent_auto_prs(target_date, lookback_hours=lookback_h)
-    except Exception:
-        logger.exception("recent auto PR query failed (non-fatal)")
-        recent_prs = []
-    if recent_prs:
-        auto_pr_lines = [
-            f"## 🔧 今日自动修复 PR（最近 {lookback_h}h，{len(recent_prs)} 条）",
-            "",
-        ]
-        for pr in recent_prs[:10]:
-            number = f"#{pr['pr_number']}" if pr.get("pr_number") else ""
-            status_emoji = {
-                "merged": "✅", "open": "🟢", "closed": "⚪", "draft": "🟡",
-            }.get(pr.get("pr_status") or "draft", "🟡")
-            issue_url = _frontend_issue_url(pr["datadog_issue_id"])
-            title_short = (pr.get("issue_title") or "")[:60]
-            pr_link = pr.get("pr_url") or ""
-            auto_pr_lines.append(
-                f"- {status_emoji} [{pr.get('pr_status') or 'draft'}] [{title_short}]({issue_url}) "
-                f"→ [PR{number}]({pr_link})"
-            )
-        auto_pr_lines.append("")
-        auto_pr_lines.append("---")
-        auto_pr_lines.append("")
+    # 早晚报不再展示 PR 修复段——按用户要求，PR 内容只在 crashguard web 端查看
+    # 早晚报只聚焦"出了什么事"，PR 状态查看走前端，避免群消息聒噪
 
     # 插入位置：title (line 0) + 数据窗口 (line 1) + 空行 (line 2) 后
-    # 顺序：Σ 摘要 → 昨日复盘 → 🔧 今日自动 PR（高亮置顶）→ ✨ 关注点
+    # 顺序：Σ 摘要 → 昨日复盘 → ✨ 关注点
     insert_at = 2
-    lines[insert_at:insert_at] = [sigma, ""] + retro_lines + auto_pr_lines + attn_lines
+    lines[insert_at:insert_at] = [sigma, ""] + retro_lines + attn_lines
 
     payload["new_count"] = total_new
     payload["regression_count"] = total_surge
@@ -772,14 +760,6 @@ async def _retrospect_yesterday(target_date: date) -> Optional[str]:
         issues = (await session.execute(
             select(CrashIssue).where(CrashIssue.datadog_issue_id.in_(list(attention_ids)))
         )).scalars().all()
-        # 检查 PR
-        from app.crashguard.models import CrashPullRequest
-        pr_rows = (await session.execute(
-            select(CrashPullRequest.datadog_issue_id, CrashPullRequest.pr_url).where(
-                CrashPullRequest.datadog_issue_id.in_(list(attention_ids))
-            )
-        )).all()
-        pr_map: Dict[str, str] = {row[0]: row[1] for row in pr_rows}
 
     closed_states = {"resolved_by_pr", "ignored", "wontfix"}
     closed: List[CrashIssue] = []
@@ -794,13 +774,11 @@ async def _retrospect_yesterday(target_date: date) -> Optional[str]:
     total = len(attention_ids)
     closed_n = len(closed)
     open_n = len(open_issues)
-    pr_n = sum(1 for iid in attention_ids if iid in pr_map)
 
     lines: List[str] = ["## 📋 昨日承诺 · 今日兑现"]
     lines.append("")
     lines.append(
-        f"> 昨日关注点 **{total}** 项 → 已闭环 **{closed_n}** · "
-        f"PR 草稿 **{pr_n}** · 仍 open **{open_n}**"
+        f"> 昨日关注点 **{total}** 项 → 已闭环 **{closed_n}** · 仍 open **{open_n}**"
     )
     if closed:
         lines.append("")
@@ -815,9 +793,7 @@ async def _retrospect_yesterday(target_date: date) -> Optional[str]:
         for issue in open_issues[:5]:
             url = _frontend_issue_url(issue.datadog_issue_id)
             title_short = (issue.title or "")[:70]
-            pr_url = pr_map.get(issue.datadog_issue_id)
-            pr_str = f" · [PR]({pr_url})" if pr_url else ""
-            lines.append(f"- [{issue.status or 'open'}] [{title_short}]({url}){pr_str}")
+            lines.append(f"- [{issue.status or 'open'}] [{title_short}]({url})")
     lines.append("")
     lines.append("---")
     lines.append("")

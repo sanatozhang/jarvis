@@ -199,6 +199,52 @@ class CrashVersion(Base):
     )
 
 
+class CrashHourlySnapshot(Base):
+    """每小时事件数快照，用于 SHoW（Same Hour-of-Week）对比。
+
+    底层逻辑：Plaud 用户横跨 JP/US/EU，hourly 流量天然有日内+周内双周期。
+    用「上周同 weekday 同小时」做基线，10% 增长才是真信号。
+
+    每个 (issue_id, hour_utc) 一条；upsert by unique 索引。
+    hour_utc 用整点 UTC datetime，便于跨时区一致比较。
+    """
+    __tablename__ = "crash_hourly_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    datadog_issue_id = Column(String(128), nullable=False, index=True)
+    hour_utc = Column(DateTime, nullable=False, index=True)  # 整点 UTC
+    events_count = Column(Integer, default=0)
+    captured_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "datadog_issue_id", "hour_utc",
+            name="uq_crash_hourly_snapshots_issue_hour",
+        ),
+        Index("ix_crash_hourly_snapshots_hour", "hour_utc"),
+    )
+
+
+class CrashHourlyAlert(Base):
+    """每小时告警发送幂等表，防多机重复触发。
+
+    一条 = 一次告警发出；hour_utc 是发送时刻的整点。alert_payload 留 JSON 供回溯。
+    """
+    __tablename__ = "crash_hourly_alerts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    hour_utc = Column(DateTime, nullable=False)
+    new_count = Column(Integer, default=0)
+    surge_count = Column(Integer, default=0)
+    feishu_message_id = Column(String(128), default="")
+    alert_payload = Column(Text, default="{}")  # JSON
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("hour_utc", name="uq_crash_hourly_alerts_hour"),
+    )
+
+
 class CrashAuditLog(Base):
     """运维 audit log：记录每次报告生成 / PR 创建 / 预热的成功失败结果。"""
     __tablename__ = "crash_audit_logs"

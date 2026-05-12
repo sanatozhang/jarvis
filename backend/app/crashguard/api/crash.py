@@ -386,15 +386,34 @@ def _datadog_url_for(issue_id: str) -> str:
 @router.get("/top")
 async def get_top(
     target_date: Optional[date] = None,
+    # 旧字段（兼容）：未传 page 时按 limit 截断
     limit: int = 40,
     kinds: str = "all",
+    # 新分页字段
+    page: Optional[int] = Query(None, ge=1),
+    page_size: int = Query(40, ge=1, le=100),
+    # 全后端过滤（首页分页化后客户端不再 useMemo 过滤）
     fatality: str = "",
+    platform: str = "",
+    status: str = "",
+    search: str = "",
+    sort_by: str = "events",  # events / impact / users / new_first
 ) -> Dict[str, Any]:
-    """读取指定日期的 Top N（不重新跑流水线）。
+    """读取指定日期的 issue 列表（首页用，**跳过早晚报 dedup**，列今日全集）。
 
-    kinds: 逗号分隔的类别白名单。默认 "all"——不再按 kind 过滤；
-           真正的"App 崩溃 vs 业务失败"分类用 `fatality` 维度。
-    fatality: "fatal" / "non_fatal" / "" (=不过滤，全部返回，前端按需分流)。
+    - kinds: 逗号分隔类别白名单；默认 "all"
+    - fatality: "fatal" / "non_fatal" / "" (=全部)
+    - platform: "android" / "ios" / "flutter" / "" (=全部)
+    - status: "open" / "investigating" / "resolved_by_pr" / "ignored" / "wontfix" / "" (=全部)
+    - search: title 子串匹配（大小写不敏感）
+    - sort_by: events(默认) / impact / users / new_first
+    - 分页：传 `page` 启用；未传则旧行为（按 limit 截取头 N 条，page_size 忽略）
+
+    返回:
+      issues[]（仅当前页）, total, page, page_size, total_pages,
+      aggregates: {p0_count, surge_count, new_count, fatal_count, non_fatal_count,
+                   total_events, total_users}
+      date
     """
     from app.db.database import get_session
     from app.crashguard.services.ranker import pick_top_n
@@ -408,16 +427,75 @@ async def get_top(
     else:
         kind_tuple = tuple(k.strip().lower() for k in kinds.split(",") if k.strip())
 
+    paginated = page is not None
+    fatality_norm = (fatality or "").strip().lower()
+    platform_norm = (platform or "").strip().lower()
+    status_norm = (status or "").strip().lower()
+    search_norm = (search or "").strip().lower()
+    sort_norm = (sort_by or "events").strip().lower()
+
     async with get_session() as session:
-        top = await pick_top_n(
+        # 分页模式 → 拉全集 + skip_dedup；非分页（旧调用方）→ 沿用截断 + dedup
+        items = await pick_top_n(
             session,
             today=target_date,
-            n=limit,
+            n=0 if paginated else limit,
             kinds=kind_tuple,
-            fatality=fatality,
+            fatality=fatality_norm if not paginated else "",  # 分页路径下统一在外层过滤
+            skip_dedup=paginated,
         )
-        # 批量补 PR 状态：每个 issue 取最新一条 PR
-        issue_ids = [item["datadog_issue_id"] for item in top]
+
+        # 后端过滤（仅分页路径用；非分页路径已由 pick_top_n 处理 fatality）
+        if paginated:
+            if fatality_norm in ("fatal", "non_fatal"):
+                items = [x for x in items if (x.get("fatality") or "fatal") == fatality_norm]
+            if platform_norm:
+                items = [x for x in items if (x.get("platform") or "").lower() == platform_norm]
+            if status_norm:
+                items = [x for x in items if (x.get("status") or "open").lower() == status_norm]
+            if search_norm:
+                items = [
+                    x for x in items
+                    if search_norm in (x.get("title") or "").lower()
+                    or search_norm in (x.get("datadog_issue_id") or "").lower()
+                ]
+            # 排序
+            if sort_norm == "events":
+                items.sort(key=lambda x: x.get("events_count") or 0, reverse=True)
+            elif sort_norm == "users":
+                items.sort(key=lambda x: x.get("users_affected") or 0, reverse=True)
+            elif sort_norm == "new_first":
+                items.sort(key=lambda x: (
+                    1 if x.get("is_new_in_version") else 0,
+                    x.get("events_count") or 0,
+                ), reverse=True)
+            else:  # impact（默认或显式）
+                items.sort(key=lambda x: x.get("crash_free_impact_score") or 0.0, reverse=True)
+
+        # 聚合（基于过滤后但未分页的全集，便于头部展示真实统计）
+        aggregates = {
+            "p0_count": sum(1 for x in items if x.get("tier") == "P0"),
+            "surge_count": sum(1 for x in items if x.get("is_surge")),
+            "new_count": sum(1 for x in items if x.get("is_new_in_version")),
+            "fatal_count": sum(1 for x in items if (x.get("fatality") or "fatal") == "fatal"),
+            "non_fatal_count": sum(1 for x in items if x.get("fatality") == "non_fatal"),
+            "total_events": sum(int(x.get("events_count") or 0) for x in items),
+            "total_users": sum(int(x.get("users_affected") or 0) for x in items),
+            "total_sessions": sum(int(x.get("sessions_affected") or 0) for x in items),
+        }
+
+        total = len(items)
+        if paginated:
+            start = (page - 1) * page_size
+            end = start + page_size
+            page_items = items[start:end]
+            total_pages = max(1, (total + page_size - 1) // page_size)
+        else:
+            page_items = items
+            total_pages = 1
+
+        # 仅给当前页 issue 补 PR/分析（控成本）
+        issue_ids = [item["datadog_issue_id"] for item in page_items]
         pr_map: Dict[str, Dict[str, Any]] = {}
         ana_map: Dict[str, Dict[str, Any]] = {}
         if issue_ids:
@@ -428,7 +506,6 @@ async def get_top(
                 .order_by(CrashPullRequest.created_at.desc())
             )).scalars().all()
             for pr in pr_rows:
-                # 同一 issue 多条 PR 时，最新创建的覆盖（按 created_at desc 来的，第一次写入即最新）
                 pr_map.setdefault(pr.datadog_issue_id, {
                     "pr_url": pr.pr_url or "",
                     "pr_number": pr.pr_number,
@@ -451,7 +528,7 @@ async def get_top(
                     "analysis_confidence": ana.confidence or "",
                 })
 
-    for item in top:
+    for item in page_items:
         item["datadog_url"] = _datadog_url_for(item["datadog_issue_id"])
         pr = pr_map.get(item["datadog_issue_id"])
         item["has_pr"] = pr is not None
@@ -463,7 +540,19 @@ async def get_top(
         item["analysis_id"] = ana["analysis_id"] if ana else None
         item["analysis_feasibility_score"] = ana["analysis_feasibility_score"] if ana else None
         item["analysis_confidence"] = ana["analysis_confidence"] if ana else ""
-    return {"date": target_date.isoformat(), "count": len(top), "issues": top}
+
+    out: Dict[str, Any] = {
+        "date": target_date.isoformat(),
+        "count": len(page_items),
+        "issues": page_items,
+        "total": total,
+        "aggregates": aggregates,
+    }
+    if paginated:
+        out["page"] = page
+        out["page_size"] = page_size
+        out["total_pages"] = total_pages
+    return out
 
 
 @router.get("/issues/{issue_id}")
@@ -934,37 +1023,64 @@ async def patch_issue(issue_id: str, patch: IssuePatch) -> Dict[str, Any]:
 @router.get("/reports/history")
 async def list_reports_history(
     days: int = Query(30, ge=1, le=180),
-    report_type: Optional[str] = Query(None, regex="^(morning|evening)$"),
-    limit: int = Query(60, ge=1, le=180),
+    report_type: Optional[str] = Query(None, regex="^(morning|evening|hourly_alert)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    # 兼容旧前端：保留 limit 但忽略（用 page_size 代替）
+    limit: Optional[int] = Query(None, ge=1, le=200),
 ) -> Dict[str, Any]:
-    """列出最近 N 天的历史早晚报（含 attention 计数 + payload 摘要）。"""
+    """列出最近 N 天的历史早晚报 + 实时告警（混合列表，按时间 desc）。
+
+    返回 item 含 `kind: "daily" | "hourly_alert"`；前端按 kind 分发详情请求。
+    分页：1-based page，page_size 默认 20。
+    """
     from datetime import datetime, timedelta, date as _date
     from sqlalchemy import select, desc
     from app.db.database import get_session
-    from app.crashguard.models import CrashDailyReport
+    from app.crashguard.models import CrashDailyReport, CrashHourlyAlert
     import json as _json
 
-    since = _date.today() - timedelta(days=days)
+    today = _date.today()
+    since_date = today - timedelta(days=days)
+    since_dt = datetime.utcnow() - timedelta(days=days)
+
+    daily_rows: List[Any] = []
+    hourly_rows: List[Any] = []
+
     async with get_session() as session:
-        stmt = select(CrashDailyReport).where(CrashDailyReport.report_date >= since)
-        if report_type:
-            stmt = stmt.where(CrashDailyReport.report_type == report_type)
-        stmt = stmt.order_by(
-            desc(CrashDailyReport.report_date),
-            desc(CrashDailyReport.created_at),
-        ).limit(limit)
-        rows = (await session.execute(stmt)).scalars().all()
+        # daily reports
+        if report_type in (None, "morning", "evening"):
+            stmt = select(CrashDailyReport).where(CrashDailyReport.report_date >= since_date)
+            if report_type in ("morning", "evening"):
+                stmt = stmt.where(CrashDailyReport.report_type == report_type)
+            stmt = stmt.order_by(
+                desc(CrashDailyReport.report_date),
+                desc(CrashDailyReport.created_at),
+            )
+            daily_rows = (await session.execute(stmt)).scalars().all()
+        # hourly alerts
+        if report_type in (None, "hourly_alert"):
+            stmt2 = (
+                select(CrashHourlyAlert)
+                .where(CrashHourlyAlert.hour_utc >= since_dt)
+                .order_by(desc(CrashHourlyAlert.hour_utc))
+            )
+            hourly_rows = (await session.execute(stmt2)).scalars().all()
 
     items: List[Dict[str, Any]] = []
-    for r in rows:
+    for r in daily_rows:
         try:
             payload = _json.loads(r.report_payload or "{}")
         except Exception:
             payload = {}
+        # sort_key：用 created_at（每日早晚报）作为统一时间轴
+        sort_key = r.created_at or datetime.combine(r.report_date or today, datetime.min.time())
         items.append({
+            "kind": "daily",
             "id": r.id,
+            "sort_key": sort_key.isoformat() if sort_key else None,
             "report_date": r.report_date.isoformat() if r.report_date else None,
-            "report_type": r.report_type,
+            "report_type": r.report_type,  # "morning" | "evening"
             "top_n": r.top_n,
             "new_count": r.new_count,
             "regression_count": r.regression_count,
@@ -976,7 +1092,117 @@ async def list_reports_history(
                 int(r.new_count or 0) + int(r.regression_count or 0) + int(r.surge_count or 0)
             ),
         })
-    return {"items": items, "total": len(items), "days": days}
+    for a in hourly_rows:
+        items.append({
+            "kind": "hourly_alert",
+            "id": a.id,
+            "sort_key": a.hour_utc.isoformat() if a.hour_utc else None,
+            "report_date": a.hour_utc.date().isoformat() if a.hour_utc else None,
+            "report_type": "hourly_alert",
+            "hour_utc": a.hour_utc.isoformat() if a.hour_utc else None,
+            "top_n": 0,
+            "new_count": int(a.new_count or 0),
+            "regression_count": 0,
+            "surge_count": int(a.surge_count or 0),
+            "feishu_message_id": a.feishu_message_id or "",
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "summary": "",
+            "attention_total": int(a.new_count or 0) + int(a.surge_count or 0),
+        })
+
+    # 按时间 desc 排序后分页
+    items.sort(key=lambda x: x.get("sort_key") or "", reverse=True)
+    total = len(items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    paged = items[start:end]
+
+    return {
+        "items": paged,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+        "days": days,
+    }
+
+
+@router.get("/alerts/hourly/{alert_id}")
+async def get_hourly_alert_detail(alert_id: int) -> Dict[str, Any]:
+    """单次 hourly 告警详情：渲染 markdown 视图 + 完整 payload。"""
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlyAlert
+    from app.crashguard.config import get_crashguard_settings
+    import json as _json
+
+    async with get_session() as session:
+        row = (await session.execute(
+            select(CrashHourlyAlert).where(CrashHourlyAlert.id == alert_id)
+        )).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="hourly alert not found")
+        try:
+            payload = _json.loads(row.alert_payload or "{}")
+        except Exception:
+            payload = {}
+
+    s = get_crashguard_settings()
+    base = s.frontend_base_url.rstrip("/")
+    # 显示用新加坡时区（UTC+8）
+    sg_label = "—"
+    if row.hour_utc:
+        sg_dt = row.hour_utc + timedelta(hours=8)
+        sg_label = sg_dt.strftime("%Y-%m-%d %H:%M SGT")
+    lines: List[str] = [
+        f"# 🚨 实时告警 · {sg_label}",
+        "",
+        (f"> Σ 过去 3 小时 · 新增 **{row.new_count}** · 上涨 **{row.surge_count}**  ·  "
+         f"阈值 +{payload.get('threshold_pct', 10):.0f}%（SHoW-3h 同周同 3h 块对比）"),
+        "",
+    ]
+    new_items = payload.get("new") or []
+    surge_items = payload.get("surge") or []
+    if new_items:
+        lines.append("## 🆕 新增崩溃（近 30 天首现）")
+        lines.append("")
+        for it in new_items:
+            url = f"{base}/crashguard?issue={it.get('issue_id', '')}"
+            title = it.get("title") or it.get("issue_id", "")
+            platform = it.get("platform", "")
+            events = it.get("events_h", 0)
+            lines.append(f"- [{title}]({url}) · {platform} · **{events}** events/h")
+        lines.append("")
+    if surge_items:
+        lines.append("## 📈 异常上涨")
+        lines.append("")
+        for it in surge_items:
+            url = f"{base}/crashguard?issue={it.get('issue_id', '')}"
+            title = it.get("title") or it.get("issue_id", "")
+            platform = it.get("platform", "")
+            events = it.get("events_h", 0)
+            baseline = it.get("baseline", 0)
+            growth = it.get("growth_pct", 0)
+            src = "SHoW" if it.get("baseline_source") == "show" else "7d 均值"
+            lines.append(
+                f"- [{title}]({url}) · {platform} · **{events}** vs {baseline:.0f} ({src}) · **+{growth:.1f}%** ⬆️"
+            )
+        lines.append("")
+    if not new_items and not surge_items:
+        lines.append("_本小时无异常_")
+
+    return {
+        "id": row.id,
+        "kind": "hourly_alert",
+        "hour_utc": row.hour_utc.isoformat() if row.hour_utc else None,
+        "new_count": int(row.new_count or 0),
+        "surge_count": int(row.surge_count or 0),
+        "feishu_message_id": row.feishu_message_id or "",
+        "markdown": "\n".join(lines),
+        "payload": payload,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
 
 
 @router.get("/reports/{report_id}")

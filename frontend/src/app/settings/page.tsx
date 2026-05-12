@@ -4,6 +4,7 @@ import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
 import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig } from "@/lib/api";
+import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
 interface EnvGroup { key: string; label: string; fields: EnvField[]; }
@@ -21,6 +22,73 @@ const inputStyle = {
   color: S.text1,
   outline: "none",
 };
+
+
+function CrashguardPrefsSection() {
+  const t = useT();
+  const [n, setN] = useState<number>(BATCH_TOP_N_BOUNDS.default);
+  const [draft, setDraft] = useState<string>(String(BATCH_TOP_N_BOUNDS.default));
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const cur = getBatchTopN();
+    setN(cur);
+    setDraft(String(cur));
+  }, []);
+
+  const onSave = () => {
+    const parsed = parseInt(draft, 10);
+    const applied = setBatchTopN(Number.isFinite(parsed) ? parsed : BATCH_TOP_N_BOUNDS.default);
+    setN(applied);
+    setDraft(String(applied));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  };
+
+  return (
+    <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+      <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+        Crashguard
+      </h2>
+      <div className="flex flex-col gap-3 max-w-md">
+        <div>
+          <label className="block text-sm mb-1" style={{ color: S.text1 }}>
+            {t("批量分析 Top N")}
+          </label>
+          <p className="text-xs mb-2" style={{ color: S.text3 }}>
+            {t("首页「批量分析」按钮一次启动多少个未分析过的 issue。范围")} {BATCH_TOP_N_BOUNDS.min}–{BATCH_TOP_N_BOUNDS.max}，{t("默认")} {BATCH_TOP_N_BOUNDS.default}。
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={BATCH_TOP_N_BOUNDS.min}
+              max={BATCH_TOP_N_BOUNDS.max}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              className="rounded px-3 py-1.5 text-sm w-24"
+              style={inputStyle}
+            />
+            <button
+              onClick={onSave}
+              className="rounded px-3 py-1.5 text-sm font-medium"
+              style={{ background: S.accent, color: "white", border: "none", cursor: "pointer" }}
+            >
+              {t("保存")}
+            </button>
+            {saved && (
+              <span className="text-xs" style={{ color: S.accent }}>
+                ✓ {t("已保存")}（{t("当前")}: {n}）
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] mt-2" style={{ color: S.text3 }}>
+            {t("此偏好仅本浏览器有效（localStorage 存储）")}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 
 function UserList() {
@@ -541,6 +609,9 @@ export default function SettingsPage() {
             </div>
           </section>
         )}
+
+        {/* CRASHGUARD PREFERENCES (per-browser) */}
+        <CrashguardPrefsSection />
 
         {/* USER MANAGEMENT (Admin only) */}
         {isAdmin && (
