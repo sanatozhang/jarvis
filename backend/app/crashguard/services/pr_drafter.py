@@ -507,13 +507,14 @@ async def _create_one_draft_pr(
                     f"origin/main, manual merge needed): {err[:200]}"),
                     "repo": repo_logical, "branch_name": branch}, pushed
 
+    # `git add -A` 在大仓库（Flutter 主仓含 5 个 submodule）默认 60s 不够，提到 180s
     if files_to_add is None:
-        rc, _, err = _run_git(["git", "add", "-A"], cwd)
+        rc, _, err = _run_git(["git", "add", "-A"], cwd, timeout=180)
     else:
         if not files_to_add:
             return {"ok": False, "error": "no files to add", "repo": repo_logical,
                     "branch_name": branch}, pushed
-        rc, _, err = _run_git(["git", "add", "--"] + files_to_add, cwd)
+        rc, _, err = _run_git(["git", "add", "--"] + files_to_add, cwd, timeout=180)
     if rc != 0:
         return {"ok": False, "error": f"git add failed: {err}", "repo": repo_logical,
                 "branch_name": branch}, pushed
