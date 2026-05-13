@@ -496,15 +496,26 @@ def _classify_changed_files(
             sp = sm.get("path", "").rstrip("/")
             if not sp:
                 continue
-            if f == sp or f.startswith(sp + "/"):
-                rel = f[len(sp) + 1:] if f.startswith(sp + "/") else ""
+            if f == sp:
+                # 裸 submodule pointer（如 "nicebuildSDK"）：丢弃，不进 parent 也不进 sub_files。
+                # 底层逻辑：parent git status 显示 ` M nicebuildSDK` 时只是 pointer 改动，
+                # 不是真代码 diff——commit pointer 让 reviewer 误以为 SDK 被改了（PR #209 教训）。
+                # 真改动通过 _run_implementation_agent 的 agent_nested_buckets 路径捕获。
+                sub_map.setdefault(sp, {
+                    "abs_path": os.path.join(repo_path, sp),
+                    "url": sm.get("url", ""),
+                    "files": [],
+                })
+                placed = True
+                break
+            if f.startswith(sp + "/"):
+                rel = f[len(sp) + 1:]
                 entry = sub_map.setdefault(sp, {
                     "abs_path": os.path.join(repo_path, sp),
                     "url": sm.get("url", ""),
                     "files": [],
                 })
-                if rel:
-                    entry["files"].append(rel)
+                entry["files"].append(rel)
                 placed = True
                 break
         if not placed:
@@ -1344,7 +1355,10 @@ async def draft_pr_for_analysis(
 
         # === 父 repo PR（如果有 parent_files）===
         if parent_files:
-            parent_files_arg = parent_files if impl_source == "agent" else None
+            # impl_source ∈ {"agent","diff"}：两条路径都显式传 parent_files，
+            # 避免 git add -A 把 submodule pointer 残留扫进 commit（PR #209 教训：
+            # nicebuildSDK pointer 改动被当 parent file 上车，reviewer 困惑）
+            parent_files_arg = parent_files
             parent_result, parent_pushed = await _create_one_draft_pr(
                 cwd=repo_path,
                 branch=branch,
