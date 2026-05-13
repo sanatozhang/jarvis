@@ -15,6 +15,39 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 from app.config import PROJECT_ROOT, _load_yaml
 
 
+def _is_in_container() -> bool:
+    """检测是否运行在容器内（Docker / containerd / kubepods）。
+
+    底层逻辑：容器内 socket().getsockname() 拿到的是 bridge 网段 IP（172.17/18.x.x），
+    对外不可达。autodetect 在容器里没意义，必须强制要求显式 env。
+    """
+    import os
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            content = f.read()
+        return any(k in content for k in ("docker", "kubepods", "containerd"))
+    except Exception:
+        return False
+
+
+def _is_docker_bridge_ip(ip: str) -> bool:
+    """识别 docker bridge 默认网段 172.16-31.x.x（RFC1918 b 段子集）。
+
+    10.x / 192.168.x 是常见 LAN 段（10.0.52.100 也在里头），不能黑名单。
+    只过滤 172.16-31，对应 Docker / Podman 默认 bridge 段。
+    """
+    parts = ip.split(".")
+    if len(parts) != 4 or parts[0] != "172":
+        return False
+    try:
+        second = int(parts[1])
+    except ValueError:
+        return False
+    return 16 <= second <= 31
+
+
 def _autodetect_frontend_base_url() -> str:
     """探测本机出口 IP，构造默认 frontend URL。
 
@@ -22,19 +55,24 @@ def _autodetect_frontend_base_url() -> str:
     飞书消息里的链接会回环到 localhost——其他人点开打不到当前部署的页面。
     用 UDP socket connect 8.8.8.8（不真发包，仅触发路由表查询）拿到本机出口 IP。
 
-    ⚠️ Docker 容器里 socket 拿到的是 bridge 网段（172.x.x.x），对外不可达。
-    Docker 部署必须显式设 env：`CRASHGUARD_FRONTEND_BASE_URL=http://10.0.52.x:3000`，
-    本函数仅作 native dev / 单机部署的便利默认。
+    ⚠️ 容器内必须显式 env：`CRASHGUARD_FRONTEND_BASE_URL=http://10.0.52.x:3000`。
+    本函数检测到在容器内 + 无显式 env 时不再回落 socket 拿到的 bridge IP，
+    而是返回带"CONFIGURE"哨兵的 URL，让运维一眼看出来要补 env，避免飞书 PR/告警
+    里出现死链 http://172.18.0.3:3000 还看不出来。
     """
+    import logging
     import os
     import socket
-    # 优先读 env：HOST_IP / DEPLOY_HOST （docker-compose 可注入宿主 IP）
+    # 优先读 env：HOST_IP / DEPLOY_HOST（docker-compose 可注入宿主 IP）
     for key in ("CRASHGUARD_HOST_IP", "HOST_IP", "DEPLOY_HOST"):
         v = (os.environ.get(key) or "").strip()
         if v:
             if v.startswith("http://") or v.startswith("https://"):
                 return v
             return f"http://{v}:3000"
+
+    in_container = _is_in_container()
+
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.3)
@@ -42,9 +80,24 @@ def _autodetect_frontend_base_url() -> str:
         ip = s.getsockname()[0]
         s.close()
         if ip and ip != "127.0.0.1":
+            # 容器内 + bridge IP → 拒绝（对外不可达，飞书 / PR body 写出去就是死链）
+            if in_container and _is_docker_bridge_ip(ip):
+                logging.getLogger("crashguard.config").error(
+                    "docker bridge IP %s detected inside container; "
+                    "MUST set CRASHGUARD_FRONTEND_BASE_URL=http://<host_ip>:3000 in .env",
+                    ip,
+                )
+                return "http://CONFIGURE_CRASHGUARD_FRONTEND_BASE_URL:3000"
             return f"http://{ip}:3000"
     except Exception:
         pass
+
+    if in_container:
+        logging.getLogger("crashguard.config").error(
+            "running in container without CRASHGUARD_FRONTEND_BASE_URL / HOST_IP; "
+            "feishu/PR links will be unreachable"
+        )
+        return "http://CONFIGURE_CRASHGUARD_FRONTEND_BASE_URL:3000"
     return "http://localhost:3000"
 
 
@@ -199,33 +252,60 @@ class CrashguardSettings(BaseSettings):
 
     @model_validator(mode="after")
     def _backfill_repo_paths_from_jarvis_env(self):
-        """老 jarvis 约定 (CODE_REPO_APP / CODE_REPO_PATH) 兜底。
+        """老 jarvis 约定 (CODE_REPO_APP / CODE_REPO_PATH) 兜底 + 壳工程自动下钻。
 
-        底层逻辑：jarvis 主流用 CODE_REPO_APP 指向 Flutter 主仓库（Android/iOS native
-        作为 git submodule 在子目录里），crashguard 出现晚一些用 CRASHGUARD_REPO_PATH_*。
-        两套约定并存让运营每次部署得记两遍，**owner 意识做法是自动兜底**：
-        - repo_path_flutter 空 → CRASHGUARD_REPO_PATH_FLUTTER → CODE_REPO_APP → CODE_REPO_PATH
-        - repo_path_android 空 → CRASHGUARD_REPO_PATH_ANDROID → CODE_REPO_ANDROID → repo_path_flutter
-        - repo_path_ios     空 → CRASHGUARD_REPO_PATH_IOS → CODE_REPO_IOS → repo_path_flutter
-        Android/iOS 兜底到 flutter 因为 pr_drafter 的 submodule 路由会自己分辨子目录。
+        底层逻辑：jarvis 老约定里 `CODE_REPO_APP` / `CODE_REPO_PATH` 指向的是
+        **Plaud-App 壳工程**（含 `.gitmodules`，里面是 plaud-android/plaud-ios/
+        plaud-flutter-common 三个子模块）；新约定 `CRASHGUARD_REPO_PATH_*` 直接指子模块。
+        两套语义混用，如果直接把壳路径塞进 `repo_path_flutter`，pr_drafter 拿到的就是
+        壳本身——AI agent 在壳工程改文件 → PR 进 Plaud-App 而不是子模块 repo。
+
+        owner 意识做法：识别 wrapper（有 `.gitmodules` + 标准子目录），**自动下钻**到
+        子模块；下钻失败时**留空**，让 `_platform_repo_path` 走它自己的 sub_default
+        路径推导逻辑，绝不把壳路径直接当 direct path。
+
+        优先级：
+        - repo_path_flutter 空 → CRASHGUARD_REPO_PATH_FLUTTER → 壳下钻 plaud-flutter-common
+        - repo_path_android 空 → CRASHGUARD_REPO_PATH_ANDROID → 壳下钻 plaud-android
+        - repo_path_ios     空 → CRASHGUARD_REPO_PATH_IOS → 壳下钻 plaud-ios
         """
         import os
+        from pathlib import Path as _P
+
+        def _wrapper_or_sub(raw: str, sub_default: str) -> str:
+            """若 raw 是 wrapper（含 .gitmodules + sub_default 子目录），返回子目录。
+            否则按 raw 原样返回（包括 raw 本身就是子模块路径的情况）。
+            找不到子目录则返回空，让上游 _platform_repo_path 走自己的回落。
+            """
+            if not raw:
+                return ""
+            p = os.path.expanduser(raw)
+            if not os.path.isdir(p):
+                return ""
+            # 是否为 wrapper：有 .gitmodules 文件
+            if os.path.isfile(os.path.join(p, ".gitmodules")):
+                cand = os.path.join(p, sub_default)
+                if os.path.exists(os.path.join(cand, ".git")):
+                    return cand
+                # wrapper 存在但子目录没 init → 留空让上层报错（避免悄悄落到壳）
+                return ""
+            # 不是 wrapper，本身可能就是子模块 → 原样返回
+            return p
+
+        wrapper_env = (
+            os.environ.get("CODE_REPO_APP")
+            or os.environ.get("CODE_REPO_PATH")
+            or ""
+        )
+
         if not self.repo_path_flutter:
-            self.repo_path_flutter = (
-                os.environ.get("CODE_REPO_APP")
-                or os.environ.get("CODE_REPO_PATH")
-                or ""
-            )
+            self.repo_path_flutter = _wrapper_or_sub(wrapper_env, "plaud-flutter-common")
         if not self.repo_path_android:
-            self.repo_path_android = (
-                os.environ.get("CODE_REPO_ANDROID")
-                or self.repo_path_flutter
-            )
+            raw = os.environ.get("CODE_REPO_ANDROID") or wrapper_env
+            self.repo_path_android = _wrapper_or_sub(raw, "plaud-android")
         if not self.repo_path_ios:
-            self.repo_path_ios = (
-                os.environ.get("CODE_REPO_IOS")
-                or self.repo_path_flutter
-            )
+            raw = os.environ.get("CODE_REPO_IOS") or wrapper_env
+            self.repo_path_ios = _wrapper_or_sub(raw, "plaud-ios")
         return self
 
     @classmethod
