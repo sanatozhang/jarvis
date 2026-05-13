@@ -1933,6 +1933,10 @@ _JOB_META: List[Dict[str, str]] = [
      "label": "任务健康度兜底告警",
      "desc": "每 5min 扫心跳表，任一任务连续失败/超期 → 飞书告警",
      "enabled_field": "job_health_alert_enabled"},
+    {"name": "top_crash_auto_pr", "cron_field": "top_crash_auto_pr_cron",
+     "label": "Top crash 自动 PR",
+     "desc": "Top N 专属低门槛 (0.5) + 节流，兜底覆盖 feasibility 0.5~0.7 区间的崩溃",
+     "enabled_field": "top_crash_auto_pr_enabled"},
 ]
 
 

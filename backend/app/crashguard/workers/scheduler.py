@@ -27,6 +27,7 @@ _analyze_last_fired: str = ""    # 定时分析 tick 防同分钟重跑
 _hourly_alert_last_fired: str = ""  # 进程级幂等；DB UNIQUE(hour_utc) 兜多机
 _core_metric_last_fired: str = ""   # 10min tick 进程级幂等；DB UNIQUE(window_start) 兜多机
 _job_health_last_fired: str = ""    # 兜底告警 tick 进程级幂等
+_top_crash_auto_pr_last_fired: str = ""  # Top crash 自动 PR 进程级幂等
 _backfill_last_fired: str = ""      # 周度 baseline 回填 tick 进程级幂等
 
 
@@ -145,6 +146,28 @@ async def _tick_once() -> None:
                 )
         except Exception:
             logger.exception("crashguard pr_sync tick failed")
+
+    # Top crash 自动 PR（专属低门槛 + 节流，默认每 2h）
+    global _top_crash_auto_pr_last_fired
+    top_pr_cron = getattr(s, "top_crash_auto_pr_cron", "") or ""
+    if top_pr_cron and _top_crash_auto_pr_last_fired != tag and _cron_matches(top_pr_cron, now):
+        _top_crash_auto_pr_last_fired = tag
+        try:
+            async with record_heartbeat("top_crash_auto_pr") as hb:
+                from app.crashguard.services.top_crash_auto_pr import (
+                    run_top_crash_auto_pr_tick,
+                )
+                res = await run_top_crash_auto_pr_tick()
+                hb.set_summary(res)
+                if res.get("actioned", 0) == 0 and res.get("total_scanned", 0) == 0:
+                    hb.status = "skipped"
+                logger.info(
+                    "crashguard top_crash_auto_pr fired: actioned=%d scanned=%d urls=%s",
+                    res.get("actioned", 0), res.get("total_scanned", 0),
+                    (res.get("pr_urls") or [])[:3],
+                )
+        except Exception:
+            logger.exception("crashguard top_crash_auto_pr tick failed")
 
     # AI 分析定时小步分批（独立 cron，默认 */5）
     global _analyze_last_fired

@@ -109,6 +109,7 @@ async def run_job_health_check() -> Dict[str, Any]:
         {"name": "pipeline", "cron_field": "pipeline_cron"},
         {"name": "morning_daily", "cron_field": "morning_cron"},
         {"name": "evening_daily", "cron_field": "evening_cron"},
+        {"name": "top_crash_auto_pr", "cron_field": "top_crash_auto_pr_cron"},
     ]
 
     now_utc = datetime.utcnow()

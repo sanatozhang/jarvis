@@ -307,6 +307,21 @@ class CrashguardSettings(BaseSettings):
     # review body 字符数下限——太短的 review（如 "LGTM" "+1"）信噪比低，直接跳过
     pr_review_response_min_body_chars: int = 50
 
+    # === Top crash 专属自动 PR（解决 Top N 因全局阈值过保守而无 PR 的问题）===
+    # 默认 enabled=True，因为这是用户主动需求；threshold 比全局低（0.5 vs 0.7），
+    # 抓手是：Top crash 即使 feasibility 一般也优先派人看一眼（开 PR 比无解强）
+    top_crash_auto_pr_enabled: bool = True
+    # cron 间隔——默认每 2h 一次（pr_drafter 调用本身较重，不必每 5min 扫）
+    top_crash_auto_pr_cron: str = "0 */2 * * *"
+    # 扫描的 Top N
+    top_crash_auto_pr_top_n: int = 20
+    # 专属低门槛（全局 feasibility_pr_threshold=0.7，Top 放宽到 0.5）
+    top_crash_auto_pr_threshold: float = 0.5
+    # 每 tick 最多开 N 个 PR（防一次 spam 出 20 个）
+    top_crash_auto_pr_max_per_tick: int = 3
+    # 已有 closed PR 的 issue 是否重试——默认 False 防反复开烂 PR
+    top_crash_auto_pr_retry_on_closed: bool = False
+
     model_config = {
         "env_prefix": "CRASHGUARD_",
         "env_file": str(PROJECT_ROOT / ".env"),
