@@ -387,8 +387,8 @@ async def compose_report(
     ]
 
     # 双窗口对照：让用户一眼看 sessions + fatal events 是否真增长
-    # （只在 evening + 有实时数据时展示——日报 24h 颗粒度对照意义有限）
-    if is_evening and (
+    # 早报 24h（vs 上周同 weekday 24h）、速报 10h（vs 上周同 10h）都展示
+    if (
         total_sessions_by_plat or baseline_sessions_by_plat
         or realtime_today_events or realtime_baseline_events
     ):
