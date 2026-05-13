@@ -404,23 +404,13 @@ async def compose_report(
             sign = "+" if pct >= 0 else ""
             return f"{sign}{pct:.0f}%"
 
-        cmp_lines = [
-            "",
-            f"### 📊 双窗口对照（{data_window_hours}h，今天 {target_date.isoformat()} vs 上周 {base_date.isoformat()}）",
-            "",
-            "| 平台 | 今天 sessions | 上周 sessions | Δ sessions | 今天 fatal events | 上周 fatal events | Δ events |",
-            "|---|---:|---:|---:|---:|---:|---:|",
-        ]
         # 平台 fatal 分桶需要从 realtime dict 反查 issue.platform
-        # 颗粒度：只展示三平台（Android/iOS/Others）合并
         today_fatal_by_plat: Dict[str, int] = {"ANDROID": 0, "IOS": 0, "OTHER": 0}
         base_fatal_by_plat: Dict[str, int] = {"ANDROID": 0, "IOS": 0, "OTHER": 0}
-        # 走 today_rows 已 normalized 的 platform
         id_to_plat: Dict[str, str] = {}
         for snap, issue in today_rows:
             p = (issue.platform or "").upper()
             if p == "FLUTTER":
-                # 用 top_os 还原真平台
                 tp = _resolve_real_os("FLUTTER", getattr(issue, "top_os", "") or "")
                 p = (tp or "OTHER").upper()
             id_to_plat[snap.datadog_issue_id] = p if p in ("ANDROID", "IOS") else "OTHER"
@@ -429,25 +419,58 @@ async def compose_report(
         for iid, ev in (realtime_baseline_events or {}).items():
             base_fatal_by_plat[id_to_plat.get(iid, "OTHER")] += int(ev)
 
+        def _fmt_num(n: int) -> str:
+            return f"{n:,}"
+
+        def _tag(pct_str: str) -> str:
+            """判读小图标：fatal 恶化 🔴 / 改善 ✅ / 持平 ⚪"""
+            try:
+                v = float(pct_str.rstrip("%").lstrip("+"))
+            except Exception:
+                return ""
+            if v >= 50:
+                return " 🔴"
+            if v <= -10:
+                return " ✅"
+            return ""
+
+        # 飞书 markdown 不支持 table，改用 bullet 列表（粗体 + 缩进）
+        cmp_lines = [
+            "",
+            f"### 📊 双窗口对照（{data_window_hours}h · 今天 {target_date.isoformat()} vs 上周 {base_date.isoformat()}）",
+            "",
+        ]
+        plat_icon = {"ANDROID": "📱 Android", "IOS": "🍎 iOS"}
         for plat_key in ("ANDROID", "IOS"):
             t_sess = total_sessions_by_plat.get(plat_key, 0)
             b_sess = baseline_sessions_by_plat.get(plat_key, 0)
             t_fatal = today_fatal_by_plat[plat_key]
             b_fatal = base_fatal_by_plat[plat_key]
+            sess_pct = _delta_str(t_sess, b_sess)
+            fatal_pct = _delta_str(t_fatal, b_fatal)
+            cmp_lines.append(f"**{plat_icon[plat_key]}**")
             cmp_lines.append(
-                f"| {plat_key} | {t_sess} | {b_sess} | {_delta_str(t_sess, b_sess)} | "
-                f"{t_fatal} | {b_fatal} | {_delta_str(t_fatal, b_fatal)} |"
+                f"- sessions: **{_fmt_num(t_sess)}** vs {_fmt_num(b_sess)} → **{sess_pct}**"
             )
-        # 合计行
+            cmp_lines.append(
+                f"- fatal events: **{_fmt_num(t_fatal)}** vs {_fmt_num(b_fatal)} → **{fatal_pct}**{_tag(fatal_pct)}"
+            )
+            cmp_lines.append("")
+        # 合计
         t_sess_all = sum(total_sessions_by_plat.get(k, 0) for k in ("ANDROID", "IOS"))
         b_sess_all = sum(baseline_sessions_by_plat.get(k, 0) for k in ("ANDROID", "IOS"))
+        cmp_lines.append("**📊 合计**")
         cmp_lines.append(
-            f"| **合计** | **{t_sess_all}** | **{b_sess_all}** | **{_delta_str(t_sess_all, b_sess_all)}** | "
-            f"**{today_fatal_total}** | **{base_fatal_total}** | **{_delta_str(today_fatal_total, base_fatal_total)}** |"
+            f"- sessions: {_fmt_num(t_sess_all)} vs {_fmt_num(b_sess_all)} → "
+            f"{_delta_str(t_sess_all, b_sess_all)}"
+        )
+        cmp_lines.append(
+            f"- fatal events: {_fmt_num(today_fatal_total)} vs {_fmt_num(base_fatal_total)} → "
+            f"{_delta_str(today_fatal_total, base_fatal_total)}"
         )
         cmp_lines.append("")
         cmp_lines.append(
-            "> 💡 看法：fatal Δ 大幅高于 sessions Δ → crash rate 真恶化（不是用户量增加）"
+            "> 💡 fatal Δ 大幅高于 sessions Δ = crash rate 真恶化（不是用户量增加）；反之是质量改善"
         )
         cmp_lines.append("")
         lines.extend(cmp_lines)
