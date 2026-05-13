@@ -213,8 +213,20 @@ def _run_git(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str
             elif program == "gh":
                 if arg in _FORBIDDEN_GH_SUBCOMMANDS:
                     return 1, "", f"forbidden gh subcommand: {arg}"
+    # gh CLI 走 OAuth (hosts.yml gho_*) 才有 org repo 权限；env 里若设了 GH_TOKEN
+    # 个人 PAT（无 SSO 权限），gh 会优先用 PAT → 私有 org 仓库 404。剥掉 GH_TOKEN
+    # 让 OAuth 接管。git 命令也顺手 strip（避免 https push 走 PAT 没权限）。
+    sub_env = None
+    if cmd and cmd[0] in ("gh", "git"):
+        import os as _os
+        sub_env = dict(_os.environ)
+        for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+            sub_env.pop(k, None)
     try:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True,
+            timeout=timeout, env=sub_env,
+        )
         # 注意：不要用 stdout.strip()！git status --porcelain 第一行可能以空格开头
         # （" M path" 表示 worktree modified），strip() 会吞掉那个空格 → 后续
         # ln[3:] 切片误从第 4 个字符开始 → 第一行路径首字母被砍（PR #41/#32/#44 教训）
