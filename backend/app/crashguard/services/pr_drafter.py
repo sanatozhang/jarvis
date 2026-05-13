@@ -215,7 +215,10 @@ def _run_git(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str
                     return 1, "", f"forbidden gh subcommand: {arg}"
     try:
         r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-        return r.returncode, r.stdout.strip(), r.stderr.strip()
+        # 注意：不要用 stdout.strip()！git status --porcelain 第一行可能以空格开头
+        # （" M path" 表示 worktree modified），strip() 会吞掉那个空格 → 后续
+        # ln[3:] 切片误从第 4 个字符开始 → 第一行路径首字母被砍（PR #41/#32/#44 教训）
+        return r.returncode, r.stdout.rstrip("\n\r"), r.stderr.rstrip("\n\r")
     except subprocess.TimeoutExpired:
         return 1, "", f"timeout after {timeout}s"
     except Exception as e:
