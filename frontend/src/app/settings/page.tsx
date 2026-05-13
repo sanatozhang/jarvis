@@ -192,7 +192,7 @@ export default function SettingsPage() {
     if (!config) return;
     setSaving(true);
     try {
-      await updateAgentConfig({ default_agent: config.default, timeout: config.timeout, max_turns: config.max_turns, routing: config.routing });
+      await updateAgentConfig({ default_agent: config.default, call_mode: config.call_mode, timeout: config.timeout, max_turns: config.max_turns, routing: config.routing });
       setToast(t("Agent 配置已保存"));
     } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
     finally { setSaving(false); }
@@ -396,6 +396,57 @@ export default function SettingsPage() {
             ))}
           </div>
         </section>
+
+        {/* CLAUDE CALL MODE TOGGLE */}
+        {config && (
+          <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("Claude 调用方式")}</h2>
+            <p className="text-xs mb-3" style={{ color: S.text3 }}>
+              {t("切换后下一个分析任务立即生效；L1.5 浓缩永远走 API（与此开关无关）。")}
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                {
+                  value: "api" as const,
+                  title: t("API 直连（推荐）"),
+                  desc: t("通过公司 Vertex 代理调用 API；可观测每一步、无 CLI 依赖、容器轻量。"),
+                },
+                {
+                  value: "cli" as const,
+                  title: t("CLI 子进程（兼容回滚）"),
+                  desc: t("保留原 claude CLI 调用方式，行为与历史一致。"),
+                },
+              ].map((opt) => {
+                const selected = config.call_mode === opt.value;
+                return (
+                  <label
+                    key={opt.value}
+                    className="rounded-lg p-3 cursor-pointer transition-colors"
+                    style={{
+                      background: selected ? S.accentBg : S.overlay,
+                      border: `1px solid ${selected ? S.accent : S.border}`,
+                    }}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <input
+                        type="radio"
+                        name="call_mode"
+                        value={opt.value}
+                        checked={selected}
+                        onChange={() => setConfig({ ...config, call_mode: opt.value })}
+                        style={{ marginTop: 2, accentColor: S.accent }}
+                      />
+                      <div className="flex-1">
+                        <div className="text-sm font-medium" style={{ color: S.text1 }}>{opt.title}</div>
+                        <div className="text-xs mt-1" style={{ color: S.text3 }}>{opt.desc}</div>
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* AGENT CONFIGURATION */}
         {config && (

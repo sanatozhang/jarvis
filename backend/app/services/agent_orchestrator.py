@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app.agents.base import AgentConfig, BaseAgent
+from app.agents.claude_api import ClaudeApiAgent
 from app.agents.claude_code import ClaudeCodeAgent
 from app.agents.codex import CodexAgent
 from app.config import get_settings
@@ -24,6 +26,7 @@ logger = logging.getLogger("jarvis.orchestrator")
 # Registry of agent implementations
 AGENT_REGISTRY: Dict[str, type[BaseAgent]] = {
     "claude_code": ClaudeCodeAgent,
+    "claude_api": ClaudeApiAgent,
     "codex": CodexAgent,
 }
 
@@ -33,7 +36,8 @@ _QUOTA_EXHAUSTED_TYPES = {"Claude 额度不足", "OpenAI 额度不足"}
 # Fallback order: primary → fallback
 _FALLBACK_MAP: Dict[str, str] = {
     "claude_code": "codex",
-    "codex": "claude_code",
+    "claude_api": "codex",
+    "codex": "claude_api",
 }
 
 
@@ -47,13 +51,21 @@ class AgentOrchestrator:
         """
         Select the agent to use based on:
         1. Explicit override (e.g. from API request)
-        2. Routing config (rule_type → agent)
-        3. Default agent
+        2. call_mode toggle: "api" → claude_api, "cli" → routing/default Claude resolves to claude_code
+        3. Routing config (rule_type → agent)
+        4. Default agent
         """
         agent_cfg = self._settings.agent
 
         # Determine which agent to use
         agent_name = override or agent_cfg.routing.get(rule_type) or agent_cfg.default
+
+        # Apply call_mode toggle: when set to "api", swap any Claude CLI selection to claude_api
+        # (and vice versa). codex is never swapped.
+        if agent_cfg.call_mode == "api" and agent_name == "claude_code":
+            agent_name = "claude_api"
+        elif agent_cfg.call_mode == "cli" and agent_name == "claude_api":
+            agent_name = "claude_code"
 
         # Get provider config
         provider = agent_cfg.providers.get(agent_name)
@@ -78,6 +90,11 @@ class AgentOrchestrator:
             max_turns=agent_cfg.max_turns,
             allowed_tools=provider.allowed_tools,
             approval_mode=provider.approval_mode,
+            base_url=provider.base_url,
+            per_turn_timeout=provider.per_turn_timeout,
+            max_tokens=provider.max_tokens,
+            enable_cache=provider.enable_cache,
+            api_key=os.environ.get("ANTHROPIC_API_KEY", "") if agent_name == "claude_api" else "",
         )
 
         # Instantiate
@@ -88,7 +105,8 @@ class AgentOrchestrator:
                 f"Registered: {list(AGENT_REGISTRY.keys())}"
             )
 
-        logger.info("Selected agent: %s (model=%s) for rule_type=%s", agent_name, config.model, rule_type)
+        logger.info("Selected agent: %s (model=%s, call_mode=%s) for rule_type=%s",
+                    agent_name, config.model, agent_cfg.call_mode, rule_type)
         return agent_cls(config)
 
     def _try_create_agent(self, agent_name: str) -> Optional[BaseAgent]:
@@ -110,6 +128,11 @@ class AgentOrchestrator:
             max_turns=agent_cfg.max_turns,
             allowed_tools=provider.allowed_tools,
             approval_mode=provider.approval_mode,
+            base_url=provider.base_url,
+            per_turn_timeout=provider.per_turn_timeout,
+            max_tokens=provider.max_tokens,
+            enable_cache=provider.enable_cache,
+            api_key=os.environ.get("ANTHROPIC_API_KEY", "") if agent_name == "claude_api" else "",
         )
         return agent_cls(config)
 

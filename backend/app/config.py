@@ -92,10 +92,16 @@ class AgentProviderConfig(BaseSettings):
     max_turns: int = 25
     allowed_tools: List[str] = Field(default_factory=list)
     approval_mode: str = "auto-edit"
+    # ── claude_api specific (ignored by CLI providers) ──
+    base_url: str = ""             # Vertex proxy URL, e.g. http://34.216.169.232:30001/vertex
+    per_turn_timeout: int = 120    # seconds per messages.create call
+    max_tokens: int = 8192         # max output tokens per turn
+    enable_cache: bool = True      # apply cache_control on system prompt
 
 
 class AgentSettings(BaseSettings):
     default: str = "claude_code"
+    call_mode: str = "cli"         # "cli" | "api" — toggled from Settings UI
     timeout: int = 600
     max_turns: int = 25
     providers: Dict[str, AgentProviderConfig] = Field(default_factory=dict)
@@ -183,7 +189,7 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
 
     # Agent
     ag = cfg.get("agent", {})
-    for k in ("default", "timeout", "max_turns"):
+    for k in ("default", "call_mode", "timeout", "max_turns"):
         if k in ag:
             setattr(settings.agent, k, ag[k])
 
@@ -195,17 +201,45 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
     settings.agent.routing = routing_cfg
 
     # AGENT_DEFAULT env var overrides config.yaml default and all routing
-    _valid_agents = {"codex", "claude_code"}
+    _valid_agents = {"codex", "claude_code", "claude_api"}
     env_agent = os.getenv("AGENT_DEFAULT", "").strip()
     if env_agent in _valid_agents:
         settings.agent.default = env_agent
         settings.agent.routing = {k: env_agent for k in settings.agent.routing}
+
+    # AGENT_CALL_MODE env var overrides config.yaml call_mode
+    env_call_mode = os.getenv("AGENT_CALL_MODE", "").strip().lower()
+    if env_call_mode in ("api", "cli"):
+        settings.agent.call_mode = env_call_mode
 
     # Context condensation (L1.5)
     ccc = cfg.get("context_condensation", {})
     for k, v in ccc.items():
         if hasattr(settings.context_condensation, k) and not os.getenv(f"CONDENSER_{k.upper()}"):
             setattr(settings.context_condensation, k, v)
+
+    # L1.5 always goes through the company Vertex proxy (per spec §4.6):
+    # when provider=anthropic and api_base_url is not explicitly set, inherit
+    # base_url from the claude_api provider so traffic stays inside the VPN.
+    if (
+        settings.context_condensation.provider == "anthropic"
+        and not settings.context_condensation.api_base_url
+        and not os.getenv("CONDENSER_API_BASE_URL")
+    ):
+        claude_api_provider = settings.agent.providers.get("claude_api")
+        if claude_api_provider and claude_api_provider.base_url:
+            settings.context_condensation.api_base_url = (
+                claude_api_provider.base_url.rstrip("/") + "/v1/messages"
+            )
+
+    # L1.5 shares the main agent's API key when CONDENSER_API_KEY isn't set
+    if (
+        settings.context_condensation.provider == "anthropic"
+        and not settings.context_condensation.api_key
+    ):
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if anthropic_key:
+            settings.context_condensation.api_key = anthropic_key
 
     # Concurrency
     cc = cfg.get("concurrency", {})

@@ -201,6 +201,7 @@ class RuleUpdateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 class AgentConfigUpdate(BaseModel):
     default_agent: Optional[str] = None
+    call_mode: Optional[str] = None         # "api" | "cli"
     timeout: Optional[int] = None
     max_turns: Optional[int] = None
     routing: Optional[Dict[str, str]] = None

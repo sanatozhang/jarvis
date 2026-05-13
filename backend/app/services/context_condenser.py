@@ -323,19 +323,34 @@ class ContextCondenser:
         return self._parse_llm_output(text, provider="gemini", model=model)
 
     async def _call_anthropic(self, prompt: str, model: str) -> CondensationResult:
-        """Call Anthropic Messages API."""
-        url = self.config.api_base_url or _API_URLS["anthropic"]
+        """Call Anthropic Messages API.
+
+        Detects company Vertex proxy URLs (containing '/vertex') and uses
+        Vertex rawPredict format. Otherwise uses standard Anthropic endpoint.
+        """
+        configured_url = self.config.api_base_url or _API_URLS["anthropic"]
+        is_vertex = "/vertex" in configured_url
+
         headers = {
             "x-api-key": self.config.api_key,
-            "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        body = {
-            "model": model,
+        body: Dict[str, Any] = {
             "max_tokens": 16384,
             "temperature": self.config.temperature,
             "messages": [{"role": "user", "content": prompt}],
         }
+
+        if is_vertex:
+            # Rebuild URL to publishers/anthropic/models/{model}:rawPredict.
+            # Strip any trailing /v1/messages first since merge_yaml appends it.
+            base = configured_url.split("/v1/messages")[0].rstrip("/")
+            url = f"{base}/publishers/anthropic/models/{model}:rawPredict"
+            body["anthropic_version"] = "vertex-2023-10-16"
+        else:
+            url = configured_url
+            body["model"] = model
+            headers["anthropic-version"] = "2023-06-01"
 
         async with httpx.AsyncClient(timeout=self.config.timeout) as client:
             resp = await client.post(url, headers=headers, json=body)
