@@ -2025,10 +2025,18 @@ async def jobs_status() -> Dict[str, Any]:
                 .limit(50)
             )).scalars().all()
             fail_count_50 = sum(1 for r in recent if r.status == "failed")
+            degraded_count_50 = sum(1 for r in recent if r.status == "degraded")
             consecutive_failures = 0
             for r in recent:
                 if r.status == "failed":
                     consecutive_failures += 1
+                else:
+                    break
+            # 连续非 success（含 degraded）—— degraded 弱信号通道
+            consecutive_unhealthy = 0
+            for r in recent:
+                if r.status in ("degraded", "failed"):
+                    consecutive_unhealthy += 1
                 else:
                     break
 
@@ -2067,13 +2075,18 @@ async def jobs_status() -> Dict[str, Any]:
                     if last_success_row and last_success_row.fired_at else None
                 ),
                 "fail_count_in_recent_50": fail_count_50,
+                "degraded_count_in_recent_50": degraded_count_50,
                 "consecutive_failures": consecutive_failures,
+                "consecutive_unhealthy": consecutive_unhealthy,
                 "stale": stale,
                 # 健康度综合判定（前端用色块）
+                # 三态 heartbeat 升级后：consecutive_unhealthy ≥ 6（pr_sync 30min × 6 = 3h
+                # 持续非 success）也升级为 failing；普通 degraded（不持续）仅黄色
                 "health": (
                     "stale" if stale
                     else "failing" if consecutive_failures >= 3
-                    else "degraded" if fail_count_50 >= 10
+                    else "failing" if consecutive_unhealthy >= 6
+                    else "degraded" if (fail_count_50 + degraded_count_50) >= 10
                     else "ok"
                 ),
             })

@@ -81,6 +81,36 @@ class _HeartbeatCtx:
         if res.get("skipped"):
             self.status = "skipped"
 
+    def set_status_from_partial(
+        self, success_count: int, total_count: int, error_hint: str = ""
+    ) -> None:
+        """批量任务的三态判定：
+        - total==0 → success（空 tick，无可做之事，不视为异常）
+        - success==total → success（全部成功）
+        - 0<success<total → degraded（部分失败，可能 transient，不立刻告警）
+        - success==0 且 total>0 → failed（全部失败，必然是 systemic 问题）
+
+        抓手：避免「1/12 PR 偶发失败 → 全 job 标 failed → 告警」的误报噪音。
+        degraded 进入 `job_health_alerter` 的弱信号通道，持续 N 次才升级。
+        """
+        if total_count <= 0:
+            self.status = "success"
+            return
+        if success_count >= total_count:
+            self.status = "success"
+            return
+        if success_count <= 0:
+            self.status = "failed"
+            self.error = (
+                error_hint or f"all {total_count} items failed"
+            )[:500]
+            return
+        # 部分失败 = degraded
+        self.status = "degraded"
+        self.error = (
+            error_hint or f"{total_count - success_count}/{total_count} items failed"
+        )[:500]
+
 
 @asynccontextmanager
 async def record_heartbeat(job_name: str):

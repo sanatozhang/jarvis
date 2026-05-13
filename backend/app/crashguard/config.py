@@ -259,6 +259,10 @@ class CrashguardSettings(BaseSettings):
     job_health_alert_fail_threshold: int = 2
     # 自愈重跑节流（同任务多久内不重复重跑）
     job_health_alert_retry_throttle_minutes: int = 10
+    # degraded 弱信号阈值：连续 N 次「部分失败」（含 degraded + failed 混合）
+    # 才升级为 failing 发告警。抓手：避免 1/12 transient 误报，但持续 systemic
+    # 问题仍能拦截。默认 6 = pr_sync 30min 间隔下连续 3h 才告警。
+    job_health_alert_degraded_threshold: int = 6
 
     # === PR 质量闸门（12 道防线，按 ROI 默认全开）===
     # 输入端

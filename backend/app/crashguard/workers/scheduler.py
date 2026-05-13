@@ -129,12 +129,19 @@ async def _tick_once() -> None:
                 from app.crashguard.services.pr_sync import sync_all_open_prs
                 res = await sync_all_open_prs()
                 hb.set_summary(res)
-                if res.get("errors", 0) > 0:
-                    hb.status = "failed"
-                    hb.error = f"errors={res.get('errors')}"
+                # 三态判定：全部成功→success / 部分失败→degraded / 全部失败→failed
+                # 部分失败常见为 transient（GitHub 偶发 502、单个 PR 被人删），
+                # 不应触发立刻告警，进 degraded 弱信号通道累积观察。
+                checked = int(res.get("checked", 0) or 0)
+                errors = int(res.get("errors", 0) or 0)
+                hb.set_status_from_partial(
+                    success_count=checked - errors,
+                    total_count=checked,
+                    error_hint=f"errors={errors}/{checked}" if errors else "",
+                )
                 logger.info(
-                    "crashguard pr_sync fired: checked=%d changed=%d errors=%d",
-                    res.get("checked", 0), res.get("changed", 0), res.get("errors", 0),
+                    "crashguard pr_sync fired: checked=%d changed=%d errors=%d status=%s",
+                    checked, res.get("changed", 0), errors, hb.status,
                 )
         except Exception:
             logger.exception("crashguard pr_sync tick failed")

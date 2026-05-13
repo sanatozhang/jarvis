@@ -309,14 +309,17 @@ export default function CrashguardJobsPage() {
                   </thead>
                   <tbody>
                     {history.map((h) => {
-                      const color = h.status === "success" ? D.ok : h.status === "failed" ? D.danger : D.text3;
+                      const color = h.status === "success" ? D.ok
+                        : h.status === "failed" ? D.danger
+                        : h.status === "degraded" ? D.warn
+                        : D.text3;
                       return (
                         <tr key={h.id} style={{ borderTop: `1px solid ${D.border}` }}>
                           <td style={{ padding: "8px 10px", color: D.text2 }}>{_fmtTime(h.fired_at)}</td>
                           <td style={{ padding: "8px 10px", color, fontWeight: 600 }}>{h.status}</td>
                           <td style={{ padding: "8px 10px", color: D.text2 }}>{h.duration_ms} ms</td>
-                          <td style={{ padding: "8px 10px", fontFamily: "monospace", fontSize: 11, color: h.status === "failed" ? D.danger : D.text2, maxWidth: 460, wordBreak: "break-word" }}>
-                            {h.status === "failed" ? h.error : JSON.stringify(h.summary)}
+                          <td style={{ padding: "8px 10px", fontFamily: "monospace", fontSize: 11, color: (h.status === "failed" || h.status === "degraded") ? color : D.text2, maxWidth: 460, wordBreak: "break-word" }}>
+                            {(h.status === "failed" || h.status === "degraded") && h.error ? h.error : JSON.stringify(h.summary)}
                           </td>
                         </tr>
                       );

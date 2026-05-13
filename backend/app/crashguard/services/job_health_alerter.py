@@ -122,6 +122,11 @@ async def run_job_health_check() -> Dict[str, Any]:
     cooldown = timedelta(minutes=cooldown_min)
     # 失败次数阈值（默认 2，原来 3）
     fail_threshold = int(getattr(s, "job_health_alert_fail_threshold", 2) or 2)
+    # degraded 弱信号阈值（连续 N 次部分失败才升级为 failing）
+    # 默认 6 = pr_sync 30min 间隔下连续 3h 都 degraded 才告警
+    degraded_threshold = int(
+        getattr(s, "job_health_alert_degraded_threshold", 6) or 6
+    )
     # 自愈重试间隔（默认 10min，防短时间内重复重跑）
     retry_throttle = timedelta(minutes=int(
         getattr(s, "job_health_alert_retry_throttle_minutes", 10) or 10
@@ -166,6 +171,14 @@ async def run_job_health_check() -> Dict[str, Any]:
                     consecutive_failures += 1
                 else:
                     break
+            # 连续非 success（含 degraded + failed）—— degraded 弱信号通道
+            # 抓手：单条 degraded 不告警，但持续 N 次说明系统真有问题
+            consecutive_unhealthy = 0
+            for r in recent:
+                if r.status in ("degraded", "failed"):
+                    consecutive_unhealthy += 1
+                else:
+                    break
 
             stale = False
             if interval and last_success_row is not None and last_success_row.fired_at:
@@ -177,6 +190,10 @@ async def run_job_health_check() -> Dict[str, Any]:
             if stale:
                 health = "stale"
             elif consecutive_failures >= fail_threshold:
+                health = "failing"
+            elif consecutive_unhealthy >= degraded_threshold:
+                # 持续 degraded（混 failed 也算）—— 系统性 transient 演变为
+                # systemic，进入 failing 状态发告警
                 health = "failing"
             else:
                 health = "ok"
