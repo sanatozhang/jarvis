@@ -23,8 +23,9 @@ WORKDIR /app
 
 # System deps for grep, unzip, git, ssh (git push via ssh), node (for codex CLI)
 # openssh-client: crashguard pr_drafter 走 git@github.com:... ssh 协议，slim 镜像默认不带
+# ripgrep: claude_api 的 grep 工具用 rg 替代 shell grep（更快 + 结构化输出）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    grep coreutils unzip git openssh-client curl ca-certificates gnupg \
+    grep ripgrep coreutils unzip git openssh-client curl ca-certificates gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20 (needed for Codex CLI)

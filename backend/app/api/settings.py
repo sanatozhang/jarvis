@@ -8,7 +8,7 @@ import json
 import logging
 from typing import List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.config import get_settings
@@ -47,6 +47,7 @@ async def get_agent_config():
 
     return {
         "default": ag.default,
+        "call_mode": ag.call_mode,
         "timeout": ag.timeout,
         "max_turns": ag.max_turns,
         "providers": providers,
@@ -61,6 +62,11 @@ async def update_agent_config(req: AgentConfigUpdate):
 
     if req.default_agent is not None:
         settings.agent.default = req.default_agent
+    if req.call_mode is not None:
+        mode = req.call_mode.strip().lower()
+        if mode not in ("api", "cli"):
+            raise HTTPException(status_code=400, detail="call_mode must be 'api' or 'cli'")
+        settings.agent.call_mode = mode
     if req.timeout is not None:
         settings.agent.timeout = req.timeout
     if req.max_turns is not None:
@@ -68,7 +74,11 @@ async def update_agent_config(req: AgentConfigUpdate):
     if req.routing is not None:
         settings.agent.routing.update(req.routing)
 
-    return {"status": "updated", "agent": settings.agent.default}
+    return {
+        "status": "updated",
+        "agent": settings.agent.default,
+        "call_mode": settings.agent.call_mode,
+    }
 
 
 @router.get("/concurrency")

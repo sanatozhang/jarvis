@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
 import MarkdownText from "@/components/MarkdownText";
 import { Toast } from "@/components/Toast";
+import { AgentTraceBlock } from "@/components/AgentTraceBlock";
 import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
 import { fetchTracking, markInaccurate, markComplete, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
@@ -784,6 +785,22 @@ export default function TrackingPage() {
                                 <MarkdownText>{lang(r, "root_cause", "root_cause_en")}</MarkdownText>
                               </div>
                             </div>
+
+                            {/* Agent execution trace (claude_api only, default collapsed) */}
+                            {r.agent_type === "claude_api" && r.task_id && (
+                              <AgentTraceBlock
+                                taskId={r.task_id}
+                                palette={{
+                                  surface: S.surface,
+                                  overlay: S.overlay,
+                                  border: S.border,
+                                  text1: S.text1,
+                                  text2: S.text2,
+                                  text3: S.text3,
+                                  accent: S.accent,
+                                }}
+                              />
+                            )}
 
                             {/* Collapsible evidence */}
                             {r.key_evidence && r.key_evidence.length > 0 && (

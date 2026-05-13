@@ -158,11 +158,73 @@ export interface DailyReport {
 
 export interface AgentConfig {
   default: string;
+  call_mode: "api" | "cli";
   timeout: number;
   max_turns: number;
   providers: Record<string, any>;
   routing: Record<string, string>;
 }
+
+// Agent execution trace (claude_api only)
+export interface AgentTraceToolCall {
+  name: string;
+  input: Record<string, any>;
+  ok: boolean;
+  summary?: string;
+  error?: string;
+}
+
+export interface AgentTraceUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+export interface AgentTraceTurn {
+  turn: number;
+  stop_reason?: string;
+  model?: string;
+  tool_calls?: AgentTraceToolCall[];
+  usage?: AgentTraceUsage;
+  duration_ms?: number;
+  error?: string;
+  msg?: string;
+  status?: number;
+  final_text_chars?: number;
+}
+
+export interface AgentTraceEvent {
+  event: string;
+  [k: string]: any;
+}
+
+export interface AgentTraceSummary {
+  total_turns: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  cache_hit_ratio: number;
+  total_duration_ms: number;
+}
+
+export interface AgentTraceResponse {
+  task_id: string;
+  summary: AgentTraceSummary;
+  events: AgentTraceEvent[];
+  turns: AgentTraceTurn[];
+}
+
+export const fetchTaskTrace = async (taskId: string): Promise<AgentTraceResponse | null> => {
+  try {
+    return await request<AgentTraceResponse>(`/tasks/${taskId}/trace`);
+  } catch (e: any) {
+    // 404 means task ran in CLI mode (no trace) — return null instead of throwing
+    if (typeof e?.message === "string" && e.message.includes("404")) return null;
+    throw e;
+  }
+};
 
 // ============================================================
 // Issues

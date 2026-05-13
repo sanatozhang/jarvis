@@ -129,6 +129,68 @@ async def get_task_status(task_id: str):
     )
 
 
+@router.get("/{task_id}/trace")
+async def get_task_trace(task_id: str):
+    """Return the Agent execution trace for a task (claude_api only).
+
+    Reads `output/agent_trace.jsonl` from the task's workspace and returns
+    parsed turns + summary. Returns 404 if the file doesn't exist (task ran
+    in CLI mode, or was never started).
+    """
+    from pathlib import Path
+    from app.config import get_settings
+
+    record = await db.get_task(task_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    workspace = Path(get_settings().storage.workspace_dir) / task_id
+    trace_path = workspace / "output" / "agent_trace.jsonl"
+    if not trace_path.exists():
+        raise HTTPException(status_code=404, detail="Trace not available")
+
+    turns: list[dict] = []
+    events: list[dict] = []
+    total_in = total_out = total_cache_read = total_cache_create = 0
+    total_duration_ms = 0
+    for line in trace_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "event" in rec:
+            events.append(rec)
+            continue
+        turns.append(rec)
+        usage = rec.get("usage") or {}
+        total_in += int(usage.get("input_tokens", 0) or 0)
+        total_out += int(usage.get("output_tokens", 0) or 0)
+        total_cache_read += int(usage.get("cache_read_input_tokens", 0) or 0)
+        total_cache_create += int(usage.get("cache_creation_input_tokens", 0) or 0)
+        total_duration_ms += int(rec.get("duration_ms", 0) or 0)
+
+    cache_total = total_cache_read + total_cache_create
+    cache_hit_ratio = (total_cache_read / cache_total) if cache_total else 0.0
+
+    return {
+        "task_id": task_id,
+        "summary": {
+            "total_turns": len(turns),
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+            "total_cache_read_tokens": total_cache_read,
+            "total_cache_creation_tokens": total_cache_create,
+            "cache_hit_ratio": round(cache_hit_ratio, 3),
+            "total_duration_ms": total_duration_ms,
+        },
+        "events": events,
+        "turns": turns,
+    }
+
+
 @router.get("/{task_id}/result", response_model=Optional[AnalysisResult])
 async def get_task_result(task_id: str):
     """Get the analysis result for a completed task."""

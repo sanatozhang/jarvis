@@ -21,7 +21,7 @@ logger = logging.getLogger("jarvis.agent")
 @dataclass
 class AgentConfig:
     """Configuration for an agent session."""
-    agent_type: str                  # "claude_code" or "codex"
+    agent_type: str                  # "claude_code" / "codex" / "claude_api"
     model: str = ""
     effort: str = ""                 # "low", "medium", "high", "max"
     fallback_model: str = ""         # auto-fallback when primary overloaded
@@ -30,6 +30,12 @@ class AgentConfig:
     max_turns: int = 25
     allowed_tools: List[str] = field(default_factory=list)
     approval_mode: str = "auto-edit"
+    # ── claude_api specific ──
+    base_url: str = ""               # e.g. http://34.216.169.232:30001/vertex
+    api_key: str = ""                # ANTHROPIC_API_KEY (filled by orchestrator from env)
+    per_turn_timeout: int = 120      # seconds per messages.create call
+    max_tokens: int = 8192           # max output tokens per turn
+    enable_cache: bool = True        # apply cache_control on system prompt
 
 
 class BaseAgent(ABC):
