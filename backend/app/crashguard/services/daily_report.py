@@ -124,6 +124,12 @@ def _parse_top_app_version(s: str) -> List[Tuple[str, float]]:
     return out
 
 
+def _baseline_min_for_pct() -> int:
+    """基线 events 低于此值时，% 噪声太大，不进入 surge attention（只允许绝对量级触发）。"""
+    s = get_crashguard_settings()
+    return int(getattr(s, "daily_baseline_min_events_for_pct", 500) or 500)
+
+
 def _delta_pct(today: int, baseline: Optional[int]) -> Optional[float]:
     """ratio = (today - baseline) / baseline；基线为 None / 0 时返回 None。
 
@@ -558,16 +564,21 @@ async def compose_report(
                 continue
 
             # § 2 - 突增 / 新增（per fatality）
+            baseline_min_pct = _baseline_min_for_pct()
             surges: List[Tuple[CrashSnapshot, CrashIssue, Optional[float]]] = []
             for snap, issue in f_rows:
                 events_today = int(snap.events_count or 0)
                 yt = baseline_events.get(snap.datadog_issue_id)
                 delta = _delta_pct(events_today, yt)
                 is_new = bool(snap.is_new_in_version)
+                # 小基数过滤：baseline < N 时 % 噪声过大（500 ev → 1000 ev 看着 +100%
+                # 但绝对增量才 500，远低于 4000+ ev 真信号）。要么用绝对增量，要么忽略
+                base_too_small = (yt is None or yt < baseline_min_pct)
                 is_surge = (
                     delta is not None
                     and delta >= surge_threshold
                     and events_today >= attention_min_events
+                    and not base_too_small
                 )
                 if is_new or is_surge:
                     surges.append((snap, issue, delta))

@@ -161,6 +161,10 @@ class CrashguardSettings(BaseSettings):
     # 噪声治理：events 量级下限。低于此值的 surge / drop 不进 attention，
     # 但「新增 issue」(is_new_in_version) 不受此限制（新代码崩溃永远是信号）。
     daily_attention_min_events: int = 100
+    # baseline 量级下限：基线 < 此值时 % 噪声过大，不进 surge attention
+    # （5/13 实测案例：a64421ae baseline=172 → +81% 是假大，真增量仅 139；
+    #  设 500 → 500 ev 以下的"上周同时段"不参与百分比 surge 判定）
+    daily_baseline_min_events_for_pct: int = 500
 
     # Feishu
     feishu_target_chat_id: str = ""
