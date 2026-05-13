@@ -618,6 +618,26 @@ async def _create_one_draft_pr(
         return {"ok": False, "error": f"git add failed: {err}", "repo": repo_logical,
                 "branch_name": branch}, pushed
 
+    # Hard cap 防御（PR #213 教训：60w 行 build_log 上车）：commit 前看 staged diff 量级，
+    # 超 5000 行 / 20 个文件直接 abort，避免污染 PR。
+    rc_st, st_out, _ = _run_git(
+        ["git", "diff", "--cached", "--shortstat"], cwd, timeout=15,
+    )
+    if rc_st == 0 and st_out:
+        # 形如 " 2 files changed, 614239 insertions(+), 0 deletions(-)"
+        import re as _re
+        m_ins = _re.search(r"(\d+)\s+insertion", st_out)
+        m_fc = _re.search(r"(\d+)\s+files? changed", st_out)
+        ins = int(m_ins.group(1)) if m_ins else 0
+        fc = int(m_fc.group(1)) if m_fc else 0
+        if ins > 5000 or fc > 20:
+            # 取消 staging，返回失败
+            _run_git(["git", "reset", "HEAD", "--"], cwd, timeout=30)
+            return {"ok": False, "error": (
+                f"hard_cap_exceeded: staged {ins} insertions / {fc} files exceeds "
+                f"limit (5000 / 20). Likely build artifact leak, refusing to commit."
+            ), "repo": repo_logical, "branch_name": branch}, pushed
+
     # `git commit` 在大仓库 + pre-commit hook 跳过情况下仍可能 > 30s，提到 120s
     rc, _, err = _run_git(
         ["git", "commit", "-m", commit_message, "--no-verify"], cwd, timeout=120,
@@ -804,6 +824,15 @@ async def _run_implementation_agent(
     pre_existed_prompt = (workspace / "prompt.md").exists()
     pre_existed_output = (workspace / "output").exists()
 
+    # 入口治本：清掉 worktree 所有 untracked（保留 .crashguard 临时目录 + .gitignore 内文件）
+    # PR #213 教训：plaud-android 残留 build_global.log + mapping_archive 60w 行 untracked，
+    # 被错当 parent_changed 显式 git add 进 commit。`git clean -fd` 不动 ignored，安全。
+    cleaned = _run_git(
+        ["git", "clean", "-fd", "--exclude=.crashguard"], repo_path, timeout=60,
+    )
+    if cleaned[0] != 0:
+        logger.warning("pre-agent git clean failed: %s", cleaned[2][:200])
+
     try:
         await asyncio.wait_for(
             agent.analyze(workspace=workspace, prompt=prompt),
@@ -831,6 +860,22 @@ async def _run_implementation_agent(
     parent_changed: list[str] = []
     dirty_sm_paths: set[str] = set()  # 内部需要进一步抓取的 submodule
 
+    # 黑名单：构建产物 / 工具缓存目录前缀，永远不该 commit 进 PR（PR #213 教训）
+    _GARBAGE_PREFIXES = (
+        "build/", "build_", ".gradle/", ".dart_tool/", ".flutter-plugins",
+        "mapping_archive/", "outputs/", "intermediates/", ".jenkins_",
+        "DerivedData/", "Pods/", "node_modules/", ".idea/", ".cxx/",
+        "captures/", "test-results/", "reports/", ".cursor/", ".claude/",
+    )
+    _GARBAGE_EXT = (".log", ".dump", ".bin", ".apk", ".aab", ".ipa", ".dSYM.zip")
+    # untracked (`??`) 只允许这些扩展（真源码）；其它一律拒绝（PR #180 教训：
+    # ExportOptions.plist 是构建打包配置，untracked 状态时不该 commit 进 PR）
+    _UNTRACKED_ALLOW_EXT = (
+        ".kt", ".java", ".swift", ".m", ".mm", ".h", ".hpp", ".cpp", ".cc",
+        ".dart", ".gradle", ".gradle.kts", ".xml", ".yaml", ".yml", ".json",
+        ".pro", ".cfg", ".properties",
+    )
+
     def _is_temp(p: str) -> bool:
         if p.startswith(".crashguard/") or p == "prompt.md" or p.startswith("output/"):
             return True
@@ -841,12 +886,34 @@ async def _run_implementation_agent(
             return True
         return False
 
+    def _is_garbage_path(p: str) -> bool:
+        pp = p.replace("\\", "/")
+        if any(pp.startswith(pfx) for pfx in _GARBAGE_PREFIXES):
+            return True
+        if any(pp.endswith(ext) for ext in _GARBAGE_EXT):
+            return True
+        return False
+
+    def _untracked_allowed(p: str) -> bool:
+        # 严格白名单：源码扩展才让 untracked 入 commit
+        pp = p.lower()
+        return any(pp.endswith(ext) for ext in _UNTRACKED_ALLOW_EXT)
+
     for ln in stdout.splitlines():
         if len(ln) < 4:
             continue
         status = ln[:2]
         path = ln[3:].strip().strip('"')
         if not path or _is_temp(path):
+            continue
+        # 黑名单：构建产物 / 工具缓存路径直接丢（PR #213 教训：60w 行 build_global.log）
+        if _is_garbage_path(path):
+            logger.warning("dropped garbage path from PR: %s (status=%r)", path, status)
+            continue
+        # untracked (`??`) 严格白名单：只让源码扩展入 commit
+        # PR #180 教训：ExportOptions.plist untracked 配置文件被误 commit
+        if status == "??" and not _untracked_allowed(path):
+            logger.warning("dropped untracked non-source path: %s", path)
             continue
         # 命中 submodule pointer 目录（裸路径无尾斜杠）
         if path in sm_index:
@@ -883,8 +950,15 @@ async def _run_implementation_agent(
         for ln in out_sm.splitlines():
             if len(ln) < 4:
                 continue
+            sm_status = ln[:2]
             p = ln[3:].strip().strip('"')
             if not p or _is_temp(p):
+                continue
+            if _is_garbage_path(p):
+                logger.warning("dropped garbage from submodule %s: %s", sm_path, p)
+                continue
+            if sm_status == "??" and not _untracked_allowed(p):
+                logger.warning("dropped untracked non-source from submodule %s: %s", sm_path, p)
                 continue
             if not (Path(sm_abs) / p).exists():
                 continue
