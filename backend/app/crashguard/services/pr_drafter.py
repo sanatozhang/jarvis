@@ -312,6 +312,68 @@ def _worktree_dirty(repo_path: str) -> tuple[bool, str]:
     return bool(stdout.strip()), stdout.strip()
 
 
+def _parse_repo_from_pr_url(pr_url: str) -> tuple[str, int] | None:
+    """从 https://github.com/<owner>/<name>/pull/<n> 解析 (owner/name, pr_number)。
+
+    gh pr edit 需要 --repo owner/name 才能跨 cwd 改 PR body。
+    """
+    m = re.match(r"https?://github\.com/([^/]+/[^/]+)/pull/(\d+)", (pr_url or "").strip())
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def _cross_link_prs(all_pr_results: list[dict]) -> None:
+    """所有 PR 创建完后，把 sibling PR 链接回填到每个 PR 的 body 末尾。
+
+    底层逻辑：一个 issue 跨多仓库（plaud-android parent + nicebuildSDK 子模块）开多 PR
+    时，每个 PR 都是孤岛——reviewer 无法从 plaud-android PR 跳转到对应的 ble-sdk-android
+    PR。把所有 sibling 的 URL 用 `## 🔗 Related PRs` 段塞回每个 PR body，闭环关联。
+
+    用 `gh pr edit <pr_number> --repo <owner>/<name> --body <new_body>`，body 通过
+    `gh pr view` 先拉当前值，追加 Related 段后整体写回（避免误覆盖）。
+    """
+    ok_prs = [r for r in all_pr_results if r.get("ok") and r.get("pr_url")]
+    if len(ok_prs) < 2:
+        return  # 单 PR 不需要 cross-link
+
+    section_lines = ["", "---", "### 🔗 Related PRs（同 issue 跨仓库联动）"]
+    for r in ok_prs:
+        repo = r.get("repo") or "unknown"
+        section_lines.append(f"- **{repo}**: {r['pr_url']}")
+    section_lines.append("")
+    section = "\n".join(section_lines)
+
+    for r in ok_prs:
+        url = r.get("pr_url") or ""
+        parsed = _parse_repo_from_pr_url(url)
+        if not parsed:
+            logger.warning("cross_link: cannot parse %s", url)
+            continue
+        owner_repo, pr_num = parsed
+        # 当前 body
+        rc, body, err = _run_git(
+            ["gh", "pr", "view", str(pr_num), "--repo", owner_repo, "--json", "body", "-q", ".body"],
+            cwd="/tmp", timeout=30,
+        )
+        if rc != 0:
+            logger.warning("cross_link: gh pr view %s failed: %s", url, err[:120])
+            continue
+        new_body = (body or "").rstrip() + "\n" + section
+        # 已有 Related 段就不重复追加
+        if "### 🔗 Related PRs" in (body or ""):
+            logger.info("cross_link: %s already has Related section; skip", url)
+            continue
+        rc2, _, err2 = _run_git(
+            ["gh", "pr", "edit", str(pr_num), "--repo", owner_repo, "--body", new_body],
+            cwd="/tmp", timeout=60,
+        )
+        if rc2 != 0:
+            logger.warning("cross_link: gh pr edit %s failed: %s", url, err2[:120])
+            continue
+        logger.info("cross_link: appended Related section to %s", url)
+
+
 def _cleanup_repo_after_pr(
     repo_path: str,
     base_ref: str,
@@ -644,22 +706,53 @@ def _normalize_diff_for_apply(raw_diff: str, sub_repo_dirname: str) -> str:
 
 async def _run_implementation_agent(
     repo_path: str, ana: CrashAnalysis, issue: CrashIssue,
-) -> tuple[bool, list[str], str]:
+) -> tuple[bool, list[str], dict[str, dict], str]:
     """在 sub-repo 工作树里跑 Claude Code agent，让它根据 fix_suggestion 直接 Edit 真文件。
 
     底层逻辑：让 LLM 写 unified diff 是反人性的（行号/escape 错就 apply 失败）；
     更稳的做法是让 agent 直接在真 repo 改文件，最后用 `git diff HEAD --stat` 抽出
     实际改动——文件改动是原子事实，比文本 diff 可信。
 
-    Returns: (changed, changed_files, error)
+    支持嵌套 submodule：parent git status 看到 ` m <sm>`（dirty submodule）时，
+    递归进 submodule 内部 `git status` 抓真实文件列表，作为独立 bucket 返回。
+    这样 plaud-android/nicebuildSDK 里的代码改动会路由到 ble-sdk-android 独立 PR，
+    而不是被错误地当作 plaud-android 的 pointer 更新 commit 进去（PR #209 教训）。
+
+    Returns: (ok, parent_files, nested_submodule_buckets, error)
+      - parent_files: 直接归属本仓库的文件
+      - nested_submodule_buckets: {sm_rel_path: {"abs_path": "...", "url": "...", "files": [...]}}
     """
     from app.services.agent_orchestrator import AgentOrchestrator
 
     fix_text = (ana.fix_suggestion or ana.solution or "").strip()
     if not fix_text:
-        return False, [], "no fix_suggestion to implement"
+        return False, [], {}, "no fix_suggestion to implement"
 
     sub_name = os.path.basename(repo_path.rstrip("/"))
+
+    # 把当前 repo 的嵌套 submodule 列表告诉 AI，避免它瞎改 pointer 文件
+    nested_submodules = _parse_gitmodules(repo_path)
+    sm_hint_lines = ""
+    if nested_submodules:
+        sm_hint_lines = "\n".join(
+            f"- `{sm['path']}` → {sm.get('url', '')}"
+            for sm in nested_submodules
+        )
+        sm_hint_block = f"""
+
+## ⚠️ 本仓库含嵌套 submodule（重要！）
+以下子目录是**独立 git 仓库**，pointer 文件指向其它 GitHub repo：
+{sm_hint_lines}
+
+**如何处理 submodule 内代码改动**：
+- ✅ 直接用 Edit 改 submodule 路径下的源文件（如 `nicebuildSDK/src/main/...`）—— 外部脚本会自动把这些改动 commit 到 submodule 自己的 GitHub repo（独立 PR）。
+- 🚫 严禁 git submodule update / git checkout submodule pointer 这类操作
+- 🚫 不要把 submodule pointer 整目录（如裸的 `nicebuildSDK`）当文件 commit—— 那是指针不是代码
+- 💡 impl_report.json 里 changed_files 把 submodule 内文件也写**相对仓库根**的路径，外部脚本会自动分桶到 submodule
+"""
+    else:
+        sm_hint_block = ""
+
     prompt = f"""你是 Plaud senior 工程师。当前 cwd 是 git 仓库 `{sub_name}` 的工作树（已 checkout 到一个临时分支）。
 
 ## 你的任务
@@ -672,7 +765,7 @@ async def _run_implementation_agent(
 
 ## 修复方案（来自 root cause analysis）
 {fix_text[:4500]}
-
+{sm_hint_block}
 ## 严格工作流
 1. 用 Glob / Grep 在 cwd 内**定位真实文件路径**（不要凭印象编路径）
 2. 用 Read 读关键文件确认行号和上下文
@@ -692,7 +785,7 @@ async def _run_implementation_agent(
     try:
         agent = orch.select_agent(rule_type="crashguard")
     except Exception as e:
-        return False, [], f"agent select failed: {e}"
+        return False, [], {}, f"agent select failed: {e}"
 
     # ClaudeCodeAgent 会在 cwd 写 prompt.md 和 output/——必须清理避免污染 sub-repo
     import shutil
@@ -706,9 +799,9 @@ async def _run_implementation_agent(
             timeout=600,
         )
     except asyncio.TimeoutError:
-        return False, [], "implementation agent timeout (10min)"
+        return False, [], {}, "implementation agent timeout (10min)"
     except Exception as e:
-        return False, [], f"implementation agent error: {e}"
+        return False, [], {}, f"implementation agent error: {e}"
     finally:
         # 无论成功失败，都清理 agent 留的临时文件（仅当 sub-repo 之前没有这些文件）
         if not pre_existed_prompt:
@@ -716,36 +809,99 @@ async def _run_implementation_agent(
         if not pre_existed_output:
             shutil.rmtree(workspace / "output", ignore_errors=True)
 
-    # git diff 抽改动事实——untracked 也算（包含 agent 新建的文件）
+    # === 抽 parent 改动 + 识别 dirty submodule ===
     rc, stdout, stderr = _run_git(
         ["git", "status", "--porcelain"], repo_path, timeout=15,
     )
     if rc != 0:
-        return False, [], f"git status failed: {stderr.strip()[:200]}"
-    changed: list[str] = []
+        return False, [], {}, f"git status failed: {stderr.strip()[:200]}"
+
+    sm_index = {sm["path"]: sm for sm in nested_submodules}
+    parent_changed: list[str] = []
+    dirty_sm_paths: set[str] = set()  # 内部需要进一步抓取的 submodule
+
+    def _is_temp(p: str) -> bool:
+        if p.startswith(".crashguard/") or p == "prompt.md" or p.startswith("output/"):
+            return True
+        if p.endswith(".dump.txt"):
+            return True
+        base = os.path.basename(p)
+        if base == ".DS_Store" or base.endswith(".swp") or base.endswith("~"):
+            return True
+        return False
+
     for ln in stdout.splitlines():
-        # 形如 " M lib/foo.dart"、"?? new_file.dart"、" D old.dart"
         if len(ln) < 4:
             continue
+        status = ln[:2]
         path = ln[3:].strip().strip('"')
-        if not path:
+        if not path or _is_temp(path):
             continue
-        # 过滤掉临时/报告文件
-        if (path.startswith(".crashguard/") or path == "prompt.md"
-                or path.startswith("output/") or path.endswith(".dump.txt")):
+        # 命中 submodule pointer 目录（裸路径无尾斜杠）
+        if path in sm_index:
+            # 小写 m = submodule 内部 dirty；大写 M = pointer commit 变化
+            # 两种都意味着 submodule 内部有需要回收的真改动
+            dirty_sm_paths.add(path)
             continue
-        changed.append(path)
-    if not changed:
-        return False, [], "agent produced no source changes"
-    # 兜底校验：agent 偶尔在 impl_report.json 写残缺路径（首字母被剥离等模型 hallucination），
-    # 这种路径 git add 会炸 "pathspec did not match any files"。落 add 前先确认文件真存在。
-    real = [f for f in changed if (Path(repo_path) / f).exists()]
-    if not real:
-        return False, [], f"agent reported changed files but none exist on disk: {changed[:5]}"
-    if len(real) != len(changed):
-        missing = [f for f in changed if f not in real]
-        logger.warning("filtered out %d non-existent paths from impl_report: %s", len(missing), missing[:3])
-    return True, real, ""
+        # 命中 submodule 内部文件（路径前缀匹配）—— parent git status 通常不会展开
+        # 到这一层（只显示 submodule pointer），但少数情况会，兜底归桶
+        sm_owner = None
+        for sp in sm_index:
+            if path == sp or path.startswith(sp + "/"):
+                sm_owner = sp
+                break
+        if sm_owner:
+            dirty_sm_paths.add(sm_owner)
+            continue
+        parent_changed.append(path)
+
+    # === 递归进 dirty submodule 抓真实文件 ===
+    nested_buckets: dict[str, dict] = {}
+    for sm_path in dirty_sm_paths:
+        sm_abs = os.path.join(repo_path, sm_path)
+        if not os.path.isdir(sm_abs) or not os.path.exists(os.path.join(sm_abs, ".git")):
+            logger.warning("dirty submodule %s missing or not init; skipping", sm_path)
+            continue
+        rc_sm, out_sm, err_sm = _run_git(
+            ["git", "status", "--porcelain"], sm_abs, timeout=15,
+        )
+        if rc_sm != 0:
+            logger.warning("submodule %s git status failed: %s", sm_path, err_sm[:120])
+            continue
+        sm_files: list[str] = []
+        for ln in out_sm.splitlines():
+            if len(ln) < 4:
+                continue
+            p = ln[3:].strip().strip('"')
+            if not p or _is_temp(p):
+                continue
+            if not (Path(sm_abs) / p).exists():
+                continue
+            sm_files.append(p)
+        if not sm_files:
+            logger.info("submodule %s flagged dirty but no concrete file changes; skipping", sm_path)
+            continue
+        nested_buckets[sm_path] = {
+            "abs_path": sm_abs,
+            "url": sm_index[sm_path].get("url", ""),
+            "files": sm_files,
+            "initialized": True,
+        }
+        logger.info(
+            "nested submodule %s captured %d file(s) for independent PR: %s",
+            sm_path, len(sm_files), sm_files[:5],
+        )
+
+    # 兜底校验 parent_changed 落盘存在性
+    real_parent = [f for f in parent_changed if (Path(repo_path) / f).exists()]
+    if len(real_parent) != len(parent_changed):
+        missing = [f for f in parent_changed if f not in real_parent]
+        logger.warning("filtered out %d non-existent parent paths: %s", len(missing), missing[:3])
+
+    if not real_parent and not nested_buckets:
+        return False, [], {}, "agent produced no source changes"
+
+    return True, real_parent, nested_buckets, ""
 
 
 def _try_apply_fix_diff(
@@ -1018,19 +1174,22 @@ async def draft_pr_for_analysis(
         last_failure_reason = ""  # 用于 audit / md fallback 日志
 
         # 优先 1：实施 agent 直接在真 repo 里 Edit 文件
+        agent_nested_buckets: dict[str, dict] = {}
         try:
-            impl_ok, impl_files, impl_err = await _run_implementation_agent(
+            impl_ok, impl_files, agent_nested_buckets, impl_err = await _run_implementation_agent(
                 repo_path, ana, issue,
             )
         except Exception as exc:
-            impl_ok, impl_files, impl_err = False, [], f"impl agent crash: {exc}"
+            impl_ok, impl_files, agent_nested_buckets, impl_err = (
+                False, [], {}, f"impl agent crash: {exc}",
+            )
         if impl_ok:
             patch_applied = True
             impl_source = "agent"
             changed_files = impl_files
             logger.info(
-                "implementation agent changed %d file(s) in %s on %s: %s",
-                len(impl_files), sub_repo_dirname, branch, impl_files[:5],
+                "implementation agent changed %d parent file(s) + %d nested submodule(s) in %s on %s",
+                len(impl_files), len(agent_nested_buckets), sub_repo_dirname, branch,
             )
         else:
             last_failure_reason = impl_err
@@ -1107,6 +1266,33 @@ async def draft_pr_for_analysis(
         classified = _classify_changed_files(repo_path, changed_files, submodules_meta)
         parent_files = classified["parent"]
         sub_buckets = classified["submodules"]
+
+        # 合并 agent 递归抓的嵌套 submodule 真实改动（PR #209 教训：parent git status
+        # 只能看到 submodule pointer 变化，看不到内部文件——必须 cd 进 submodule 抓）
+        if agent_nested_buckets:
+            for sm_path, info in agent_nested_buckets.items():
+                if sm_path in sub_buckets:
+                    # 合并 files，去重
+                    existing = sub_buckets[sm_path]
+                    merged_files = list(dict.fromkeys(
+                        (existing.get("files") or []) + (info.get("files") or [])
+                    ))
+                    existing["files"] = merged_files
+                    existing.setdefault("abs_path", info["abs_path"])
+                    existing.setdefault("url", info.get("url", ""))
+                    existing["initialized"] = True
+                    existing.pop("init_detail", None)
+                else:
+                    sub_buckets[sm_path] = {
+                        "abs_path": info["abs_path"],
+                        "url": info.get("url", ""),
+                        "files": info["files"],
+                        "initialized": True,
+                    }
+            logger.info(
+                "merged %d agent nested submodule bucket(s) into sub_buckets: %s",
+                len(agent_nested_buckets), list(agent_nested_buckets.keys()),
+            )
 
         # Defense A：submodule 有 edit 但未 init → 立即失败，拒绝把 submodule 源码 commit 进父 repo
         for sm_path, info in sub_buckets.items():
@@ -1240,6 +1426,12 @@ async def draft_pr_for_analysis(
                 "error": "no PR built after classification",
                 "repo": repo_logical or platform,
             }
+
+        # 多 PR 互链：≥2 个 PR 时回填 Related 段，孤岛 → 闭环
+        try:
+            _cross_link_prs(all_pr_results)
+        except Exception:
+            logger.exception("cross_link_prs failed (non-fatal)")
 
         primary = all_pr_results[0]
         extras = all_pr_results[1:]
