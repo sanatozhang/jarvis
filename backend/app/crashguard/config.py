@@ -236,6 +236,13 @@ class CrashguardSettings(BaseSettings):
     # 监控平台白名单（小写逗号串），空 = 不限制
     core_metric_platforms: str = "android,ios"
 
+    # === Baseline 周度回填 ===
+    # 底层逻辑：hourly_alert / 早晚报 SHoW 基线依赖 crash_hourly_snapshots /
+    # crash_snapshots 表。日常 pipeline + tick 失败或限流时会留窗口空洞。每周一次
+    # 调 Datadog 历史 API 幂等补齐近 3 天，保证基线持续可用。
+    baseline_backfill_enabled: bool = True
+    baseline_backfill_cron: str = "0 18 * * 0"   # 周日 UTC 18:00 = 北京 周一 02:00
+
     # === 定时任务健康度兜底告警 ===
     # 底层逻辑：cron 类任务静默失败是最大盲点。每 5 分钟扫一遍 heartbeat 表，
     # 任一任务 health ∈ (failing, stale) 且距上次告警 > cooldown 分钟 → 聚合发飞书

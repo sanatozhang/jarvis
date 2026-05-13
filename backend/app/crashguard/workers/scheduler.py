@@ -27,6 +27,7 @@ _analyze_last_fired: str = ""    # 定时分析 tick 防同分钟重跑
 _hourly_alert_last_fired: str = ""  # 进程级幂等；DB UNIQUE(hour_utc) 兜多机
 _core_metric_last_fired: str = ""   # 10min tick 进程级幂等；DB UNIQUE(window_start) 兜多机
 _job_health_last_fired: str = ""    # 兜底告警 tick 进程级幂等
+_backfill_last_fired: str = ""      # 周度 baseline 回填 tick 进程级幂等
 
 
 async def _run_analyze_tick(max_per_tick: int) -> dict:
@@ -196,6 +197,28 @@ async def _tick_once() -> None:
                 )
             except Exception:
                 logger.exception("crashguard core_metric tick failed")
+
+    # Baseline 回填（每周一次扫近 3 天，补 hourly_alert tick 漏掉的窗口 + 早晚报 DB fallback）
+    # 底层逻辑：日常 pipeline / hourly_alert tick 若因 Datadog 限流或重启失败，会留下基线
+    # 窗口空洞。每周扫一遍最近 3 天，幂等 INSERT OR IGNORE 补齐缺口，保证 SHoW 基线始终有数据。
+    global _backfill_last_fired
+    if getattr(s, "baseline_backfill_enabled", True):
+        bf_cron = getattr(s, "baseline_backfill_cron", "") or "0 18 * * 0"
+        if bf_cron and _backfill_last_fired != tag and _cron_matches(bf_cron, now):
+            _backfill_last_fired = tag
+            try:
+                async with record_heartbeat("baseline_backfill") as hb:
+                    from app.crashguard.scripts_runtime import run_backfill_all
+                    res = await run_backfill_all(days_hourly=3, days_daily=3)
+                    hb.set_summary(res)
+                    hb.set_status_from_result(res)
+                    logger.info(
+                        "crashguard baseline_backfill fired: hourly_written=%s daily_written=%s",
+                        res.get("hourly", {}).get("written"),
+                        res.get("daily", {}).get("written"),
+                    )
+            except Exception:
+                logger.exception("crashguard baseline_backfill tick failed")
 
     # 定时任务健康度兜底告警（每 5min 扫描 heartbeat 表）
     global _job_health_last_fired
