@@ -15,6 +15,10 @@ services:
       # - ./codex-auth.json:/root/.codex/auth.json:ro  # Codex OAuth auth (optional)
       # claude 凭证用 named volume 持久化；首次部署执行：
       # docker compose exec -it backend claude login
+      # 顶层设计：volume 只能挂目录，但 Claude CLI 把 session config 写在 sibling
+      # ~/.claude.json（不在 ~/.claude/ 内）。Dockerfile 把 /root/.claude.json
+      # symlink 到 /root/.claude/_root_config.json——这样单 volume 就覆盖了
+      # 凭证目录 + session 文件，rebuild 后两者都保留。
       - claude-auth:/root/.claude
       - lark-cli-auth:/root/.lark-cli        # 飞书 CLI 凭证持久化
       # GitHub CLI 凭证持久化（crashguard auto-PR 必需）；首次部署执行：

@@ -76,6 +76,24 @@ COPY scripts/ ./scripts/
 # Create data dirs
 RUN mkdir -p /app/data /app/workspaces
 
+# Entrypoint: 把 ~/.claude.json 软链到 named volume 内部，让 `claude login`
+# 写入的 session config 跟着 ~/.claude/ 目录一起持久化。否则每次 rebuild
+# /root/.claude.json 都会回到镜像里的默认（旧 backup）状态，agent 全 401。
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    'CFG=/root/.claude/_root_config.json' \
+    'LINK=/root/.claude.json' \
+    'if [ ! -L "$LINK" ]; then' \
+    '  # 第一次启动：若已有 sibling 配置（首次 login 后镜像内残留），迁进 volume' \
+    '  if [ -f "$LINK" ] && [ ! -f "$CFG" ]; then mv "$LINK" "$CFG"; fi' \
+    '  ln -sfn "$CFG" "$LINK"' \
+    'fi' \
+    'exec "$@"' \
+    > /usr/local/bin/entrypoint.sh \
+    && chmod +x /usr/local/bin/entrypoint.sh
+
 EXPOSE 8000
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
