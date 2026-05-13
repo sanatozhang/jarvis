@@ -77,6 +77,20 @@ dc() {
     fi
 }
 
+# ---- Prune dangling images (避免每次 rebuild 后旧 image 堆磁盘) ----
+prune_dangling() {
+    local before after freed
+    before=$(docker images -f dangling=true -q | wc -l | tr -d ' ')
+    if [ "$before" -gt 0 ]; then
+        log "Pruning $before dangling image(s)..."
+        # 仅 prune dangling，不动 named image（防误删）
+        docker image prune -f >/dev/null 2>&1 || true
+        after=$(docker images -f dangling=true -q | wc -l | tr -d ' ')
+        freed=$((before - after))
+        log "✅ Pruned $freed dangling image(s)"
+    fi
+}
+
 # ---- Setup (first time) ----
 cmd_setup() {
     log "Setting up Jarvis..."
@@ -190,7 +204,7 @@ cmd_logs() {
     dc logs -f --tail=100 "${@:-}"
 }
 
-# ---- Update (pull + rebuild + restart) ----
+# ---- Update (pull + rebuild + restart + prune) ----
 cmd_update() {
     log "Updating Jarvis..."
 
@@ -205,6 +219,9 @@ cmd_update() {
     log "Restarting with new images..."
     dc down
     dc up -d
+
+    # 治本闭环：rebuild 后旧 image 变 dangling，长期堆磁盘
+    prune_dangling
 
     log "✅ Updated and restarted."
 }

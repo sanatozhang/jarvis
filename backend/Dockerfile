@@ -21,11 +21,17 @@ FROM python:3.12-slim AS production
 
 WORKDIR /app
 
-# System deps for grep, unzip, git, ssh (git push via ssh), node (for codex CLI)
+# Layer 1：稳定系统依赖（重量级，含 git/perl/gnutls/krb5 等 ~120 MB），尽量不动。
 # openssh-client: crashguard pr_drafter 走 git@github.com:... ssh 协议，slim 镜像默认不带
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    grep coreutils unzip git openssh-client curl ca-certificates gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Layer 2：agent 工具包（轻量，频繁迭代）。
+# 把这层放在稳定层之后、彼此独立——下次加 agent 工具不再触发 Layer 1 重拉。
 # ripgrep: claude_api 的 grep 工具用 rg 替代 shell grep（更快 + 结构化输出）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    grep ripgrep coreutils unzip git openssh-client curl ca-certificates gnupg \
+    ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20 (needed for Codex CLI)
