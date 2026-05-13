@@ -846,6 +846,28 @@ async def _run_implementation_agent(
     except Exception as e:
         return False, [], {}, f"agent select failed: {e}"
 
+    # 顶层设计：日志分析用的 allowed_tools 只含 Read/Grep/Glob/Write，没 Edit；
+    # implementation agent 需要 Edit/Bash 真改源文件。复制一份 config 仅本次覆盖，
+    # 避免污染常规分析路径。
+    try:
+        import copy as _copy
+        agent.config = _copy.copy(agent.config)
+        existing_tools = list(getattr(agent.config, "allowed_tools", []) or [])
+        # 加齐 implementation 需要的：Edit / MultiEdit / Bash(git/ls/cat/find)
+        needed = ["Edit", "MultiEdit", "Read", "Write", "Glob", "Grep",
+                  "Bash(git:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(find:*)",
+                  "Bash(rg:*)", "Bash(head:*)", "Bash(tail:*)"]
+        merged: list[str] = []
+        seen: set[str] = set()
+        for t in existing_tools + needed:
+            if t not in seen:
+                merged.append(t)
+                seen.add(t)
+        agent.config.allowed_tools = merged
+        logger.info("implementation agent allowed_tools: %s", merged)
+    except Exception:
+        logger.exception("failed to inject Edit tool into agent config (continuing)")
+
     # ClaudeCodeAgent 会在 cwd 写 prompt.md 和 output/——必须清理避免污染 sub-repo
     import shutil
     workspace = Path(repo_path)
