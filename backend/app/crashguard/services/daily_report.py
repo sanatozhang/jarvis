@@ -317,11 +317,16 @@ async def compose_report(
         baseline_events = {}
     # 方案 A：用实时窗口数据覆盖 today snapshot 的 events_count（in-memory mutation，session 已关）
     # 这样后续所有 snap.events_count 引用都自动用对齐窗口数据，不必逐处改写。
+    #
+    # 治本（2026-05-13 用户实测发现 bug）：原代码只在 `rt is not None` 时覆盖，issue 不
+    # 在 realtime（被 Datadog Top100 截断 / 当前窗口实际为 0）时仍保留 DB 旧值（可能是
+    # 24h 全量或回填数据）→ 速报里展示的 events vs SHoW % 口径混杂。
+    # 修：realtime 拉成功后，**所有 today_rows 的 events_count 一律按 realtime 重写**，
+    # 不在 realtime 内的强制置 0（10h 窗口内确实没产生 events）。
     if realtime_today_events:
         for snap, _ in today_rows:
             rt = realtime_today_events.get(snap.datadog_issue_id)
-            if rt is not None:
-                snap.events_count = rt
+            snap.events_count = int(rt) if rt is not None else 0
 
     # 按真实 OS 分桶（FLUTTER 按 top_os 重新归类，无 top_os 进 UNKNOWN）
     by_platform: Dict[str, List[Tuple[CrashSnapshot, CrashIssue]]] = defaultdict(list)
