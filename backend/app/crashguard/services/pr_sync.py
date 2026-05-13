@@ -62,12 +62,21 @@ def _gh_view(repo_slug: str, pr_number: int, timeout: int = 30) -> Tuple[bool, D
     返回 (ok, parsed_json_dict, error_str)。
     抽出来便于单测 mock。
     """
+    # PAT (gho_*) 个人 token 对 org SSO repo 的 GraphQL 字段（如 statusCheckRollup）
+    # 报 "Resource not accessible by personal access token"。gh CLI 走 OAuth
+    # (hosts.yml) 才有权限。剥掉 GH_TOKEN/GITHUB_TOKEN 让 OAuth 接管——和
+    # pr_drafter._run_git 同一类修法。
+    import os as _os
+    sub_env = dict(_os.environ)
+    for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+        sub_env.pop(k, None)
     try:
         r = subprocess.run(
             ["gh", "pr", "view", str(pr_number), "--repo", repo_slug, "--json", _GH_FIELDS],
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=sub_env,
         )
         if r.returncode != 0:
             return False, {}, (r.stderr or "").strip()[:300]
