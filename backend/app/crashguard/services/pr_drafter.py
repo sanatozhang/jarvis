@@ -854,6 +854,12 @@ async def _run_implementation_agent(
 - 🚫 不要 Read .git 内部文件
 - 🚫 不要做超出修复方案范围的"顺手优化"
 - 🚫 不要碰 build/.gradle/.dart_tool/DerivedData/Pods/node_modules 等构建产物目录
+
+## 修复方案质量红线（PR #991 教训）
+- 🚫 **严禁"换异常类名"假修复**：原代码若是 `rethrow` / `throw OriginalException`，你改成 `throw NewException(...)` **行为等价**（上层 catch 不到新类反而更糟）。
+- ✅ 真修复必须落实下列至少一条：(a) 在 catch 里直接处理后**不**抛出（return / 给默认值 / 走 fallback）；(b) 通过 Completer / EventBus / ToastUtil 把错误反馈给 UI；(c) pre-check 提前避免触发崩溃路径。
+- 🚫 **严禁修改版本号字段**：pubspec.yaml 的 `version:` / build.gradle 的 `versionCode|versionName` / Info.plist 的 `CFBundleVersion|CFBundleShortVersionString` 这些版本号一律**不准动**——版本号由 release 流程管理，crashguard 是修 bug 不是发版。
+- 🚫 严禁仅靠加 log（PLogger.e/i/p）作为唯一修复——log 不解决崩溃。
 """
     orch = AgentOrchestrator()
     try:
@@ -1205,6 +1211,7 @@ async def draft_pr_for_analysis(
     from app.crashguard.services.pr_quality_gates import (
         verify_fix_paths, detect_forced_platform, pass_confidence_gate,
         verify_keyword_hits, lint_changed_files, judge_diff_with_llm,
+        verify_no_version_bump,
     )
     if getattr(s, "gate_confidence_enabled", True):
         ok_g3, why_g3 = pass_confidence_gate(
@@ -1573,6 +1580,24 @@ async def draft_pr_for_analysis(
                 diff_text = "\n".join(_parts)
             except Exception:
                 diff_text = ""
+
+        # Gate#13：版本号字段保护——pubspec/build.gradle/Info.plist 一律禁碰
+        if diff_text:
+            ok_g13, why_g13, info_g13 = verify_no_version_bump(diff_text)
+            if not ok_g13:
+                logger.warning("gate#13 blocked PR (ana=%d): %s", analysis_id, why_g13)
+                try:
+                    from app.crashguard.services.audit import write_audit
+                    await write_audit(
+                        op="pr_draft", target_id=str(analysis_id), success=False,
+                        error=f"gate_version_bump: {why_g13}",
+                        detail={"gate": "version_bump", "info": info_g13,
+                                "repo": repo_logical or platform},
+                    )
+                except Exception:
+                    pass
+                return {"ok": False, "error": f"gate_version_bump: {why_g13}",
+                        "repo": repo_logical, "gate_info": info_g13}
 
         # Gate#8：关键词命中（必须命中 fix_suggestion 里 ≥1 个标识符）
         if getattr(s, "gate_keyword_enabled", True) and diff_text:

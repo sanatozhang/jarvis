@@ -616,6 +616,42 @@ def pick_primary_platform(
     return candidates[0], "first_candidate_fallback"
 
 
+# ============================================================
+# Gate#13：版本号字段保护（pubspec/build.gradle/Info.plist 一律禁碰）
+# ============================================================
+
+_VERSION_FILE_RULES = (
+    # (file_basename / suffix match, regex_for_version_lines)
+    ("pubspec.yaml", re.compile(r"^[+-]\s*version\s*:", re.MULTILINE)),
+    ("build.gradle", re.compile(r"^[+-]\s*(versionCode|versionName)\b", re.MULTILINE)),
+    ("build.gradle.kts", re.compile(r"^[+-]\s*(versionCode|versionName)\b", re.MULTILINE)),
+    ("Info.plist", re.compile(r"^[+-].*(CFBundleVersion|CFBundleShortVersionString)", re.MULTILINE)),
+)
+
+
+def verify_no_version_bump(diff_text: str) -> tuple[bool, str, dict]:
+    """禁 agent 改 pubspec/build.gradle/Info.plist 的版本号字段。
+
+    抓手：PR #991/#992/#993 教训——AI 顺手把 pubspec.yaml 的
+    `version: 3.2.0+508` bump 成 `+510`，与 fix_suggestion 无关，浪费 reviewer 心智。
+    版本号属于 release 流程，crashguard 修 bug 不发版。
+    """
+    if not diff_text:
+        return True, "skipped (no diff)", {}
+    violations: list[str] = []
+    for fname, regex in _VERSION_FILE_RULES:
+        # 找 diff 里 `--- a/path/pubspec.yaml` 文件块
+        # 简化：只要 diff 含 path 且匹配 version 正则就标违规
+        if fname in diff_text and regex.search(diff_text):
+            violations.append(fname)
+    if violations:
+        return False, (
+            f"version_bump_blocked: detected version field change in "
+            f"{', '.join(violations)} — release files must not be touched by crashguard"
+        ), {"files": violations}
+    return True, "no version bump", {}
+
+
 __all__ = [
     "verify_fix_paths",
     "detect_forced_platform",
@@ -625,4 +661,5 @@ __all__ = [
     "verify_keyword_hits",
     "judge_diff_with_llm",
     "pick_primary_platform",
+    "verify_no_version_bump",
 ]
