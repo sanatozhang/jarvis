@@ -17,10 +17,21 @@ linear:
 # Agent 配置
 agent:
   default: claude_code
+  call_mode: cli         # "cli" | "api" — Settings 页面切换；api 把 claude_code 自动替换成 claude_api
   timeout: 600           # 单次分析超时（秒）— 探索式分析需要足够时间
   max_turns: 30          # Agent 最大交互轮数 — 50 太宽松会触发 grep 风暴；30 配合 prompt anti-timeout 协议
 
   providers:
+    claude_api:
+      enabled: true
+      model: "claude-sonnet-4-6"        # Vertex 代理不识别 [1m] 后缀
+      fallback_model: "claude-haiku-4-5"
+      base_url: "http://34.216.169.232:30001/vertex"   # 公司 Vertex 代理（VPN 内）
+      per_turn_timeout: 120             # 单轮 messages.create 超时（秒）
+      max_tokens: 8192                  # 单轮最大输出 token
+      enable_cache: true                # cache_control 头；目前 proxy 不生效（见 spike 2026-05-13），保留 forward-compat
+      timeout: 600
+
     claude_code:
       enabled: true
       model: "claude-sonnet-4-6[1m]"    # Sonnet 4.6 with 1M context window
