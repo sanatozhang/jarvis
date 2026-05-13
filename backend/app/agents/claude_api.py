@@ -29,8 +29,11 @@ from app.models.schemas import AnalysisResult
 
 logger = logging.getLogger("jarvis.agent.claude_api")
 
-_ANTHROPIC_VERSION = "2023-06-01"
-_DEFAULT_MESSAGES_PATH = "/v1/messages"
+# Vertex AI rawPredict format. base_url must already include
+# `/v1/projects/{project}/locations/{location}` (the company proxy prepends
+# this automatically). We only append the publisher/model segment.
+_VERTEX_ANTHROPIC_VERSION = "vertex-2023-10-16"
+_VERTEX_MODEL_PATH_TPL = "/publishers/anthropic/models/{model}:rawPredict"
 
 
 class _TraceWriter:
@@ -71,13 +74,24 @@ class _MessagesClient:
             timeout=httpx.Timeout(timeout, connect=10.0),
             headers={
                 "x-api-key": api_key,
-                "anthropic-version": _ANTHROPIC_VERSION,
                 "content-type": "application/json",
             },
         )
 
     async def create_message(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        url = self._base_url + _DEFAULT_MESSAGES_PATH
+        """Send a Vertex-format message and return the parsed response.
+
+        The Vertex AI rawPredict endpoint takes the model name in the URL
+        path, NOT in the body. Caller passes `body["model"]` as a convenience;
+        we pop it here and rewrite the body to Vertex shape.
+        """
+        body = dict(body)  # don't mutate caller's dict
+        model = body.pop("model", "")
+        if not model:
+            raise ValueError("create_message: body must include 'model'")
+        body["anthropic_version"] = _VERTEX_ANTHROPIC_VERSION
+
+        url = self._base_url + _VERTEX_MODEL_PATH_TPL.format(model=model)
         resp = await self._client.post(url, json=body)
         if resp.status_code >= 400:
             # Raise with the response text attached so caller can map error types
