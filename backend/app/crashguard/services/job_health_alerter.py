@@ -26,6 +26,49 @@ logger = logging.getLogger("crashguard.job_health_alerter")
 
 # 进程级节流：job_name → 上次发告警的 UTC 时间
 _last_alerted_at: Dict[str, datetime] = {}
+# 进程级"自动重试过"标记：job_name → 上次尝试自愈的 UTC 时间
+# 抓手：发现 failing/stale 先尝试自动重跑一次，下 tick 仍失败才告警
+_last_retried_at: Dict[str, datetime] = {}
+
+
+async def _try_auto_retry_job(job_name: str) -> tuple[bool, str]:
+    """根据 job_name 派发到对应 runner，跑一次"自愈"重试。
+
+    返回 (是否成功触发, summary)；触发本身报错则 summary 含 exception。
+    不抛异常——本函数失败不阻断告警链路。
+    """
+    try:
+        if job_name == "pr_sync":
+            from app.crashguard.services.pr_sync import sync_all_open_prs
+            r = await sync_all_open_prs()
+            return True, f"pr_sync: checked={r.get('checked',0)} changed={r.get('changed',0)}"
+        if job_name == "core_metric":
+            from app.crashguard.services.core_metric_alerter import run_core_metric_tick
+            r = await run_core_metric_tick()
+            return True, f"core_metric: alerted={r.get('alerted')}"
+        if job_name == "hourly_alert":
+            from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+            r = await run_hourly_alert_tick()
+            return True, f"hourly_alert: alerted={r.get('alerted')}"
+        if job_name == "analyze_tick":
+            # scheduler 内的私有函数；reuse 通过模块路径
+            from app.crashguard.workers.scheduler import _run_analyze_tick
+            r = await _run_analyze_tick(max_per_tick=1)
+            return True, f"analyze_tick: picked={r.get('picked',0)} done={r.get('completed',0)}"
+        if job_name == "baseline_backfill":
+            from app.crashguard.scripts_runtime import run_backfill_all
+            r = await run_backfill_all(days_hourly=1, days_daily=1)
+            return True, f"baseline_backfill: ok={r.get('ok')}"
+        # morning_daily / evening_daily / pipeline 不主动重发（避免重复推卡片 / 长跑）
+        return False, f"no_retry_runner_for:{job_name}"
+    except Exception as exc:
+        logger.exception("auto-retry %s crashed", job_name)
+        return False, f"retry_exception: {exc}"
+
+
+def _is_weekend_local() -> bool:
+    """北京时间是否周末。容器内 TZ=Asia/Shanghai。"""
+    return datetime.now().weekday() >= 5  # 5=Sat, 6=Sun
 
 
 def _interval_minutes_from_cron(cron_expr: str) -> Optional[int]:
@@ -70,9 +113,22 @@ async def run_job_health_check() -> Dict[str, Any]:
 
     now_utc = datetime.utcnow()
     cooldown_min = int(getattr(s, "job_health_alert_cooldown_minutes", 30) or 30)
+    # 周末告警节流倍数（默认 4× = 周末 2h 才能发一次同任务告警）
+    weekend_mult = int(getattr(s, "job_health_alert_weekend_multiplier", 4) or 4)
+    if _is_weekend_local() and weekend_mult > 1:
+        cooldown_min = cooldown_min * weekend_mult
+        logger.info("job_health_alert weekend mode: cooldown=%dmin (x%d)",
+                    cooldown_min, weekend_mult)
     cooldown = timedelta(minutes=cooldown_min)
+    # 失败次数阈值（默认 2，原来 3）
+    fail_threshold = int(getattr(s, "job_health_alert_fail_threshold", 2) or 2)
+    # 自愈重试间隔（默认 10min，防短时间内重复重跑）
+    retry_throttle = timedelta(minutes=int(
+        getattr(s, "job_health_alert_retry_throttle_minutes", 10) or 10
+    ))
 
     unhealthy: List[Dict[str, Any]] = []
+    auto_retried: List[str] = []
 
     async with get_session() as session:
         for meta in job_meta:
@@ -120,12 +176,26 @@ async def run_job_health_check() -> Dict[str, Any]:
             health: str
             if stale:
                 health = "stale"
-            elif consecutive_failures >= 3:
+            elif consecutive_failures >= fail_threshold:
                 health = "failing"
             else:
                 health = "ok"
 
             if health == "ok":
+                continue
+
+            # 自愈：先尝试重跑一次（节流：retry_throttle 内不重复触发）
+            last_retry = _last_retried_at.get(jn)
+            can_retry = last_retry is None or (now_utc - last_retry) >= retry_throttle
+            if can_retry:
+                ok_retry, retry_summary = await _try_auto_retry_job(jn)
+                _last_retried_at[jn] = now_utc
+                auto_retried.append(f"{jn}:{retry_summary}")
+                logger.info(
+                    "job_health_alert auto-retried %s: ok=%s summary=%s",
+                    jn, ok_retry, retry_summary,
+                )
+                # 重试已触发——本 tick 不告警，等下 tick 看结果（仍失败才发）
                 continue
 
             # 节流：距上次告警 < cooldown 跳过
@@ -148,7 +218,10 @@ async def run_job_health_check() -> Dict[str, Any]:
             })
 
     if not unhealthy:
-        return {"ok": True, "alerted": False, "scanned": len(job_meta)}
+        return {
+            "ok": True, "alerted": False, "scanned": len(job_meta),
+            "auto_retried": auto_retried,
+        }
 
     # 发送聚合飞书卡片
     from app.crashguard.services.feishu_card import build_job_health_alert_card
@@ -181,4 +254,5 @@ async def run_job_health_check() -> Dict[str, Any]:
         "sent": sent_ok,
         "unhealthy_count": len(unhealthy),
         "unhealthy_jobs": [it["job_name"] for it in unhealthy],
+        "auto_retried": auto_retried,
     }

@@ -248,7 +248,13 @@ class CrashguardSettings(BaseSettings):
     # 任一任务 health ∈ (failing, stale) 且距上次告警 > cooldown 分钟 → 聚合发飞书
     job_health_alert_enabled: bool = True
     job_health_alert_cron: str = "*/5 * * * *"
-    job_health_alert_cooldown_minutes: int = 30   # 同任务告警节流窗口
+    job_health_alert_cooldown_minutes: int = 30   # 同任务告警节流窗口（工作日）
+    # 周末节流倍数：周末 cooldown × N（默认 4 = 2h 一次同任务告警；改 1 关闭周末降频）
+    job_health_alert_weekend_multiplier: int = 4
+    # 连续失败几次才告警（含自愈失败后；默认 2）
+    job_health_alert_fail_threshold: int = 2
+    # 自愈重跑节流（同任务多久内不重复重跑）
+    job_health_alert_retry_throttle_minutes: int = 10
 
     # === PR 质量闸门（12 道防线，按 ROI 默认全开）===
     # 输入端
