@@ -460,6 +460,17 @@ async def _maybe_auto_draft_pr(analysis_id: int, feasibility: float) -> None:
             error="below_threshold",
         )
         return
+    # Gate#11：人工 approve 总闸——开启后所有自动入口都不直接落 PR，
+    # 而是写 audit log 标 needs_manual_approval；前端 approve-pr 按钮才真触发 draft_prs_multi
+    if getattr(s, "pr_manual_approve_mode", False):
+        await write_audit(
+            op="auto_draft_pr",
+            target_id=str(analysis_id),
+            success=False,
+            detail=f"feasibility={feasibility:.2f}, awaiting manual approve (gate#11 enabled)",
+            error="needs_manual_approval",
+        )
+        return
     try:
         from app.crashguard.services.pr_drafter import draft_prs_multi
         result = await draft_prs_multi(analysis_id, approver="auto")

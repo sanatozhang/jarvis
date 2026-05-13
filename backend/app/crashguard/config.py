@@ -250,6 +250,30 @@ class CrashguardSettings(BaseSettings):
     job_health_alert_cron: str = "*/5 * * * *"
     job_health_alert_cooldown_minutes: int = 30   # 同任务告警节流窗口
 
+    # === PR 质量闸门（12 道防线，按 ROI 默认全开）===
+    # 输入端
+    gate_confidence_enabled: bool = True       # Gate#3：confidence/feasibility 门槛
+    gate_min_confidence: str = "high"           # 仅 high 放行；medium 进 attention 但不开 PR
+    gate_force_route_enabled: bool = True       # Gate#2：stack→平台强制路由
+    gate_path_verify_enabled: bool = True       # Gate#1：fix_diff 路径实存性
+    gate_path_min_ratio: float = 0.5            # 实存比 < 50% 拒绝
+    # 过程端
+    # Gate#4 禁 Write / Gate#5 实存文件清单 / Gate#6 git clean -fdx 全部在 _run_implementation_agent 内硬编码生效
+    # 输出端
+    gate_keyword_enabled: bool = True           # Gate#8：关键词命中
+    gate_keyword_min_hits: int = 1
+    gate_syntax_enabled: bool = True            # Gate#7：语法速检（best-effort）
+    gate_llm_judge_enabled: bool = False        # Gate#9：二级 LLM 判官（默认关，开 = 每 PR 多一次 agent 调用成本）
+    gate_llm_judge_min_score: int = 7
+    # 路由端
+    gate_primary_only_enabled: bool = True      # Gate#10：多候选合议为单 primary
+    # 闭环端
+    # Gate#11：人工 approve 总闸——开启后 PR 不直接落 draft，而是落 needs_review；前端 approve 才推送
+    pr_manual_approve_mode: bool = False
+    # Gate#12：PR 落地后 CI 反馈
+    gate_ci_feedback_enabled: bool = True
+    gate_ci_feedback_close_on_fail: bool = True  # CI 失败自动关 PR
+
     model_config = {
         "env_prefix": "CRASHGUARD_",
         "env_file": str(PROJECT_ROOT / ".env"),

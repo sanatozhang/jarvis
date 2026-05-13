@@ -761,6 +761,28 @@ async def _run_implementation_agent(
 
     sub_name = os.path.basename(repo_path.rstrip("/"))
 
+    # Gate#5 预投喂：从 fix_suggestion 抽关键词在 repo 内 Glob 找实存路径，注入 prompt
+    # 让 agent 在确定的文件列表里挑目标，不允许凭印象编路径（PR #216 教训）
+    try:
+        from app.crashguard.services.pr_quality_gates import (
+            collect_existing_paths_for_keywords,
+        )
+        existing_files = collect_existing_paths_for_keywords(
+            repo_path, fix_text, ana.fix_diff or "", max_n=20,
+        )
+    except Exception:
+        existing_files = []
+    if existing_files:
+        files_hint_block = (
+            "\n## 📂 仓库内"
+            "**确认存在**"
+            "的候选源文件（必须从中选改动目标，不可凭印象编路径）\n"
+            + "\n".join(f"- `{p}`" for p in existing_files)
+            + "\n"
+        )
+    else:
+        files_hint_block = ""
+
     # 把当前 repo 的嵌套 submodule 列表告诉 AI，避免它瞎改 pointer 文件
     nested_submodules = _parse_gitmodules(repo_path)
     sm_hint_lines = ""
@@ -787,7 +809,7 @@ async def _run_implementation_agent(
     prompt = f"""你是 Plaud senior 工程师。当前 cwd 是 git 仓库 `{sub_name}` 的工作树（已 checkout 到一个临时分支）。
 
 ## 你的任务
-根据下方修复方案，**用 Edit/Write 工具直接修改源码**，让仓库工作树产生真实代码改动。
+根据下方修复方案，**用 Edit 工具修改既有源文件**，让仓库工作树产生真实代码改动。
 不要写 markdown 说明、不要写 diff 文本——目标是产出真 patch。
 
 ## Issue
@@ -796,21 +818,27 @@ async def _run_implementation_agent(
 
 ## 修复方案（来自 root cause analysis）
 {fix_text[:4500]}
-{sm_hint_block}
+{files_hint_block}{sm_hint_block}
 ## 严格工作流
-1. 用 Glob / Grep 在 cwd 内**定位真实文件路径**（不要凭印象编路径）
+1. **必须先 Glob 校验文件存在**：fix_suggestion 提到的目标路径必须用 Glob 确认实存——
+   不存在就 Grep 搜关键类名/方法名定位真实文件；都找不到 → 立即 STOP，
+   Write `.crashguard/impl_report.json` 写 `changed_files=[]` + `summary="target_not_found"`
 2. 用 Read 读关键文件确认行号和上下文
-3. 用 Edit 工具精准修改——优先单文件单函数，改动 ≤ 30 行
-4. 改完后**必须**用 Write 写一份 `.crashguard/impl_report.json`：
+3. **只能用 Edit 修改既有文件**——⚠️ 严禁用 Write 新建源文件（除非 fix_suggestion 明确要求新建测试文件，且必须落在 test/ 路径下）
+4. 单文件单函数，改动 ≤ 30 行
+5. 改完后**必须**用 Write 写一份 `.crashguard/impl_report.json`：
 ```json
 {{"changed_files": ["<相对仓库根>"], "summary": "一句话说明"}}
 ```
 
 ## 红线（违反 = 失败）
-- ⚠️ 禁止调用 git / gh / Bash 做任何 commit/push/checkout/branch 操作（外部脚本会做）
-- ⚠️ 如果判断本仓库不该改（修复在另一仓库）→ Write impl_report.json 写 changed_files=[] + summary 说明原因，**不要硬改**
-- ⚠️ 不要 Read .git 内部文件
-- ⚠️ 不要做超出修复方案范围的"顺手优化"
+- 🚫 **严禁用 Write 新建 .kt/.java/.swift/.dart 源文件**——PR #216 教训：找不到目标就新建空壳，编译都过不去。找不到 → STOP，不要硬创。
+- 🚫 严禁调用 git / gh / Bash 做任何 commit/push/checkout/branch 操作（外部脚本会做）
+- 🚫 严禁 git submodule update / git checkout submodule pointer
+- 🚫 如果判断本仓库不该改（修复在另一仓库）→ Write impl_report.json 写 changed_files=[] + summary 说明原因，**不要硬改**
+- 🚫 不要 Read .git 内部文件
+- 🚫 不要做超出修复方案范围的"顺手优化"
+- 🚫 不要碰 build/.gradle/.dart_tool/DerivedData/Pods/node_modules 等构建产物目录
 """
     orch = AgentOrchestrator()
     try:
@@ -824,14 +852,15 @@ async def _run_implementation_agent(
     pre_existed_prompt = (workspace / "prompt.md").exists()
     pre_existed_output = (workspace / "output").exists()
 
-    # 入口治本：清掉 worktree 所有 untracked（保留 .crashguard 临时目录 + .gitignore 内文件）
+    # 入口治本：清掉 worktree 所有 untracked + ignored 文件（仅保留 .crashguard 临时目录）
     # PR #213 教训：plaud-android 残留 build_global.log + mapping_archive 60w 行 untracked，
-    # 被错当 parent_changed 显式 git add 进 commit。`git clean -fd` 不动 ignored，安全。
+    # 被错当 parent_changed 显式 git add 进 commit。
+    # Gate#6：`-fdx` 同时清 ignored（gitignore 里 build/.gradle/Pods 等也擦掉），彻底清场。
     cleaned = _run_git(
-        ["git", "clean", "-fd", "--exclude=.crashguard"], repo_path, timeout=60,
+        ["git", "clean", "-fdx", "--exclude=.crashguard"], repo_path, timeout=120,
     )
     if cleaned[0] != 0:
-        logger.warning("pre-agent git clean failed: %s", cleaned[2][:200])
+        logger.warning("pre-agent git clean -fdx failed: %s", cleaned[2][:200])
 
     try:
         await asyncio.wait_for(
@@ -1135,6 +1164,66 @@ async def draft_pr_for_analysis(
     if not repo_path or not Path(repo_path).exists():
         return {"ok": False, "error": f"repo_path not configured/found for platform={platform} repo={repo_logical}"}
 
+    # === Gate#3：confidence / feasibility 准入门槛 ===
+    from app.crashguard.services.pr_quality_gates import (
+        verify_fix_paths, detect_forced_platform, pass_confidence_gate,
+        verify_keyword_hits, lint_changed_files, judge_diff_with_llm,
+    )
+    if getattr(s, "gate_confidence_enabled", True):
+        ok_g3, why_g3 = pass_confidence_gate(
+            ana.confidence or "low",
+            float(ana.feasibility_score or 0.0),
+            min_confidence=getattr(s, "gate_min_confidence", "high"),
+            min_feasibility=float(getattr(s, "feasibility_pr_threshold", 0.7) or 0.7),
+        )
+        if not ok_g3:
+            logger.info("gate#3 blocked PR: %s (ana=%d repo=%s)", why_g3, analysis_id, repo_logical)
+            return {"ok": False, "error": f"gate_confidence: {why_g3}", "repo": repo_logical}
+
+    # === Gate#2：stack→平台强制路由 ===
+    if getattr(s, "gate_force_route_enabled", True):
+        forced, why_g2 = detect_forced_platform(
+            issue.representative_stack or "", platform,
+        )
+        if forced and forced != (repo_logical or platform):
+            logger.warning(
+                "gate#2 platform mismatch: claimed=%s but stack forces=%s (ana=%d) → abort",
+                repo_logical or platform, forced, analysis_id,
+            )
+            return {
+                "ok": False,
+                "error": (
+                    f"gate_force_route: stack forces platform={forced} "
+                    f"but PR target={repo_logical or platform} ({why_g2})"
+                ),
+                "repo": repo_logical or platform,
+                "forced_platform": forced,
+            }
+
+    # === Gate#1：fix_diff / fix_suggestion 引用的源码路径实存性 ===
+    if getattr(s, "gate_path_verify_enabled", True):
+        ok_g1, why_g1, info_g1 = verify_fix_paths(
+            repo_path, ana.fix_suggestion or "", ana.fix_diff or "",
+            min_ratio=float(getattr(s, "gate_path_min_ratio", 0.5) or 0.5),
+        )
+        if not ok_g1:
+            logger.warning(
+                "gate#1 blocked PR (ana=%d repo=%s): %s; debug=%s",
+                analysis_id, repo_logical, why_g1, info_g1,
+            )
+            try:
+                from app.crashguard.services.audit import write_audit
+                await write_audit(
+                    op="pr_draft", target_id=str(analysis_id), success=False,
+                    error=f"gate_path_verify: {why_g1}",
+                    detail={"gate": "path_verify", "info": info_g1,
+                            "repo": repo_logical or platform},
+                )
+            except Exception:
+                pass
+            return {"ok": False, "error": f"gate_path_verify: {why_g1}",
+                    "repo": repo_logical, "gate_info": info_g1}
+
     # Stack 验证：把 fix_suggestion + fix_diff + 该 issue 的崩溃栈一起作为匹配源。
     # 底层逻辑：issue.platform 来自 Datadog @platform tag，本身可信；这道闸是兜底
     # 防 AI 跨平台串台。崩溃栈本身就是该平台，只要 representative_stack 含平台标识
@@ -1421,6 +1510,93 @@ async def draft_pr_for_analysis(
                 "repo": repo_logical or platform,
             }
 
+        # === Gate#7/8/9：落 commit 前的体检三连 ===
+        # 拿到当前 HEAD 与 worktree 的真实 diff（包括 untracked stage 后的内容）
+        all_changed_files: list[str] = list(parent_files)
+        for sm_p, sm_info in sub_buckets.items():
+            for fp in sm_info.get("files", []):
+                all_changed_files.append(os.path.join(sm_p, fp))
+
+        rc_diff, diff_text, _ = _run_git(
+            ["git", "diff", "HEAD", "--"] + (all_changed_files or []),
+            repo_path, timeout=30,
+        )
+        if rc_diff != 0 or not (diff_text or "").strip():
+            # untracked 新文件 diff HEAD 拿不到，退化为读文件内容拼伪 diff
+            try:
+                _parts: list[str] = []
+                for fp in all_changed_files[:30]:
+                    full = Path(repo_path) / fp
+                    if full.is_file():
+                        try:
+                            txt = full.read_text(encoding="utf-8", errors="ignore")[:4000]
+                            _parts.append(f"--- a/{fp}\n+++ b/{fp}\n{txt}")
+                        except Exception:
+                            pass
+                diff_text = "\n".join(_parts)
+            except Exception:
+                diff_text = ""
+
+        # Gate#8：关键词命中（必须命中 fix_suggestion 里 ≥1 个标识符）
+        if getattr(s, "gate_keyword_enabled", True) and diff_text:
+            ok_g8, why_g8, info_g8 = verify_keyword_hits(
+                diff_text, ana.fix_suggestion or "",
+                min_hits=int(getattr(s, "gate_keyword_min_hits", 1) or 1),
+            )
+            if not ok_g8:
+                logger.warning("gate#8 blocked PR (ana=%d): %s", analysis_id, why_g8)
+                try:
+                    from app.crashguard.services.audit import write_audit
+                    await write_audit(
+                        op="pr_draft", target_id=str(analysis_id), success=False,
+                        error=f"gate_keyword: {why_g8}",
+                        detail={"gate": "keyword_hit", "info": info_g8,
+                                "repo": repo_logical or platform},
+                    )
+                except Exception:
+                    pass
+                return {"ok": False, "error": f"gate_keyword: {why_g8}",
+                        "repo": repo_logical, "gate_info": info_g8}
+
+        # Gate#7：语法速检（best-effort：工具不在 PATH 时 skip 不阻断）
+        if getattr(s, "gate_syntax_enabled", True):
+            ok_g7, why_g7, info_g7 = lint_changed_files(repo_path, all_changed_files)
+            if not ok_g7:
+                logger.warning("gate#7 blocked PR (ana=%d): %s", analysis_id, why_g7)
+                try:
+                    from app.crashguard.services.audit import write_audit
+                    await write_audit(
+                        op="pr_draft", target_id=str(analysis_id), success=False,
+                        error=f"gate_syntax: {why_g7}",
+                        detail={"gate": "syntax_check", "info": info_g7,
+                                "repo": repo_logical or platform},
+                    )
+                except Exception:
+                    pass
+                return {"ok": False, "error": f"gate_syntax: {why_g7}",
+                        "repo": repo_logical, "gate_info": info_g7}
+
+        # Gate#9：二级 LLM 判官（fail-open：判官超时/挂掉不阻断真修复）
+        if getattr(s, "gate_llm_judge_enabled", False) and diff_text:
+            ok_g9, why_g9, info_g9 = await judge_diff_with_llm(
+                diff_text, ana.fix_suggestion or "", ana.root_cause or "",
+                min_score=int(getattr(s, "gate_llm_judge_min_score", 7) or 7),
+            )
+            if not ok_g9:
+                logger.warning("gate#9 blocked PR (ana=%d): %s", analysis_id, why_g9)
+                try:
+                    from app.crashguard.services.audit import write_audit
+                    await write_audit(
+                        op="pr_draft", target_id=str(analysis_id), success=False,
+                        error=f"gate_llm_judge: {why_g9}",
+                        detail={"gate": "llm_judge", "info": info_g9,
+                                "repo": repo_logical or platform},
+                    )
+                except Exception:
+                    pass
+                return {"ok": False, "error": f"gate_llm_judge: {why_g9}",
+                        "repo": repo_logical, "gate_info": info_g9}
+
         pr_title = f"[Crashguard][{platform}] {(issue.title or 'crash fix')[:80]}"
         pr_body = _build_pr_body(issue, ana, frontend_url, patch_applied=patch_applied)
         all_pr_results: list[dict] = []
@@ -1605,6 +1781,26 @@ async def draft_prs_multi(
     candidates = _resolve_candidate_repos(
         issue.platform or "", fix_text, issue.representative_stack or "",
     )
+
+    # === Gate#10：多候选先合议——≥2 个平台时锁 primary，只在 primary 仓开 PR ===
+    s_gate = get_crashguard_settings()
+    if (
+        getattr(s_gate, "gate_primary_only_enabled", True)
+        and len(candidates) >= 2
+    ):
+        from app.crashguard.services.pr_quality_gates import pick_primary_platform
+        primary, why_g10 = pick_primary_platform(
+            candidates,
+            issue.representative_stack or "",
+            fix_text,
+            (issue.platform or "").lower(),
+        )
+        if primary is not None:
+            logger.info(
+                "gate#10 narrowed %d candidates → primary %s (%s)",
+                len(candidates), primary[0], why_g10,
+            )
+            candidates = [primary]
     def _flatten(primary: Dict[str, Any], repo_name: str) -> list[Dict[str, Any]]:
         """把 draft_pr_for_analysis 的单结果（可能含 extra_prs）摊平成 list。"""
         primary.setdefault("repo", repo_name)
