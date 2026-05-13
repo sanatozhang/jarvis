@@ -457,6 +457,65 @@ class DatadogClient:
             return "aot_pointers_unsymbolicated"
         return "raw"
 
+    async def count_sessions_in_window(
+        self,
+        start_ms: int,
+        end_ms: int,
+    ) -> Dict[str, int]:
+        """绝对时间窗口版 sessions by platform。
+
+        给日报双窗口对照用——需要拉 7 天前的 10h 段，不能用相对 'now-Nh'。
+        失败返回 {} 不致命。
+        """
+        try:
+            return await asyncio.to_thread(self._sync_count_sessions_in_window, start_ms, end_ms)
+        except Exception as exc:
+            logger.warning("count_sessions_in_window failed: %s", exc)
+            return {}
+
+    def _sync_count_sessions_in_window(self, start_ms: int, end_ms: int) -> Dict[str, int]:
+        from datadog_api_client import ApiClient
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        body = RUMAggregateRequest(
+            filter=RUMQueryFilter(
+                query="@type:session",
+                _from=str(start_ms),
+                to=str(end_ms),
+            ),
+            compute=[RUMCompute(aggregation=RUMAggregationFunction.COUNT, type=RUMComputeType.TOTAL)],
+            group_by=[RUMGroupBy(facet="@os.name", limit=20)],
+        )
+        with ApiClient(self._build_configuration()) as api_client:
+            rum = RUMApi(api_client)
+            resp = rum.aggregate_rum_events(body=body)
+        out: Dict[str, int] = {}
+        buckets = getattr(getattr(resp, "data", None), "buckets", None) or []
+        for b in buckets:
+            by = getattr(b, "by", {}) or {}
+            os_name = (by.get("@os.name") or "").strip().lower()
+            comp = getattr(b, "computes", {}) or {}
+            try:
+                count = int(next(iter(comp.values())))
+            except (StopIteration, TypeError, ValueError):
+                count = 0
+            if not os_name or count <= 0:
+                continue
+            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                key = "ios"
+            elif os_name.startswith("android"):
+                key = "android"
+            else:
+                key = "other"
+            out[key] = out.get(key, 0) + count
+        return out
+
     async def count_sessions_by_platform(
         self,
         window_hours: int = 24,

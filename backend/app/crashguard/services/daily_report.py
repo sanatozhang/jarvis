@@ -255,6 +255,8 @@ async def compose_report(
     # 关键收益：严格对齐 weekday + 时区双周期，规避 vs 昨日的周末效应假警。
     realtime_today_events: Dict[str, int] = {}
     realtime_baseline_events: Dict[str, int] = {}
+    # 双窗口对照所需：baseline sessions by platform（today 已在上面拉过）
+    baseline_sessions_by_plat: Dict[str, int] = {}
     if s_cfg.datadog_api_key:
         try:
             from app.crashguard.services.datadog_client import DatadogClient
@@ -305,6 +307,18 @@ async def compose_report(
                             )
                 except Exception:
                     logger.exception("dual-window pull failed for query=%s (non-fatal)", q)
+            # baseline sessions（上周同 N 小时段）
+            try:
+                _week_ago_end = now_ms - 7 * 24 * 3600 * 1000
+                _week_ago_start = _week_ago_end - win_ms
+                raw_base_sess = await client.count_sessions_in_window(
+                    start_ms=_week_ago_start, end_ms=_week_ago_end,
+                )
+                baseline_sessions_by_plat = {
+                    k.upper(): v for k, v in (raw_base_sess or {}).items()
+                }
+            except Exception:
+                logger.exception("baseline sessions pull failed (non-fatal)")
         except Exception:
             logger.exception("count_sessions failed (non-fatal)")
 
@@ -371,6 +385,72 @@ async def compose_report(
         window_caption,
         "",
     ]
+
+    # 双窗口对照：让用户一眼看 sessions + fatal events 是否真增长
+    # （只在 evening + 有实时数据时展示——日报 24h 颗粒度对照意义有限）
+    if is_evening and (
+        total_sessions_by_plat or baseline_sessions_by_plat
+        or realtime_today_events or realtime_baseline_events
+    ):
+        from datetime import timedelta as _td
+        base_date = target_date - _td(days=7)
+        today_fatal_total = sum(realtime_today_events.values()) if realtime_today_events else 0
+        base_fatal_total = sum(realtime_baseline_events.values()) if realtime_baseline_events else 0
+
+        def _delta_str(t: int, b: int) -> str:
+            if b == 0:
+                return "—" if t == 0 else f"+{t} (基线 0)"
+            pct = (t - b) / b * 100
+            sign = "+" if pct >= 0 else ""
+            return f"{sign}{pct:.0f}%"
+
+        cmp_lines = [
+            "",
+            f"### 📊 双窗口对照（{data_window_hours}h，今天 {target_date.isoformat()} vs 上周 {base_date.isoformat()}）",
+            "",
+            "| 平台 | 今天 sessions | 上周 sessions | Δ sessions | 今天 fatal events | 上周 fatal events | Δ events |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+        # 平台 fatal 分桶需要从 realtime dict 反查 issue.platform
+        # 颗粒度：只展示三平台（Android/iOS/Others）合并
+        today_fatal_by_plat: Dict[str, int] = {"ANDROID": 0, "IOS": 0, "OTHER": 0}
+        base_fatal_by_plat: Dict[str, int] = {"ANDROID": 0, "IOS": 0, "OTHER": 0}
+        # 走 today_rows 已 normalized 的 platform
+        id_to_plat: Dict[str, str] = {}
+        for snap, issue in today_rows:
+            p = (issue.platform or "").upper()
+            if p == "FLUTTER":
+                # 用 top_os 还原真平台
+                tp = _resolve_real_os("FLUTTER", getattr(issue, "top_os", "") or "")
+                p = (tp or "OTHER").upper()
+            id_to_plat[snap.datadog_issue_id] = p if p in ("ANDROID", "IOS") else "OTHER"
+        for iid, ev in (realtime_today_events or {}).items():
+            today_fatal_by_plat[id_to_plat.get(iid, "OTHER")] += int(ev)
+        for iid, ev in (realtime_baseline_events or {}).items():
+            base_fatal_by_plat[id_to_plat.get(iid, "OTHER")] += int(ev)
+
+        for plat_key in ("ANDROID", "IOS"):
+            t_sess = total_sessions_by_plat.get(plat_key, 0)
+            b_sess = baseline_sessions_by_plat.get(plat_key, 0)
+            t_fatal = today_fatal_by_plat[plat_key]
+            b_fatal = base_fatal_by_plat[plat_key]
+            cmp_lines.append(
+                f"| {plat_key} | {t_sess} | {b_sess} | {_delta_str(t_sess, b_sess)} | "
+                f"{t_fatal} | {b_fatal} | {_delta_str(t_fatal, b_fatal)} |"
+            )
+        # 合计行
+        t_sess_all = sum(total_sessions_by_plat.get(k, 0) for k in ("ANDROID", "IOS"))
+        b_sess_all = sum(baseline_sessions_by_plat.get(k, 0) for k in ("ANDROID", "IOS"))
+        cmp_lines.append(
+            f"| **合计** | **{t_sess_all}** | **{b_sess_all}** | **{_delta_str(t_sess_all, b_sess_all)}** | "
+            f"**{today_fatal_total}** | **{base_fatal_total}** | **{_delta_str(today_fatal_total, base_fatal_total)}** |"
+        )
+        cmp_lines.append("")
+        cmp_lines.append(
+            "> 💡 看法：fatal Δ 大幅高于 sessions Δ → crash rate 真恶化（不是用户量增加）"
+        )
+        cmp_lines.append("")
+        lines.extend(cmp_lines)
 
     payload: Dict[str, Any] = {
         "report_date": target_date.isoformat(),
