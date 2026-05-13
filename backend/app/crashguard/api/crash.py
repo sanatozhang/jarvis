@@ -556,6 +556,14 @@ async def get_top(
             "new_count": sum(1 for x in items if x.get("is_new_in_version")),
             "fatal_count": sum(1 for x in items if (x.get("fatality") or "fatal") == "fatal"),
             "non_fatal_count": sum(1 for x in items if x.get("fatality") == "non_fatal"),
+            "fatal_events": sum(
+                int(x.get("events_count") or 0)
+                for x in items if (x.get("fatality") or "fatal") == "fatal"
+            ),
+            "non_fatal_events": sum(
+                int(x.get("events_count") or 0)
+                for x in items if x.get("fatality") == "non_fatal"
+            ),
             "total_events": sum(int(x.get("events_count") or 0) for x in items),
             "total_users": sum(int(x.get("users_affected") or 0) for x in items),
             "total_sessions": sum(int(x.get("sessions_affected") or 0) for x in items),

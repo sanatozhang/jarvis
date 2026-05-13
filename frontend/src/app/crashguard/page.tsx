@@ -294,8 +294,10 @@ function CrashguardPageInner() {
         sessions: aggregates.total_sessions,
         p0: aggregates.p0_count,
         surge: aggregates.surge_count,
-        fatalEvents: 0, // 不在 aggregates 里单独统计（按需后端加）
-        nonFatalEvents: 0,
+        // 后端 fatal_events / non_fatal_events 已补齐（见 api/crash.py::aggregates）；
+        // 老前端未升级时 fallback 0，避免破渲染
+        fatalEvents: (aggregates as { fatal_events?: number }).fatal_events ?? 0,
+        nonFatalEvents: (aggregates as { non_fatal_events?: number }).non_fatal_events ?? 0,
         fatalCount: aggregates.fatal_count,
         nonFatalCount: aggregates.non_fatal_count,
       };
