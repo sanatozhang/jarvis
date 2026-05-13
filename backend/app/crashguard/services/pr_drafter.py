@@ -1582,8 +1582,16 @@ async def draft_pr_for_analysis(
                 diff_text = ""
 
         # Gate#13：版本号字段保护——pubspec/build.gradle/Info.plist 一律禁碰
-        if diff_text:
-            ok_g13, why_g13, info_g13 = verify_no_version_bump(diff_text)
+        # ⚠️ diff_text 只覆盖未 commit 工作区；agent 用 Bash(git:*) 自己 commit pubspec
+        # 可绕过（PR #994/#995 教训：agent 直接 git commit "version: 3.2.0+510"）。
+        # 治本：Gate#13 用 base_ref...HEAD 全量分支 diff，覆盖 agent 自有 commit。
+        rc_bd, branch_diff_text, _ = _run_git(
+            ["git", "diff", f"{base_ref}...HEAD"],
+            repo_path, timeout=30,
+        )
+        gate13_input = branch_diff_text if (rc_bd == 0 and branch_diff_text) else diff_text
+        if gate13_input:
+            ok_g13, why_g13, info_g13 = verify_no_version_bump(gate13_input)
             if not ok_g13:
                 logger.warning("gate#13 blocked PR (ana=%d): %s", analysis_id, why_g13)
                 try:
