@@ -327,3 +327,44 @@ class CrashAuditLog(Base):
     error = Column(Text, default="")
     duration_ms = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CrashPrReviewIteration(Base):
+    """PR review 自动响应记录：每条 reviewer 评论 → agent 评判 → 修复 or 解释。
+
+    底层逻辑：crashguard 不能"无条件接受" reviewer 意见，否则 bot review 噪声会
+    污染 PR；要 LLM 二次自反思——评判 review 是否站得住脚，存在 → 修，不存在 → 评论解释。
+
+    约束：
+    - UNIQUE(pr_id, review_id) 防同条 review 重复响应
+    - iter_count ≤ max_iterations（配置项，默认 3）—— 防 fix-break-refix 循环
+    - dispatched_at 用于 cooldown 节流（30min 内同 PR 不重派）
+    """
+    __tablename__ = "crash_pr_review_iterations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pr_id = Column(Integer, index=True, nullable=False)        # → crash_pull_requests.id
+    iter_count = Column(Integer, nullable=False, default=1)    # 第几轮（1/2/3）
+    review_author = Column(String(128), default="")            # copilot-pull-request-reviewer / chatgpt-codex-connector / claude / 人工
+    review_id = Column(String(128), nullable=False)            # GitHub review GraphQL id（去重抓手）
+    review_body_excerpt = Column(Text, default="")             # review 内容摘要（≤2000 字）
+    dispatched_at = Column(DateTime, default=datetime.utcnow, index=True)
+    completed_at = Column(DateTime, nullable=True)
+    # verdict 取值：
+    #   addressed   → agent 判定问题真存在，已 commit 修复
+    #   explained   → agent 判定问题不存在/有意为之，已发解释评论
+    #   skipped     → 被 cooldown / max_iter / kill switch 跳过
+    #   gate_blocked→ agent 改了但被 Gate#1-13 拦下
+    #   failed      → agent crash / timeout / 其它失败
+    verdict = Column(String(32), default="")
+    fix_commit_sha = Column(String(64), default="")            # verdict=addressed 时填
+    response_comment = Column(Text, default="")                # 回 PR 的评论内容
+    error = Column(Text, default="")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "pr_id", "review_id",
+            name="uq_crash_pr_review_iter_pr_review",
+        ),
+        Index("ix_crash_pr_review_iter_pr_dispatched", "pr_id", "dispatched_at"),
+    )

@@ -288,6 +288,25 @@ class CrashguardSettings(BaseSettings):
     gate_ci_feedback_enabled: bool = True
     gate_ci_feedback_close_on_fail: bool = True  # CI 失败自动关 PR
 
+    # === PR Review 自动响应（Step 3）===
+    # 默认关，启用前先在测试 PR 上验过。开启后 pr_sync tick 内会拉每条 open PR 的
+    # reviews，对未响应的 review 调 LLM 评判：问题真存在 → 修复 commit；不存在 →
+    # 发评论解释。所有 Gate#1-13 闸门复用。
+    pr_review_response_enabled: bool = False
+    # 每条 PR 最多自动响应 N 轮（防 fix-break-refix 循环）
+    pr_review_response_max_iterations: int = 3
+    # 同 PR 距上次 dispatch ≤ N min 跳过（cooldown 节流）
+    pr_review_response_cooldown_minutes: int = 30
+    # 允许响应的 reviewer 白名单——其它 author（特别是 owner 本人 / unknown bot）跳过
+    # 默认覆盖 Copilot / Codex / Claude；人工评审走人工 PR 流程，agent 不抢
+    pr_review_response_allowed_authors: list[str] = [
+        "copilot-pull-request-reviewer",
+        "chatgpt-codex-connector",
+        "claude",
+    ]
+    # review body 字符数下限——太短的 review（如 "LGTM" "+1"）信噪比低，直接跳过
+    pr_review_response_min_body_chars: int = 50
+
     model_config = {
         "env_prefix": "CRASHGUARD_",
         "env_file": str(PROJECT_ROOT / ".env"),
