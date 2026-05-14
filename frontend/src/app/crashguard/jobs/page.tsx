@@ -6,8 +6,11 @@ import {
   fetchCrashJobsStatus,
   fetchCrashJobHeartbeats,
   triggerCrashJobNow,
+  fetchAlertChannelsStatus,
+  formatSGT,
   type CrashJobStatusItem,
   type CrashJobHeartbeatItem,
+  type AlertChannelsStatus,
 } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
@@ -40,8 +43,8 @@ const HEALTH_LABEL: Record<CrashJobStatusItem["health"], string> = {
 
 function _fmtTime(s: string | null): string {
   if (!s) return "—";
-  // server 给的是 naive datetime（UTC）；前端展示同样不带 TZ 后缀，避免误解
-  return s.replace("T", " ").slice(0, 19);
+  // server 给的是 naive UTC datetime；展示统一锚定到 SGT（UTC+8）
+  return formatSGT(s);
 }
 
 function _fmtAgo(s: string | null, now: Date): string {
@@ -65,6 +68,7 @@ export default function CrashguardJobsPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [running, setRunning] = useState<Record<string, boolean>>({});
   const [toast, setToast] = useState<string | null>(null);
+  const [alertChannels, setAlertChannels] = useState<AlertChannelsStatus | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,16 +83,28 @@ export default function CrashguardJobsPage() {
     }
   }, []);
 
+  const loadAlertChannels = useCallback(async () => {
+    try {
+      const r = await fetchAlertChannelsStatus();
+      setAlertChannels(r);
+    } catch {
+      // 静默失败：tile 显示 "—" 不影响主表格
+    }
+  }, []);
+
   // 初次加载 + 每 30s 自动刷新（让运维放着看）
   useEffect(() => {
     load();
+    loadAlertChannels();
     const t1 = setInterval(load, 30_000);
     const t2 = setInterval(() => setNow(new Date()), 5_000);
+    const t3 = setInterval(loadAlertChannels, 30_000);
     return () => {
       clearInterval(t1);
       clearInterval(t2);
+      clearInterval(t3);
     };
-  }, [load]);
+  }, [load, loadAlertChannels]);
 
   const runNow = async (jobName: string) => {
     if (running[jobName]) return;
@@ -138,6 +154,79 @@ export default function CrashguardJobsPage() {
           <Link href="/crashguard" style={{ color: D.accent, fontSize: 13, textDecoration: "none" }}>
             ← {t("返回主页")}
           </Link>
+        </div>
+
+        {/* Alert Channels Tile */}
+        <div style={{ background: D.surface, borderRadius: 8, border: `1px solid ${D.border}`, padding: "16px 20px", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: D.text1 }}>
+              📡 {t("Alert Channels")} — {t("近 24h 命中")}
+            </span>
+            {alertChannels && (
+              <span style={{ fontSize: 11, color: D.text3 }}>
+                {t("更新于")} {formatSGT(alertChannels.as_of)} SGT
+                &nbsp;·&nbsp;
+                {t("cache")} {alertChannels.datadog_cache.count} {t("keys")}
+                &nbsp;·&nbsp;
+                {t("审计行")} {alertChannels.audit_rows_24h}
+              </span>
+            )}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+            {alertChannels
+              ? alertChannels.channels.map((ch) => {
+                  const badgeColor = !ch.enabled ? D.danger : ch.shadow_mode ? D.text3 : D.ok;
+                  const badgeLabel = !ch.enabled ? "OFF" : ch.shadow_mode ? t("影子") : "ON";
+                  const badgeBg = !ch.enabled ? "rgba(220,38,38,0.10)" : ch.shadow_mode ? "rgba(156,163,175,0.15)" : "rgba(22,163,74,0.10)";
+                  return (
+                    <div
+                      key={ch.name}
+                      style={{
+                        background: "#F9FAFB",
+                        borderRadius: 6,
+                        padding: "12px 14px",
+                        border: `1px solid ${D.border}`,
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <span style={{ fontSize: 11, color: D.text2, fontWeight: 500 }}>{ch.label}</span>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: "1px 6px",
+                            borderRadius: 3,
+                            background: badgeBg,
+                            color: badgeColor,
+                          }}
+                        >
+                          {badgeLabel}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 28, fontWeight: 700, color: D.text1, lineHeight: 1 }}>
+                        {ch.count_24h}
+                      </div>
+                      <div style={{ fontSize: 10, color: D.text3, marginTop: 4 }}>
+                        {t("命中")}
+                      </div>
+                    </div>
+                  );
+                })
+              : Array.from({ length: 4 }).map((_, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      background: "#F9FAFB",
+                      borderRadius: 6,
+                      padding: "12px 14px",
+                      border: `1px solid ${D.border}`,
+                      minHeight: 70,
+                    }}
+                  >
+                    <div style={{ color: D.text3, fontSize: 12 }}>{t("加载中…")}</div>
+                  </div>
+                ))}
+          </div>
         </div>
 
         {error && (
@@ -212,7 +301,7 @@ export default function CrashguardJobsPage() {
                     </td>
                     <td style={{ padding: "12px 14px" }}>
                       <div style={{ fontSize: 12 }}>{_fmtAgo(it.last_fired_at, now)}</div>
-                      <div style={{ fontSize: 11, color: D.text3 }}>{_fmtTime(it.last_fired_at)} UTC</div>
+                      <div style={{ fontSize: 11, color: D.text3 }}>{_fmtTime(it.last_fired_at)} SGT</div>
                       {it.last_status === "failed" && it.last_error && (
                         <div style={{ fontSize: 11, color: D.danger, marginTop: 2, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           ⚠️ {it.last_error}
@@ -301,7 +390,7 @@ export default function CrashguardJobsPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: "#F9FAFB", textAlign: "left" }}>
-                      <th style={{ padding: "8px 10px" }}>{t("时间 (UTC)")}</th>
+                      <th style={{ padding: "8px 10px" }}>{t("时间 (SGT)")}</th>
                       <th style={{ padding: "8px 10px" }}>{t("状态")}</th>
                       <th style={{ padding: "8px 10px" }}>{t("耗时")}</th>
                       <th style={{ padding: "8px 10px" }}>{t("摘要")} / Error</th>

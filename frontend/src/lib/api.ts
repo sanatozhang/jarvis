@@ -16,6 +16,26 @@ export function formatLocalTime(utcIso: string | undefined | null, mode: "dateti
   return `${date} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/**
+ * Convert a UTC ISO timestamp to Singapore time (UTC+8) string.
+ * Unlike formatLocalTime, this is deterministic regardless of browser TZ —
+ * Plaud 主用户在 SG/上海，所有时间统一锚定 UTC+8 展示，避免跨时区误读。
+ *
+ * Backend may send naive UTC strings without "Z" suffix; we add it before parsing.
+ */
+export function formatSGT(utcIso: string | undefined | null, mode: "datetime" | "date" = "datetime"): string {
+  if (!utcIso) return "—";
+  const iso = utcIso.endsWith("Z") ? utcIso : utcIso + "Z";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return utcIso;
+  // 强制 UTC+8 投影：用 getTime() + 8h 后取 UTC 字段，避开浏览器本地 TZ
+  const sgt = new Date(d.getTime() + 8 * 3600 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = `${sgt.getUTCFullYear()}-${pad(sgt.getUTCMonth() + 1)}-${pad(sgt.getUTCDate())}`;
+  if (mode === "date") return date;
+  return `${date} ${pad(sgt.getUTCHours())}:${pad(sgt.getUTCMinutes())}`;
+}
+
 const BASE = "/api";
 
 // 携带 HTTP 状态 + endpoint 的结构化错误，前端可按 status 决定是否降级显示
@@ -1424,6 +1444,27 @@ export const triggerCrashJobNow = (jobName: string) =>
     `/crash/jobs/${encodeURIComponent(jobName)}/run-now`,
     { method: "POST", body: "{}" },
   );
+
+export interface AlertChannelItem {
+  name: string;
+  label: string;
+  count_24h: number;
+  enabled: boolean;
+  shadow_mode: boolean;
+  threshold?: Record<string, number>;
+}
+
+export interface AlertChannelsStatus {
+  ok: boolean;
+  window_hours: number;
+  as_of: string;
+  channels: AlertChannelItem[];
+  audit_rows_24h: number;
+  datadog_cache: { keys: string[]; count: number };
+}
+
+export const fetchAlertChannelsStatus = () =>
+  request<AlertChannelsStatus>("/crash/alert-channels");
 
 export const fetchCrashHourlyAlertDetail = (id: number) =>
   request<{

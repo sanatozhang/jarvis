@@ -2268,6 +2268,90 @@ def _interval_minutes_from_cron(cron_expr: str) -> Optional[int]:
     return None
 
 
+@router.get("/alert-channels")
+async def alert_channels_status() -> Dict[str, Any]:
+    """各告警通道近 24h 命中统计 + shadow_mode 状态 + cache stats。
+
+    底层逻辑：扫 crash_hourly_alerts 表过去 24h 的 alert_payload，
+    分别累计 new / surge / new_version / new_crash 命中数。
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlyAlert
+    from app.crashguard.services.datadog_cache import DatadogCache
+    import json as _json
+
+    s = get_crashguard_settings()
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+
+    counts = {"new": 0, "surge": 0, "new_version": 0, "new_crash": 0}
+    total_rows = 0
+
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(CrashHourlyAlert).where(CrashHourlyAlert.created_at >= cutoff)
+        )).scalars().all()
+        for r in rows:
+            total_rows += 1
+            try:
+                p = _json.loads(r.alert_payload or "{}")
+            except Exception:
+                continue
+            for k in counts.keys():
+                counts[k] += len(p.get(k) or [])
+
+    # cache stats
+    cache_stats = DatadogCache.stats()
+
+    return {
+        "ok": True,
+        "window_hours": 24,
+        "as_of": datetime.utcnow().isoformat(),
+        "channels": [
+            {
+                "name": "new",
+                "label": "新增 (channel 2)",
+                "count_24h": counts["new"],
+                "enabled": s.hourly_alert_enabled,
+                "shadow_mode": False,  # channel 2 不支持 shadow
+            },
+            {
+                "name": "surge",
+                "label": "上涨 (channel 2)",
+                "count_24h": counts["surge"],
+                "enabled": s.hourly_alert_enabled,
+                "shadow_mode": False,
+            },
+            {
+                "name": "new_version",
+                "label": "新版本桶 (channel 1)",
+                "count_24h": counts["new_version"],
+                "enabled": s.hourly_alert_new_version_enabled,
+                "shadow_mode": s.hourly_alert_new_version_shadow_mode,
+                "threshold": {
+                    "min_events": s.hourly_alert_new_version_min_events,
+                    "user_rate_pct": s.hourly_alert_new_version_user_rate_pct,
+                },
+            },
+            {
+                "name": "new_crash",
+                "label": "新 crash 兜底 (channel 3)",
+                "count_24h": counts["new_crash"],
+                "enabled": s.hourly_alert_new_crash_enabled,
+                "shadow_mode": s.hourly_alert_new_crash_shadow_mode,
+                "threshold": {
+                    "window_hours": s.hourly_alert_new_crash_window_hours,
+                    "min_events": s.hourly_alert_new_crash_min_events,
+                    "min_sessions": s.hourly_alert_new_crash_min_sessions,
+                },
+            },
+        ],
+        "audit_rows_24h": total_rows,
+        "datadog_cache": cache_stats,
+    }
+
+
 @router.get("/jobs/{job_name}/heartbeats")
 async def list_job_heartbeats(
     job_name: str,
