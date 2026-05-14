@@ -82,11 +82,17 @@ class ClaudeCodeAgent(BaseAgent):
                     logger.error("Claude Code token quota exhausted. raw: %s", raw_err)
                     return AnalysisResult(
                         task_id="", issue_id="",
-                        problem_type="Claude 额度不足",
+                        problem_type="Claude API Quota Exhausted",
+                        problem_type_en="Claude API Quota Exhausted",
                         root_cause=(
-                            "Claude Code 额度已耗尽，无法完成分析。\n\n"
-                            f"原始错误: {raw_err}\n\n"
-                            "请检查账户余额或等待额度重置后重试。"
+                            "Claude Code API quota has been exhausted; analysis could not complete.\n\n"
+                            f"Original error: {raw_err}\n\n"
+                            "Please check account balance or wait for quota reset, then retry."
+                        ),
+                        root_cause_en=(
+                            "Claude Code API quota has been exhausted; analysis could not complete.\n\n"
+                            f"Original error: {raw_err}\n\n"
+                            "Please check account balance or wait for quota reset, then retry."
                         ),
                         confidence="low", needs_engineer=False, system_failure=True, agent_type="claude_code",
                     )
@@ -167,7 +173,7 @@ class ClaudeCodeAgent(BaseAgent):
                     # Accept any result with non-empty root_cause that isn't the literal timeout marker.
                     # A partial result (confidence=low, placeholder user_reply) is strictly better
                     # than reporting 600s of work as a total failure.
-                    if result.root_cause and result.root_cause != "分析超时":
+                    if result.root_cause and result.root_cause not in ("分析超时", "Analysis Timeout"):
                         logger.info(
                             "Claude Code timed out but result.json exists — salvaging partial result (type=%s, confidence=%s)",
                             result.problem_type, result.confidence,
@@ -182,7 +188,7 @@ class ClaudeCodeAgent(BaseAgent):
             if stdout_dump and "{" in stdout_dump:
                 try:
                     result = self.parse_result(workspace, stdout_dump)
-                    if result.root_cause and result.root_cause != "分析超时":
+                    if result.root_cause and result.root_cause not in ("分析超时", "Analysis Timeout"):
                         logger.info(
                             "Claude Code timed out, salvaging from stdout (type=%s)",
                             result.problem_type,
@@ -195,8 +201,10 @@ class ClaudeCodeAgent(BaseAgent):
             return AnalysisResult(
                 task_id="",
                 issue_id="",
-                problem_type="分析超时",
-                root_cause=f"Claude Code 分析超过 {self.config.timeout}s 超时（已 dump stdout/stderr 到 output/timeout_*.txt 供排查）",
+                problem_type="Analysis Timeout",
+                problem_type_en="Analysis Timeout",
+                root_cause=f"Claude Code analysis exceeded {self.config.timeout}s timeout (stdout/stderr dumped to output/timeout_*.txt for investigation).",
+                root_cause_en=f"Claude Code analysis exceeded {self.config.timeout}s timeout (stdout/stderr dumped to output/timeout_*.txt for investigation).",
                 confidence="low",
                 needs_engineer=False,
                 system_failure=True,
@@ -207,8 +215,10 @@ class ClaudeCodeAgent(BaseAgent):
             return AnalysisResult(
                 task_id="",
                 issue_id="",
-                problem_type="Agent 不可用",
-                root_cause="Claude Code CLI 未安装或不在 PATH 中",
+                problem_type="Agent Unavailable",
+                problem_type_en="Agent Unavailable",
+                root_cause="Claude Code CLI is not installed or not on PATH.",
+                root_cause_en="Claude Code CLI is not installed or not on PATH.",
                 confidence="low",
                 needs_engineer=False,
                 system_failure=True,

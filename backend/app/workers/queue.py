@@ -43,7 +43,7 @@ async def analyze_task(ctx: Dict[str, Any], task_id: str, issue_id: str, agent_o
             on_progress=on_progress,
         )
         await db.save_analysis(result.model_dump())
-        await db.update_task(task_id, status="done", progress=100, message="分析完成")
+        await db.update_task(task_id, status="done", progress=100, message="Analysis complete")
         logger.info("Task %s completed successfully", task_id)
         return {"status": "done", "task_id": task_id}
 

@@ -31,7 +31,12 @@ AGENT_REGISTRY: Dict[str, type[BaseAgent]] = {
 }
 
 # problem_type values that indicate token quota exhaustion
-_QUOTA_EXHAUSTED_TYPES = {"Claude 额度不足", "OpenAI 额度不足"}
+_QUOTA_EXHAUSTED_TYPES = {
+    # 英文（当前 problem_type 用的）
+    "Claude API Quota Exhausted", "OpenAI API Quota Exhausted",
+    # 兼容历史中文（旧数据 / 老镜像）
+    "Claude 额度不足", "OpenAI 额度不足",
+}
 
 # Fallback order: primary → fallback
 _FALLBACK_MAP: Dict[str, str] = {
@@ -243,7 +248,7 @@ class AgentOrchestrator:
                     )
                     if on_progress:
                         import asyncio
-                        val = on_progress(55, f"{primary_name} 额度不足，自动切换到 {fallback_name}...")
+                        val = on_progress(55, f"{primary_name} quota exhausted; auto-switching to {fallback_name}...")
                         if asyncio.iscoroutine(val):
                             await val
 
@@ -260,10 +265,15 @@ class AgentOrchestrator:
                         result = AnalysisResult(
                             task_id="",
                             issue_id="",
-                            problem_type="所有模型额度不足",
+                            problem_type="All Model Quotas Exhausted",
+                            problem_type_en="All Model Quotas Exhausted",
                             root_cause=(
-                                "Claude 和 OpenAI 的 API 额度均已耗尽，无法完成分析。\n\n"
-                                "请联系 sanato 充值或更换 API Key。"
+                                "Both Claude and OpenAI API quotas have been exhausted; analysis could not complete.\n\n"
+                                "Please contact sanato to top up or rotate the API key."
+                            ),
+                            root_cause_en=(
+                                "Both Claude and OpenAI API quotas have been exhausted; analysis could not complete.\n\n"
+                                "Please contact sanato to top up or rotate the API key."
                             ),
                             confidence="low",
                             needs_engineer=False,

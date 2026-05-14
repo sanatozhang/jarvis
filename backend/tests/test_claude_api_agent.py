@@ -164,7 +164,7 @@ class TestAgentLoop:
 
         agent = ClaudeApiAgent(config)
         result = await agent.analyze(workspace=workspace, prompt="x")
-        assert result.problem_type == "Claude 额度不足"
+        assert result.problem_type == "Claude API Quota Exhausted"
         assert "rate_limit" in result.root_cause or "hit limit" in result.root_cause
 
     async def test_overloaded_swaps_to_fallback_model(self, workspace, config, monkeypatch):

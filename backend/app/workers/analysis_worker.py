@@ -131,7 +131,7 @@ async def run_analysis_pipeline(
                 import json as _jm
                 result.log_metadata = _jm.loads(prev_analysis.log_metadata_json)
             if on_progress:
-                await on_progress(100, "分析完成")
+                await on_progress(100, "Analysis complete")
             return result
         # Fast path unavailable — fall through to full pipeline
         logger.info("Follow-up fast path unavailable for %s, running full pipeline", issue_id)
@@ -345,7 +345,7 @@ async def run_analysis_pipeline(
         result.followup_question = followup_question
 
     if on_progress:
-        await on_progress(100, "分析完成")
+        await on_progress(100, "Analysis complete")
 
     return result
 

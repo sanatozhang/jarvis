@@ -1364,15 +1364,39 @@ export default function HomePage() {
                                   {r.agent_model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}
                                 </span>
                               )}
-                              {r.needs_engineer && (
-                                <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
-                                  style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(184,146,46,0.25)` }}>
-                                  {lang === "cn" ? "需工程师" : "Engineer needed"}
-                                </span>
-                              )}
+                              {r.needs_engineer && (() => {
+                                // Plan B: badge 三态
+                                //   未反馈   → 橙色「AI 标：需工程师」
+                                //   反馈 false → 灰色「AI 标：需工程师（客服已纠偏）」
+                                //   反馈 true  → 绿色「AI 标：需工程师 ✅ 客服已确认」
+                                const fb = r.engineer_label_feedback;
+                                let bg = S.accentBg, color = S.accent, border = "rgba(184,146,46,0.25)";
+                                let text = lang === "cn" ? "🤖 AI 标：需工程师" : "🤖 AI: Engineer needed";
+                                let suffix = "";
+                                if (fb === false) {
+                                  bg = "rgba(107,114,128,0.08)"; color = "#6B7280"; border = "rgba(107,114,128,0.25)";
+                                  suffix = lang === "cn" ? "（客服已纠偏）" : "(CS overrode)";
+                                } else if (fb === true) {
+                                  bg = "rgba(34,197,94,0.10)"; color = "#16A34A"; border = "rgba(34,197,94,0.30)";
+                                  suffix = lang === "cn" ? " ✅ 客服已确认" : " ✅ Confirmed";
+                                }
+                                return (
+                                  <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
+                                    style={{ background: bg, color, border: `1px solid ${border}` }}
+                                    title={
+                                      r.engineer_label_feedback_by
+                                        ? `${lang === "cn" ? "反馈人" : "by"}: ${r.engineer_label_feedback_by}`
+                                        : undefined
+                                    }>
+                                    {text}{suffix}
+                                  </span>
+                                );
+                              })()}
                             </div>
-                            {/* T3 客服反馈闭环：对 AI 的"需工程师"标签做事后纠偏 */}
-                            {r.needs_engineer && detailId && (
+                            {/* T3 客服反馈闭环：未反馈时才显示 widget；已反馈状态由 badge 表达 */}
+                            {r.needs_engineer && detailId
+                              && (r.engineer_label_feedback === null || r.engineer_label_feedback === undefined)
+                              && (
                               <EngineerLabelFeedbackWidget
                                 issueId={detailId}
                                 taskId={r.task_id}
@@ -1760,44 +1784,11 @@ function EngineerLabelFeedbackWidget(props: {
   lang: "cn" | "en";
   onSubmit: (actuallyNeededEngineer: boolean, note?: string) => Promise<void>;
 }) {
-  const { feedback, feedbackBy, feedbackAt, lang, onSubmit } = props;
+  const { lang, onSubmit } = props;
   const [submitting, setSubmitting] = useState<boolean>(false);
 
-  const formatTime = (iso: string) => {
-    if (!iso) return "";
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString(lang === "cn" ? "zh-CN" : "en-US", {
-        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-      });
-    } catch { return ""; }
-  };
-
-  // 已有反馈：展示状态，不再让点
-  if (feedback !== null && feedback !== undefined) {
-    const isCorrect = feedback === true;
-    const bg = isCorrect ? "rgba(34,197,94,0.08)" : "rgba(234,179,8,0.08)";
-    const fg = isCorrect ? "#16A34A" : "#CA8A04";
-    const border = isCorrect ? "rgba(34,197,94,0.25)" : "rgba(234,179,8,0.25)";
-    return (
-      <div className="flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-xs"
-        style={{ background: bg, color: fg, border: `1px solid ${border}` }}>
-        <span className="font-semibold">
-          {isCorrect
-            ? (lang === "cn" ? "✅ 客服已确认确实需要工程师" : "✅ Confirmed: engineer was needed")
-            : (lang === "cn" ? "🟡 客服反馈：AI 误判，实际无需工程师" : "🟡 Feedback: AI false positive")}
-        </span>
-        {feedbackBy && (
-          <span className="opacity-60">
-            {lang === "cn" ? "由" : "by"} {feedbackBy}
-            {feedbackAt && ` · ${formatTime(feedbackAt)}`}
-          </span>
-        )}
-      </div>
-    );
-  }
-
-  // 未反馈：给两按钮
+  // Plan B: 已反馈状态由 badge 自己表达，widget 只负责"未反馈→提交"这一段
+  // 调用方已在外层过滤掉 feedback!==null 的 case，这里专注按钮交互
   const handleClick = async (actuallyNeeded: boolean) => {
     if (submitting) return;
     setSubmitting(true);

@@ -347,11 +347,17 @@ def _quota_exhausted_result(raw_err: str) -> AnalysisResult:
     return AnalysisResult(
         task_id="",
         issue_id="",
-        problem_type="Claude 额度不足",
+        problem_type="Claude API Quota Exhausted",
+        problem_type_en="Claude API Quota Exhausted",
         root_cause=(
-            "Claude API 额度已耗尽，无法完成分析。\n\n"
-            f"原始错误: {raw_err[:500]}\n\n"
-            "请检查账户余额或等待额度重置后重试。"
+            "Claude API quota has been exhausted; analysis could not complete.\n\n"
+            f"Original error: {raw_err[:500]}\n\n"
+            "Please check account balance or wait for quota reset, then retry."
+        ),
+        root_cause_en=(
+            "Claude API quota has been exhausted; analysis could not complete.\n\n"
+            f"Original error: {raw_err[:500]}\n\n"
+            "Please check account balance or wait for quota reset, then retry."
         ),
         confidence="low",
         needs_engineer=False,

@@ -311,6 +311,10 @@ async def fix_false_failures():
     from sqlalchemy import select
 
     _system_failure_types = {
+        # 英文（当前 problem_type）
+        "Analysis Timeout", "Log Parse Failed", "Agent Unavailable",
+        "OpenAI API Quota Exhausted", "Claude API Quota Exhausted", "All Model Quotas Exhausted",
+        # 兼容历史中文
         "分析超时", "日志解析失败", "Agent 不可用",
         "OpenAI 额度不足", "Claude 额度不足", "所有模型额度不足",
     }
@@ -339,16 +343,16 @@ async def fix_false_failures():
                 kw in rc.lower() for kw in ["max turns", "reached max", "error:"]
             )
             has_substance = bool(rc) and not is_only_error and not is_short_error
-            has_real_type = bool(pt and pt not in _system_failure_types and pt != "未知")
+            has_real_type = bool(pt and pt not in _system_failure_types and pt not in ("未知", "Unknown"))
 
-            is_fail = pt in _system_failure_types or (pt == "未知" and not has_substance)
+            is_fail = pt in _system_failure_types or (pt in ("未知", "Unknown") and not has_substance)
             if pt not in _system_failure_types and (has_substance or has_real_type):
                 is_fail = False
 
             if not is_fail:
                 # This task was wrongly marked as failed → fix it
                 task.status = "done"
-                task.message = "分析完成（已修正）"
+                task.message = "Analysis complete (auto-corrected)"
                 task.error = None
 
                 # Also fix the issue status
@@ -432,7 +436,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 task_id,
                 status="failed",
                 progress=100,
-                message=f"分析超时（task_timeout={_task_timeout}s）",
+                message=f"Analysis timeout (task_timeout={_task_timeout}s)",
                 error=f"task_timeout_exceeded ({_task_timeout}s)",
             )
             return
@@ -445,6 +449,10 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
         # Only infrastructure errors (timeout, quota, crash) are real failures.
 
         _system_failure_types = {
+            # 英文（当前 problem_type）
+            "Analysis Timeout", "Log Parse Failed", "Agent Unavailable",
+            "OpenAI API Quota Exhausted", "Claude API Quota Exhausted", "All Model Quotas Exhausted",
+            # 兼容历史中文
             "分析超时", "日志解析失败", "Agent 不可用",
             "OpenAI 额度不足", "Claude 额度不足", "所有模型额度不足",
         }
@@ -482,11 +490,11 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
         if is_real_failure:
             error_msg = result.root_cause[:200]
-            await db.update_task(task_id, status="failed", progress=100, message="分析失败", error=error_msg)
+            await db.update_task(task_id, status="failed", progress=100, message="Analysis failed", error=error_msg)
             await db.update_issue_status(issue_id, "failed")
             _update_progress(task_id, TaskProgress(
                 task_id=task_id, issue_id=issue_id, status=TaskStatus.FAILED,
-                progress=100, message="分析失败", error=error_msg, updated_at=datetime.utcnow(),
+                progress=100, message="Analysis failed", error=error_msg, updated_at=datetime.utcnow(),
             ))
             # Auto-notify oncall engineers on analysis failure (gated by ENABLE_ONCALL_NOTIFY)
             import os
@@ -506,11 +514,11 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             duration = int((_time.monotonic() - _start_time) * 1000)
             await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": result.problem_type, "error": error_msg[:200]})
         else:
-            await db.update_task(task_id, status="done", progress=100, message="分析完成")
+            await db.update_task(task_id, status="done", progress=100, message="Analysis complete")
             await db.update_issue_status(issue_id, "done")
             _update_progress(task_id, TaskProgress(
                 task_id=task_id, issue_id=issue_id, status=TaskStatus.DONE,
-                progress=100, message="分析完成", updated_at=datetime.utcnow(),
+                progress=100, message="Analysis complete", updated_at=datetime.utcnow(),
             ))
 
             # Track: analysis succeeded
@@ -529,7 +537,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 issue_id=issue_id,
                 status=TaskStatus.FAILED,
                 progress=0,
-                message="分析失败",
+                message="Analysis failed",
                 error=error_str,
                 updated_at=datetime.utcnow(),
             ),

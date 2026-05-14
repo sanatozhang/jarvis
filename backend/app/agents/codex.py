@@ -45,8 +45,10 @@ class CodexAgent(BaseAgent):
             logger.error("Codex CLI not found in PATH")
             return AnalysisResult(
                 task_id="", issue_id="",
-                problem_type="Agent 不可用",
-                root_cause="Codex CLI 未安装。请在服务器上安装: npm install -g @openai/codex",
+                problem_type="Agent Unavailable",
+                problem_type_en="Agent Unavailable",
+                root_cause="Codex CLI is not installed. Install on the server: npm install -g @openai/codex",
+                root_cause_en="Codex CLI is not installed. Install on the server: npm install -g @openai/codex",
                 confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
             )
 
@@ -70,8 +72,10 @@ class CodexAgent(BaseAgent):
             logger.error("OPENAI_API_KEY not set")
             return AnalysisResult(
                 task_id="", issue_id="",
-                problem_type="Agent 不可用",
-                root_cause="OPENAI_API_KEY 未配置。请在 .env 文件中设置。",
+                problem_type="Agent Unavailable",
+                problem_type_en="Agent Unavailable",
+                root_cause="OPENAI_API_KEY is not configured. Set it in the .env file.",
+                root_cause_en="OPENAI_API_KEY is not configured. Set it in the .env file.",
                 confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
             )
 
@@ -117,10 +121,15 @@ class CodexAgent(BaseAgent):
                 logger.error("Codex exit code 1: OpenAI quota exhausted. stderr: %s", stderr[:300])
                 return AnalysisResult(
                     task_id="", issue_id="",
-                    problem_type="OpenAI 额度不足",
+                    problem_type="OpenAI API Quota Exhausted",
+                    problem_type_en="OpenAI API Quota Exhausted",
                     root_cause=(
-                        "OpenAI API 额度已耗尽，无法完成分析。\n\n"
-                        "请检查 OpenAI 账户余额或升级套餐后重试。"
+                        "OpenAI API quota has been exhausted; analysis could not complete.\n\n"
+                        "Please check OpenAI account balance or upgrade the plan, then retry."
+                    ),
+                    root_cause_en=(
+                        "OpenAI API quota has been exhausted; analysis could not complete.\n\n"
+                        "Please check OpenAI account balance or upgrade the plan, then retry."
                     ),
                     confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
                 )
@@ -152,7 +161,8 @@ class CodexAgent(BaseAgent):
                 diag.append(f"stdout (first 500): {stdout[:500] if stdout else '(empty)'}")
                 logger.error("Parse failed diagnostics:\n%s", "\n".join(diag))
 
-                result.root_cause = "分析未产出结构化结果，请稍后重试或联系管理员查看日志。"
+                result.root_cause = "Analysis did not produce a structured result. Please retry later or contact an admin to inspect logs."
+                result.root_cause_en = result.root_cause
 
             return result
 
@@ -160,16 +170,20 @@ class CodexAgent(BaseAgent):
             logger.error("Codex timed out after %ds", self.config.timeout)
             return AnalysisResult(
                 task_id="", issue_id="",
-                problem_type="分析超时",
-                root_cause=f"Codex 分析超过 {self.config.timeout}s 超时",
+                problem_type="Analysis Timeout",
+                problem_type_en="Analysis Timeout",
+                root_cause=f"Codex analysis exceeded {self.config.timeout}s timeout.",
+                root_cause_en=f"Codex analysis exceeded {self.config.timeout}s timeout.",
                 confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
             )
         except FileNotFoundError:
             logger.error("Codex CLI not found. Is it installed?")
             return AnalysisResult(
                 task_id="", issue_id="",
-                problem_type="Agent 不可用",
-                root_cause="Codex CLI 未安装或不在 PATH 中",
+                problem_type="Agent Unavailable",
+                problem_type_en="Agent Unavailable",
+                root_cause="Codex CLI is not installed or not on PATH.",
+                root_cause_en="Codex CLI is not installed or not on PATH.",
                 confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
             )
 

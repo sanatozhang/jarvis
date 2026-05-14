@@ -278,10 +278,18 @@ async def _run_api_analysis(
         result.rule_type = rule_type
 
         # Check if real failure
+        _FAIL_TYPES = (
+            # 英文
+            "Analysis Timeout", "Log Parse Failed", "Agent Unavailable", "Unknown",
+            "Analysis Error",
+            # 兼容历史中文
+            "分析超时", "日志解析失败", "Agent 不可用", "未知", "分析异常",
+        )
         is_failure = (
-            result.problem_type in ("分析超时", "日志解析失败", "Agent 不可用", "未知")
+            result.problem_type in _FAIL_TYPES
             or (result.confidence == "low" and result.needs_engineer and not result.user_reply)
             or "未产出结构化结果" in (result.root_cause or "")
+            or "did not produce structured result" in (result.root_cause or "").lower()
         )
 
         await _finish_task(task_id, record_id, result, webhook_url, is_failure=is_failure)
@@ -290,7 +298,10 @@ async def _run_api_analysis(
         logger.error("API analysis %s failed: %s", task_id, e, exc_info=True)
         result = AnalysisResult(
             task_id=task_id, issue_id=record_id,
-            problem_type="分析异常", root_cause=str(e),
+            problem_type="Analysis Error",
+            problem_type_en="Analysis Error",
+            root_cause=str(e),
+            root_cause_en=str(e),
             confidence="low", needs_engineer=True,
         )
         await _finish_task(task_id, record_id, result, webhook_url, is_failure=True)
@@ -307,12 +318,12 @@ async def _finish_task(
     await db.save_analysis(result.model_dump())
 
     if is_failure:
-        await db.update_task(task_id, status="failed", progress=100, message="分析失败", error=result.root_cause[:200])
+        await db.update_task(task_id, status="failed", progress=100, message="Analysis failed", error=result.root_cause[:200])
         await db.update_issue_status(record_id, "failed")
         await db.log_event("analysis_fail", issue_id=record_id, username="api",
                            detail={"reason": result.problem_type})
     else:
-        await db.update_task(task_id, status="done", progress=100, message="分析完成")
+        await db.update_task(task_id, status="done", progress=100, message="Analysis complete")
         await db.update_issue_status(record_id, "done")
         await db.log_event("analysis_done", issue_id=record_id, username="api",
                            detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
