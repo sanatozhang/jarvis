@@ -17,3 +17,20 @@ forbidden_modules =
 ignore_imports =
     # crashguard.config 允许 import app.config 的 PROJECT_ROOT 与 _load_yaml
     app.crashguard.config -> app.config
+
+    # === 以下耦合点经 ADR-0001 第 4 条白名单允许 ===
+    # crashguard 经 agent_orchestrator / feishu_cli 这两个白名单点
+    # 间接 import 到 app.models.schemas 是合理的——它们是 jarvis 公开 API 的一部分。
+    # 这里 ignore 这些"末端边"打断传递链，但**直接** crashguard → app.models 仍被禁。
+    app.services.agent_orchestrator -> app.models.schemas
+    app.services.agent_orchestrator -> app.agents.codex
+    app.services.agent_orchestrator -> app.agents.claude_api
+    app.services.agent_orchestrator -> app.services.engineer_label_adjudicator
+    app.services.engineer_label_adjudicator -> app.models.schemas
+    app.agents.codex -> app.models.schemas
+    app.agents.claude_api -> app.models.schemas
+    app.agents.claude_code -> app.models.schemas
+    app.agents.base -> app.models.schemas
+    app.services.agent_orchestrator -> app.agents.base
+    app.services.agent_orchestrator -> app.agents.claude_code
+    app.services.feishu_cli -> app.models.schemas
