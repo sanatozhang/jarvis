@@ -272,7 +272,9 @@ async def run_hourly_alert_tick(
                 "hour_utc": now_hour.isoformat()}
 
     # === 获取各平台「用户量最大版本」（通道 1 分桶依据）===
-    top_versions: Dict[str, Any] = {}
+    # 拉两个窗口：24h 用于分桶（识别主版本），3h 用于 user_rate 分母校准
+    top_versions: Dict[str, Any] = {}           # 24h 窗口，用于版本分桶
+    top_versions_3h: Dict[str, Any] = {}        # 3h 窗口，用于 user_rate 分母
     if s.hourly_alert_new_version_enabled:
         try:
             from app.crashguard.services.datadog_client import DatadogClient
@@ -286,9 +288,16 @@ async def run_hourly_alert_tick(
                 ttl_seconds=6 * 3600,
                 fetch_fn=lambda: _ddclient.top_user_version_by_platform(window_hours=24),
             )
+            # 3h 窗口给 user_rate 分母用——抓手：分母颗粒度对齐 events_h 窗口
+            top_versions_3h = await DatadogCache.get_or_fetch(
+                "top_user_version:3",
+                ttl_seconds=6 * 3600,
+                fetch_fn=lambda: _ddclient.top_user_version_by_platform(window_hours=3),
+            )
         except Exception:
             logger.exception("hourly_alerter: top_user_version fetch failed, fallback to {}")
             top_versions = {}
+            top_versions_3h = {}
 
     new_items: List[Dict[str, Any]] = []
     surge_items: List[Dict[str, Any]] = []
@@ -347,7 +356,11 @@ async def run_hourly_alert_tick(
             issue_ver = attrs.get("version") or (issue_row.last_seen_version if issue_row else "") or ""
             bucket = classify_version(issue_ver, platform.lower(), top_versions)
             if bucket == "new" and s.hourly_alert_new_version_enabled:
-                denom = (top_versions.get(platform.lower()) or {}).get("users") or 0
+                # 分母优先用 3h 窗口（颗粒度对齐 events_h）；3h 缺数则降级到 24h（防完全无数据）
+                denom_3h = (top_versions_3h.get(platform.lower()) or {}).get("users") or 0
+                denom_24h = (top_versions.get(platform.lower()) or {}).get("users") or 0
+                denom = denom_3h if denom_3h > 0 else denom_24h
+                denom_source = "3h" if denom_3h > 0 else ("24h_fallback" if denom_24h > 0 else "none")
                 user_rate = events_h / denom if denom > 0 else None
                 if (
                     events_h >= s.hourly_alert_new_version_min_events
@@ -363,6 +376,8 @@ async def run_hourly_alert_tick(
                         "events_h": events_h,
                         "sessions_h": sessions_h,
                         "user_rate_pct": round((user_rate or 0) * 100, 3),
+                        "denom_source": denom_source,    # "3h" / "24h_fallback" / "none"
+                        "denom_users": denom,            # 透明化分母值，方便 audit
                     })
                 continue  # 新版本桶：无论是否触发，不走通道 2 逻辑
 

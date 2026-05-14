@@ -1269,3 +1269,161 @@ async def test_channel_3_prefers_api_over_db_for_freshness(tmp_path, monkeypatch
     assert result.get("new_crash", 0) == 0, (
         f"expected new_crash=0 (API overrides stale DB), got {result}"
     )
+
+
+# ===== Sprint B: 通道 1 user_rate 分母校准（3h 窗口）=====
+
+@pytest.mark.asyncio
+async def test_channel_1_uses_3h_denom_when_available(tmp_path, monkeypatch):
+    """Sprint B：3h 分母可用时，user_rate 用 3h 窗口计算（夜间低流量场景召回）。
+
+    场景：凌晨 3-6 点 UTC（日本/欧洲深夜）
+    - 24h 累计用户 10000，但过去 3h 实际活跃用户只有 800
+    - events_h=50 → 24h 分母 rate=50/10000=0.5%（仅刚踩阈值）
+    - 3h 分母 rate=50/800=6.25%（严重告警级，远超 0.5% 阈值）
+    期望：用 3h 分母，rate=6.25% 触发告警；denom_source="3h"
+    """
+    import json
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    # 阈值设为 1%（介于 24h rate=0.5% 和 3h rate=6.25% 之间）
+    # 若用 24h 分母：0.5% < 1% → 不触发；若用 3h 分母：6.25% > 1% → 触发
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.01")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    issues = [{
+        "id": "test_3h_denom_1",
+        "type": "issue",
+        "attributes": {
+            "events_count": 50,
+            "sessions_affected": 800,
+            "title": "NightlyCrash",
+            "platform": "android",
+            "version": "3.20.0-700",
+        },
+    }]
+
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    # mock 按 key 分流：24h 返回 10000 用户，3h 返回 800 用户（夜间低流量）
+    async def _mock_cache(key, ttl_seconds, fetch_fn):
+        if key == "top_user_version:24":
+            return {"android": {"version": "3.19.0-600", "users": 10000}}
+        elif key == "top_user_version:3":
+            return {"android": {"version": "3.19.0-600", "users": 800}}
+        return {}
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(side_effect=_mock_cache)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    # 3h 分母（800）：50/800=6.25% > 1% 阈值 → 应触发
+    assert result["alerted"] is True, (
+        f"expected alerted=True with 3h denom (6.25% > 1%), got {result}"
+    )
+    assert result["new_version"] == 1, (
+        f"expected new_version=1, got {result}"
+    )
+
+    # 验证 audit payload 中 denom_source="3h"
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlyAlert
+    from sqlalchemy import select
+    async with get_session() as session:
+        row = (await session.execute(select(CrashHourlyAlert))).scalars().first()
+    assert row is not None
+    payload = json.loads(row.alert_payload)
+    nv_list = payload.get("new_version") or []
+    assert len(nv_list) == 1, f"expected 1 new_version item, got {nv_list}"
+    assert nv_list[0]["denom_source"] == "3h", (
+        f"expected denom_source='3h', got {nv_list[0]}"
+    )
+    assert nv_list[0]["denom_users"] == 800, (
+        f"expected denom_users=800 (3h window), got {nv_list[0]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_channel_1_falls_back_to_24h_denom(tmp_path, monkeypatch):
+    """Sprint B：3h 分母缺失时自动降级到 24h 兜底（如新版本 day-1 上线 <3h 数据不足）。
+
+    场景：3h 窗口数据为空（{}），24h 窗口有数据（8000 用户）
+    - events=50, denom=8000 → rate=50/8000=0.625% > 0.5% 阈值 → 触发
+    期望：denom_source="24h_fallback"，告警正常发出
+    """
+    import json
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.005")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 13, 5, 0)  # different hour to avoid idempotency conflict
+    issues = [{
+        "id": "test_24h_fallback_1",
+        "type": "issue",
+        "attributes": {
+            "events_count": 50,
+            "sessions_affected": 800,
+            "title": "NewVersionFallback",
+            "platform": "android",
+            "version": "3.20.0-700",
+        },
+    }]
+
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    # mock：3h 数据缺失（{}），24h 有数据
+    async def _mock_cache(key, ttl_seconds, fetch_fn):
+        if key == "top_user_version:24":
+            return {"android": {"version": "3.19.0-600", "users": 8000}}
+        elif key == "top_user_version:3":
+            return {}  # 3h 数据缺失
+        return {}
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(side_effect=_mock_cache)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    # 24h 兜底（8000）：50/8000=0.625% > 0.5% 阈值 → 应触发
+    assert result["alerted"] is True, (
+        f"expected alerted=True with 24h fallback denom (0.625% > 0.5%), got {result}"
+    )
+    assert result["new_version"] == 1, (
+        f"expected new_version=1, got {result}"
+    )
+
+    # 验证 audit payload 中 denom_source="24h_fallback"
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlyAlert
+    from sqlalchemy import select
+    async with get_session() as session:
+        row = (await session.execute(select(CrashHourlyAlert))).scalars().first()
+    assert row is not None
+    payload = json.loads(row.alert_payload)
+    nv_list = payload.get("new_version") or []
+    assert len(nv_list) == 1, f"expected 1 new_version item, got {nv_list}"
+    assert nv_list[0]["denom_source"] == "24h_fallback", (
+        f"expected denom_source='24h_fallback', got {nv_list[0]}"
+    )
+    assert nv_list[0]["denom_users"] == 8000, (
+        f"expected denom_users=8000 (24h fallback), got {nv_list[0]}"
+    )
