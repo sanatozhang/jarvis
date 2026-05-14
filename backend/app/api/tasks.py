@@ -439,6 +439,15 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 message=f"Analysis timeout (task_timeout={_task_timeout}s)",
                 error=f"task_timeout_exceeded ({_task_timeout}s)",
             )
+            try:
+                from app.services.feishu_cli import notify_analysis_failure
+                await notify_analysis_failure(
+                    task_id=task_id, issue_id=issue_id,
+                    error=f"task_timeout_exceeded ({_task_timeout}s)",
+                    kind="hard",
+                )
+            except Exception as ne:
+                logger.warning("Timeout Feishu alert failed for task %s: %s", task_id, ne)
             return
 
         # Determine if this is a system-level failure vs a completed analysis.
@@ -513,6 +522,20 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             # Track: analysis failed
             duration = int((_time.monotonic() - _start_time) * 1000)
             await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": result.problem_type, "error": error_msg[:200]})
+
+            # Admin DM: link to the failed task so we can react fast.
+            try:
+                from app.services.feishu_cli import notify_analysis_failure
+                desc = getattr(getattr(result, "issue", None), "description", "") or ""
+                await notify_analysis_failure(
+                    task_id=task_id, issue_id=issue_id,
+                    error=error_msg, description=desc,
+                    problem_type=result.problem_type_en or result.problem_type,
+                    root_cause=result.root_cause_en or result.root_cause,
+                    kind="soft",
+                )
+            except Exception as ne:
+                logger.warning("Failure Feishu alert failed for task %s: %s", task_id, ne)
         else:
             await db.update_task(task_id, status="done", progress=100, message="Analysis complete")
             await db.update_issue_status(issue_id, "done")
@@ -552,3 +575,12 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": "exception", "error": error_str[:200]})
         except Exception as db_err:
             logger.error("Failed to persist task failure to DB (disk full?): %s", db_err)
+
+        try:
+            from app.services.feishu_cli import notify_analysis_failure
+            await notify_analysis_failure(
+                task_id=task_id, issue_id=issue_id,
+                error=error_str, kind="hard",
+            )
+        except Exception as ne:
+            logger.warning("Exception Feishu alert failed for task %s: %s", task_id, ne)

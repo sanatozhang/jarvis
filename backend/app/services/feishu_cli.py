@@ -884,6 +884,55 @@ async def create_escalation_group(
     }
 
 
+async def notify_analysis_failure(
+    task_id: str,
+    issue_id: str,
+    error: str,
+    description: str = "",
+    problem_type: str = "",
+    root_cause: str = "",
+    kind: str = "hard",  # "hard" = exception | "soft" = system_failure flag
+) -> bool:
+    """DM admins when an analysis task fails. Best-effort; never raises.
+
+    Recipients: ANALYSIS_FAILURE_ALERT_EMAILS env CSV; falls back to sanato.zhang@plaud.ai.
+    Includes a deep link to /tracking?detail={issue_id} when APPLLO_BASE_URL is set.
+    """
+    import os as _os
+    raw = (_os.environ.get("ANALYSIS_FAILURE_ALERT_EMAILS", "") or "").strip()
+    recipients = [e.strip() for e in raw.split(",") if e.strip()] or ["sanato.zhang@plaud.ai"]
+
+    base = (_os.environ.get("APPLLO_BASE_URL", "") or "").rstrip("/")
+    link = f"{base}/tracking?detail={issue_id}" if base else ""
+
+    title = "🚨 Analysis Task Failed" if kind == "hard" else "⚠️ Analysis System Failure"
+    lines = [
+        title,
+        f"Task: {task_id}",
+        f"Issue: {issue_id}",
+    ]
+    if description:
+        lines.append(f"Description: {description[:160]}")
+    if problem_type:
+        lines.append(f"Type: {problem_type}")
+    if root_cause:
+        lines.append(f"Root cause: {root_cause[:200]}")
+    if error:
+        lines.append(f"Error: {error[:300]}")
+    if link:
+        lines.append(f"Link: {link}")
+    text = "\n".join(lines)
+
+    sent = 0
+    for email in recipients:
+        try:
+            if await send_message(email=email, text=text):
+                sent += 1
+        except Exception as e:
+            logger.warning("notify_analysis_failure: failed to DM %s: %s", email, e)
+    return sent > 0
+
+
 async def notify_oncall(
     issue_id: str,
     description: str,

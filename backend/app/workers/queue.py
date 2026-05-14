@@ -45,11 +45,39 @@ async def analyze_task(ctx: Dict[str, Any], task_id: str, issue_id: str, agent_o
         await db.save_analysis(result.model_dump())
         await db.update_task(task_id, status="done", progress=100, message="Analysis complete")
         logger.info("Task %s completed successfully", task_id)
+
+        # Soft-fail alert: pipeline finished but agent/CLI/quota broke (system_failure flag).
+        if getattr(result, "system_failure", False):
+            try:
+                from app.services.feishu_cli import notify_analysis_failure
+                desc = getattr(getattr(result, "issue", None), "description", "") or ""
+                await notify_analysis_failure(
+                    task_id=task_id,
+                    issue_id=issue_id,
+                    error="",
+                    description=desc,
+                    problem_type=result.problem_type_en or result.problem_type,
+                    root_cause=result.root_cause_en or result.root_cause,
+                    kind="soft",
+                )
+            except Exception as notify_err:
+                logger.warning("Soft-fail Feishu alert failed for task %s: %s", task_id, notify_err)
+
         return {"status": "done", "task_id": task_id}
 
     except Exception as e:
         logger.error("Task %s failed: %s", task_id, e, exc_info=True)
         await db.update_task(task_id, status="failed", error=str(e))
+        try:
+            from app.services.feishu_cli import notify_analysis_failure
+            await notify_analysis_failure(
+                task_id=task_id,
+                issue_id=issue_id,
+                error=str(e),
+                kind="hard",
+            )
+        except Exception as notify_err:
+            logger.warning("Hard-fail Feishu alert failed for task %s: %s", task_id, notify_err)
         return {"status": "failed", "task_id": task_id, "error": str(e)}
 
 
