@@ -266,13 +266,23 @@ class AgentOrchestrator:
                                 "请联系 sanato 充值或更换 API Key。"
                             ),
                             confidence="low",
-                            needs_engineer=True,
+                            needs_engineer=False,
+                            system_failure=True,
                             agent_type=f"{primary_name}+{fallback_name}",
                         )
 
         result.issue_id = issue.record_id
         result.rule_type = rule_type
         result.agent_model = result.agent_model or agent.config.model
+
+        # T2: 二次 LLM 复核——破解 AI 自相矛盾，把"已给完整 user_reply 还说要工程师"翻回 false
+        # 只对 needs_engineer=true 的工单调用，约 30% 流量，安全降级（失败保持原判）
+        try:
+            from app.services.engineer_label_adjudicator import apply_adjudication
+            result = await apply_adjudication(result)
+        except Exception as e:
+            logger.warning("Adjudicator unexpected error (保持原判): %s", e)
+
         return result
 
 

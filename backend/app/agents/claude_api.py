@@ -354,7 +354,8 @@ def _quota_exhausted_result(raw_err: str) -> AnalysisResult:
             "请检查账户余额或等待额度重置后重试。"
         ),
         confidence="low",
-        needs_engineer=True,
+        needs_engineer=False,
+        system_failure=True,
         agent_type="claude_api",
     )
 

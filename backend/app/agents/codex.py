@@ -47,7 +47,7 @@ class CodexAgent(BaseAgent):
                 task_id="", issue_id="",
                 problem_type="Agent 不可用",
                 root_cause="Codex CLI 未安装。请在服务器上安装: npm install -g @openai/codex",
-                confidence="low", needs_engineer=True, agent_type="codex",
+                confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
             )
 
         # Check OPENAI_API_KEY (check env + .env file)
@@ -72,7 +72,7 @@ class CodexAgent(BaseAgent):
                 task_id="", issue_id="",
                 problem_type="Agent 不可用",
                 root_cause="OPENAI_API_KEY 未配置。请在 .env 文件中设置。",
-                confidence="low", needs_engineer=True, agent_type="codex",
+                confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
             )
 
         cmd = self._build_command(prompt_file)
@@ -122,7 +122,7 @@ class CodexAgent(BaseAgent):
                         "OpenAI API 额度已耗尽，无法完成分析。\n\n"
                         "请检查 OpenAI 账户余额或升级套餐后重试。"
                     ),
-                    confidence="low", needs_engineer=True, agent_type="codex",
+                    confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
                 )
 
             # Filesystem sync: ensure result.json is visible before parsing
@@ -162,7 +162,7 @@ class CodexAgent(BaseAgent):
                 task_id="", issue_id="",
                 problem_type="分析超时",
                 root_cause=f"Codex 分析超过 {self.config.timeout}s 超时",
-                confidence="low", needs_engineer=True, agent_type="codex",
+                confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
             )
         except FileNotFoundError:
             logger.error("Codex CLI not found. Is it installed?")
@@ -170,7 +170,7 @@ class CodexAgent(BaseAgent):
                 task_id="", issue_id="",
                 problem_type="Agent 不可用",
                 root_cause="Codex CLI 未安装或不在 PATH 中",
-                confidence="low", needs_engineer=True, agent_type="codex",
+                confidence="low", needs_engineer=False, system_failure=True, agent_type="codex",
             )
 
     def _build_command(self, prompt_file: Path) -> list[str]:

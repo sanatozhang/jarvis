@@ -385,8 +385,15 @@ class RuleEngine:
     "user_reply": "完整中文客服回复模板（200-500字）",
     "user_reply_en": "Complete English customer reply template (200-500 words, same structure as Chinese)",
     "needs_engineer": false,
+    "system_failure": false,
+    "needs_user_retry": false,
     "fix_suggestion": ""
 }
+
+⚠️ 三个标志互斥，选对那一个（默认全 false）：
+- needs_engineer=true : 客服解决不了，需要研发查代码/发版修
+- system_failure=true : Agent 超时/API 额度/CLI 不可用 → ops 重跑，**不是研发问题**
+- needs_user_retry=true : 日志损坏/缺关键截图 → 客服找用户重传，**不是研发问题**
 ```
 
 **双语检查清单（写 result.json 前必须确认）**：

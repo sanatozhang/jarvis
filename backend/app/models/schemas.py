@@ -129,6 +129,9 @@ class AnalysisResult(BaseModel):
     user_reply: str = ""
     user_reply_en: str = ""
     needs_engineer: bool = False
+    # T1: 字段拆分 — 把系统/数据问题从"研发介入"剥离
+    system_failure: bool = False    # Agent 超时/额度/CLI 不可用 → ops 重跑
+    needs_user_retry: bool = False  # 日志解密失败/缺关键截图 → 客服找用户重传
     fix_suggestion: str = ""
     rule_type: str = ""
     agent_type: str = ""

@@ -230,8 +230,9 @@ output/       ← 请将 result.json 写入此目录
 2. **请求重传**：引导用户重新通过 APP「设置 > 意见反馈 / 发送日志」上传一次，避免改名 / 转发 / 邮件附件
 3. **不要瞎猜根因**：在没有日志的前提下，**禁止**编造具体的技术根因（如「队列卡住」「上传中断」等都是猜测）；只能给出"已收到反馈、正在排查"的礼貌占位
 4. **confidence 强制设为 "low"**：因为根因无法确认
-5. **needs_engineer = true**：让工程师介入手动排查
-6. **结果必须写文件**：分析完成后必须将 JSON 结果写入 output/result.json"""
+5. **needs_user_retry = true**：让客服联系用户重传日志（这不是研发问题，**不要**设 needs_engineer=true）
+6. **needs_engineer = false**：除非用户重传后仍无解，否则不必研发介入
+7. **结果必须写文件**：分析完成后必须将 JSON 结果写入 output/result.json"""
 
                 extraction_section = """## 日志情况（关键）
 
@@ -241,7 +242,7 @@ output/       ← 请将 result.json 写入此目录
 - user_reply 必须包含「请重新通过 APP 内『发送日志』功能上传一次，避免邮件附件 / 改名 / 转发」
 - 不要在 user_reply 里基于空气猜测技术根因
 - root_cause 字段写「日志文件损坏，无法读取，需要用户重新上传」
-- confidence: low；needs_engineer: true"""
+- confidence: low；needs_user_retry: true；needs_engineer: false"""
             else:
                 role_and_principles = f"""你是 Plaud 产品和技术专家，专门帮助客服团队解答用户疑问。
 **注意：本工单没有提供日志文件**，你需要基于问题描述、代码仓库和产品知识来分析和回答。
@@ -525,6 +526,9 @@ output/       ← 请将 result.json 写入此目录
             user_reply_en=_raw_reply_en,
             # 缺省 False：AI 不显式申请就不打工程师标签；漏字段不等于要人工介入。
             needs_engineer=data.get("needs_engineer", False),
+            # T1 字段拆分：系统/数据问题独立打标，不再混到 needs_engineer
+            system_failure=data.get("system_failure", False),
+            needs_user_retry=data.get("needs_user_retry", False),
             fix_suggestion=data.get("fix_suggestion", ""),
             raw_output=raw_output[:10000],
         )
@@ -605,8 +609,16 @@ def _compose_prompt(
     "root_cause_zh": "中文根因分析（与英文版信息量对等，5-10句话）",
     "problem_type_zh": "中文问题分类（如：蓝牙连接异常、录音丢失、固件升级失败）",
     "needs_engineer": false,
+    "system_failure": false,
+    "needs_user_retry": false,
     "fix_suggestion": "Engineering fix suggestion (if applicable)"
 }}
+
+needs_engineer / system_failure / needs_user_retry — **mutually exclusive flags, pick the correct one**:
+- needs_engineer=true : Customer support cannot resolve, requires engineering investigation/code fix
+- system_failure=true : Agent timeout / API quota exhausted / CLI unavailable — ops re-run, NOT engineering
+- needs_user_retry=true : Logs corrupted / missing key screenshots — CS contacts user, NOT engineering
+- Default all to false. If the case is clearly answerable with full user_reply, set all three to false.
 ```
 
 problem_categories and device_type taxonomy: see `context/classification_taxonomy.json` — **read it before analysis**. One issue can belong to multiple categories.

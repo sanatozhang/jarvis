@@ -62,6 +62,8 @@ async def get_daily_report(date_str: str):
             "key_evidence": evidence,
             "user_reply": a.user_reply,
             "needs_engineer": a.needs_engineer,
+            "system_failure": getattr(a, "system_failure", False) or False,
+            "needs_user_retry": getattr(a, "needs_user_retry", False) or False,
             "rule_type": a.rule_type,
             "agent_type": a.agent_type,
             "agent_model": getattr(a, "agent_model", "") or "",

@@ -93,6 +93,11 @@ class AnalysisRecord(Base):
     user_reply = Column(Text, default="")
     user_reply_en = Column(Text, default="")
     needs_engineer = Column(Boolean, default=False)
+    # T1 字段拆分：把"系统失败"和"需用户重传"从 needs_engineer 剥离
+    # - system_failure: Agent 超时/额度耗尽/CLI 不可用 → ops 重跑就行，不必骚扰研发
+    # - needs_user_retry: 日志解密失败/缺关键截图 → 客服找用户重传，不是研发问题
+    system_failure = Column(Boolean, default=False)
+    needs_user_retry = Column(Boolean, default=False)
     fix_suggestion = Column(Text, default="")
     problem_categories_json = Column(Text, default="[]")  # JSON: [{"category":"蓝牙连接","subcategory":"搜索不到设备"},...]
     device_type = Column(String(64), default="")           # "Note" / "Note Pin" / "Note Pro" / "NotePin 2" / "iZYREC"
@@ -330,6 +335,8 @@ async def init_db():
             ("device_type", "VARCHAR(64)", "''"),
             ("agent_model", "VARCHAR(128)", "''"),
             ("log_metadata_json", "TEXT", "'{}'"),
+            ("system_failure", "BOOLEAN", "0"),       # T1: 系统失败标志（ops 重跑）
+            ("needs_user_retry", "BOOLEAN", "0"),     # T1: 用户需重传日志/截图
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -676,6 +683,8 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             user_reply=data.get("user_reply", ""),
             user_reply_en=data.get("user_reply_en", ""),
             needs_engineer=data.get("needs_engineer", False),
+            system_failure=data.get("system_failure", False),
+            needs_user_retry=data.get("needs_user_retry", False),
             fix_suggestion=data.get("fix_suggestion", ""),
             rule_type=data.get("rule_type", ""),
             agent_type=data.get("agent_type", ""),
@@ -953,6 +962,8 @@ def _issue_to_dict(
             "user_reply": analysis.user_reply or "",
             "user_reply_en": analysis.user_reply_en or "",
             "needs_engineer": analysis.needs_engineer,
+            "system_failure": getattr(analysis, "system_failure", False) or False,
+            "needs_user_retry": getattr(analysis, "needs_user_retry", False) or False,
             "fix_suggestion": analysis.fix_suggestion or "",
             "rule_type": analysis.rule_type or "",
             "agent_type": analysis.agent_type or "",

@@ -88,7 +88,7 @@ class ClaudeCodeAgent(BaseAgent):
                             f"原始错误: {raw_err}\n\n"
                             "请检查账户余额或等待额度重置后重试。"
                         ),
-                        confidence="low", needs_engineer=True, agent_type="claude_code",
+                        confidence="low", needs_engineer=False, system_failure=True, agent_type="claude_code",
                     )
 
                 # Detect max turns exhaustion — but still try to parse result.json
@@ -198,7 +198,8 @@ class ClaudeCodeAgent(BaseAgent):
                 problem_type="分析超时",
                 root_cause=f"Claude Code 分析超过 {self.config.timeout}s 超时（已 dump stdout/stderr 到 output/timeout_*.txt 供排查）",
                 confidence="low",
-                needs_engineer=True,
+                needs_engineer=False,
+                system_failure=True,
                 agent_type="claude_code",
             )
         except FileNotFoundError:
@@ -209,7 +210,8 @@ class ClaudeCodeAgent(BaseAgent):
                 problem_type="Agent 不可用",
                 root_cause="Claude Code CLI 未安装或不在 PATH 中",
                 confidence="low",
-                needs_engineer=True,
+                needs_engineer=False,
+                system_failure=True,
                 agent_type="claude_code",
             )
 

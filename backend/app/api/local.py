@@ -142,6 +142,8 @@ async def get_issue_analyses(issue_id: str):
             "user_reply": a.user_reply or "",
             "user_reply_en": a.user_reply_en or "",
             "needs_engineer": a.needs_engineer,
+            "system_failure": getattr(a, "system_failure", False) or False,
+            "needs_user_retry": getattr(a, "needs_user_retry", False) or False,
             "fix_suggestion": a.fix_suggestion or "",
             "rule_type": a.rule_type or "",
             "agent_type": a.agent_type or "",
