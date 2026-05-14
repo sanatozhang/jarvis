@@ -89,7 +89,7 @@ _PROMPT_TEMPLATE = """你是 Plaud 移动端崩溃分析专家。基于下方崩
 - **优先用 Read / Glob / Grep 工具**到上述目录里查阅真实代码，再下结论
 - 堆栈里的 `package:plaud_flutter_common/...dart:行号` 一律去 `code/plaud-flutter-common/lib/` 找对应文件
 - 看到 file:line 必须验证那一行真的存在；不存在则在 root_cause 里说明
-{followup_block}
+{stack_paths_block}{followup_block}
 ## 任务（输出 JSON）
 
 完成分析后将 JSON 写入 `output/result.json`：
@@ -152,6 +152,19 @@ _PROMPT_TEMPLATE = """你是 Plaud 移动端崩溃分析专家。基于下方崩
 
 未验证的路径**禁止写入**输出——宁可 `code_pointer: ""`，也不要假路径。
 fix_suggestion 不需要给确切路径时，只描述模块层逻辑修复（如"在 X 模块的 try-catch 里加 fallback"）即可。
+
+### ⚠️ 平台锁定（Gate#2 防线）
+
+**本崩溃的目标平台是 `{platform}`**——这是 Datadog `@platform` tag 的地面真相。
+
+- 所有 `fix_diff` / `code_pointer` 路径**必须**落在 `{platform}` 对应的 sub-repo 内
+  - `flutter` → `code/plaud-flutter-common/lib/...` 或对应 dart 仓
+  - `android` → `code/<android 仓>/...`（含 `.kt` / `.java` / `.gradle`）
+  - `ios` → `code/<ios 仓>/...`（含 `.swift` / `.m` / `.mm` / `.h`）
+- **禁止跨平台**：flutter crash 不应改 `.swift`/`.kt`；android crash 不应改 `.dart`/`.swift`
+- 若堆栈是 native frame 但根因在 dart 层（如 `flutter_inappwebview` 触发的 native 崩溃），
+  允许在 fix_diff 中改 dart 文件，但需在 `root_cause` 显式说明这个路由判断
+- 跨平台串台一次 = Gate#2 直接拦截 PR，分析作废重跑，浪费 AI 成本——**输出前自检一遍 fix_diff 的扩展名**
 
 ### possible_causes 输出规则
 
@@ -340,6 +353,11 @@ async def _run_in_background(issue_id: str, run_id: str) -> None:
         snapshot_data["enrichment_block"] = await _build_enrichment_block(issue_id)
         workspace = _prepare_workspace(issue_id)
         snapshot_data["code_hint"] = _platform_code_hint(snapshot_data.get("platform", ""), workspace)
+        snapshot_data["stack_paths_block"] = _build_stack_paths_block(
+            snapshot_data.get("stack_trace", ""),
+            snapshot_data.get("platform", ""),
+            workspace,
+        )
 
         if is_followup:
             snapshot_data["followup_block"] = await _build_followup_block(issue_id, followup_q)
@@ -355,6 +373,27 @@ async def _run_in_background(issue_id: str, run_id: str) -> None:
 
         output = await _run_agent(workspace, prompt, is_followup=is_followup)
         output.raw_output = output.raw_output[:8000] if output.raw_output else ""
+
+        # 平台一致性预检（Gate#2 前移）：AI 给出的 fix_diff / fix_suggestion 必须
+        # 落在目标平台的 sub-repo 内。跨平台串台时分析直接标 failed，省 PR gate
+        # 一道往返 + 给前端"低信心需人介入"的明确信号。
+        if not is_followup and output.root_cause:
+            mismatch = _detect_platform_mismatch(
+                platform=snapshot_data.get("platform", ""),
+                fix_suggestion=output.fix_suggestion or "",
+                fix_diff=output.fix_diff or "",
+                solution=output.solution or "",
+            )
+            if mismatch:
+                logger.warning(
+                    "analyzer platform mismatch issue=%s platform=%s reason=%s — demote to failed",
+                    issue_id, snapshot_data.get("platform"), mismatch,
+                )
+                output.error = (
+                    f"platform_mismatch: AI 输出引用了非 {snapshot_data.get('platform')} "
+                    f"平台的源码路径（{mismatch}）；分析作废，需重跑"
+                )
+                output.root_cause = ""
 
         await _persist_to_run(run_id, output, is_followup=is_followup)
     except Exception as e:
@@ -539,6 +578,11 @@ async def analyze_issue(issue_id: str) -> AnalysisOutput:
     snapshot_data["enrichment_block"] = await _build_enrichment_block(issue_id)
     workspace = _prepare_workspace(issue_id)
     snapshot_data["code_hint"] = _platform_code_hint(snapshot_data.get("platform", ""), workspace)
+    snapshot_data["stack_paths_block"] = _build_stack_paths_block(
+        snapshot_data.get("stack_trace", ""),
+        snapshot_data.get("platform", ""),
+        workspace,
+    )
     prompt = _build_prompt(snapshot_data)
     try:
         (workspace / "prompt.md").write_text(prompt, encoding="utf-8")
@@ -575,6 +619,7 @@ def _build_prompt(d: Dict[str, Any]) -> str:
     data.setdefault("enrichment_block", "")
     data.setdefault("code_hint", "")
     data.setdefault("followup_block", "")
+    data.setdefault("stack_paths_block", "")
     return _PROMPT_TEMPLATE.format(**data)
 
 
@@ -684,6 +729,60 @@ def _prepare_workspace(issue_id: str) -> Path:
             except OSError as exc:
                 logger.warning("symlink code repo failed: %s", exc)
     return ws
+
+
+_PLATFORM_FOREIGN_EXT: Dict[str, tuple] = {
+    "flutter": (".swift", ".kt", ".java", ".m", ".mm"),
+    "android": (".dart", ".swift", ".m", ".mm"),
+    "ios": (".dart", ".kt", ".java", ".gradle"),
+}
+
+
+def _detect_platform_mismatch(
+    *, platform: str, fix_suggestion: str, fix_diff: str, solution: str,
+) -> str:
+    """检查 AI 输出是否引用了目标平台之外的源码扩展名。
+
+    抓手：iOS crash 不该改 .dart；Flutter crash 不该改 .swift。返回空串表示对齐，
+    返回字符串表示具体问题（用于错误消息）。
+
+    例外：fix_diff 为空（complexity=complex 留空）时不阻断；fix_suggestion 是自然
+    语言概念，仅做兜底关键词检测（命中 1 个跨平台扩展不必直接 fail，需在 fix_diff
+    中确实出现该扩展才阻断——避免误杀"提到 swift 一词"这种描述）。
+    """
+    p = (platform or "").strip().lower()
+    foreign = _PLATFORM_FOREIGN_EXT.get(p)
+    if not foreign:
+        return ""
+    # fix_diff 是 ground truth，最严格——出现任意外平台扩展直接拦截
+    diff_lower = (fix_diff or "").lower()
+    if diff_lower:
+        for ext in foreign:
+            # diff 头格式 `--- a/foo.swift` / `+++ b/bar.kt`，匹配 ext+空白边界
+            if (f"{ext}\n" in diff_lower
+                    or f"{ext} " in diff_lower
+                    or f"{ext}@@" in diff_lower
+                    or diff_lower.endswith(ext)):
+                return f"fix_diff 引用 {ext} 文件"
+    return ""
+
+
+def _build_stack_paths_block(stack: str, platform: str, workspace: Path) -> str:
+    """跑 stack_path_resolver 把候选路径塞进 prompt。
+
+    失败/空结果都吞掉返回 ""——prompt setdefault 兜底，不影响主流程。
+    抓手：把"AI 猜路径"收敛成"AI 在白名单里选路径"，治本 Gate#1 path_check_failed。
+    """
+    try:
+        from app.crashguard.services.stack_path_resolver import (
+            format_stack_paths_block,
+            resolve_stack_paths,
+        )
+        resolved = resolve_stack_paths(stack or "", platform or "", workspace)
+        return format_stack_paths_block(resolved)
+    except Exception:
+        logger.exception("stack_path_resolver failed (non-fatal)")
+        return ""
 
 
 def _platform_code_hint(platform: str, workspace: Path) -> str:

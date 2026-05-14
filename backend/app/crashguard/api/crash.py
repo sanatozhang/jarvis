@@ -486,6 +486,79 @@ def _compute_pr_blocker(
     }
 
 
+@router.get("/auto-pr/funnel")
+async def get_auto_pr_funnel(
+    top_n: int = Query(20, ge=1, le=100),
+    target_date: Optional[date] = None,
+    window_hours: int = Query(24, ge=1, le=720),
+) -> Dict[str, Any]:
+    """Top N issue 的 auto-PR 漏斗——每个 issue 当前卡在哪个环节。
+
+    抓手：让运营/工程师一眼看到"今天 Top 20 里有几个被 Gate#1 拦了 / 几个还在
+    等分析 / 几个已开 PR"——不用扒 audit log 逐条捞。
+
+    返回：
+      {
+        date,
+        top_n,
+        scanned,
+        buckets: [
+          {reason, label, hint, count, issues: [{id, title, events, ...}]}
+        ]
+      }
+    复用 _compute_pr_blocker 的归因逻辑，bucket 顺序按"离 PR 越近"排：
+      has_active_pr / has_closed_pr → no_analysis → low_confidence →
+      low_feasibility → gate_check_failed → (无定义兜底)
+    """
+    # 调本模块自己的 get_top（同一 process 内直接 await，零额外成本）
+    top = await get_top(
+        target_date=target_date,
+        page=1,
+        page_size=top_n,
+        kinds="all",
+        window_hours=window_hours,
+        sort_by="events",
+    )
+    issues = top.get("issues", []) or []
+    bucket_order = [
+        "has_active_pr", "has_closed_pr", "no_analysis",
+        "low_confidence", "low_feasibility", "gate_check_failed",
+    ]
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for it in issues:
+        blocker = it.get("pr_blocker") or {}
+        reason = blocker.get("reason") or "unknown"
+        b = buckets.setdefault(reason, {
+            "reason": reason,
+            "label": blocker.get("label") or reason,
+            "hint": blocker.get("hint") or "",
+            "count": 0,
+            "issues": [],
+        })
+        b["count"] += 1
+        b["issues"].append({
+            "datadog_issue_id": it.get("datadog_issue_id"),
+            "title": (it.get("title") or "")[:120],
+            "platform": it.get("platform"),
+            "events": it.get("total_events") or it.get("events_count"),
+            "pr_url": it.get("pr_url") or "",
+            "pr_status": it.get("pr_status") or "",
+            "analysis_feasibility_score": it.get("analysis_feasibility_score"),
+            "analysis_confidence": it.get("analysis_confidence") or "",
+        })
+    ordered = [buckets[r] for r in bucket_order if r in buckets]
+    # 未在固定顺序里的 reason（如 unknown）放最后
+    for r, b in buckets.items():
+        if r not in bucket_order:
+            ordered.append(b)
+    return {
+        "date": top.get("date"),
+        "top_n": top_n,
+        "scanned": len(issues),
+        "buckets": ordered,
+    }
+
+
 @router.get("/top")
 async def get_top(
     target_date: Optional[date] = None,
