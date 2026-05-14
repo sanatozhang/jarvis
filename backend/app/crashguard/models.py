@@ -241,6 +241,10 @@ class CrashHourlyAlert(Base):
     surge_count = Column(Integer, default=0)
     feishu_message_id = Column(String(128), default="")
     alert_payload = Column(Text, default="{}")  # JSON
+    # Sprint E: 误报率反馈环（good / bad / NULL）
+    feedback = Column(String(16), nullable=True)       # "good" / "bad" / NULL
+    feedback_at = Column(DateTime, nullable=True)
+    feedback_by = Column(String(64), nullable=True)    # feishu open_id 或 email
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (

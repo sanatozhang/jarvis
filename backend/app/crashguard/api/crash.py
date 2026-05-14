@@ -2268,6 +2268,58 @@ def _interval_minutes_from_cron(cron_expr: str) -> Optional[int]:
     return None
 
 
+@router.get("/alert-feedback")
+async def record_alert_feedback(
+    alert_id: int,
+    label: str,
+    by: str = "",
+):
+    """记录 hourly_alert 反馈——按钮 URL 直接调，无需 webhook。
+
+    label 取值: "good" / "bad"。
+    返回一个简单 HTML 页面告知用户已记录。
+    """
+    from datetime import datetime
+    from fastapi.responses import HTMLResponse
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlyAlert
+    from sqlalchemy import select
+
+    if label not in ("good", "bad"):
+        return HTMLResponse(
+            content="<h2>无效反馈 label</h2><p>必须是 good 或 bad</p>",
+            status_code=400,
+        )
+
+    async with get_session() as session:
+        row = (await session.execute(
+            select(CrashHourlyAlert).where(CrashHourlyAlert.id == alert_id)
+        )).scalars().first()
+        if row is None:
+            return HTMLResponse(
+                content=f"<h2>找不到 alert_id={alert_id}</h2>",
+                status_code=404,
+            )
+        row.feedback = label
+        row.feedback_at = datetime.utcnow()
+        row.feedback_by = by[:64] if by else ""
+        await session.commit()
+
+    emoji = "👍" if label == "good" else "👎"
+    html = f"""
+    <html><head><meta charset="utf-8"><title>反馈已记录</title></head>
+    <body style="font-family:system-ui;padding:40px;max-width:600px;margin:auto;">
+      <h1 style="font-size:48px;text-align:center;">{emoji}</h1>
+      <h2 style="text-align:center;">反馈已记录（alert #{alert_id} → {label}）</h2>
+      <p style="color:#666;text-align:center;">感谢——这条反馈会用于阈值调优。</p>
+      <p style="text-align:center;margin-top:40px;">
+        <a href="javascript:window.close()" style="color:#1677ff;">关闭窗口</a>
+      </p>
+    </body></html>
+    """
+    return HTMLResponse(content=html)
+
+
 @router.get("/alert-channels")
 async def alert_channels_status() -> Dict[str, Any]:
     """各告警通道近 24h 命中统计 + shadow_mode 状态 + cache stats。
@@ -2287,6 +2339,8 @@ async def alert_channels_status() -> Dict[str, Any]:
 
     counts = {"new": 0, "surge": 0, "new_version": 0, "new_crash": 0}
     total_rows = 0
+    fb_good = 0
+    fb_bad = 0
 
     async with get_session() as session:
         rows = (await session.execute(
@@ -2297,9 +2351,14 @@ async def alert_channels_status() -> Dict[str, Any]:
             try:
                 p = _json.loads(r.alert_payload or "{}")
             except Exception:
-                continue
+                p = {}
             for k in counts.keys():
                 counts[k] += len(p.get(k) or [])
+            # 反馈统计
+            if r.feedback == "good":
+                fb_good += 1
+            elif r.feedback == "bad":
+                fb_bad += 1
 
     # cache stats
     cache_stats = DatadogCache.stats()
@@ -2348,6 +2407,12 @@ async def alert_channels_status() -> Dict[str, Any]:
             },
         ],
         "audit_rows_24h": total_rows,
+        "feedback_24h": {
+            "good": fb_good,
+            "bad": fb_bad,
+            "total_with_feedback": fb_good + fb_bad,
+            "total_audit_rows": total_rows,
+        },
         "datadog_cache": cache_stats,
     }
 

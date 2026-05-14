@@ -34,6 +34,150 @@ def _split_sections(markdown: str) -> List[Dict[str, str]]:
     return sections
 
 
+def _truncate_md(content: str, limit: int = 3500) -> str:
+    if len(content) > limit:
+        return content[:limit] + "\n\n_…内容过长，已截断，详见 Web 端_"
+    return content
+
+
+def _div(content: str) -> Dict[str, Any]:
+    return {"tag": "div", "text": {"tag": "lark_md", "content": content}}
+
+
+def _collapsible_panel(
+    title_md: str,
+    elements: List[Dict[str, Any]],
+    expanded: bool = False,
+    background: str = "grey-100",
+) -> Dict[str, Any]:
+    """飞书 v2 card collapsible_panel 组件——折叠区。
+
+    底层逻辑：把 FYI 内容折叠，默认收起；点击 header 展开全文。
+    需要 schema 2.0；与 div/hr/action 同级。
+    """
+    return {
+        "tag": "collapsible_panel",
+        "expanded": expanded,
+        "background_color": background,
+        "header": {
+            "title": {"tag": "markdown", "content": title_md},
+            "vertical_align": "center",
+            "padding": "4px 0px 4px 8px",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "color": "neutral",
+                "size": "16px 16px",
+            },
+            "icon_position": "right",
+            "icon_expanded_angle": -180,
+        },
+        "elements": elements,
+    }
+
+
+def _tldr_headline(tldr: Dict[str, Any]) -> str:
+    """从 tldr.platforms 拼一行平台状态——每平台一段 chip。"""
+    parts: List[str] = []
+    for p in tldr.get("platforms", []) or []:
+        label = p.get("platform_label") or "?"
+        status = p.get("status") or "unknown"
+        delta = p.get("delta_pct")
+        new_n = int(p.get("new_count") or 0)
+        if status == "red":
+            tag = "🔴"
+        elif status == "yellow":
+            tag = "🟡"
+        elif status == "green_improve":
+            tag = "✅"
+        elif status == "green":
+            tag = "✅"
+        else:
+            tag = "⚪"
+        # 文案：平台 fatal +N% / 持平 / 改善 / 无基线
+        if status in ("red", "yellow"):
+            delta_str = f"fatal +{delta:.0f}%" if delta is not None else "fatal 上涨"
+            if new_n > 0:
+                delta_str += f" · 🆕{new_n}"
+            parts.append(f"{label} {delta_str} {tag}")
+        elif status == "green_improve":
+            parts.append(f"{label} fatal {delta:.0f}% ✅")
+        elif status == "green":
+            parts.append(f"{label} 持平 {tag}")
+        else:
+            # unknown：无基线
+            parts.append(f"{label} —")
+    return " · ".join(parts) if parts else "全平台无数据"
+
+
+def _build_tldr_elements(
+    tldr: Dict[str, Any],
+    frontend_base_url: str,
+    fallback_summary_md: str,
+) -> List[Dict[str, Any]]:
+    """三行 TL;DR：①今日重点 ②👉 必看 ③其他 N 项无需立刻动。"""
+    if not tldr:
+        # 兼容老 payload（无 tldr 字段）
+        return [_div(fallback_summary_md)]
+
+    severity = tldr.get("severity") or "green"
+    headline = _tldr_headline(tldr)
+    must_see = tldr.get("must_see")
+    other_count = int(tldr.get("other_count") or 0)
+    anomaly_total = int(tldr.get("anomaly_total") or 0)
+
+    if severity == "red":
+        prefix = "🚨 **今日重点**"
+    elif severity == "yellow":
+        prefix = "🟡 **今日重点**"
+    else:
+        prefix = "🌿 **今日重点**"
+
+    line1 = f"{prefix}：{headline}"
+    elements: List[Dict[str, Any]] = [_div(line1)]
+
+    if must_see:
+        title = must_see.get("title") or must_see.get("issue_id", "")
+        url = must_see.get("url") or f"{frontend_base_url.rstrip('/')}/crashguard"
+        ev = int(must_see.get("events") or 0)
+        delta_pct = must_see.get("delta_pct")
+        plat = must_see.get("platform") or ""
+        if must_see.get("is_new"):
+            extra = "新版首现"
+        elif delta_pct is not None:
+            extra = f"{'+' if delta_pct >= 0 else ''}{delta_pct:.0f}% vs 上周"
+        else:
+            extra = ""
+        plat_str = f"[{plat}] " if plat else ""
+        extra_str = f", {extra}" if extra else ""
+        line2 = (
+            f"👉 **必看**：{plat_str}[{title}]({url}) "
+            f"（{ev:,} events{extra_str}）"
+        )
+        elements.append(_div(line2))
+
+    # 文案三态：
+    #   ① 有单 issue 异常（anomaly_total > 0）→ "其他 N 个 issue 量级在基线范围内，无需立刻动"
+    #   ② 无单 issue 异常但平台级 fatal 红/黄（severity != green）
+    #      → "单 issue 无突增，平台级 fatal 波动看下方分平台明细"（避免与 TL;DR 红头矛盾）
+    #   ③ 无单 issue 异常且平台 green → "全平台 fatal 平稳"
+    if anomaly_total > 0 and other_count > 0:
+        line3 = f"> 其他 **{other_count}** 个 issue 量级在基线范围内，无需立刻动。"
+    elif anomaly_total == 0 and severity in ("red", "yellow"):
+        line3 = (
+            "> 单 issue 未突破 ±10% 突增阈值，但平台级 fatal 已波动 —— "
+            "看下方 **分平台明细** 找根因。"
+        )
+    elif anomaly_total == 0:
+        line3 = "> 全平台 fatal 平稳，无需关注。"
+    else:
+        line3 = ""
+    if line3:
+        elements.append(_div(line3))
+
+    return elements
+
+
 def build_daily_card(
     report_type: str,
     target_date: str,
@@ -41,18 +185,36 @@ def build_daily_card(
     payload: Dict[str, Any],
     frontend_base_url: str = "http://localhost:3000",
 ) -> Dict[str, Any]:
-    """构造飞书 interactive card payload。"""
+    """构造飞书 interactive card payload（v2 schema）。
+
+    顶层设计：
+    1. **TL;DR 区**（顶置，不折叠）—— 一眼速读今日重点 + 必看 issue + 其他无需关注数
+    2. **数据口径 banner**（小行，inline 在 TL;DR 下方）
+    3. **🆕 今日关注点 / 新增 / 突增**段（默认展开，必看区）
+    4. **collapsible_panel × N**（FYI 折叠）：双窗口对照 / 各平台 详情 / 下降 / 复盘
+    5. Action 按钮（Web 端）
+
+    抓手：把 80% 行动力压到第一屏，FYI 折叠到下方需要时再点开。
+    """
     is_morning = report_type == "morning"
     new_count = int(payload.get("new_count") or 0)
     surge_count = int(payload.get("surge_count") or 0)
     drop_count = int(payload.get("regression_count") or 0)
     has_anomaly = (new_count + surge_count + drop_count) > 0
+    tldr = payload.get("tldr") or {}
 
-    # 卡片头部颜色：异常用 red，平稳用 turquoise
-    template = "red" if has_anomaly else "turquoise"
-    # 早晚报差异化（A+B 方案）：
-    #   早报 = "Crashguard 日报"（昨日 24h 总览）
-    #   晚报 = "Crashguard 速报"（日内增量 vs 上周同段）—— 两字对仗，明确区分
+    # 卡片头部颜色：优先 tldr.severity；fallback 老逻辑
+    severity = tldr.get("severity")
+    if severity == "red":
+        template = "red"
+    elif severity == "yellow":
+        template = "yellow"
+    elif severity == "green":
+        template = "turquoise"
+    else:
+        template = "red" if has_anomaly else "turquoise"
+
+    # 早晚报差异化
     evening_window_h = int(payload.get("data_window_hours") or 10)
     if is_morning:
         title_text = f"🌅 Crashguard 日报 · {target_date}"
@@ -67,69 +229,76 @@ def build_daily_card(
             f"基线：**上周同 weekday 同 {evening_window_h}h 段**（SHoW-{evening_window_h}h）"
         )
 
-    elements: List[Dict[str, Any]] = []
-
-    # 数据口径 banner（顶部置顶，让群里人 2 秒识别本卡片是日报还是速报）
-    elements.append({
-        "tag": "div",
-        "text": {"tag": "lark_md", "content": scope_md},
-    })
-
-    # 顶部摘要小标签
-    summary_md = (
+    # 顶层 summary 老 fallback（无 tldr 字段时使用）
+    fallback_summary_md = (
         f"**Σ** 新增 **{new_count}** · 突增 **{surge_count}** · 下降 **{drop_count}**"
         if has_anomaly
         else "🌿 **数据平稳，安全无虞**"
     )
-    elements.append({
-        "tag": "div",
-        "text": {"tag": "lark_md", "content": summary_md},
-    })
+
+    elements: List[Dict[str, Any]] = []
+
+    # ── TL;DR 顶置区（不折叠）──
+    elements.extend(_build_tldr_elements(tldr, frontend_base_url, fallback_summary_md))
+    # 口径 banner 紧跟 TL;DR（小字体，引用样式）
+    elements.append(_div(f"> {scope_md}"))
     elements.append({"tag": "hr"})
 
-    # 切段插入
+    # ── 按 markdown 切段：必看段（关注点/新增/突增）展开，FYI 段折叠 ──
     sections = _split_sections(markdown)
-    for sec in sections:
-        # skip 空段
-        if not sec["title"] and not sec["content"]:
-            continue
-        # 段标题（已含 emoji）
-        if sec["title"]:
-            elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"**{sec['title']}**"},
-            })
-        if sec["content"]:
-            # 卡片单 lark_md 长度限制 ~4000 char，超长截断
-            content = sec["content"]
-            if len(content) > 3500:
-                content = content[:3500] + "\n\n_…内容过长，已截断，详见 Web 端_"
-            elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": content},
-            })
-        elements.append({"tag": "hr"})
 
-    # 底部按钮：跳 Web 端
+    # 主题分类：标题里含这些关键字 → 必看（默认展开）；其余 → 折叠
+    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR")
+
+    for sec in sections:
+        title = sec["title"]
+        content = sec["content"]
+        if not title and not content:
+            continue
+        if not title:
+            # 无标题段（首段 intro）—— 跳过，已被 TL;DR 替代
+            continue
+
+        sec_elements: List[Dict[str, Any]] = []
+        if content:
+            sec_elements.append(_div(_truncate_md(content)))
+
+        is_expanded = any(kw in title for kw in EXPANDED_KEYWORDS)
+        if is_expanded:
+            # 不折叠：直接平铺标题 + 内容
+            elements.append(_div(f"**{title}**"))
+            elements.extend(sec_elements)
+            elements.append({"tag": "hr"})
+        else:
+            # 折叠区：标题前加 ▶ 视觉提示（v1 client 兜底）
+            panel_title = f"▶ **{title}**"
+            elements.append(
+                _collapsible_panel(panel_title, sec_elements, expanded=False)
+            )
+
+    # ── 底部按钮（v2 schema：button 直接作为 element，不再 wrap 在 action 里）──
     elements.append({
-        "tag": "action",
-        "actions": [
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "📊 在 Web 端查看 / 操作"},
+        "type": "primary",
+        "behaviors": [
             {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "📊 在 Web 端查看 / 操作"},
-                "type": "primary",
-                "url": f"{frontend_base_url.rstrip('/')}/crashguard",
+                "type": "open_url",
+                "default_url": f"{frontend_base_url.rstrip('/')}/crashguard",
             },
         ],
     })
 
+    # 飞书 v2.0 schema：collapsible_panel 必须挂 body.elements 下，顶层不允许 elements。
+    # 若顶层同时给 elements 会被 v2 校验器拒（200621 parse card json err）。
     return {
-        "config": {"wide_screen_mode": True},
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
             "template": template,
             "title": {"tag": "plain_text", "content": title_text},
         },
-        "elements": elements,
+        "body": {"elements": elements},
     }
 
 
@@ -285,17 +454,33 @@ def build_hourly_alert_card(
         btn_url = f"{frontend_base_url.rstrip('/')}/crashguard/alerts/hourly/{alert_id}"
     else:
         btn_url = f"{frontend_base_url.rstrip('/')}/crashguard/reports?type=hourly_alert"
-    elements.append({
-        "tag": "action",
-        "actions": [
+    action_buttons = [
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📊 Web 端查看"},
+            "type": "primary",
+            "url": btn_url,
+        },
+    ]
+    if alert_id is not None:
+        feedback_base = (
+            f"{frontend_base_url.rstrip('/')}/api/crash/alert-feedback?alert_id={alert_id}"
+        )
+        action_buttons.extend([
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "📊 在 Web 端查看"},
-                "type": "primary",
-                "url": btn_url,
+                "text": {"tag": "plain_text", "content": "👍 准"},
+                "type": "default",
+                "url": f"{feedback_base}&label=good",
             },
-        ],
-    })
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "👎 不准"},
+                "type": "danger",
+                "url": f"{feedback_base}&label=bad",
+            },
+        ])
+    elements.append({"tag": "action", "actions": action_buttons})
 
     return {
         "config": {"wide_screen_mode": True},

@@ -45,6 +45,10 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_issues", "fatality", "VARCHAR(16)", "'unknown'"),
     # rate-AND-check：hourly snapshot 同时存 sessions_count（与 events_count 算 rate）
     ("crash_hourly_snapshots", "sessions_count", "INTEGER", "0"),
+    # Sprint E：hourly_alert 反馈环（good / bad / NULL）
+    ("crash_hourly_alerts", "feedback", "VARCHAR(16)", "NULL"),
+    ("crash_hourly_alerts", "feedback_at", "DATETIME", "NULL"),
+    ("crash_hourly_alerts", "feedback_by", "VARCHAR(64)", "NULL"),
 ]
 
 
