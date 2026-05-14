@@ -10,6 +10,11 @@ def test_settings_loads_defaults(monkeypatch):
     """无 env 时使用 yaml 默认值"""
     monkeypatch.delenv("CRASHGUARD_DATADOG_API_KEY", raising=False)
     monkeypatch.delenv("CRASHGUARD_ENABLED", raising=False)
+    # 防 .env 污染：pydantic_settings 直读 .env 文件，monkeypatch.delenv 不生效，
+    # 显式 setenv 把"测期望的默认值"塞回去（env > .env > yaml > default 优先级）。
+    monkeypatch.setenv("CRASHGUARD_FEISHU_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_PR_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_ENABLED", "true")
 
     from app.crashguard.config import get_crashguard_settings
     get_crashguard_settings.cache_clear()

@@ -166,7 +166,7 @@ def build_hourly_alert_card(
     # 顶部摘要
     summary_md = (
         f"**Σ** 过去 3 小时 · 新增 **{new_n}** · 上涨 **{surge_n}**  ·  "
-        f"阈值 +{threshold_pct:.0f}%（对比上周同 3h 块，SHoW-3h）"
+        f"阈值 events +{threshold_pct:.0f}% **AND** rate 同步涨（对比上周同 3h 块，SHoW-3h）"
     )
     elements.append({
         "tag": "div",
@@ -209,10 +209,17 @@ def build_hourly_alert_card(
             src = "SHoW" if it.get("baseline_source") == "show" else "7d 均值"
             sess = it.get("sessions_h") or 0
             sess_str = f" · {sess} 会话" if sess else ""
+            # rate 维度：events/sessions × 100；可缺失（老 snapshot / API 空）→ 不显示
+            rate_now = it.get("rate_now")
+            rate_growth = it.get("rate_growth_pct")
+            if rate_now is not None and rate_growth is not None:
+                rate_str = f"  ·  rate **{rate_now:.2f}%** ({'+' if rate_growth >= 0 else ''}{rate_growth:.1f}%)"
+            else:
+                rate_str = ""
             surge_lines.append(
                 f"- {pe} [{it.get('title') or it['issue_id']}]({url})  ·  "
                 f"**{it['events_h']}** vs {it['baseline']:.0f} ({src})  ·  "
-                f"**+{it['growth_pct']:.1f}%** ⬆️{sess_str}"
+                f"**+{it['growth_pct']:.1f}%** ⬆️{rate_str}{sess_str}"
             )
         elements.append({
             "tag": "div",
@@ -220,12 +227,9 @@ def build_hourly_alert_card(
         })
         elements.append({"tag": "hr"})
 
-    # 底部按钮：直接跳 reports 页对应告警详情（带 alert_id 自动打开 modal）
+    # 底部按钮：path 化深链，直达本条告警详情页（不再走 list+modal）
     if alert_id is not None:
-        btn_url = (
-            f"{frontend_base_url.rstrip('/')}/crashguard/reports"
-            f"?type=hourly_alert&alert_id={alert_id}"
-        )
+        btn_url = f"{frontend_base_url.rstrip('/')}/crashguard/alerts/hourly/{alert_id}"
     else:
         btn_url = f"{frontend_base_url.rstrip('/')}/crashguard/reports?type=hourly_alert"
     elements.append({

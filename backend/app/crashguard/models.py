@@ -214,6 +214,9 @@ class CrashHourlySnapshot(Base):
     datadog_issue_id = Column(String(128), nullable=False, index=True)
     hour_utc = Column(DateTime, nullable=False, index=True)  # 整点 UTC
     events_count = Column(Integer, default=0)
+    # sessions_count：本 issue 在该 3h 块内影响的 session 数；用于 rate-AND-check
+    # （surge 判定要求 events 涨 AND rate=events/sessions 同步涨，过滤流量自然增长误报）
+    sessions_count = Column(Integer, default=0)
     captured_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (

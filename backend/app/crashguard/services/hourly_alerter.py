@@ -80,7 +80,7 @@ async def _fetch_hourly_events(
 
 
 async def _upsert_snapshot(
-    session, issue_id: str, hour_utc: datetime, events: int,
+    session, issue_id: str, hour_utc: datetime, events: int, sessions: int = 0,
 ) -> None:
     existing = (await session.execute(
         select(CrashHourlySnapshot).where(
@@ -93,59 +93,58 @@ async def _upsert_snapshot(
             datadog_issue_id=issue_id,
             hour_utc=hour_utc,
             events_count=events,
+            sessions_count=sessions,
         ))
     else:
         existing.events_count = events
+        existing.sessions_count = sessions
 
 
 async def _resolve_baseline(
     session, issue_id: str, window_start: datetime, min_baseline: int,
-) -> tuple[Optional[float], str]:
+) -> tuple[Optional[float], Optional[float], str]:
     """优先 SHoW-3h（7 天前同 weekday 同 3h 块）；不足回落 rolling 过去 7 天同名块均值。
 
-    返回 (baseline_or_None, source: 'show' | 'rolling_7d' | 'insufficient')。
+    返回 (events_baseline, sessions_baseline, source)。
+    events_baseline=None → 数据不足；sessions_baseline=None → 老 snapshot 无 sessions_count。
     """
     show_target = window_start - timedelta(days=7)
+    # 用区间而非 `==`：防御文本存储下的格式漂移（19 vs 26 字符 microseconds）。
     show_row = (await session.execute(
         select(CrashHourlySnapshot).where(
             CrashHourlySnapshot.datadog_issue_id == issue_id,
-            CrashHourlySnapshot.hour_utc == show_target,
+            CrashHourlySnapshot.hour_utc >= show_target,
+            CrashHourlySnapshot.hour_utc < show_target + timedelta(seconds=1),
         )
     )).scalars().first()
     if show_row is not None and show_row.events_count >= min_baseline:
-        return float(show_row.events_count), "show"
+        sess_b = float(show_row.sessions_count) if (show_row.sessions_count or 0) > 0 else None
+        return float(show_row.events_count), sess_b, "show"
 
-    # Fallback: rolling 过去 7 天同名 3h 块均值（共最多 7 个值）
-    # 同名块 = window_start 的 hour 字段相同（00/03/06/...）
+    # Fallback: rolling 过去 7 天同名 3h 块均值
     target_hour = window_start.hour
     fallback_start = window_start - timedelta(days=7)
-    rolling = (await session.execute(
-        select(CrashHourlySnapshot.events_count).where(
+    rows = (await session.execute(
+        select(
+            CrashHourlySnapshot.events_count,
+            CrashHourlySnapshot.sessions_count,
+            CrashHourlySnapshot.hour_utc,
+        ).where(
             CrashHourlySnapshot.datadog_issue_id == issue_id,
             CrashHourlySnapshot.hour_utc >= fallback_start,
             CrashHourlySnapshot.hour_utc < window_start,
         )
     )).all()
-    if not rolling:
-        return None, "insufficient"
-    # 仅保留 hour 字段匹配的同名块（hour_utc 是 datetime，需要拉出来对比）
-    same_block_rows = (await session.execute(
-        select(CrashHourlySnapshot.events_count, CrashHourlySnapshot.hour_utc).where(
-            CrashHourlySnapshot.datadog_issue_id == issue_id,
-            CrashHourlySnapshot.hour_utc >= fallback_start,
-            CrashHourlySnapshot.hour_utc < window_start,
-        )
-    )).all()
-    same_block = [r[0] for r in same_block_rows if r[1].hour == target_hour]
-    if not same_block:
-        # 同名块也没数据 → 退到全部 rolling 均值（更宽容兜底）
-        vals = [r[0] for r in rolling]
-        avg = sum(vals) / len(vals)
-    else:
-        avg = sum(same_block) / len(same_block)
-    if avg < min_baseline:
-        return None, "insufficient"
-    return avg, "rolling_7d"
+    if not rows:
+        return None, None, "insufficient"
+    same_block = [(e, s) for (e, s, hu) in rows if hu.hour == target_hour]
+    pool = same_block if same_block else [(e, s) for (e, s, _) in rows]
+    evs_avg = sum(e for e, _ in pool) / len(pool)
+    sess_pool = [s for _, s in pool if (s or 0) > 0]
+    sess_avg = (sum(sess_pool) / len(sess_pool)) if sess_pool else None
+    if evs_avg < min_baseline:
+        return None, None, "insufficient"
+    return evs_avg, sess_avg, "rolling_7d"
 
 
 async def run_hourly_alert_tick(
@@ -157,7 +156,8 @@ async def run_hourly_alert_tick(
     now 可注入，便于单测。
     """
     s = get_crashguard_settings()
-    if not s.enabled or not s.feishu_enabled:
+    # feishu_enabled 拆为「发送」开关，不杀整条 tick；本地 dev 关飞书仍 upsert snapshot。
+    if not s.enabled:
         return {"skipped": "kill_switch", "enabled": s.enabled, "feishu": s.feishu_enabled}
     if not s.hourly_alert_enabled:
         return {"skipped": "hourly_alert_disabled"}
@@ -214,7 +214,8 @@ async def run_hourly_alert_tick(
                 continue
 
             # 持久化 snapshot（用于下一周的 SHoW 基线）—— snapshot 全量入库，告警阈值另判
-            await _upsert_snapshot(session, issue_id, window_start, events_h)
+            # events + sessions 一起存：rate-AND-check 需要历史 sessions
+            await _upsert_snapshot(session, issue_id, window_start, events_h, sessions_h)
 
             # 绝对量级阈值过滤：sessions 太低 → 噪声，跳过告警判定（snapshot 已入库不影响 SHoW）
             if min_sessions > 0 and sessions_h < min_sessions:
@@ -242,24 +243,43 @@ async def run_hourly_alert_tick(
                 })
                 continue  # 新增优先，不再算上涨
 
-            # SHoW baseline
-            baseline, baseline_source = await _resolve_baseline(
+            # SHoW baseline（events + sessions 两路）
+            baseline, sess_baseline, baseline_source = await _resolve_baseline(
                 session, issue_id, window_start, min_baseline,
             )
             if baseline is None or baseline <= 0:
                 continue
             growth = (events_h - baseline) / baseline
-            if growth >= threshold_ratio:
-                surge_items.append({
-                    "issue_id": issue_id,
-                    "title": title[:100],
-                    "platform": platform,
-                    "events_h": events_h,
-                    "sessions_h": sessions_h,
-                    "baseline": round(baseline, 1),
-                    "growth_pct": round(growth * 100, 1),
-                    "baseline_source": baseline_source,
-                })
+            if growth < threshold_ratio:
+                continue
+
+            # rate-AND-check：events 涨 ≥ 阈值 还不够，需 rate=events/sessions 也涨
+            # 用于过滤"用户量自然增长" → events 涨 但 rate 持平 / 反而跌的误报。
+            # 兜底语义：sess_baseline 或 sessions_h 缺失（老 snapshot / API 数据缺）→ 退化为只看 events
+            rate_now = (events_h / sessions_h) if sessions_h > 0 else None
+            rate_base = (baseline / sess_baseline) if sess_baseline and sess_baseline > 0 else None
+            rate_growth_pct: Optional[float] = None
+            if rate_now is not None and rate_base is not None and rate_base > 0:
+                rate_growth = (rate_now - rate_base) / rate_base
+                rate_growth_pct = round(rate_growth * 100, 1)
+                # rate 没有同步上涨（流量稀释或持平）→ 用户体验没劣化，不告警
+                if rate_growth <= 0.0:
+                    continue
+
+            surge_items.append({
+                "issue_id": issue_id,
+                "title": title[:100],
+                "platform": platform,
+                "events_h": events_h,
+                "sessions_h": sessions_h,
+                "baseline": round(baseline, 1),
+                "sessions_baseline": round(sess_baseline, 1) if sess_baseline else None,
+                "growth_pct": round(growth * 100, 1),
+                "rate_now": round(rate_now * 100, 3) if rate_now else None,
+                "rate_base": round(rate_base * 100, 3) if rate_base else None,
+                "rate_growth_pct": rate_growth_pct,
+                "baseline_source": baseline_source,
+            })
         await session.commit()
 
     # 按事件量 desc 排序
@@ -309,20 +329,23 @@ async def run_hourly_alert_tick(
     )
 
     sent_ok = False
-    try:
-        from app.services.feishu_cli import send_interactive_card
-        if s.feishu_target_chat_id:
-            sent_ok = await send_interactive_card(
-                chat_id=s.feishu_target_chat_id, card=card,
-            )
-        elif s.feishu_target_email:
-            sent_ok = await send_interactive_card(
-                email=s.feishu_target_email, card=card,
-            )
-        else:
-            logger.warning("hourly_alerter: no chat_id/email configured, skip send")
-    except Exception:
-        logger.exception("hourly_alerter: feishu send error")
+    if not s.feishu_enabled:
+        logger.info("hourly_alerter: feishu_enabled=False, skip send (snapshot 已落表)")
+    else:
+        try:
+            from app.services.feishu_cli import send_interactive_card
+            if s.feishu_target_chat_id:
+                sent_ok = await send_interactive_card(
+                    chat_id=s.feishu_target_chat_id, card=card,
+                )
+            elif s.feishu_target_email:
+                sent_ok = await send_interactive_card(
+                    email=s.feishu_target_email, card=card,
+                )
+            else:
+                logger.warning("hourly_alerter: no chat_id/email configured, skip send")
+        except Exception:
+            logger.exception("hourly_alerter: feishu send error")
 
     logger.info(
         "hourly_alerter fired: hour=%s new=%d surge=%d sent=%s",

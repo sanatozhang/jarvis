@@ -300,6 +300,8 @@ function CrashguardPageInner() {
         nonFatalEvents: (aggregates as { non_fatal_events?: number }).non_fatal_events ?? 0,
         fatalCount: aggregates.fatal_count,
         nonFatalCount: aggregates.non_fatal_count,
+        crashFreeSessionsPct: aggregates.crash_free_sessions_pct ?? null,
+        crashFreeTotalSessions: aggregates.crash_free_total_sessions ?? 0,
       };
     }
     const events = items.reduce((s, i) => s + (i.events_count || 0), 0);
@@ -313,6 +315,8 @@ function CrashguardPageInner() {
       fatalEvents: fatalItems.reduce((s, i) => s + (i.events_count || 0), 0),
       nonFatalEvents: nonFatalItems.reduce((s, i) => s + (i.events_count || 0), 0),
       fatalCount: fatalItems.length, nonFatalCount: nonFatalItems.length,
+      crashFreeSessionsPct: null as number | null,
+      crashFreeTotalSessions: 0,
     };
   }, [items, aggregates]);
 
@@ -970,9 +974,17 @@ function CrashguardPageInner() {
         <div className="grid grid-cols-2 gap-3 px-6 mt-3">
           <StatCardLarge
             title={t("Crash-free 会话")}
-            primary={"—"}
-            secondary={`${totals.sessions.toLocaleString()} ${t("受影响会话")}`}
-            hint={t("session-level，Datadog impacted_sessions")}
+            primary={
+              totals.crashFreeSessionsPct !== null
+                ? `${totals.crashFreeSessionsPct.toFixed(2)}%`
+                : "—"
+            }
+            secondary={
+              totals.crashFreeTotalSessions > 0
+                ? `${totals.crashFreeTotalSessions.toLocaleString()} ${t("总会话")} · ${totals.sessions.toLocaleString()} ${t("受影响会话")}`
+                : `${totals.sessions.toLocaleString()} ${t("受影响会话")}`
+            }
+            hint={t("session-level，crash_metric_snapshots 窗口聚合")}
           />
           <StatCardLarge
             title={t("Crash-free 用户")}

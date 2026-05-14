@@ -92,10 +92,15 @@ async def run_backfill(days: int = 7, dry_run: bool = False) -> dict:
                 print(f"  [{call_n:>3}/{total}] {block} {qname}: FETCH_ERR {exc}")
                 await asyncio.sleep(2.0)
                 continue
+            # hu 必须与 ORM 写入格式对齐：26 字符 'YYYY-MM-DD HH:MM:SS.ffffff'。
+            # 裸 text() 走 aiosqlite 默认 adapter，microsecond=0 时会输出 19 字符，
+            # 导致 hourly_alerter._resolve_baseline 的 SHoW 精确比较永远 miss。
+            hu_str = block.strftime("%Y-%m-%d %H:%M:%S.%f")
+            now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")
             rows = [
-                {"iid": it.get("id") or "", "hu": block,
+                {"iid": it.get("id") or "", "hu": hu_str,
                  "ev": int(it.get("attributes", {}).get("events_count", 0) or 0),
-                 "now": datetime.utcnow()}
+                 "now": now_str}
                 for it in items if it.get("id")
             ]
             if rows:

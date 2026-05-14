@@ -283,6 +283,150 @@ async def test_fallback_to_rolling_avg_when_show_missing(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_rate_and_check_blocks_traffic_growth_false_positive(tmp_path, monkeypatch):
+    """rate-AND-check：events 涨 ≥ 10% 但 rate=events/sessions 持平 / 跌 → 不告警。
+
+    场景：用户量自然增长（如新版本发布、海外开闸）导致 events 等比例上涨，
+    但 crash rate 没变，本质用户体验没劣化，不应该 surge。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlySnapshot, CrashIssue
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    now_hour = _floor_h(fake_now)
+    window_start = now_hour - timedelta(hours=1)
+    show_target = window_start - timedelta(days=7)
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="ddi_traffic",
+            platform="ios",
+            title="TrafficGrowth",
+            first_seen_at=fake_now - timedelta(days=60),
+        ))
+        # SHoW 基线：100 events / 1000 sessions → rate 10%
+        session.add(CrashHourlySnapshot(
+            datadog_issue_id="ddi_traffic",
+            hour_utc=show_target,
+            events_count=100,
+            sessions_count=1000,
+        ))
+        await session.commit()
+
+    # 当前：150 events / 1500 sessions → rate 10%（持平）
+    # events 涨 +50%（>>10% 阈值）但 rate 没动 → 应被 rate-AND 拦住
+    issues = [_fake_dd_issue("ddi_traffic", "TrafficGrowth", 150, "ios", sessions=1500)]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(now=fake_now)
+
+    assert result["ok"] is True
+    # events 维度涨了 +50%，但 rate 持平 → surge=0 才符合预期
+    assert result.get("surge", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_rate_and_check_allows_real_severity_growth(tmp_path, monkeypatch):
+    """rate-AND-check 不能误伤真劣化：events 涨且 rate 也涨 → 必须告警。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlySnapshot, CrashIssue
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    now_hour = _floor_h(fake_now)
+    window_start = now_hour - timedelta(hours=1)
+    show_target = window_start - timedelta(days=7)
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="ddi_real",
+            platform="ios",
+            title="RealRegression",
+            first_seen_at=fake_now - timedelta(days=60),
+        ))
+        # SHoW: 100 events / 1000 sessions → rate 10%
+        session.add(CrashHourlySnapshot(
+            datadog_issue_id="ddi_real",
+            hour_utc=show_target,
+            events_count=100,
+            sessions_count=1000,
+        ))
+        await session.commit()
+
+    # 当前：200 events / 1000 sessions → rate 20%（×2）— 真劣化
+    issues = [_fake_dd_issue("ddi_real", "RealRegression", 200, "ios", sessions=1000)]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(now=fake_now)
+
+    assert result.get("surge", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_show_baseline_matches_legacy_19char_format(tmp_path, monkeypatch):
+    """回归：回填脚本在 microsecond=0 时落 19 字符 'YYYY-MM-DD HH:MM:SS'，
+    而 ORM 用 26 字符 '...ffffff'。`_resolve_baseline` 必须用区间匹配，否则 SHoW miss。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+
+    from sqlalchemy import text
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    now_hour = _floor_h(fake_now)
+    window_start = now_hour - timedelta(hours=1)
+    show_target = window_start - timedelta(days=7)
+    legacy_hu = show_target.strftime("%Y-%m-%d %H:%M:%S")  # 19 字符，无 microseconds
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="ddi_legacy_fmt",
+            platform="ios",
+            title="LegacyFmt",
+            first_seen_at=fake_now - timedelta(days=60),
+        ))
+        await session.commit()
+        # 模拟 backfill 脚本（旧版）走 text() 落 19 字符
+        await session.execute(text(
+            "INSERT INTO crash_hourly_snapshots "
+            "(datadog_issue_id, hour_utc, events_count, captured_at) "
+            "VALUES (:iid, :hu, :ev, :now)"
+        ), {"iid": "ddi_legacy_fmt", "hu": legacy_hu, "ev": 100,
+            "now": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")})
+        await session.commit()
+
+    issues = [_fake_dd_issue("ddi_legacy_fmt", "LegacyFmt", 120, "ios")]
+
+    sent_cards = []
+    async def fake_send(chat_id="", card=None, email=""):
+        sent_cards.append(card)
+        return True
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.services.feishu_cli.send_interactive_card", side_effect=fake_send):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(now=fake_now)
+
+    assert result["alerted"] is True
+    assert result["surge"] == 1
+    # 必须走 SHoW（不是 rolling_7d fallback）
+    assert "SHoW" in str(sent_cards[0])
+
+
+@pytest.mark.asyncio
 async def test_min_sessions_filter_blocks_low_volume(tmp_path, monkeypatch):
     """绝对量级阈值：sessions_affected < 60 的 issue 不告警（脏数据/低频噪声过滤）。"""
     await _setup_db_and_settings(tmp_path, monkeypatch)

@@ -888,7 +888,7 @@ class DatadogClient:
 
         口径：
             total_sessions   = CARDINALITY(@session.id) WHERE @type:session
-            crashed_sessions = CARDINALITY(@session.id) WHERE @type:session @session.has_crash:true
+            crashed_sessions = CARDINALITY(@session.id) WHERE @type:session @session.crash.count:>0
             crash_free_pct   = (1 - crashed/total) * 100   （total=0 时返回 100.0）
 
         返回:
@@ -961,7 +961,7 @@ class DatadogClient:
             return out
 
         total = _agg("@type:session")
-        crashed = _agg("@type:session @session.has_crash:true")
+        crashed = _agg("@type:session @session.crash.count:>0")
 
         result: Dict[str, Dict[str, Any]] = {}
         for plat in set(total.keys()) | set(crashed.keys()):

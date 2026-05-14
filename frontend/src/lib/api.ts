@@ -933,6 +933,11 @@ export interface CrashTopAggregates {
   total_events: number;
   total_users: number;
   total_sessions: number;
+  // crash-free sessions % (来自 crash_metric_snapshots，window_hours 加权 sum)
+  // null = 窗口内无 session 数据
+  crash_free_sessions_pct?: number | null;
+  crash_free_total_sessions?: number;
+  crash_free_crashed_sessions?: number;
 }
 
 export interface CrashTopResponse {

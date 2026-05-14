@@ -476,7 +476,7 @@ async def get_top(
     """
     from app.db.database import get_session
     from app.crashguard.services.ranker import pick_top_n
-    from sqlalchemy import select
+    from sqlalchemy import select, func
 
     if target_date is None:
         target_date = date.today()
@@ -549,8 +549,29 @@ async def get_top(
             else:  # impact（默认或显式）
                 items.sort(key=lambda x: x.get("crash_free_impact_score") or 0.0, reverse=True)
 
+        # Crash-free sessions %（窗口 sum sessions weighted）—— 从 crash_metric_snapshots 滚一遍
+        # 颗粒度：跟 window_hours 对齐；total=0 → None（前端用 — 占位）
+        from datetime import datetime as _dt
+        from app.crashguard.models import CrashMetricSnapshot
+        cf_window_start = _dt.utcnow() - timedelta(hours=window_hours)
+        cf_row = (await session.execute(
+            select(
+                func.coalesce(func.sum(CrashMetricSnapshot.total_sessions), 0),
+                func.coalesce(func.sum(CrashMetricSnapshot.crashed_sessions), 0),
+            ).where(CrashMetricSnapshot.window_start >= cf_window_start)
+        )).first()
+        cf_total = int(cf_row[0] or 0) if cf_row else 0
+        cf_crashed = int(cf_row[1] or 0) if cf_row else 0
+        if cf_total > 0:
+            crash_free_sessions_pct = round((1.0 - cf_crashed / cf_total) * 100.0, 3)
+        else:
+            crash_free_sessions_pct = None
+
         # 聚合（基于过滤后但未分页的全集，便于头部展示真实统计）
         aggregates = {
+            "crash_free_sessions_pct": crash_free_sessions_pct,
+            "crash_free_total_sessions": cf_total,
+            "crash_free_crashed_sessions": cf_crashed,
             "p0_count": sum(1 for x in items if x.get("tier") == "P0"),
             "surge_count": sum(1 for x in items if x.get("is_surge")),
             "new_count": sum(1 for x in items if x.get("is_new_in_version")),

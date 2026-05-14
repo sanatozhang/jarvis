@@ -120,7 +120,9 @@ async def run_core_metric_tick(
     now 可注入便于单测。
     """
     s = get_crashguard_settings()
-    if not s.enabled or not s.feishu_enabled:
+    # 拆分语义：feishu_enabled 只控发送，不再杀整条 tick。
+    # 本地 dev 关掉飞书也能继续算 crash_free % / 写 snapshot。
+    if not s.enabled:
         return {"skipped": "kill_switch"}
     if not getattr(s, "core_metric_enabled", False):
         return {"skipped": "core_metric_disabled"}
@@ -249,16 +251,19 @@ async def run_core_metric_tick(
         alert_id=alert_id,
     )
     sent_ok = False
-    try:
-        from app.services.feishu_cli import send_interactive_card
-        if s.feishu_target_chat_id:
-            sent_ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
-        elif s.feishu_target_email:
-            sent_ok = await send_interactive_card(email=s.feishu_target_email, card=card)
-        else:
-            logger.warning("core_metric_alerter: no chat_id/email; skip send")
-    except Exception:
-        logger.exception("core_metric_alerter: feishu send error")
+    if not s.feishu_enabled:
+        logger.info("core_metric_alerter: feishu_enabled=False, skip send (data 已落表)")
+    else:
+        try:
+            from app.services.feishu_cli import send_interactive_card
+            if s.feishu_target_chat_id:
+                sent_ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
+            elif s.feishu_target_email:
+                sent_ok = await send_interactive_card(email=s.feishu_target_email, card=card)
+            else:
+                logger.warning("core_metric_alerter: no chat_id/email; skip send")
+        except Exception:
+            logger.exception("core_metric_alerter: feishu send error")
 
     logger.info(
         "core_metric_alerter fired: window=%s alerts=%d direction=%s sent=%s",
