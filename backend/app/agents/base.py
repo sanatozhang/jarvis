@@ -476,7 +476,8 @@ output/       ← 请将 result.json 写入此目录
                 data.setdefault("root_cause", cleaned_output)
                 data.setdefault("confidence", "medium")
                 data.setdefault("confidence_reason", "从 Agent 文本输出中提取，未生成标准 result.json")
-                data.setdefault("needs_engineer", True)
+                # 默认 False：兜底提取 ≠ 需要工程师。让 confidence 来表达不确定性。
+                data.setdefault("needs_engineer", False)
                 logger.info("Using cleaned raw_output (%d chars) as fallback root_cause", len(cleaned_output))
 
         # New prompt outputs English in main fields, Chinese in _zh fields.
@@ -522,7 +523,8 @@ output/       ← 请将 result.json 写入此目录
             key_evidence=_safe_key_evidence(data.get("key_evidence", [])),
             user_reply=_raw_reply_zh,
             user_reply_en=_raw_reply_en,
-            needs_engineer=data.get("needs_engineer", True),
+            # 缺省 False：AI 不显式申请就不打工程师标签；漏字段不等于要人工介入。
+            needs_engineer=data.get("needs_engineer", False),
             fix_suggestion=data.get("fix_suggestion", ""),
             raw_output=raw_output[:10000],
         )
@@ -856,7 +858,9 @@ def _salvage_from_markdown(text: str) -> Dict:
 
     result["confidence"] = "medium"
     result["confidence_reason"] = "Agent 未生成 result.json，从 Markdown 输出中提取"
-    result["needs_engineer"] = True
+    # 不再无脑把工程师标签拍上：兜底提取只代表格式不合规，不代表分析质量不行；
+    # 是否需要工程师由 confidence 决定（low 才转人工，medium/high 走自助回复）。
+    result["needs_engineer"] = result["confidence"] == "low"
 
     return result if result.get("root_cause") else {}
 

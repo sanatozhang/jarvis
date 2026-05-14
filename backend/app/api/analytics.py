@@ -116,3 +116,57 @@ async def get_rule_accuracy(
     """Get rule accuracy statistics."""
     from app.services.rule_accuracy import get_rule_accuracy_stats
     return await get_rule_accuracy_stats(days=days)
+
+
+@router.get("/fallback-extraction")
+async def get_fallback_extraction_rate(
+    days: int = Query(7, ge=1, le=3650, description="Number of days to look back"),
+):
+    """L4.2 监控指标：AI 没写 result.json 走 Markdown 兜底的占比。
+
+    阈值参考：> 5% 说明 prompt/平台合约不够强，需要排查。
+    """
+    from sqlalchemy import func, select, and_
+    from app.db import database as db
+    from datetime import datetime, timedelta
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    fallback_marker = "Agent 未生成 result.json，从 Markdown 输出中提取"
+
+    async with db.get_session() as session:
+        total_stmt = select(func.count()).select_from(db.AnalysisRecord).where(
+            db.AnalysisRecord.created_at >= cutoff,
+        )
+        total = (await session.execute(total_stmt)).scalar() or 0
+
+        fallback_stmt = select(func.count()).select_from(db.AnalysisRecord).where(
+            and_(
+                db.AnalysisRecord.created_at >= cutoff,
+                db.AnalysisRecord.confidence_reason == fallback_marker,
+            )
+        )
+        fallback = (await session.execute(fallback_stmt)).scalar() or 0
+
+        # 按 agent 分组
+        agent_stmt = select(
+            db.AnalysisRecord.agent_type,
+            func.count(),
+        ).where(
+            and_(
+                db.AnalysisRecord.created_at >= cutoff,
+                db.AnalysisRecord.confidence_reason == fallback_marker,
+            )
+        ).group_by(db.AnalysisRecord.agent_type)
+        by_agent = {row[0] or "unknown": row[1] for row in (await session.execute(agent_stmt)).all()}
+
+    rate = round(fallback / total * 100, 2) if total else 0.0
+    return {
+        "window_days": days,
+        "total_analyses": total,
+        "fallback_extractions": fallback,
+        "fallback_rate_pct": rate,
+        "threshold_pct": 5.0,
+        "alert": rate > 5.0,
+        "by_agent": by_agent,
+        "marker": fallback_marker,
+    }

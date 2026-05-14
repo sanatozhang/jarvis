@@ -332,6 +332,8 @@ class TestSalvageFromMarkdown:
         assert data.get("root_cause") == "Error"
 
     def test_confidence_defaults(self):
+        # 兜底提取 ≠ 需要工程师：confidence=medium 时 needs_engineer 应为 False，
+        # 只有 confidence=low 才转人工。
         data = _salvage_from_markdown("## 测试\n内容很长足够做分析了")
         assert data["confidence"] == "medium"
-        assert data["needs_engineer"] is True
+        assert data["needs_engineer"] is False

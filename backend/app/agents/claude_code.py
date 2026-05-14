@@ -34,6 +34,11 @@ class ClaudeCodeAgent(BaseAgent):
         prompt_file = workspace / "prompt.md"
         prompt_file.write_text(prompt, encoding="utf-8")
 
+        # L3: 在 workspace 写 .claude/settings.json，注入 Stop hook 强制 result.json 必须落地
+        # 底层逻辑：模型想 stop 时 hook 先 check 文件是否存在，不存在就 block 它退出，强制再来一轮把文件写了。
+        # 平台级合约，不靠 prompt 自觉。
+        self._write_stop_hook(workspace)
+
         cmd = self._build_command()
         logger.info("Running Claude Code in %s (prompt: %d chars, piped via stdin)", workspace, len(prompt))
 
@@ -93,6 +98,24 @@ class ClaudeCodeAgent(BaseAgent):
 
             if on_progress:
                 await _maybe_await(on_progress(90, "解析分析结果..."))
+
+            # L2: 检测到主分析结束但 result.json 没落地 → 触发"格式补救轮"
+            # 底层逻辑：AI 已经把分析想清楚了（stdout 有 Markdown），只是忘了用 Write 工具落盘；
+            # 启一个短任务（max_turns=3, timeout=60s）让它只做格式转换，避免走 Markdown 兜底。
+            result_file = workspace / "output" / "result.json"
+            if not result_file.exists() and stdout and len(stdout.strip()) > 200:
+                logger.warning(
+                    "result.json missing after primary run — triggering L2 format fixup (stdout=%d chars)",
+                    len(stdout),
+                )
+                try:
+                    fixed = await self._run_format_fixup(workspace, stdout)
+                    if fixed:
+                        logger.info("L2 format fixup succeeded — result.json now exists")
+                    else:
+                        logger.warning("L2 format fixup did NOT produce result.json — falling back to Markdown salvage")
+                except Exception as e:
+                    logger.warning("L2 format fixup exception: %s", e)
 
             # Always try to parse — even if returncode != 0, Claude may
             # have written result.json or produced useful stdout before failing
@@ -223,6 +246,147 @@ class ClaudeCodeAgent(BaseAgent):
     def _parse_claude_output(self, workspace: Path, raw_output: str) -> AnalysisResult:
         """Parse Claude Code output - try result.json first, then raw text."""
         return self.parse_result(workspace, raw_output)
+
+    # ------------------------------------------------------------------
+    # L3: 写 Stop hook，强制模型必须写出 result.json 才能退出
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _write_stop_hook(workspace: Path) -> None:
+        """在 workspace 内写 .claude/settings.json，注入 Stop hook。
+
+        Stop hook 在模型决定 stop 时触发：
+        - 如果 output/result.json 存在 → exit 0 → 允许 stop
+        - 如果不存在 → 输出 block decision → 强制 Claude 继续一轮
+
+        被 max_turns 卡死时仍会退出，所以不会无限循环。
+        """
+        try:
+            settings_dir = workspace / ".claude"
+            settings_dir.mkdir(parents=True, exist_ok=True)
+            hook_cmd = (
+                "if [ -f \"$(pwd)/output/result.json\" ]; then exit 0; "
+                "else echo '{\"decision\":\"block\",\"reason\":\"output/result.json 还没写！请立即用 Write 工具写入符合 schema 的 JSON，写完再尝试 stop。\"}'; fi"
+            )
+            settings = {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "matcher": "",
+                            "hooks": [
+                                {"type": "command", "command": hook_cmd}
+                            ],
+                        }
+                    ]
+                }
+            }
+            (settings_dir / "settings.json").write_text(
+                json.dumps(settings, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.debug("Wrote Stop hook to %s/.claude/settings.json", workspace)
+        except Exception as e:
+            logger.warning("Failed to write stop hook (non-fatal): %s", e)
+
+    # ------------------------------------------------------------------
+    # L2: 格式补救轮（廉价子任务，把已有 Markdown 转写成 result.json）
+    # ------------------------------------------------------------------
+    async def _run_format_fixup(self, workspace: Path, prev_markdown: str) -> bool:
+        """启一个短任务让 Claude 把之前的 Markdown 转写成 result.json。
+
+        只在主分析完成但没落盘 result.json 时调用。返回 True 表示 result.json 已生成。
+        """
+        # 截断输入，避免 prompt 爆掉（保留首尾，丢中间）
+        max_md_chars = 20000
+        md = prev_markdown
+        if len(md) > max_md_chars:
+            half = max_md_chars // 2 - 50
+            md = md[:half] + "\n...[trimmed]...\n" + md[-half:]
+
+        fixup_prompt = f"""你刚才完成了 Plaud 工单分析，但**忘了用 Write 工具把结果落盘到 `output/result.json`**。
+
+## 你现在的唯一任务
+
+把下面这段 Markdown 转写成符合 schema 的 JSON，**直接用 Write 工具写入 `output/result.json`，然后退出**。
+
+- 不要重新分析、不要 grep、不要读其他文件
+- 直接做格式转换，每个字段都从下面的 Markdown 里抽取/凝练
+- 写完立即 `cat output/result.json` 验证一次然后退出
+
+## Schema
+
+```json
+{{
+  "problem_type": "问题分类（中文，从 Markdown 标题或根因段提取）",
+  "problem_type_en": "Problem Type (English)",
+  "root_cause": "根因（中文，5-10 句，含现象/根因/证据）",
+  "root_cause_en": "Root cause (English, equivalent depth)",
+  "confidence": "high | medium | low（从 Markdown 中找；找不到默认 medium）",
+  "confidence_reason": "为什么是这个置信度",
+  "key_evidence": ["最多 5 条关键日志或证据"],
+  "user_reply": "完整中文客服回复模板（200-500 字）",
+  "user_reply_en": "Full English reply (200-500 words)",
+  "needs_engineer": false,
+  "fix_suggestion": ""
+}}
+```
+
+**`needs_engineer` 取值规则**：只有当 Markdown 里明确说"无法定位/证据不足/建议人工排查"时才填 true，否则一律 false。
+
+## 你之前的 Markdown 输出（来源材料）
+
+```
+{md}
+```
+"""
+
+        prompt_file = workspace / "fixup_prompt.md"
+        try:
+            prompt_file.write_text(fixup_prompt, encoding="utf-8")
+        except Exception:
+            pass
+
+        # 单独构造命令：只允许 Write/Read/Bash，max-turns=3，超时 60s
+        cmd = ["claude", "-p", "--output-format", "text", "--max-turns", "3"]
+        if self.config.model:
+            cmd.extend(["--model", self.config.model])
+        cmd.extend(["--allowedTools", "Write", "Read", "Bash"])
+
+        logger.info("Running L2 fixup: max-turns=3, timeout=60s, prompt=%d chars", len(fixup_prompt))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(workspace),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(input=fixup_prompt.encode("utf-8")),
+                    timeout=60,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("L2 fixup subprocess timed out at 60s; killing")
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return False
+
+            if proc.returncode != 0:
+                logger.warning(
+                    "L2 fixup exited code=%d stderr=%s",
+                    proc.returncode,
+                    stderr_b.decode("utf-8", errors="replace")[:200],
+                )
+            # 唯一判据：result.json 是否真的落地了
+            return (workspace / "output" / "result.json").exists()
+        except FileNotFoundError:
+            logger.warning("L2 fixup: claude CLI not found")
+            return False
+        except Exception as e:
+            logger.warning("L2 fixup unexpected error: %s", e)
+            return False
 
 
 async def _maybe_await(val):
