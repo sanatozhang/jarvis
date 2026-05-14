@@ -43,6 +43,8 @@ async def _setup_db_and_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_GROWTH_THRESHOLD_PCT", "10")
     monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_WINDOW_DAYS", "30")
     monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_MIN_BASELINE_EVENTS", "20")
+    # 测试环境锚定 min_sessions=100；prod default 500（5/14 二次上调，与 core_metric 对齐）
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_MIN_SESSIONS", "100")
 
     from app.config import get_settings
     from app.crashguard.config import get_crashguard_settings
@@ -106,16 +108,17 @@ async def test_show_baseline_growth_above_threshold_triggers_surge(tmp_path, mon
             title="OldCrash",
             first_seen_at=fake_now - timedelta(days=60),
         ))
-        # SHoW 基线：上周同时段 100 events
+        # SHoW 基线：上周同时段 100 events / 1000 sessions → rate 10%
         session.add(CrashHourlySnapshot(
             datadog_issue_id="ddi_old",
             hour_utc=show_target,
             events_count=100,
+            sessions_count=1000,
         ))
         await session.commit()
 
-    # 本小时 120 events → +20%（> 10% 阈值）
-    issues = [_fake_dd_issue("ddi_old", "OldCrash", 120, "ios")]
+    # 本小时 120 events / 1000 sessions → events +20%，rate +20% → AND 双过
+    issues = [_fake_dd_issue("ddi_old", "OldCrash", 120, "ios", sessions=1000)]
 
     sent_cards = []
     async def fake_send(chat_id="", card=None, email=""):
@@ -253,17 +256,18 @@ async def test_fallback_to_rolling_avg_when_show_missing(tmp_path, monkeypatch):
             title="RollingCrash",
             first_seen_at=fake_now - timedelta(days=60),
         ))
-        # 不写 SHoW snapshot；写过去 5 天的滚动数据，平均 100
+        # 不写 SHoW snapshot；写过去 5 天的滚动数据，平均 100 events / 1000 sessions
         for i in range(1, 6):
             session.add(CrashHourlySnapshot(
                 datadog_issue_id="ddi_rolling",
                 hour_utc=window_start - timedelta(days=i),
                 events_count=100,
+                sessions_count=1000,
             ))
         await session.commit()
 
-    # 当前 120 → 100 均值 → +20%
-    issues = [_fake_dd_issue("ddi_rolling", "RollingCrash", 120, "ios")]
+    # 当前 120 events / 1000 sessions → events +20% AND rate +20%
+    issues = [_fake_dd_issue("ddi_rolling", "RollingCrash", 120, "ios", sessions=1000)]
 
     sent_cards = []
     async def fake_send(chat_id="", card=None, email=""):
@@ -398,16 +402,16 @@ async def test_show_baseline_matches_legacy_19char_format(tmp_path, monkeypatch)
             first_seen_at=fake_now - timedelta(days=60),
         ))
         await session.commit()
-        # 模拟 backfill 脚本（旧版）走 text() 落 19 字符
+        # 模拟 backfill 脚本（旧版）走 text() 落 19 字符；sessions_count=1000 让 rate-AND-check 过关
         await session.execute(text(
             "INSERT INTO crash_hourly_snapshots "
-            "(datadog_issue_id, hour_utc, events_count, captured_at) "
-            "VALUES (:iid, :hu, :ev, :now)"
-        ), {"iid": "ddi_legacy_fmt", "hu": legacy_hu, "ev": 100,
+            "(datadog_issue_id, hour_utc, events_count, sessions_count, captured_at) "
+            "VALUES (:iid, :hu, :ev, :ss, :now)"
+        ), {"iid": "ddi_legacy_fmt", "hu": legacy_hu, "ev": 100, "ss": 1000,
             "now": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")})
         await session.commit()
 
-    issues = [_fake_dd_issue("ddi_legacy_fmt", "LegacyFmt", 120, "ios")]
+    issues = [_fake_dd_issue("ddi_legacy_fmt", "LegacyFmt", 120, "ios", sessions=1000)]
 
     sent_cards = []
     async def fake_send(chat_id="", card=None, email=""):
@@ -467,6 +471,112 @@ async def test_min_sessions_allows_high_volume(tmp_path, monkeypatch):
 
     assert result["alerted"] is True
     assert result["new"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rate_and_check_strict_blocks_when_no_sess_baseline(tmp_path, monkeypatch):
+    """P0 严格化：SHoW 历史 snapshot 无 sessions_count + 14d 内也无 sessions 兜底
+    → rate_base 算不出来 → 不告警（宁缺勿误报，而非旧版静默放行）。
+
+    抓手：之前 rate_base=None 被 if 跳过，AND 退化为单 events 闸；现在强制 AND。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlySnapshot, CrashIssue
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    now_hour = _floor_h(fake_now)
+    window_start = now_hour - timedelta(hours=1)
+    show_target = window_start - timedelta(days=7)
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="ddi_no_sess",
+            platform="ios",
+            title="NoSessHistory",
+            first_seen_at=fake_now - timedelta(days=60),
+        ))
+        # SHoW 有 events 但 sessions_count=0（模拟老 snapshot 列刚加未回填）
+        session.add(CrashHourlySnapshot(
+            datadog_issue_id="ddi_no_sess",
+            hour_utc=show_target,
+            events_count=100,
+            sessions_count=0,
+        ))
+        await session.commit()
+
+    # 当前 200 events / 100 sessions：events +100% 远超 10%；但 rate_base 算不出来
+    issues = [_fake_dd_issue("ddi_no_sess", "NoSessHistory", 200, "ios", sessions=100)]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(now=fake_now)
+
+    # P0：rate_base 算不出来 → 宁缺勿误报
+    assert result.get("surge", 0) == 0
+    assert result.get("alerted") is False
+
+
+@pytest.mark.asyncio
+async def test_sessions_baseline_fallback_kicks_in_when_show_lacks_sessions(tmp_path, monkeypatch):
+    """P2 兜底：SHoW events 命中但 sessions_count=0 → 用 14 天 sessions>0 中位数兜底；
+    兜底后 rate-AND-check 重新可用。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlySnapshot, CrashIssue
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    now_hour = _floor_h(fake_now)
+    window_start = now_hour - timedelta(hours=1)
+    show_target = window_start - timedelta(days=7)
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="ddi_sess_fb",
+            platform="ios",
+            title="SessFallback",
+            first_seen_at=fake_now - timedelta(days=60),
+        ))
+        # SHoW: events=100 但 sessions=0（无 sessions 历史）
+        session.add(CrashHourlySnapshot(
+            datadog_issue_id="ddi_sess_fb",
+            hour_utc=show_target,
+            events_count=100,
+            sessions_count=0,
+        ))
+        # 14d 内有 5 个 snapshot 带 sessions_count → 中位数 = 1000
+        for i in range(1, 6):
+            session.add(CrashHourlySnapshot(
+                datadog_issue_id="ddi_sess_fb",
+                hour_utc=window_start - timedelta(days=i),
+                events_count=80,
+                sessions_count=1000,
+            ))
+        await session.commit()
+
+    # 当前 200 events / 1000 sessions → rate 20%；
+    # 兜底 sess_baseline=1000 → rate_base = 100/1000 = 10% → rate +100%
+    issues = [_fake_dd_issue("ddi_sess_fb", "SessFallback", 200, "ios", sessions=1000)]
+
+    sent_cards = []
+    async def fake_send(chat_id="", card=None, email=""):
+        sent_cards.append(card)
+        return True
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.services.feishu_cli.send_interactive_card", side_effect=fake_send):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(now=fake_now)
+
+    assert result.get("alerted") is True
+    assert result.get("surge") == 1
 
 
 @pytest.mark.asyncio

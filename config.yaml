@@ -149,7 +149,7 @@ crashguard:
     new_window_days: 30            # 近 30 天首次出现 = 新增告警
     min_baseline_events: 20        # 上周同 3h 块 < 20 件则跳过百分比判定（小基数噪声）
     max_items: 10                  # 卡片最多展示前 N 项
-    min_sessions: 100              # 受影响会话 < 100 不告警（脏数据过滤；Plaud RUM 无 user 字段，sessions 代理 user；5/14 上调 60→100）
+    min_sessions: 500              # 受影响会话 < 500 不告警（5/14 二次上调 100→500：AppHang 148 会话贴线触发仍无业务意义；与 core_metric 颗粒度对齐）
 
   # 核心指标报警（crash-free sessions % 健康度，10 分钟粒度）
   # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增；本告警补"系统级健康度"颗粒度。

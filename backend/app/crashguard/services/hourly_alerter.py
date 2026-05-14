@@ -100,6 +100,31 @@ async def _upsert_snapshot(
         existing.sessions_count = sessions
 
 
+async def _fallback_sessions_baseline(
+    session, issue_id: str, window_start: datetime,
+    days: int = 14, min_samples: int = 3,
+) -> Optional[float]:
+    """SHoW 历史 snapshot 无 sessions_count（老数据）时的兜底：
+    取该 issue 过去 N 天所有 sessions_count > 0 的 snapshot 中位数。
+
+    抓手：sessions_count 列 5/14 才上线，SHoW=上周同 3h 块基本无 sessions；
+    没有这个兜底，rate-AND-check 退化为纯 events% 单闸门——P0 严格化后将无任何 surge 告警。
+    """
+    base_from = window_start - timedelta(days=days)
+    rows = (await session.execute(
+        select(CrashHourlySnapshot.sessions_count).where(
+            CrashHourlySnapshot.datadog_issue_id == issue_id,
+            CrashHourlySnapshot.hour_utc >= base_from,
+            CrashHourlySnapshot.hour_utc < window_start,
+            CrashHourlySnapshot.sessions_count > 0,
+        )
+    )).all()
+    samples = sorted([int(r[0]) for r in rows if r[0] and r[0] > 0])
+    if len(samples) < min_samples:
+        return None
+    return float(samples[len(samples) // 2])  # median
+
+
 async def _resolve_baseline(
     session, issue_id: str, window_start: datetime, min_baseline: int,
 ) -> tuple[Optional[float], Optional[float], str]:
@@ -253,18 +278,33 @@ async def run_hourly_alert_tick(
             if growth < threshold_ratio:
                 continue
 
-            # rate-AND-check：events 涨 ≥ 阈值 还不够，需 rate=events/sessions 也涨
-            # 用于过滤"用户量自然增长" → events 涨 但 rate 持平 / 反而跌的误报。
-            # 兜底语义：sess_baseline 或 sessions_h 缺失（老 snapshot / API 数据缺）→ 退化为只看 events
+            # P2: SHoW 历史 snapshot 无 sessions_count → 兜底取 14 天中位数
+            sess_baseline_source = baseline_source
+            if not sess_baseline or sess_baseline <= 0:
+                sess_fb = await _fallback_sessions_baseline(
+                    session, issue_id, window_start,
+                )
+                if sess_fb and sess_fb > 0:
+                    sess_baseline = sess_fb
+                    sess_baseline_source = f"{baseline_source}+sess_fb14d"
+
+            # rate-AND-check（P0 严格化）：rate_base 缺数 → **不告警**（宁缺勿误报）
+            # 抓手：之前 rate_base=None 被静默放行 → AND 退化为 OR；
+            # 现在强制 AND——历史 sessions 数据不足时也算"信号不足"，不发警。
             rate_now = (events_h / sessions_h) if sessions_h > 0 else None
             rate_base = (baseline / sess_baseline) if sess_baseline and sess_baseline > 0 else None
-            rate_growth_pct: Optional[float] = None
-            if rate_now is not None and rate_base is not None and rate_base > 0:
-                rate_growth = (rate_now - rate_base) / rate_base
-                rate_growth_pct = round(rate_growth * 100, 1)
-                # rate 没有同步上涨（流量稀释或持平）→ 用户体验没劣化，不告警
-                if rate_growth <= 0.0:
-                    continue
+            if rate_now is None or rate_base is None or rate_base <= 0:
+                # 信号不足：放过这一条，写日志便于排查
+                logger.info(
+                    "hourly_alerter: skip rate-AND-check insufficient: issue=%s events=%s sess=%s base=%s sess_base=%s",
+                    issue_id, events_h, sessions_h, baseline, sess_baseline,
+                )
+                continue
+            rate_growth = (rate_now - rate_base) / rate_base
+            rate_growth_pct = round(rate_growth * 100, 1)
+            # rate 没有同步上涨（流量稀释或持平）→ 用户体验没劣化，不告警
+            if rate_growth <= 0.0:
+                continue
 
             surge_items.append({
                 "issue_id": issue_id,
@@ -278,7 +318,7 @@ async def run_hourly_alert_tick(
                 "rate_now": round(rate_now * 100, 3) if rate_now else None,
                 "rate_base": round(rate_base * 100, 3) if rate_base else None,
                 "rate_growth_pct": rate_growth_pct,
-                "baseline_source": baseline_source,
+                "baseline_source": sess_baseline_source,
             })
         await session.commit()
 

@@ -227,8 +227,9 @@ class CrashguardSettings(BaseSettings):
     # 绝对量级阈值：单 issue 在窗口内 sessions_affected < 此值不入告警（脏数据/极低频噪声过滤）
     # 注：Plaud RUM 未 setUser，users_affected 全 0（已知 data hole），用 sessions 代理 user
     # （24h 内典型 1-3 sessions/user，相关性高）。卡片文案显示「受影响会话 ≥ N」。
-    # 100 = 至少影响 100 个 session 才有统计意义（5/14 上调：原 60 太低，单用户多 session 仍误报）
-    hourly_alert_min_sessions: int = 100
+    # 500 = 5/14 二次上调：100 仍贴线触发（如 AppHang 148 会话也告警，业务量级无意义）
+    # 与 core_metric_min_sessions=500 对齐，颗粒度统一
+    hourly_alert_min_sessions: int = 500
 
     # === 核心指标报警（10 分钟粒度 crash-free sessions % 监控）===
     # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增/新增；核心指标补的是
