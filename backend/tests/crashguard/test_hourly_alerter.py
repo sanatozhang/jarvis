@@ -715,6 +715,57 @@ async def test_channel_1_new_version_triggers_when_user_rate_meets(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_channel_1_bypasses_min_events_absolute(tmp_path, monkeypatch):
+    """[回归测试] 通道 1 必须绕过 min_events_absolute（200，生产值）。
+
+    底层逻辑：通道 1 是"灰度新版本"专属抓手，events 通常 30~150 区间。
+    若 min_events_abs（生产 200）卡在分桶之前，通道 1 永远触发不了。
+    本测试模拟生产配置——MIN_EVENTS_ABSOLUTE=200, events=50, user_rate=0.5%——
+    通道 1 必须仍然触发。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    # 生产值：MIN_EVENTS_ABSOLUTE=200（远高于本测试的 events=50）
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_MIN_EVENTS_ABSOLUTE", "200")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.005")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    issues = [{
+        "id": "test_new_ver_bypass_abs", "type": "issue",
+        "attributes": {
+            "events_count": 50,                 # < min_events_abs=200，但应被通道 1 接住
+            "sessions_affected": 800,
+            "title": "NewVersionCrash",
+            "platform": "android",
+            "version": "3.20.0-700",
+        },
+    }]
+    top_version_data = {"android": {"version": "3.19.0-600", "users": 10000}}
+
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(return_value=top_version_data)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    # 关键断言：events=50 < min_events_abs=200，但通道 1 仍触发
+    assert result.get("new_version") == 1, (
+        f"通道 1 被 min_events_abs 拦截了！alerted={result.get('alerted')} "
+        f"new_version={result.get('new_version')}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_channel_1_blocked_by_user_rate(tmp_path, monkeypatch):
     """通道 1：user_rate = 50/1_000_000 = 0.000005 << threshold=0.005 → 不告警。"""
     await _setup_db_and_settings(tmp_path, monkeypatch)

@@ -306,9 +306,6 @@ async def run_hourly_alert_tick(
             # 绝对量级阈值过滤：sessions 太低 → 噪声，跳过告警判定（snapshot 已入库不影响 SHoW）
             if min_sessions > 0 and sessions_h < min_sessions:
                 continue
-            # #2 events 绝对量级底线：events 太低 → 即使百分比涨，业务量级也不痛不痒
-            if min_events_abs > 0 and events_h < min_events_abs:
-                continue
             # #1 跨告警去重：N 小时内同 issue 已被告警过 → 跳过（防早晚报 + hourly 反复点名）
             if issue_id in dedup_set:
                 logger.info(
@@ -316,6 +313,9 @@ async def run_hourly_alert_tick(
                     issue_id, dedup_hours,
                 )
                 continue
+            # 注意：min_events_absolute 仅约束通道 2（大盘 SHoW 涨幅）；通道 1（新版本桶）
+            # 有自己的 new_version_min_events（默认 30）。所以这里**不**应用 min_events_abs，
+            # 留到通道 1 之后再卡，否则新版本灰度阶段 events<200 的真问题会被吞掉。
 
             # 查 issue 元信息
             issue_row = (await session.execute(
@@ -346,6 +346,11 @@ async def run_hourly_alert_tick(
                         "user_rate_pct": round((user_rate or 0) * 100, 3),
                     })
                 continue  # 新版本桶：无论是否触发，不走通道 2 逻辑
+
+            # === 通道 2 入口：先卡 events 绝对量级底线（通道 1 已绕过）===
+            # #2 events 绝对量级底线：events 太低 → 即使百分比涨，业务量级也不痛不痒
+            if min_events_abs > 0 and events_h < min_events_abs:
+                continue
 
             # 新增判定：DB 不存在 OR first_seen_at 在 N 天内
             first_seen = issue_row.first_seen_at if issue_row else None
