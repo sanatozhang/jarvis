@@ -56,6 +56,25 @@ def _floor_to_block(dt: datetime) -> datetime:
 _floor_to_hour = _floor_to_block
 
 
+def _parse_first_seen(raw) -> Optional[datetime]:
+    """解析 Datadog API 返回的 first_seen 字段（兼容 ISO string / unix ms / datetime）。"""
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw.replace(tzinfo=None) if raw.tzinfo else raw
+    if isinstance(raw, (int, float)):
+        # unix ms
+        return datetime.utcfromtimestamp(raw / 1000)
+    if isinstance(raw, str):
+        # ISO 8601 string，去 Z 后缀和 timezone
+        s = raw.replace("Z", "").split("+")[0].split(".")[0]
+        try:
+            return datetime.fromisoformat(s)
+        except ValueError:
+            return None
+    return None
+
+
 async def _fetch_hourly_events(
     window_start: datetime, window_end: datetime,
 ) -> List[Dict[str, Any]]:
@@ -448,11 +467,20 @@ async def run_hourly_alert_tick(
                     continue
                 if ses24 < new_crash_min_sessions:
                     continue
-                # first_seen 判定: DB 中 issue 的 first_seen_at 必须在 N 天内
+                # first_seen 判定：优先用 Datadog API 实时 first_seen（避开 pipeline 4h 延迟）
+                api_first_seen_raw = (attrs.get("first_seen_timestamp")
+                                      or attrs.get("first_seen"))
+                api_first_seen = _parse_first_seen(api_first_seen_raw)
+
                 issue_row = (await _s24.execute(
                     select(CrashIssue).where(CrashIssue.datadog_issue_id == iid)
                 )).scalars().first()
-                first_seen = issue_row.first_seen_at if issue_row else None
+                db_first_seen = issue_row.first_seen_at if issue_row else None
+
+                first_seen = api_first_seen or db_first_seen   # API 优先
+                first_seen_source = ("api" if api_first_seen
+                                     else ("db" if db_first_seen else "none"))
+
                 if first_seen is None or first_seen < new_crash_cutoff:
                     continue
                 new_crash_items.append({
@@ -464,6 +492,7 @@ async def run_hourly_alert_tick(
                     "first_seen_version": (issue_row.first_seen_version
                                            if issue_row else "") or "",
                     "first_seen_at": first_seen.isoformat() if first_seen else None,
+                    "first_seen_source": first_seen_source,
                     "events_24h": ev24,
                     "sessions_24h": ses24,
                 })

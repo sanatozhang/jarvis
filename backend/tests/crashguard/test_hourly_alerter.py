@@ -1160,3 +1160,112 @@ async def test_real_send_when_mixed_shadow_and_real_hit(tmp_path, monkeypatch):
     assert result.get("alerted") is True, f"expected alerted=True (real send), got {result}"
     assert mock_send.call_count == 1, \
         f"send_interactive_card should be called once, got {mock_send.call_count}"
+
+
+# ===== 通道 3：API first_seen 优先（Sprint A）=====
+
+@pytest.mark.asyncio
+async def test_channel_3_uses_api_first_seen_when_db_missing(tmp_path, monkeypatch):
+    """通道 3：DB 无记录时用 API first_seen_timestamp（5 天内）触发告警，first_seen_source='api'。"""
+    import json
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "150")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "300")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 14, 10, 5, 0)
+    # API 返回 first_seen_timestamp：5 天内（new_window_days=30 内）
+    api_first_seen = (fake_now - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 不在 DB 预置 CrashIssue，让 DB 查询返回 None
+    raw_24h = [{"id": "apinew1", "attributes": {
+        "events_count": 200,
+        "sessions_affected": 400,
+        "title": "APIFirstSeenCrash",
+        "platform": "ios",
+        "first_seen_timestamp": api_first_seen,
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result.get("new_crash", 0) == 1, f"expected new_crash=1, got {result}"
+    assert result.get("alerted") is True
+
+    # 从 DB alert_payload 验证 first_seen_source == "api"
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlyAlert
+    async with get_session() as session:
+        from sqlalchemy import select
+        row = (await session.execute(select(CrashHourlyAlert))).scalars().first()
+    assert row is not None
+    payload = json.loads(row.alert_payload)
+    new_crash_list = payload.get("new_crash") or []
+    assert len(new_crash_list) == 1
+    assert new_crash_list[0]["first_seen_source"] == "api", (
+        f"expected first_seen_source='api', got {new_crash_list[0]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_channel_3_prefers_api_over_db_for_freshness(tmp_path, monkeypatch):
+    """通道 3 API 优先语义：API first_seen=60 天前 > DB first_seen=5 天前，应不告警。
+
+    DB 滞后记录（"近期才写入"）不代表 crash 真实很新；API 反映真实历史首次出现时间。
+    API 值 60 天前超过 new_window_days=30，故不触发。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "150")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "300")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 14, 10, 5, 0)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+
+    # DB 预置 first_seen_at=5 天前（本身属于"新"，如果纯 DB 逻辑会触发告警）
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="stale_api_1",
+            platform="android",
+            title="StaleAPIBug",
+            first_seen_at=fake_now - timedelta(days=5),
+        ))
+        await session.commit()
+
+    # API 返回 first_seen_timestamp=60 天前（真实历史时间，早于 new_window_days=30）
+    api_first_seen_old = (fake_now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    raw_24h = [{"id": "stale_api_1", "attributes": {
+        "events_count": 200,
+        "sessions_affected": 400,
+        "title": "StaleAPIBug",
+        "platform": "android",
+        "first_seen_timestamp": api_first_seen_old,
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    # API 优先：60 天前超出 new_window_days=30，不应触发
+    assert result.get("new_crash", 0) == 0, (
+        f"expected new_crash=0 (API overrides stale DB), got {result}"
+    )
