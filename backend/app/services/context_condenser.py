@@ -162,7 +162,15 @@ class ContextCondenser:
 
     def _read_logs(self, log_paths: List[Path]) -> str:
         """Read log files into a single string, respecting max input size."""
-        max_chars = self.config.max_input_chars
+        # P1 #4: cap input to model's actual context window.
+        # Haiku 4.5 has 200K tokens (~600K chars); Gemini Flash has 1M (~2.8M chars).
+        # Use the smaller of (configured, provider-cap) so a generous config doesn't
+        # blow past the actual model limit and trigger a silent truncation/reject.
+        configured = self.config.max_input_chars
+        if self.config.provider == "anthropic":
+            max_chars = min(configured, _SMALL_CONTEXT_MAX_CHARS)
+        else:
+            max_chars = configured
         # Reserve ~30% for prompt structure, L1 extraction, etc.
         max_log_chars = int(max_chars * 0.70)
 

@@ -645,8 +645,10 @@ async def _run_context_condensation(
             )
 
     # --- Step B: LLM context extraction (optional, costs money) ---
+    # anthropic provider falls back to Claude CLI (OAuth, no api_key required);
+    # other providers still require an api_key.
     structured_context = None
-    if cc.enabled and cc.api_key:
+    if cc.enabled and (cc.api_key or cc.provider == "anthropic"):
         if on_progress:
             await on_progress(55, "L1.5: LLM 上下文提取...")
 
@@ -689,8 +691,16 @@ async def _run_context_condensation(
                     "L1.5 LLM extraction success: provider=%s, duration=%dms, output=%d chars",
                     result.provider, result.duration_ms, result.output_chars,
                 )
+                if on_progress:
+                    await on_progress(58, f"L1.5 浓缩成功（{result.provider}, {result.output_chars} chars）")
             else:
-                logger.warning("L1.5 LLM extraction failed: %s", result.error)
+                # P0 #1: surface failure to operators — agent will fall back to raw logs and may hit max_turns
+                logger.warning(
+                    "L1.5 LLM extraction failed: %s — agent will analyze raw windowed logs (risk of max_turns)",
+                    result.error,
+                )
+                if on_progress:
+                    await on_progress(58, f"L1.5 浓缩失败（{result.error[:80]}），agent 将直接分析原始日志")
                 if result.raw_output:
                     # Save raw output even if JSON parsing failed
                     context_dir = workspace / "context"
@@ -698,8 +708,26 @@ async def _run_context_condensation(
                     (context_dir / "llm_extraction_raw.txt").write_text(
                         result.raw_output, encoding="utf-8",
                     )
+                # Persist failure reason for downstream debugging / UI
+                try:
+                    context_dir = workspace / "context"
+                    context_dir.mkdir(parents=True, exist_ok=True)
+                    (context_dir / "llm_extraction_failure.json").write_text(
+                        _json.dumps({
+                            "provider": result.provider,
+                            "model": result.model,
+                            "error": result.error,
+                            "duration_ms": result.duration_ms,
+                            "input_chars": result.input_chars,
+                        }, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             logger.error("L1.5 LLM extraction error: %s", e, exc_info=True)
+            if on_progress:
+                await on_progress(58, f"L1.5 浓缩异常（{type(e).__name__}），agent 将直接分析原始日志")
 
     # Save windowing metadata
     try:

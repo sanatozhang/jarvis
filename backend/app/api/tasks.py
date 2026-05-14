@@ -407,13 +407,35 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             _update_progress(task_id, progress)
             await db.update_task(task_id, status=status.value, progress=pct, message=msg)
 
-        result = await run_analysis_pipeline(
-            issue_id=issue_id,
-            task_id=task_id,
-            agent_override=agent_override,
-            on_progress=on_progress,
-            followup_question=followup_question,
-        )
+        # P0 #2: enforce concurrency.task_timeout at the pipeline boundary so a
+        # stuck L1.5/agent step can't keep a worker slot indefinitely.
+        # arq path already has job_timeout in queue.py:WorkerSettings.
+        from app.config import get_settings as _get_settings
+        _task_timeout = _get_settings().concurrency.task_timeout or 600
+        try:
+            result = await asyncio.wait_for(
+                run_analysis_pipeline(
+                    issue_id=issue_id,
+                    task_id=task_id,
+                    agent_override=agent_override,
+                    on_progress=on_progress,
+                    followup_question=followup_question,
+                ),
+                timeout=_task_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Task %s exceeded task_timeout=%ds — aborted at pipeline level",
+                task_id, _task_timeout,
+            )
+            await db.update_task(
+                task_id,
+                status="failed",
+                progress=100,
+                message=f"分析超时（task_timeout={_task_timeout}s）",
+                error=f"task_timeout_exceeded ({_task_timeout}s)",
+            )
+            return
 
         # Determine if this is a system-level failure vs a completed analysis.
         #
