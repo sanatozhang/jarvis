@@ -194,6 +194,15 @@ async def compose_report(
     top_n = min(max(1, int(top_n)), 5)
     # 阈值从 config 读（可在 config.yaml 覆盖）
     surge_threshold, drop_threshold, attention_min_events = _thresholds()
+    # #3 跨告警去重：拿到过去 N 小时被 hourly_alert 点过的 issue_id 集合（surge 类不再重复点名）
+    # 默认 12h——覆盖上一波 hourly 到本次早晚报，防 morning + evening + hourly 三连发
+    s_cfg = get_crashguard_settings()
+    dedup_hours = int(getattr(s_cfg, "hourly_alert_dedup_hours", 12) or 0)
+    hourly_alerted_ids: set = set()
+    if dedup_hours > 0:
+        from app.crashguard.services.alert_dedup import recently_alerted_issue_ids_within_hours
+        async with get_session() as _s:
+            hourly_alerted_ids = await recently_alerted_issue_ids_within_hours(_s, hours=dedup_hours)
 
     async with get_session() as session:
         # 今日所有 snap join issue
@@ -689,16 +698,24 @@ async def compose_report(
                     and not base_too_small
                 )
                 if is_new or is_surge:
+                    # #3 dedup：surge 类（非 new）若 hourly N 小时内已点过 → 跳 attention 列表
+                    # 渲染段（日报正文 surges 表）仍保留——日报回看场景需要全景，attention 列表只挑没报过的
+                    iid = snap.datadog_issue_id
+                    skip_attn = (
+                        is_surge and not is_new
+                        and iid in hourly_alerted_ids
+                    )
                     surges.append((snap, issue, delta))
-                    bucket = attn_news if is_new else attn_surges
-                    bucket.append({
-                        "issue_id": snap.datadog_issue_id,
-                        "title": issue.title or "",
-                        "platform": plat_label,
-                        "fatality": fkey,
-                        "events": events_today,
-                        "delta": delta,
-                    })
+                    if not skip_attn:
+                        bucket = attn_news if is_new else attn_surges
+                        bucket.append({
+                            "issue_id": iid,
+                            "title": issue.title or "",
+                            "platform": plat_label,
+                            "fatality": fkey,
+                            "events": events_today,
+                            "delta": delta,
+                        })
             surges.sort(
                 key=lambda t: (
                     -(int(t[0].events_count or 0)),

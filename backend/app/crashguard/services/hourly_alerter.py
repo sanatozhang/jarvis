@@ -226,6 +226,15 @@ async def run_hourly_alert_tick(
     threshold_ratio = s.hourly_alert_growth_threshold_pct / 100.0
     min_baseline = s.hourly_alert_min_baseline_events
     min_sessions = int(getattr(s, "hourly_alert_min_sessions", 60) or 0)
+    # 抓手 #2：events 绝对量级底线（基线低 + 当前 +N% 但绝对增量不痛不痒的伪信号过滤）
+    min_events_abs = int(getattr(s, "hourly_alert_min_events_absolute", 0) or 0)
+    # 抓手 #1：跨告警去重窗口（小时）—— 同 issue 在 N 小时内已告警过则跳过
+    dedup_hours = int(getattr(s, "hourly_alert_dedup_hours", 12) or 0)
+    dedup_set: set = set()
+    if dedup_hours > 0:
+        from app.crashguard.services.alert_dedup import recently_alerted_issue_ids_within_hours
+        async with get_session() as _session:
+            dedup_set = await recently_alerted_issue_ids_within_hours(_session, hours=dedup_hours)
 
     async with get_session() as session:
         for raw in raw_issues:
@@ -244,6 +253,16 @@ async def run_hourly_alert_tick(
 
             # 绝对量级阈值过滤：sessions 太低 → 噪声，跳过告警判定（snapshot 已入库不影响 SHoW）
             if min_sessions > 0 and sessions_h < min_sessions:
+                continue
+            # #2 events 绝对量级底线：events 太低 → 即使百分比涨，业务量级也不痛不痒
+            if min_events_abs > 0 and events_h < min_events_abs:
+                continue
+            # #1 跨告警去重：N 小时内同 issue 已被告警过 → 跳过（防早晚报 + hourly 反复点名）
+            if issue_id in dedup_set:
+                logger.info(
+                    "hourly_alerter: skip issue=%s already alerted in past %dh",
+                    issue_id, dedup_hours,
+                )
                 continue
 
             # 查 issue 元信息

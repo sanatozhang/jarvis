@@ -230,6 +230,14 @@ class CrashguardSettings(BaseSettings):
     # 500 = 5/14 二次上调：100 仍贴线触发（如 AppHang 148 会话也告警，业务量级无意义）
     # 与 core_metric_min_sessions=500 对齐，颗粒度统一
     hourly_alert_min_sessions: int = 500
+    # 绝对事件量底线：单 issue 在窗口内 events_h < N 不告警。
+    # 抓手：基线 100 + 当前 120 = +20% 触发，但绝对增量才 20，对 Plaud 量级无业务意义。
+    # 加这一闸把"小基数 issue 在 sessions 大涨时被反复挑出来"的噪声砍掉。
+    hourly_alert_min_events_absolute: int = 200
+    # 跨告警去重窗口（小时）：同 issue_id 在过去 N 小时已被 hourly 告警过 → 本 tick 跳过；
+    # 早晚报 attention 列表也会扣掉这部分。0 = 关闭去重。
+    # 默认 12h：覆盖早晚报+下一 hourly cron，防同 issue 跨告警类型反复点名。
+    hourly_alert_dedup_hours: int = 12
 
     # === 核心指标报警（10 分钟粒度 crash-free sessions % 监控）===
     # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增/新增；核心指标补的是
@@ -528,6 +536,10 @@ def _yaml_overrides() -> Dict[str, Any]:
                 flat["hourly_alert_max_items"] = int(ha["max_items"])
             if "min_sessions" in ha:
                 flat["hourly_alert_min_sessions"] = int(ha["min_sessions"])
+            if "min_events_absolute" in ha:
+                flat["hourly_alert_min_events_absolute"] = int(ha["min_events_absolute"])
+            if "dedup_hours" in ha:
+                flat["hourly_alert_dedup_hours"] = int(ha["dedup_hours"])
     if "core_metric" in cfg:
         cm = cfg["core_metric"] or {}
         if isinstance(cm, dict):

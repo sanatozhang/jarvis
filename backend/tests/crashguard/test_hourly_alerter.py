@@ -45,6 +45,9 @@ async def _setup_db_and_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_MIN_BASELINE_EVENTS", "20")
     # 测试环境锚定 min_sessions=100；prod default 500（5/14 二次上调，与 core_metric 对齐）
     monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_MIN_SESSIONS", "100")
+    # min_events_absolute=50 测试用值（prod 200）；dedup_hours=0 默认禁用，单测显式打开
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_MIN_EVENTS_ABSOLUTE", "50")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_DEDUP_HOURS", "0")
 
     from app.config import get_settings
     from app.crashguard.config import get_crashguard_settings
@@ -577,6 +580,75 @@ async def test_sessions_baseline_fallback_kicks_in_when_show_lacks_sessions(tmp_
 
     assert result.get("alerted") is True
     assert result.get("surge") == 1
+
+
+@pytest.mark.asyncio
+async def test_min_events_absolute_blocks_low_event_count(tmp_path, monkeypatch):
+    """#2 events 绝对量底线：events_h < min_events_absolute 不告警，
+    即便满足 sessions / 增长率（防小基数 issue 在 sessions 大涨时被反复挑出）。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    # 抬高 events 绝对底线到 100，让 events=80 被拦
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_MIN_EVENTS_ABSOLUTE", "100")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    # 新增 issue，sessions=200（过 min_sessions=100），但 events=80 < 100
+    issues = [_fake_dd_issue("ddi_low_ev", "LowEvCrash", events=80, sessions=200, platform="ios")]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(now=fake_now)
+
+    assert result.get("alerted") is False
+    assert result.get("reason") == "no_anomaly"
+
+
+@pytest.mark.asyncio
+async def test_dedup_skips_issue_alerted_recently(tmp_path, monkeypatch):
+    """#1 跨告警 dedup：同 issue 在 12h 内已被 hourly 告警过 → 本 tick 跳过。
+
+    抓手：早晚报 + hourly 8 tick/day 容易把同一 issue 反复点名；
+    dedup 让用户每个 issue 一天最多见一次。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    # 打开 dedup
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_DEDUP_HOURS", "12")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashHourlyAlert
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+
+    # 模拟 3 小时前已存在一条告警，payload 含 ddi_repeat
+    async with get_session() as session:
+        session.add(CrashHourlyAlert(
+            hour_utc=_floor_h(fake_now) - timedelta(hours=3),
+            new_count=1, surge_count=0,
+            feishu_message_id="",
+            alert_payload='{"new":[{"issue_id":"ddi_repeat","title":"Repeat","events_h":300,"sessions_h":150,"first_seen":null}],"surge":[]}',
+            created_at=fake_now - timedelta(hours=3),
+        ))
+        await session.commit()
+
+    # 同 issue 在本 tick 又出现（新增条件成立，但 dedup 应拦截）
+    issues = [_fake_dd_issue("ddi_repeat", "Repeat", events=300, sessions=150, platform="ios")]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(now=fake_now)
+
+    # 被 dedup 拦下 → no_anomaly
+    assert result.get("alerted") is False
 
 
 @pytest.mark.asyncio
