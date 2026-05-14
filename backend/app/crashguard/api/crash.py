@@ -438,6 +438,54 @@ async def _aggregate_snapshots_window(
     }
 
 
+def _compute_pr_blocker(
+    item: Dict[str, Any],
+    pr: Optional[Dict[str, Any]],
+    ana: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """单 issue 的 PR 缺位归因：返回 {reason, label, hint}。
+
+    抓手：让用户在 /crashguard 主页直接看到 issue 为什么没 PR——不用再翻 audit log。
+    优先级（高→低）：
+    - has_active_pr / has_closed_pr: 已有 PR
+    - no_analysis: 没成功分析
+    - low_feasibility: feasibility < 0.5（Top 专属阈值）
+    - low_confidence: confidence='low'
+    - gate_check_failed: 其他闸门（Gate#1 路径不存在 / stack_mismatch 等）
+    """
+    if pr is not None:
+        status = (pr.get("pr_status") or "").lower()
+        if status in ("open", "draft", "merged"):
+            return {"reason": "has_active_pr", "label": "已有 PR", "hint": "等 reviewer / CI"}
+        if status in ("closed", "ci_failed_closed"):
+            return {
+                "reason": "has_closed_pr",
+                "label": "前次 PR 已关",
+                "hint": "上次修复未通过；30 天内同指纹不再自动重开",
+            }
+    if ana is None:
+        return {"reason": "no_analysis", "label": "无分析", "hint": "等 analyze_tick 自动跑"}
+    fea = float(ana.get("analysis_feasibility_score") or 0.0)
+    conf = (ana.get("analysis_confidence") or "").lower()
+    if fea < 0.5:
+        return {
+            "reason": "low_feasibility",
+            "label": f"信心 {fea:.0%}",
+            "hint": "AI 评估修复可行度低，建议人工介入",
+        }
+    if conf == "low":
+        return {
+            "reason": "low_confidence",
+            "label": "信心 low",
+            "hint": "AI 判定低信心，等改 prompt 或人工 re-analyze",
+        }
+    return {
+        "reason": "gate_check_failed",
+        "label": "Gate 拦截",
+        "hint": "查 /api/crash/audit-logs 看具体闸门",
+    }
+
+
 @router.get("/top")
 async def get_top(
     target_date: Optional[date] = None,
@@ -646,6 +694,8 @@ async def get_top(
         item["analysis_id"] = ana["analysis_id"] if ana else None
         item["analysis_feasibility_score"] = ana["analysis_feasibility_score"] if ana else None
         item["analysis_confidence"] = ana["analysis_confidence"] if ana else ""
+        # PR 缺位归因（可观测性抓手）：让用户在 UI 直接看到 issue 为什么没 PR
+        item["pr_blocker"] = _compute_pr_blocker(item, pr, ana)
 
     out: Dict[str, Any] = {
         "date": target_date.isoformat(),

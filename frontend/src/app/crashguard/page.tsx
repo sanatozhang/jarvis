@@ -1283,7 +1283,38 @@ function CrashguardPageInner() {
                             );
                           })()
                         ) : (
-                          <span style={{ color: D.text3, fontSize: 11 }}>—</span>
+                          (() => {
+                            // 无 PR 时显示 blocker reason 小徽章，让 owner 一眼知道为什么没 PR
+                            const blocker = (it as any).pr_blocker as
+                              | { reason: string; label: string; hint: string }
+                              | undefined;
+                            if (!blocker) {
+                              return <span style={{ color: D.text3, fontSize: 11 }}>—</span>;
+                            }
+                            const colorMap: Record<string, { fg: string; bg: string; border: string }> = {
+                              no_analysis:       { fg: "#6B7280", bg: "rgba(0,0,0,0.05)",     border: "#9CA3AF" },
+                              low_feasibility:   { fg: "#D97706", bg: "rgba(217,119,6,0.10)", border: "#D97706" },
+                              low_confidence:    { fg: "#D97706", bg: "rgba(217,119,6,0.10)", border: "#D97706" },
+                              gate_check_failed: { fg: "#DC2626", bg: "rgba(220,38,38,0.10)", border: "#DC2626" },
+                              has_closed_pr:     { fg: "#6B7280", bg: "rgba(0,0,0,0.05)",     border: "#9CA3AF" },
+                            };
+                            const c = colorMap[blocker.reason] || { fg: D.text3, bg: "transparent", border: D.border };
+                            return (
+                              <span
+                                title={blocker.hint || blocker.reason}
+                                className="inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[10px] font-medium"
+                                style={{
+                                  background: c.bg,
+                                  color: c.fg,
+                                  border: `1px solid ${c.border}`,
+                                  minWidth: 60,
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {blocker.label}
+                              </span>
+                            );
+                          })()
                         )}
                       </td>
                       <td className="px-3 py-2.5 text-center" onClick={(e) => e.stopPropagation()}>

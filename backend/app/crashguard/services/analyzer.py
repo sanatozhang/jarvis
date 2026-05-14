@@ -134,6 +134,25 @@ _PROMPT_TEMPLATE = """你是 Plaud 移动端崩溃分析专家。基于下方崩
 - **宁缺毋滥**：不确定行号/不确定该改哪行 → 把 fix_diff 留空，让工程师手动 patch；编造 diff 比留空伤害更大
 - 单个 diff 控制在 30 行以内，跨多文件可拼接（连续多个 `--- a/...` 块）
 
+### ⚠️ 路径准确度红线（Gate#1 防线）
+
+下游 `Gate#1 path_verify` 会用你给的路径去 sub-repo 里 `os.path.exists` 校验，命中率
+≥50% 才放行。Gate#1 历史失败模式：
+
+| 失败模式 | 例子 | 治本 |
+|---------|------|------|
+| 只给文件名不给目录 | `upload_service.dart` | 必须给完整相对路径 `lib/app/data/...` |
+| 文件名错（缩写 / 拼错） | `e.m`、`item.m` | 用 Glob 工具搜目录里真实文件名 |
+| 写了不存在的文件 | 想象出来的命名 | 必须先 Read 或 Grep 验证存在 |
+
+**强制约束**——任何 `code_pointer` / `fix_diff` / `fix_suggestion` 里引用的文件路径，
+**必须满足**两条之一：
+1. 你**已经用 Read 工具读过该文件**（说明确实存在）
+2. 你**用 Glob/Grep 验证过路径确实在 sub-repo 内**
+
+未验证的路径**禁止写入**输出——宁可 `code_pointer: ""`，也不要假路径。
+fix_suggestion 不需要给确切路径时，只描述模块层逻辑修复（如"在 X 模块的 try-catch 里加 fallback"）即可。
+
 ### possible_causes 输出规则
 
 - **必须给 1-3 条**；只有 1 条时也要用数组形式
