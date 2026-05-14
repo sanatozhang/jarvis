@@ -1331,7 +1331,9 @@ export const fetchCrashJobsStatus = () =>
 export interface CrashJobHeartbeatItem {
   id: number;
   fired_at: string | null;
-  status: "success" | "failed" | "skipped";
+  // 与后端 record_heartbeat 三态升级对齐（commit 5cfdfe2）：success / degraded / failed；
+  // skipped 是 kill_switch 场景，保留兜底
+  status: "success" | "degraded" | "failed" | "skipped";
   duration_ms: number;
   error: string;
   summary: Record<string, unknown>;
