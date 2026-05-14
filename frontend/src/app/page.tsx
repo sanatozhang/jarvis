@@ -272,7 +272,20 @@ export default function HomePage() {
   //   1) 之前有数据 → 保留旧数据 + 小 toast，不弹全屏红条
   //   2) 之前无数据（首次失败） → 走 error 红条，让用户能看到具体原因
   //   3) 5xx 已经在 api.ts 里自动重试过 2 次，到这里说明是持久失败
+  // ⚠️ 用 useRef 持有"是否已有数据"的快照，避免 callback 依赖列表数据
+  // 导致 setData→callback 重建→useEffect 触发→再拉的无限循环。
+  const pendingDataRef = useRef<PaginatedResponse<Issue> | null>(null);
+  const ipDataRef = useRef<PaginatedResponse<LocalIssueItem> | null>(null);
+  const doneDataRef = useRef<PaginatedResponse<LocalIssueItem> | null>(null);
+  const inaccurateDataRef = useRef<PaginatedResponse<LocalIssueItem> | null>(null);
+  useEffect(() => { pendingDataRef.current = pendingData; }, [pendingData]);
+  useEffect(() => { ipDataRef.current = ipData; }, [ipData]);
+  useEffect(() => { doneDataRef.current = doneData; }, [doneData]);
+  useEffect(() => { inaccurateDataRef.current = inaccurateData; }, [inaccurateData]);
+
   const _softFail = (current: unknown, label: string) => (e: any) => {
+    // AbortError（fetch 被 abort）不弹 toast：通常是组件卸载或竞态，不是真失败
+    if (e?.name === "AbortError") return;
     const msg = e?.message || String(e);
     if (current) {
       setToast(`${label}加载失败，已保留上次数据。${msg.slice(0, 80)}`);
@@ -288,30 +301,30 @@ export default function HomePage() {
       const d = await fetchPendingIssues(assignee || undefined, page, PAGE_SIZE, withInProgress ?? includeInProgress);
       setPendingData(d);
     } catch (e: any) {
-      _softFail(pendingData, t("待处理"))(e);
+      _softFail(pendingDataRef.current, t("待处理"))(e);
     } finally {
       setPendingLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assignee, includeInProgress, pendingData]);
+  }, [assignee, includeInProgress]);
 
   const loadInProgress = useCallback(async (page: number) => {
     try { setIpData(await fetchInProgress(page, PAGE_SIZE)); }
-    catch (e: any) { _softFail(ipData, t("进行中"))(e); }
+    catch (e: any) { _softFail(ipDataRef.current, t("进行中"))(e); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ipData]);
+  }, []);
 
   const loadDone = useCallback(async (page: number) => {
     try { setDoneData(await fetchCompleted(page, PAGE_SIZE)); }
-    catch (e: any) { _softFail(doneData, t("已完成"))(e); }
+    catch (e: any) { _softFail(doneDataRef.current, t("已完成"))(e); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doneData]);
+  }, []);
 
   const loadInaccurate = useCallback(async (page: number) => {
     try { setInaccurateData(await fetchInaccurate(page, PAGE_SIZE)); }
-    catch (e: any) { _softFail(inaccurateData, t("分析不准确"))(e); }
+    catch (e: any) { _softFail(inaccurateDataRef.current, t("分析不准确"))(e); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inaccurateData]);
+  }, []);
 
   const loadAll = useCallback(async () => {
     if (assignee === null) return;
@@ -1796,40 +1809,49 @@ function EngineerLabelFeedbackWidget(props: {
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-xs"
+    <div className="flex flex-col gap-2 rounded-lg px-3 py-2.5 text-xs"
       style={{ background: "rgba(0,0,0,0.02)", border: `1px dashed ${S.border}` }}>
-      <span style={{ color: S.text3 }}>
-        {lang === "cn" ? "这单实际是否需要工程师？" : "Did this actually need an engineer?"}
-      </span>
-      <button
-        onClick={() => handleClick(false)}
-        disabled={submitting}
-        className="rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50"
-        style={{
-          background: "rgba(34,197,94,0.08)",
-          color: "#16A34A",
-          border: "1px solid rgba(34,197,94,0.25)",
-        }}
-        title={lang === "cn" ? "AI 误判，客服自己能解决" : "AI false positive — CS resolved it"}>
-        {lang === "cn" ? "✅ 不需要（AI 误判）" : "✅ No (AI false positive)"}
-      </button>
-      <button
-        onClick={() => handleClick(true)}
-        disabled={submitting}
-        className="rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50"
-        style={{
-          background: "rgba(234,179,8,0.08)",
-          color: "#CA8A04",
-          border: "1px solid rgba(234,179,8,0.25)",
-        }}
-        title={lang === "cn" ? "确实交给了研发处理" : "Engineer involvement was actually required"}>
-        {lang === "cn" ? "⚠️ 确实需要" : "⚠️ Yes (escalated)"}
-      </button>
-      {submitting && (
-        <span className="text-[10px]" style={{ color: S.text3 }}>
-          {lang === "cn" ? "提交中..." : "submitting..."}
+      {/* 第 1 行：问句 + 小提示，独占一行 */}
+      <div className="flex items-center gap-1.5">
+        <span style={{ color: S.text2, fontWeight: 500 }}>
+          {lang === "cn" ? "这单实际是否需要工程师？" : "Did this actually need an engineer?"}
         </span>
-      )}
+        <span className="text-[10px]" style={{ color: S.text3 }}>
+          {lang === "cn" ? "（帮我们校准 AI 标签）" : "(help calibrate AI labels)"}
+        </span>
+      </div>
+      {/* 第 2 行：两按钮 + 提交状态 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => handleClick(false)}
+          disabled={submitting}
+          className="rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+          style={{
+            background: "rgba(34,197,94,0.08)",
+            color: "#16A34A",
+            border: "1px solid rgba(34,197,94,0.25)",
+          }}
+          title={lang === "cn" ? "AI 误判，客服自己能解决" : "AI false positive — CS resolved it"}>
+          {lang === "cn" ? "✅ 不需要（AI 误判）" : "✅ No (AI false positive)"}
+        </button>
+        <button
+          onClick={() => handleClick(true)}
+          disabled={submitting}
+          className="rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+          style={{
+            background: "rgba(234,179,8,0.08)",
+            color: "#CA8A04",
+            border: "1px solid rgba(234,179,8,0.25)",
+          }}
+          title={lang === "cn" ? "确实交给了研发处理" : "Engineer involvement was actually required"}>
+          {lang === "cn" ? "⚠️ 确实需要" : "⚠️ Yes (escalated)"}
+        </button>
+        {submitting && (
+          <span className="text-[10px]" style={{ color: S.text3 }}>
+            {lang === "cn" ? "提交中..." : "submitting..."}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
