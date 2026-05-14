@@ -139,9 +139,12 @@ def _platform_emoji(p: str) -> str:
 
 
 def build_hourly_alert_card(
+    *,
     hour_utc: datetime,
     new_items: List[Dict[str, Any]],
     surge_items: List[Dict[str, Any]],
+    new_version_items: List[Dict[str, Any]] = None,
+    new_crash_items: List[Dict[str, Any]] = None,
     threshold_pct: float = 10.0,
     frontend_base_url: str = "http://localhost:3000",
     alert_id: int | None = None,
@@ -152,8 +155,12 @@ def build_hourly_alert_card(
     聚合 digest 一张卡，避免高频刷屏。
     严格不含 PR 修复内容——按用户要求，PR 状态查看走前端。
     """
+    new_version_items = new_version_items or []
+    new_crash_items = new_crash_items or []
     new_n = len(new_items or [])
     surge_n = len(surge_items or [])
+    nv_n = len(new_version_items)
+    nc_n = len(new_crash_items)
     # 显示用新加坡时区（UTC+8）—— Plaud 主用户群体所在时区
     from datetime import timedelta as _td
     sg_dt = hour_utc + _td(hours=8)
@@ -165,7 +172,8 @@ def build_hourly_alert_card(
 
     # 顶部摘要
     summary_md = (
-        f"**Σ** 过去 3 小时 · 新增 **{new_n}** · 上涨 **{surge_n}**  ·  "
+        f"**Σ** 过去 3 小时 · 新增 **{new_n}** · 上涨 **{surge_n}**"
+        f" · 新版本 **{nv_n}** · 新crash **{nc_n}**  ·  "
         f"阈值 events +{threshold_pct:.0f}% **AND** rate 同步涨（对比上周同 3h 块，SHoW-3h）"
     )
     elements.append({
@@ -173,6 +181,51 @@ def build_hourly_alert_card(
         "text": {"tag": "lark_md", "content": summary_md},
     })
     elements.append({"tag": "hr"})
+
+    # === [新版本] 灰度异常段 ===
+    if new_version_items:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**🔴 [新版本] 灰度异常 · {nv_n} 项**"},
+        })
+        for idx, it in enumerate(new_version_items, 1):
+            pe = _platform_emoji(it.get("platform", ""))
+            url = f"{frontend_base_url.rstrip('/')}/crashguard?issue={it['issue_id']}"
+            first_ver = it.get("first_seen_version") or "—"
+            user_rate = it.get("user_rate_pct", 0)
+            content = (
+                f"{idx}. {pe} [{it.get('title') or it['issue_id']}]({url})\n"
+                f"   版本: {it.get('version') or '—'} | 首次出现: {first_ver}\n"
+                f"   3h events: {it.get('events_h', 0)} | sessions: {it.get('sessions_h', 0)}"
+                f" | user_rate: {user_rate}%"
+            )
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": content},
+            })
+        elements.append({"tag": "hr"})
+
+    # === [新 crash] 全网首现段 ===
+    if new_crash_items:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**🟠 [新 crash] 全网首现 · {nc_n} 项**"},
+        })
+        for idx, it in enumerate(new_crash_items, 1):
+            pe = _platform_emoji(it.get("platform", ""))
+            url = f"{frontend_base_url.rstrip('/')}/crashguard?issue={it['issue_id']}"
+            first_ver = it.get("first_seen_version") or "—"
+            first_at = it.get("first_seen_at") or "—"
+            content = (
+                f"{idx}. {pe} [{it.get('title') or it['issue_id']}]({url})\n"
+                f"   首次出现版本: {first_ver} | 首现时间: {first_at}\n"
+                f"   24h events: {it.get('events_24h', 0)} | sessions: {it.get('sessions_24h', 0)}"
+            )
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": content},
+            })
+        elements.append({"tag": "hr"})
 
     # 新增段
     if new_items:

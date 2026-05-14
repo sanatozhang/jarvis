@@ -542,6 +542,8 @@ async def run_hourly_alert_tick(
         hour_utc=now_hour,
         new_items=new_items[: s.hourly_alert_max_items],
         surge_items=surge_items[: s.hourly_alert_max_items],
+        new_version_items=new_version_items[: s.hourly_alert_max_items],
+        new_crash_items=new_crash_items[: s.hourly_alert_max_items],
         threshold_pct=s.hourly_alert_growth_threshold_pct,
         frontend_base_url=s.frontend_base_url,
         alert_id=alert_id,

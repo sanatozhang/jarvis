@@ -75,3 +75,48 @@ def test_card_truncates_long_section():
         if e.get("tag") == "div" and isinstance(e.get("text"), dict)
     ]
     assert any("已截断" in c for c in contents)
+
+
+def test_build_hourly_alert_card_with_new_version_section():
+    """卡片包含 [新版本] 标签段 + first_seen 行"""
+    from datetime import datetime
+    import json
+    from app.crashguard.services.feishu_card import build_hourly_alert_card
+    card = build_hourly_alert_card(
+        hour_utc=datetime(2026, 5, 14, 3, 0),
+        new_items=[],
+        surge_items=[],
+        new_version_items=[{
+            "issue_id": "x1", "title": "NewVer", "platform": "android",
+            "version": "3.20.0", "first_seen_version": "3.20.0",
+            "events_h": 50, "sessions_h": 800, "user_rate_pct": 0.65,
+        }],
+        new_crash_items=[],
+        threshold_pct=10, frontend_base_url="http://x",
+    )
+    rendered = json.dumps(card, ensure_ascii=False)
+    assert "新版本" in rendered
+    assert "3.20.0" in rendered
+    assert "0.65" in rendered    # user_rate_pct rendered
+
+
+def test_build_hourly_alert_card_with_new_crash_section():
+    from datetime import datetime
+    import json
+    from app.crashguard.services.feishu_card import build_hourly_alert_card
+    card = build_hourly_alert_card(
+        hour_utc=datetime(2026, 5, 14, 3, 0),
+        new_items=[], surge_items=[],
+        new_version_items=[],
+        new_crash_items=[{
+            "issue_id": "y1", "title": "NewCrash", "platform": "ios",
+            "first_seen_version": "3.18.0",
+            "first_seen_at": "2026-05-10T00:00:00",
+            "events_24h": 200, "sessions_24h": 400,
+        }],
+        threshold_pct=10, frontend_base_url="http://x",
+    )
+    rendered = json.dumps(card, ensure_ascii=False)
+    assert "新 crash" in rendered or "新crash" in rendered    # tolerate space variations
+    assert "200" in rendered
+    assert "3.18.0" in rendered
