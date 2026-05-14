@@ -668,6 +668,35 @@ async def _create_one_draft_pr(
                 "branch_name": branch}, pushed
 
     push_remote = _resolve_remote_name(cwd)
+
+    # 预检：branch 相对真正 PR base（repo 默认分支 main / master）是否有 commit。
+    # 教训（issue 81, PR #1004 stale-base 链）：agent 的改动可能与 main 完全重合
+    # （base_ref 落到非 main 分支 / 修复在 main 上已存在）→ push 完才发现 GraphQL
+    # "No commits between main and branch" 报错，留下垃圾远程分支。
+    # 抓手：用真正的 default branch 校验 rev-list count，0 则不 push，直接 skip。
+    pr_base_ref = None
+    for canonical in (f"{push_remote}/main", f"{push_remote}/master"):
+        rc_chk, _, _ = _run_git(
+            ["git", "rev-parse", "--verify", canonical], cwd, timeout=15,
+        )
+        if rc_chk == 0:
+            pr_base_ref = canonical
+            break
+    if pr_base_ref:
+        rc_cnt, cnt_out, _ = _run_git(
+            ["git", "rev-list", "--count", f"{pr_base_ref}..HEAD"], cwd, timeout=15,
+        )
+        try:
+            commits_ahead = int((cnt_out or "0").strip())
+        except ValueError:
+            commits_ahead = -1
+        if commits_ahead == 0:
+            return {"ok": False, "error": (
+                f"no_diff_vs_base: branch {branch} has 0 commits ahead of "
+                f"{pr_base_ref}; agent fix likely already on main or empty diff. "
+                f"Aborting before push to avoid orphan remote branch."
+            ), "repo": repo_logical, "branch_name": branch}, pushed
+
     rc, _, err = _run_git(["git", "push", "-u", push_remote, branch], cwd, timeout=120)
     if rc != 0:
         return {"ok": False, "error": f"git push failed: {err}", "repo": repo_logical,
@@ -680,6 +709,8 @@ async def _create_one_draft_pr(
         cwd, timeout=120,
     )
     if rc != 0:
+        # 兜底：gh pr create 失败时，把刚 push 的分支从 remote 删掉，避免污染
+        _run_git(["git", "push", push_remote, "--delete", branch], cwd, timeout=30)
         return {"ok": False, "error": f"gh pr create failed: {err}",
                 "branch_name": branch, "repo": repo_logical, "pushed": pushed}, pushed
     pr_url = stdout.strip().splitlines()[-1] if stdout else ""
