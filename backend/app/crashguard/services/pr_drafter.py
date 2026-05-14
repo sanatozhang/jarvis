@@ -1391,6 +1391,19 @@ async def draft_pr_for_analysis(
               # 仅清残留 prompt.md（即使在 main 上也可能有）
               from pathlib import Path as _P
               (_P(repo_path) / "prompt.md").unlink(missing_ok=True)
+              # 教训（issue 81 tick）：agent 跑挂在 main 上时，可能留下未提交的脏改
+              # （result.json 没出来 → 流程异常退出 → 没切分支没 stash）。下个 tick
+              # 直接被 _worktree_dirty 拦截。auto-PR 专用工作区，没有人工编辑，
+              # 这里 reset --hard + clean -fd 是安全闭环。
+              dirty_pre, _ = _worktree_dirty(repo_path)
+              if dirty_pre:
+                  logger.warning(
+                      "pre-enter heal: repo %s on main but dirty (agent leak); "
+                      "reset --hard + clean -fd",
+                      repo_path,
+                  )
+                  _run_git(["git", "reset", "--hard", "HEAD"], repo_path, timeout=30)
+                  _run_git(["git", "clean", "-fd"], repo_path, timeout=15)
       except Exception:
           logger.exception("pre-enter heal failed (non-fatal, continuing)")
 
