@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
@@ -26,7 +26,11 @@ logger = logging.getLogger("crashguard.pr_sync")
 # 终态：不再轮询的状态
 _TERMINAL_STATUSES = {"merged", "closed", "ci_failed_closed"}
 # 同步时只查这些 GitHub state 字段（statusCheckRollup 用于 Gate#12 CI 反馈）
-_GH_FIELDS = "state,isDraft,mergedAt,closedAt,statusCheckRollup,headRefName"
+_GH_FIELDS = "state,isDraft,mergedAt,closedAt,statusCheckRollup,headRefName,createdAt,files"
+
+# 污染文件名 / glob — 出现在 PR diff 里即视为 stale-base 或 build artifact 泄漏
+_POLLUTION_PATHS = ("pubspec.yaml", "pubspec.lock", "Podfile.lock")
+_POLLUTION_SUFFIXES = (".gen.dart", ".g.dart", ".freezed.dart")
 
 
 def _parse_repo_slug(pr_url: str) -> Optional[str]:
@@ -128,6 +132,37 @@ def _derive_ci_verdict(gh_payload: Dict[str, Any]) -> Tuple[str, list]:
     return "pass", []
 
 
+def _detect_pollution(gh_payload: Dict[str, Any]) -> List[str]:
+    """检查 PR files 是否含 stale-base / build artifact 污染文件。
+
+    抓手：#987 教训——agent 在 stale base 上开 PR 时会顺手带上历史的 pubspec
+    version bump；agent 又偶尔把 .gen.dart 当生产代码改。Gate#13 + .gitignore
+    都是源头治理；本函数是兜底，发现已落地的污染 → 关 PR 让 cron 重生。
+
+    返回命中污染的文件路径列表（空 = 干净）。
+    """
+    files = gh_payload.get("files") or []
+    if not files:
+        return []
+    hits: List[str] = []
+    for f in files:
+        path = (f.get("path") if isinstance(f, dict) else str(f)) or ""
+        if not path:
+            continue
+        # 完全匹配
+        for noisy in _POLLUTION_PATHS:
+            if path.endswith("/" + noisy) or path == noisy:
+                hits.append(path)
+                break
+        else:
+            # 后缀匹配
+            for suf in _POLLUTION_SUFFIXES:
+                if path.endswith(suf):
+                    hits.append(path)
+                    break
+    return hits
+
+
 def _derive_status(gh_payload: Dict[str, Any]) -> Optional[str]:
     """从 gh 输出推导本地 pr_status。
 
@@ -182,6 +217,56 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
                 "ok": False, "pr_id": pr_id,
                 "error": f"unknown gh state: {payload.get('state')}",
             }
+
+        # Gate#14：老 draft 污染自动清理——draft >24h 仍未推 ready，且 diff 里
+        # 含 pubspec / .gen.dart / .lock 等污染文件 → 关 PR，等下个 cron 用修好
+        # 的 base_ref 重生干净版本。
+        pollution_action: Optional[str] = None
+        if new_status == "draft":
+            try:
+                from app.crashguard.config import get_crashguard_settings
+                s = get_crashguard_settings()
+                if getattr(s, "gate_draft_pollution_enabled", True):
+                    created_at = _parse_iso_dt(payload.get("createdAt"))
+                    min_age_h = int(getattr(s, "gate_draft_pollution_min_age_hours", 24) or 24)
+                    age_ok = (
+                        created_at is not None
+                        and (datetime.utcnow() - created_at) >= timedelta(hours=min_age_h)
+                    )
+                    if age_ok:
+                        hits = _detect_pollution(payload)
+                        if hits:
+                            close_msg = (
+                                "🧹 Auto-close by Crashguard Gate#14 (draft pollution): "
+                                f"draft >{min_age_h}h 仍含 stale-base / generated 文件 → "
+                                f"{', '.join(hits[:5])}. 下个 cron 会基于干净 base 重生。"
+                            )
+                            try:
+                                r = subprocess.run(
+                                    ["gh", "pr", "close", str(pr_number),
+                                     "--repo", repo_slug, "--comment", close_msg],
+                                    capture_output=True, text=True, timeout=30,
+                                )
+                                if r.returncode == 0:
+                                    new_status = "closed"
+                                    pollution_action = (
+                                        f"closed_on_pollution({len(hits)}:{hits[0]})"
+                                    )
+                                    logger.warning(
+                                        "gate#14 closed PR %s#%d due to pollution: %s",
+                                        repo_slug, pr_number, hits[:3],
+                                    )
+                                else:
+                                    logger.warning(
+                                        "gate#14 gh pr close failed: %s",
+                                        (r.stderr or "")[:200],
+                                    )
+                                    pollution_action = "close_failed"
+                            except Exception as exc:
+                                logger.warning("gate#14 close exception: %s", exc)
+                                pollution_action = f"close_error:{exc}"
+            except Exception:
+                logger.exception("gate#14 pollution check crashed (non-fatal)")
 
         # Gate#12：CI 反馈——open/draft 状态下若 CI 全失败，自动 close 该 PR，
         # 并把 status 改为 ci_failed_closed（独立终态，前端可显示"AI 修复未通过 CI"）
@@ -247,6 +332,7 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
         "new_status": new_status,
         "changed": changed,
         "ci_action": ci_action,
+        "pollution_action": pollution_action,
     }
 
 

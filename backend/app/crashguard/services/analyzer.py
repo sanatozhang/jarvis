@@ -908,6 +908,46 @@ async def _run_agent(workspace: Path, prompt: str, is_followup: bool = False) ->
     logger.info("crashguard agent finished in %.1fs", elapsed)
 
     parsed = _parse_result_json(workspace)
+    # 抓手：今日 trigger 看到 2 次 `result.json not found` —— agent 跑完没写文件就退出。
+    # 闭环：判定为 missing（无 root_cause 也无 answer）→ 拼一条显式 reminder prompt
+    # 重跑一次。第二次仍 missing 才落 failed。AI 成本 +1 次 token，收益 = 救回否则
+    # 直接 dropped 的 issue。
+    def _is_missing(p: Dict[str, Any]) -> bool:
+        if is_followup:
+            return not (p.get("answer") or "").strip()
+        return not (p.get("root_cause") or "").strip()
+
+    if _is_missing(parsed):
+        logger.warning(
+            "result.json missing or empty after first run (elapsed=%.1fs) — retrying once with explicit reminder",
+            elapsed,
+        )
+        retry_prompt = (
+            "⚠️ **上一次执行没有把 result.json 写到 `output/` 目录**。\n\n"
+            "本次重试必须**首先用 Write 工具**创建 `output/result.json`，否则本任务失败。\n"
+            "可直接基于现有上下文产出最佳猜测，不必再重复读全部源码——但路径准确度红线仍然有效。\n\n"
+            "完整原始任务如下（再读一遍以恢复上下文）：\n\n"
+        ) + prompt
+        retry_started = time.time()
+        try:
+            await asyncio.wait_for(
+                agent.analyze(workspace=workspace, prompt=retry_prompt),
+                timeout=_CRASHGUARD_AGENT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "crashguard agent retry also timed out after %.0fs",
+                time.time() - retry_started,
+            )
+        except Exception:
+            logger.exception("crashguard agent retry raised")
+        else:
+            retry_elapsed = time.time() - retry_started
+            logger.info("crashguard agent retry finished in %.1fs", retry_elapsed)
+            retry_parsed = _parse_result_json(workspace)
+            if not _is_missing(retry_parsed):
+                parsed = retry_parsed
+
     if is_followup:
         # 追问模式：只取 answer / confidence / feasibility；root_cause 留空（兼容老字段：把 answer 也写进去用作 status 判定）
         ans = parsed.get("answer", "") or ""

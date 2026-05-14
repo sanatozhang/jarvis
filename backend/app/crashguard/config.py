@@ -308,6 +308,11 @@ class CrashguardSettings(BaseSettings):
     # Gate#12：PR 落地后 CI 反馈
     gate_ci_feedback_enabled: bool = True
     gate_ci_feedback_close_on_fail: bool = True  # CI 失败自动关 PR
+    # Gate#14：老 draft 污染自动关闭——draft >N 小时且 diff 含 pubspec / .gen.dart
+    # 等污染文件，pr_sync tick 内自动关 PR，等下个 cron 用干净 base 重生。
+    # 抓手：#987 stale-base 链遗留的 pubspec bump 类问题，源头治理后兜底清扫。
+    gate_draft_pollution_enabled: bool = True
+    gate_draft_pollution_min_age_hours: int = 24
 
     # === PR Review 自动响应（Step 3）===
     # 默认关，启用前先在测试 PR 上验过。开启后 pr_sync tick 内会拉每条 open PR 的
