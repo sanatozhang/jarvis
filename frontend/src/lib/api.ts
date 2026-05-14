@@ -18,6 +18,34 @@ export function formatLocalTime(utcIso: string | undefined | null, mode: "dateti
 
 const BASE = "/api";
 
+// 携带 HTTP 状态 + endpoint 的结构化错误，前端可按 status 决定是否降级显示
+export class ApiError extends Error {
+  status: number;
+  endpoint: string;
+  body: string;
+  constructor(status: number, endpoint: string, body: string) {
+    super(`API ${status}: ${body || "request failed"}`);
+    this.status = status;
+    this.endpoint = endpoint;
+    this.body = body;
+    this.name = "ApiError";
+  }
+}
+
+const DEFAULT_TIMEOUT_MS = 15000;
+const RETRY_DELAYS_MS = [300, 800]; // 最多重试 2 次
+
+// GET / HEAD 才自动重试——POST/PUT/DELETE 重试可能造成副作用（重复下单）
+function _isRetriableMethod(method: string): boolean {
+  const m = method.toUpperCase();
+  return m === "GET" || m === "HEAD";
+}
+
+// 5xx + 网络错（fetch 抛 TypeError）才重试，4xx 直接抛
+function _isRetriableStatus(status: number): boolean {
+  return status >= 500 && status <= 599;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers || {});
   const isFormDataBody =
@@ -26,15 +54,54 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
+  const method = (init?.method || "GET").toUpperCase();
+  const canRetry = _isRetriableMethod(method);
+  const maxAttempts = canRetry ? RETRY_DELAYS_MS.length + 1 : 1;
+
+  let lastErr: any = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // 每次 attempt 用独立 AbortController + 超时
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), DEFAULT_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${BASE}${path}`, {
+        ...init,
+        headers,
+        signal: init?.signal ?? ac.signal,
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+      // 非 2xx
+      const text = await res.text();
+      if (canRetry && _isRetriableStatus(res.status) && attempt < maxAttempts - 1) {
+        lastErr = new ApiError(res.status, path, text);
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+      throw new ApiError(res.status, path, text);
+    } catch (err: any) {
+      // 已经是 ApiError 而且不可重试 → 直接抛
+      if (err instanceof ApiError) {
+        if (canRetry && _isRetriableStatus(err.status) && attempt < maxAttempts - 1) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+          continue;
+        }
+        throw err;
+      }
+      // 网络错 / abort / DNS / 连接拒绝 → 仅 GET 重试
+      lastErr = err;
+      if (canRetry && attempt < maxAttempts - 1) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  return res.json();
+  throw lastErr || new Error("request failed");
 }
 
 // ============================================================

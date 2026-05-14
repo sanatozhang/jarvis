@@ -267,25 +267,50 @@ export default function HomePage() {
     localStorage.removeItem("appllo_assignee"); setShowAssigneeEdit(false); setPendingPage(1);
   };
 
+  // 列表加载失败的统一降级策略：
+  //   1) 之前有数据 → 保留旧数据 + 小 toast，不弹全屏红条
+  //   2) 之前无数据（首次失败） → 走 error 红条，让用户能看到具体原因
+  //   3) 5xx 已经在 api.ts 里自动重试过 2 次，到这里说明是持久失败
+  const _softFail = (current: unknown, label: string) => (e: any) => {
+    const msg = e?.message || String(e);
+    if (current) {
+      setToast(`${label}加载失败，已保留上次数据。${msg.slice(0, 80)}`);
+    } else {
+      setError(msg);
+    }
+  };
+
   const loadPending = useCallback(async (page: number, withInProgress?: boolean) => {
     if (assignee === null) return;
     setPendingLoading(true);
-    try { const d = await fetchPendingIssues(assignee || undefined, page, PAGE_SIZE, withInProgress ?? includeInProgress); setPendingData(d); }
-    catch (e: any) { setError(e.message); }
-    finally { setPendingLoading(false); }
-  }, [assignee, includeInProgress]);
+    try {
+      const d = await fetchPendingIssues(assignee || undefined, page, PAGE_SIZE, withInProgress ?? includeInProgress);
+      setPendingData(d);
+    } catch (e: any) {
+      _softFail(pendingData, t("待处理"))(e);
+    } finally {
+      setPendingLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignee, includeInProgress, pendingData]);
 
   const loadInProgress = useCallback(async (page: number) => {
-    try { setIpData(await fetchInProgress(page, PAGE_SIZE)); } catch (e: any) { setError(e.message); }
-  }, []);
+    try { setIpData(await fetchInProgress(page, PAGE_SIZE)); }
+    catch (e: any) { _softFail(ipData, t("进行中"))(e); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ipData]);
 
   const loadDone = useCallback(async (page: number) => {
-    try { setDoneData(await fetchCompleted(page, PAGE_SIZE)); } catch (e: any) { setError(e.message); }
-  }, []);
+    try { setDoneData(await fetchCompleted(page, PAGE_SIZE)); }
+    catch (e: any) { _softFail(doneData, t("已完成"))(e); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doneData]);
 
   const loadInaccurate = useCallback(async (page: number) => {
-    try { setInaccurateData(await fetchInaccurate(page, PAGE_SIZE)); } catch (e: any) { setError(e.message); }
-  }, []);
+    try { setInaccurateData(await fetchInaccurate(page, PAGE_SIZE)); }
+    catch (e: any) { _softFail(inaccurateData, t("分析不准确"))(e); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inaccurateData]);
 
   const loadAll = useCallback(async () => {
     if (assignee === null) return;
