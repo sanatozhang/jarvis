@@ -115,8 +115,12 @@ crashguard:
     #   CRASHGUARD_DATADOG_APP_KEY=xxx
 
   feishu:
-    target_chat_id: "oc_7b7ed77c489e7459a6f7d9a299eef51a"  # 生产群聊
-    target_email: ""                                        # 测试通道关闭（如需点对点 fallback 再开）
+    target_chat_id: "oc_7b7ed77c489e7459a6f7d9a299eef51a"  # 生产群聊（早晚报进群）
+    target_email: ""                                        # 老路径（target chat 兜底用）
+    # 非早晚报告警（hourly_alert / core_metric / job_health）专属投递目标。
+    # 设置后这类告警走点对点 email，不打扰群里其他人；早晚报继续进群。
+    # 通常通过 env CRASHGUARD_FEISHU_ALERT_EMAIL 配置（避免把个人邮箱写进代码库）。
+    alert_email: ""
     admin_open_ids: []                                      # 一键 PR approve 白名单
     morning_cron: "0 7 * * *"
     evening_cron: "0 17 * * *"

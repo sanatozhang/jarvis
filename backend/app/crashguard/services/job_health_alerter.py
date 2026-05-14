@@ -251,7 +251,10 @@ async def run_job_health_check() -> Dict[str, Any]:
     sent_ok = False
     try:
         from app.services.feishu_cli import send_interactive_card
-        if s.feishu_target_chat_id:
+        # 路由：alert_email > chat_id > target_email；job_health 是非早晚报告警，走点对点
+        if s.feishu_alert_email:
+            sent_ok = await send_interactive_card(email=s.feishu_alert_email, card=card)
+        elif s.feishu_target_chat_id:
             sent_ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
         elif s.feishu_target_email:
             sent_ok = await send_interactive_card(email=s.feishu_target_email, card=card)

@@ -170,6 +170,10 @@ class CrashguardSettings(BaseSettings):
     feishu_target_chat_id: str = ""
     # 测试阶段可改用点对点推送给指定邮箱（优先级高于 chat_id）
     feishu_target_email: str = ""
+    # 非早晚报告警（hourly_alert / core_metric_alert / job_health）专属投递目标。
+    # 早晚报继续走 feishu_target_chat_id 进群；本字段设了 → 告警走点对点 email，
+    # 避免噪声打扰群里所有人。空值则退化到 chat_id / target_email 老路径。
+    feishu_alert_email: str = ""
     feishu_admin_open_ids: List[str] = Field(default_factory=list)
     # 飞书消息中链接前缀（指向 frontend）
     # 优先级：env CRASHGUARD_FRONTEND_BASE_URL > yaml.frontend_base_url > env HOST_IP 派生
@@ -455,6 +459,8 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["feishu_target_chat_id"] = f["target_chat_id"]
         if "target_email" in f:
             flat["feishu_target_email"] = f["target_email"]
+        if "alert_email" in f:
+            flat["feishu_alert_email"] = f["alert_email"]
         if "admin_open_ids" in f:
             flat["feishu_admin_open_ids"] = f["admin_open_ids"]
         if "morning_cron" in f:

@@ -254,14 +254,17 @@ async def run_core_metric_tick(
     if not s.feishu_enabled:
         logger.info("core_metric_alerter: feishu_enabled=False, skip send (data 已落表)")
     else:
+        # 路由：alert_email（点对点）> chat_id（群）> target_email（兼容）
         try:
             from app.services.feishu_cli import send_interactive_card
-            if s.feishu_target_chat_id:
+            if s.feishu_alert_email:
+                sent_ok = await send_interactive_card(email=s.feishu_alert_email, card=card)
+            elif s.feishu_target_chat_id:
                 sent_ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
             elif s.feishu_target_email:
                 sent_ok = await send_interactive_card(email=s.feishu_target_email, card=card)
             else:
-                logger.warning("core_metric_alerter: no chat_id/email; skip send")
+                logger.warning("core_metric_alerter: no alert_email/chat_id; skip send")
         except Exception:
             logger.exception("core_metric_alerter: feishu send error")
 
