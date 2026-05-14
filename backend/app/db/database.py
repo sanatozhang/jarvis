@@ -267,6 +267,24 @@ async def init_db():
         connect_args=connect_args,
         **pool_kwargs,
     )
+
+    # Self-heal: macOS colima/virtio-fs occasionally emits "disk I/O error" on
+    # SQLite WAL files. SQLAlchemy 默认的 disconnect 识别集合不含这条，
+    # 导致 pool_pre_ping 的 SELECT 1 即使失败也只把异常向上抛、不驱逐连接，
+    # 整个池被一条坏 handle 持续污染。这里挂 handle_error 监听器，把
+    # "disk I/O error" 强制翻译成 disconnect → 连接立即作废 → 池里换新的。
+    if "sqlite" in db_url:
+        from sqlalchemy import event
+
+        @event.listens_for(_engine.sync_engine, "handle_error")
+        def _treat_sqlite_io_as_disconnect(ctx):
+            orig = ctx.original_exception
+            if orig is None:
+                return
+            msg = str(orig).lower()
+            if "disk i/o error" in msg or "database is locked" in msg and "io" in msg:
+                ctx.is_disconnect = True
+
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
     # Enable WAL mode for SQLite (allows concurrent reads while writing)
