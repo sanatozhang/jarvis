@@ -463,6 +463,30 @@ async def run_hourly_alert_tick(
                     "sessions_24h": ses24,
                 })
 
+    # === 多通道合卡 dedup：优先级 new_version > new_crash > new > surge ===
+    _seen_ids: set = set()
+    _dedup = lambda items: [it for it in items
+                             if it["issue_id"] not in _seen_ids
+                             and not _seen_ids.add(it["issue_id"])]
+    new_version_items = _dedup(new_version_items)
+    new_crash_items = _dedup(new_crash_items)
+    new_items = _dedup(new_items)
+    surge_items = _dedup(surge_items)
+
+    # === Shadow mode 判定 ===
+    # 只有 new_version / new_crash 通道有命中，且全部处于 shadow_mode → 跳过飞书发送
+    def _is_shadow_only(items: list, shadow_flag: bool) -> bool:
+        return (not items) or shadow_flag
+
+    has_any_hit = bool(new_version_items or new_crash_items or new_items or surge_items)
+    shadow_mode_active = (
+        has_any_hit
+        and (not new_items)
+        and (not surge_items)
+        and _is_shadow_only(new_version_items, s.hourly_alert_new_version_shadow_mode)
+        and _is_shadow_only(new_crash_items, s.hourly_alert_new_crash_shadow_mode)
+    )
+
     # 按事件量 desc 排序
     new_items.sort(key=lambda x: x["events_h"], reverse=True)
     surge_items.sort(key=lambda x: x["growth_pct"], reverse=True)
@@ -498,6 +522,19 @@ async def run_hourly_alert_tick(
             alert_id = row.id
     except Exception:
         logger.exception("hourly_alerter: alert row insert failed (likely race; ignored)")
+
+    # === Shadow mode 短路：仅 shadow 通道有命中 → 跳过飞书，audit log 已写 ===
+    if shadow_mode_active:
+        logger.info(
+            "hourly_alerter: shadow_mode active (only new_version/new_crash channels in shadow), skip feishu send"
+        )
+        return {
+            "ok": True, "alerted": False, "shadow": True,
+            "new": len(new_items), "surge": len(surge_items),
+            "new_version": len(new_version_items),
+            "new_crash": len(new_crash_items),
+            "hour_utc": now_hour.isoformat(),
+        }
 
     # === 构造并发送 feishu 卡片（URL 带 alert_id，点击直接打开 reports 页对应详情）===
     from app.crashguard.services.feishu_card import build_hourly_alert_card
