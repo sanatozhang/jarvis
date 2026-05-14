@@ -35,6 +35,8 @@ from app.crashguard.models import (
     CrashHourlySnapshot,
     CrashIssue,
 )
+from app.crashguard.services.datadog_cache import DatadogCache
+from app.crashguard.services.version_classifier import classify_version
 from app.db.database import get_session
 
 logger = logging.getLogger("crashguard.hourly_alerter")
@@ -220,8 +222,28 @@ async def run_hourly_alert_tick(
         return {"ok": True, "alerted": False, "reason": "no_events",
                 "hour_utc": now_hour.isoformat()}
 
+    # === 获取各平台「用户量最大版本」（通道 1 分桶依据）===
+    top_versions: Dict[str, Any] = {}
+    if s.hourly_alert_new_version_enabled:
+        try:
+            from app.crashguard.services.datadog_client import DatadogClient
+            _ddclient = DatadogClient(
+                api_key=s.datadog_api_key,
+                app_key=s.datadog_app_key,
+                site=s.datadog_site,
+            )
+            top_versions = await DatadogCache.get_or_fetch(
+                "top_user_version:24",
+                ttl_seconds=6 * 3600,
+                fetch_fn=lambda: _ddclient.top_user_version_by_platform(window_hours=24),
+            )
+        except Exception:
+            logger.exception("hourly_alerter: top_user_version fetch failed, fallback to {}")
+            top_versions = {}
+
     new_items: List[Dict[str, Any]] = []
     surge_items: List[Dict[str, Any]] = []
+    new_version_items: List[Dict[str, Any]] = []
     new_window_cutoff = now_hour - timedelta(days=s.hourly_alert_new_window_days)
     threshold_ratio = s.hourly_alert_growth_threshold_pct / 100.0
     min_baseline = s.hourly_alert_min_baseline_events
@@ -271,6 +293,29 @@ async def run_hourly_alert_tick(
             )).scalars().first()
             title = (issue_row.title if issue_row else "") or (attrs.get("title") or "") or issue_id
             platform = (issue_row.platform if issue_row else "") or (attrs.get("platform") or "")
+
+            # === 通道 1：版本分桶 ===
+            issue_ver = attrs.get("version") or (issue_row.last_seen_version if issue_row else "") or ""
+            bucket = classify_version(issue_ver, platform.lower(), top_versions)
+            if bucket == "new" and s.hourly_alert_new_version_enabled:
+                denom = (top_versions.get(platform.lower()) or {}).get("users") or 0
+                user_rate = events_h / denom if denom > 0 else None
+                if (
+                    events_h >= s.hourly_alert_new_version_min_events
+                    and user_rate is not None
+                    and user_rate >= s.hourly_alert_new_version_user_rate_pct
+                ):
+                    new_version_items.append({
+                        "issue_id": issue_id,
+                        "title": title[:100],
+                        "platform": platform,
+                        "version": issue_ver,
+                        "first_seen_version": (issue_row.first_seen_version if issue_row else "") or "",
+                        "events_h": events_h,
+                        "sessions_h": sessions_h,
+                        "user_rate_pct": round((user_rate or 0) * 100, 3),
+                    })
+                continue  # 新版本桶：无论是否触发，不走通道 2 逻辑
 
             # 新增判定：DB 不存在 OR first_seen_at 在 N 天内
             first_seen = issue_row.first_seen_at if issue_row else None
@@ -345,7 +390,7 @@ async def run_hourly_alert_tick(
     new_items.sort(key=lambda x: x["events_h"], reverse=True)
     surge_items.sort(key=lambda x: x["growth_pct"], reverse=True)
 
-    if not new_items and not surge_items:
+    if not new_items and not surge_items and not new_version_items:
         return {
             "ok": True, "alerted": False, "reason": "no_anomaly",
             "hour_utc": now_hour.isoformat(),
@@ -354,7 +399,7 @@ async def run_hourly_alert_tick(
 
     # === 先记账拿 alert_id：卡片 URL 要用 ID 做深链跳转 ===
     payload = {
-        "new": new_items, "surge": surge_items,
+        "new": new_items, "surge": surge_items, "new_version": new_version_items,
         "threshold_pct": s.hourly_alert_growth_threshold_pct,
         "min_sessions": min_sessions,
         "window_start": window_start.isoformat(),
@@ -413,11 +458,11 @@ async def run_hourly_alert_tick(
             logger.exception("hourly_alerter: feishu send error")
 
     logger.info(
-        "hourly_alerter fired: hour=%s new=%d surge=%d sent=%s",
-        now_hour.isoformat(), len(new_items), len(surge_items), sent_ok,
+        "hourly_alerter fired: hour=%s new=%d surge=%d nv=%d sent=%s",
+        now_hour.isoformat(), len(new_items), len(surge_items), len(new_version_items), sent_ok,
     )
     return {
         "ok": True, "alerted": True, "sent": sent_ok,
-        "new": len(new_items), "surge": len(surge_items),
+        "new": len(new_items), "surge": len(surge_items), "new_version": len(new_version_items),
         "hour_utc": now_hour.isoformat(),
     }
