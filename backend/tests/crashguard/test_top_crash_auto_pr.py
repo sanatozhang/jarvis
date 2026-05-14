@@ -232,3 +232,55 @@ async def test_retries_closed_pr_when_enabled(setup_db, monkeypatch):
 
     res = await fn()
     assert res["actioned"] == 1
+
+
+# ============================================================
+# Gate#3 路径专属放宽：approver=top_auto vs 其它入口
+# ============================================================
+
+@pytest.mark.asyncio
+async def test_top_auto_passes_approver_correctly(setup_db, monkeypatch):
+    """approver=top_auto 透传给 draft_prs_multi，用于 Gate#3 内部路径区分。"""
+    fn = await _enable_and_get_fn()
+    from app.crashguard import config as cfg_mod
+    cfg_mod.get_crashguard_settings().top_crash_min_confidence = "medium"
+
+    captured = {}
+    async def fake_draft(ana_id, approver):
+        captured["ana_id"] = ana_id
+        captured["approver"] = approver
+        return {"ok": True, "prs": [{"ok": True, "pr_url": "u"}], "succeeded": 1, "failed": 0, "total": 1}
+    monkeypatch.setattr(
+        "app.crashguard.services.pr_drafter.draft_prs_multi", fake_draft,
+    )
+
+    Sm = setup_db
+    async with Sm() as s:
+        iss = await _seed_issue(s, 1000, "did-1")
+        import uuid
+        ana = CrashAnalysis(
+            datadog_issue_id="did-1", analysis_run_id=str(uuid.uuid4()),
+            status="success", feasibility_score=0.7, confidence="medium",
+            agent_name="claude_code", fix_suggestion="x", followup_question="",
+        )
+        s.add(ana)
+        await s.commit()
+
+    res = await fn()
+    assert res["actioned"] == 1
+    assert captured["approver"] == "top_auto"
+
+
+def test_pass_confidence_gate_medium_threshold():
+    """直接单测 pass_confidence_gate：min_confidence='medium' 时 medium 放行，low 阻拦。"""
+    from app.crashguard.services.pr_quality_gates import pass_confidence_gate
+    ok, _ = pass_confidence_gate("medium", 0.6, min_confidence="medium", min_feasibility=0.5)
+    assert ok
+    ok, why = pass_confidence_gate("low", 0.6, min_confidence="medium", min_feasibility=0.5)
+    assert not ok
+    assert "confidence_too_low" in why
+    ok, why = pass_confidence_gate("medium", 0.4, min_confidence="medium", min_feasibility=0.5)
+    assert not ok
+    # min_confidence='high' 时 medium 应被拒（其他入口默认严格）
+    ok, _ = pass_confidence_gate("medium", 0.9, min_confidence="high", min_feasibility=0.5)
+    assert not ok

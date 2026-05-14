@@ -321,6 +321,9 @@ class CrashguardSettings(BaseSettings):
     top_crash_auto_pr_max_per_tick: int = 3
     # 已有 closed PR 的 issue 是否重试——默认 False 防反复开烂 PR
     top_crash_auto_pr_retry_on_closed: bool = False
+    # Top 专属 Gate#3 confidence 门槛——其他入口仍卡 high
+    # 选项: low / medium / high；默认 medium（high 太严会卡掉大半 Top crash）
+    top_crash_min_confidence: str = "medium"
 
     model_config = {
         "env_prefix": "CRASHGUARD_",

@@ -1214,14 +1214,32 @@ async def draft_pr_for_analysis(
         verify_no_version_bump,
     )
     if getattr(s, "gate_confidence_enabled", True):
+        # Top crash 专属低门槛：approver=top_auto 路径走 medium + 低 feasibility 阈值。
+        # 抓手：用户原话「自动化生成 Top crash 的 PR」——Top crash 即使信心一般也
+        # 优先开 PR 让 reviewer 兜底（配合 review-responder），比让 6/20 个 Top crash
+        # 永远无 PR 强。其他入口（human / auto_verified）仍严卡 high。
+        is_top_auto = (approver == "top_auto")
+        eff_min_conf = (
+            getattr(s, "top_crash_min_confidence", "medium")
+            if is_top_auto
+            else getattr(s, "gate_min_confidence", "high")
+        )
+        eff_min_fea = (
+            float(getattr(s, "top_crash_auto_pr_threshold", 0.5) or 0.5)
+            if is_top_auto
+            else float(getattr(s, "feasibility_pr_threshold", 0.7) or 0.7)
+        )
         ok_g3, why_g3 = pass_confidence_gate(
             ana.confidence or "low",
             float(ana.feasibility_score or 0.0),
-            min_confidence=getattr(s, "gate_min_confidence", "high"),
-            min_feasibility=float(getattr(s, "feasibility_pr_threshold", 0.7) or 0.7),
+            min_confidence=eff_min_conf,
+            min_feasibility=eff_min_fea,
         )
         if not ok_g3:
-            logger.info("gate#3 blocked PR: %s (ana=%d repo=%s)", why_g3, analysis_id, repo_logical)
+            logger.info(
+                "gate#3 blocked PR: %s (ana=%d repo=%s approver=%s)",
+                why_g3, analysis_id, repo_logical, approver,
+            )
             return {"ok": False, "error": f"gate_confidence: {why_g3}", "repo": repo_logical}
 
     # === Gate#2：stack→平台强制路由 ===
