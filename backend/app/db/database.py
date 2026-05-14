@@ -246,25 +246,18 @@ async def init_db():
                 db_url = f"sqlite+aiosqlite:///{abs_path}"
             Path(abs_path if not Path(db_path).is_absolute() else db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # SQLite needs WAL mode + busy_timeout to handle concurrent async writes
+    # SQLite needs WAL mode + busy_timeout to handle concurrent async writes.
+    # 池策略：用 NullPool —— SQLite 单写者，连接复用反而加剧锁争用 + GC 泄漏。
+    # NullPool 下每次请求开关一次 connection，开销 < 1ms，但彻底消灭了：
+    #   1) "connection terminating" GC 泄漏；
+    #   2) pool_timeout=30s 拿不到 slot 的雪崩；
+    #   3) 一条 stale connection 持续污染整个池。
     connect_args = {}
     pool_kwargs = {}
     if "sqlite" in db_url:
         connect_args = {"timeout": 30}  # seconds to wait for lock
-        pool_kwargs = {
-            "pool_size": 5,       # concurrent readers via WAL mode
-            "max_overflow": 10,   # burst capacity for parallel analysis tasks
-            "pool_timeout": 30,   # wait up to 30s for a pool slot
-            # ── Self-healing under transient I/O errors ────────────────────
-            # macOS colima virtiofs occasionally returns "disk I/O error" on
-            # SQLite WAL files. Without these, a single transient failure
-            # poisons a connection that stays in the pool forever — every
-            # subsequent request hits the bad connection and returns 500
-            # until backend is restarted. With pre_ping + recycle, broken
-            # connections get evicted automatically.
-            "pool_pre_ping": True,  # SELECT 1 before checkout — drops dead conns
-            "pool_recycle": 300,    # recycle every 5 min — caps stale conn age
-        }
+        from sqlalchemy.pool import NullPool
+        pool_kwargs = {"poolclass": NullPool}
 
     _engine = create_async_engine(
         db_url,
@@ -273,30 +266,39 @@ async def init_db():
         **pool_kwargs,
     )
 
-    # Self-heal: macOS colima/virtio-fs occasionally emits "disk I/O error" on
-    # SQLite WAL files. SQLAlchemy 默认的 disconnect 识别集合不含这条，
-    # 导致 pool_pre_ping 的 SELECT 1 即使失败也只把异常向上抛、不驱逐连接，
-    # 整个池被一条坏 handle 持续污染。这里挂 handle_error 监听器，把
-    # "disk I/O error" 强制翻译成 disconnect → 连接立即作废 → 池里换新的。
+    # NullPool 下每次 connection 都是新建，必须用 connect event 给每条新 conn
+    # 设上 PRAGMA。之前在 init_db 里一次性 set 只影响那一条，新 conn 全部
+    # 默认 busy_timeout=0 → 拿不到锁就立刻抛 OperationalError。
     if "sqlite" in db_url:
         from sqlalchemy import event
 
+        @event.listens_for(_engine.sync_engine, "connect")
+        def _sqlite_pragmas_on_connect(dbapi_conn, conn_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            # WAL 下用 NORMAL 同步级别（事务安全 + 大幅降低 fsync 阻塞）
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            # 每 1000 帧自动 checkpoint，避免 WAL 文件无限增长导致 reader 卡读
+            cursor.execute("PRAGMA wal_autocheckpoint=1000")
+            cursor.close()
+
+        # 把 "disk I/O error" 翻译成 disconnect，让 SQLAlchemy 不要复用坏 handle
         @event.listens_for(_engine.sync_engine, "handle_error")
         def _treat_sqlite_io_as_disconnect(ctx):
             orig = ctx.original_exception
             if orig is None:
                 return
             msg = str(orig).lower()
-            if "disk i/o error" in msg or "database is locked" in msg and "io" in msg:
+            if "disk i/o error" in msg or ("database is locked" in msg and "io" in msg):
                 ctx.is_disconnect = True
 
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
-    # Enable WAL mode for SQLite (allows concurrent reads while writing)
+    # 触发一次 connect 以应用 PRAGMA（顺便初始化 schema）
     if "sqlite" in db_url:
         async with _engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
-            await conn.execute(text("PRAGMA busy_timeout=30000"))
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -375,6 +377,53 @@ def get_session() -> AsyncSession:
     if _session_factory is None:
         raise RuntimeError("Database not initialized. Call init_db() first.")
     return _session_factory()
+
+
+# ---------------------------------------------------------------------------
+# Retry helper —— SQLite WAL 下偶发 "database is locked" 在 busy_timeout 内
+# 没等到锁就抛上来；读侧加 3 次指数退避重试，把 99% 的瞬时锁吸收掉。
+# 写侧不包，让写失败快速暴露不掩盖真实问题。
+# ---------------------------------------------------------------------------
+import asyncio as _asyncio
+import functools as _functools
+import logging as _logging
+from sqlalchemy.exc import OperationalError as _OperationalError
+
+_retry_logger = _logging.getLogger("jarvis.db.retry")
+
+
+def retry_on_lock(max_attempts: int = 3, base_delay: float = 0.05):
+    """读侧装饰器：捕获 sqlite 'database is locked' 类异常，指数退避重试。
+
+    只对读路径使用——写操作（upsert/update/delete）保持快失败。
+    """
+    def deco(fn):
+        @_functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            attempt = 0
+            delay = base_delay
+            while True:
+                try:
+                    return await fn(*args, **kwargs)
+                except _OperationalError as e:
+                    msg = str(e).lower()
+                    if "locked" not in msg and "busy" not in msg:
+                        raise
+                    attempt += 1
+                    if attempt >= max_attempts:
+                        _retry_logger.error(
+                            "retry_on_lock exhausted for %s after %d attempts: %s",
+                            fn.__name__, attempt, e,
+                        )
+                        raise
+                    _retry_logger.warning(
+                        "retry_on_lock %s attempt %d/%d after %.0fms: %s",
+                        fn.__name__, attempt, max_attempts, delay * 1000, msg[:120],
+                    )
+                    await _asyncio.sleep(delay)
+                    delay *= 2.5
+        return wrapper
+    return deco
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +757,7 @@ async def get_analysis_by_issue(issue_id: str) -> Optional[AnalysisRecord]:
         return result.scalar_one_or_none()
 
 
+@retry_on_lock()
 async def get_all_analyses_by_issue(issue_id: str) -> List[AnalysisRecord]:
     """Get ALL analyses for an issue, ordered by created_at DESC (newest first)."""
     async with get_session() as session:
@@ -752,6 +802,7 @@ async def list_tasks(limit: int = 50) -> List[TaskRecord]:
 # ---------------------------------------------------------------------------
 # Local issue queries (for 进行中 / 已完成 tabs)
 # ---------------------------------------------------------------------------
+@retry_on_lock()
 async def get_local_issue_ids() -> set:
     """
     Get issue IDs that should be EXCLUDED from the pending list.
@@ -767,6 +818,7 @@ async def get_local_issue_ids() -> set:
         return {row[0] for row in result.fetchall()}
 
 
+@retry_on_lock()
 async def get_local_issues_paginated(
     status: str,
     page: int = 1,
@@ -799,6 +851,7 @@ async def get_local_issues_paginated(
         return items, total
 
 
+@retry_on_lock()
 async def get_tracked_issues_paginated(
     page: int = 1,
     page_size: int = 20,
