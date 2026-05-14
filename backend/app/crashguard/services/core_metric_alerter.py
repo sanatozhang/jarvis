@@ -163,7 +163,8 @@ async def run_core_metric_tick(
     }
 
     threshold_pp = float(getattr(s, "core_metric_change_threshold_pp", 0.3) or 0.3)
-    min_sessions = int(getattr(s, "core_metric_min_sessions", 100) or 0)
+    min_sessions = int(getattr(s, "core_metric_min_sessions", 500) or 0)
+    min_crashed = int(getattr(s, "core_metric_min_crashed_sessions", 3) or 0)
 
     alert_items: List[Dict[str, Any]] = []
     snapshot_log: List[Dict[str, Any]] = []
@@ -181,8 +182,12 @@ async def run_core_metric_tick(
             snapshot_log.append({"platform": platform, "total": total,
                                  "crashed": crashed, "cf_pct": cf_pct})
 
-            # 量级闸：小流量不报警
+            # 量级闸 1：小流量分母 → 跳过
             if total < min_sessions:
+                continue
+            # 量级闸 2：crashed 绝对数太低（哪怕 rate 跳变）→ 跳过
+            # 抓手：1 user × 1 crash 不应触发"全平台健康度告警"——颗粒度不对齐
+            if crashed < min_crashed:
                 continue
 
             baseline_cf = await _baseline_crash_free(session, platform, window_start)

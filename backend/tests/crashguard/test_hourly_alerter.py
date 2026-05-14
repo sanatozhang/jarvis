@@ -60,8 +60,8 @@ async def test_new_issue_triggers_alert(tmp_path, monkeypatch):
     await _setup_db_and_settings(tmp_path, monkeypatch)
 
     fake_now = datetime(2026, 5, 15, 10, 5, 0)  # cron at :05
-    # events=80 → sessions=80 ≥ default min_sessions=60，过阈值
-    issues = [_fake_dd_issue("ddi_new_1", "NullPointerException", 80, "android")]
+    # events=120 → sessions=120 ≥ default min_sessions=100，过阈值
+    issues = [_fake_dd_issue("ddi_new_1", "NullPointerException", 120, "android")]
 
     sent_cards = []
     async def fake_send(chat_id="", card=None, email=""):
@@ -220,7 +220,7 @@ async def test_idempotency_same_hour_skips(tmp_path, monkeypatch):
     await _setup_db_and_settings(tmp_path, monkeypatch)
 
     fake_now = datetime(2026, 5, 15, 10, 5, 0)
-    issues = [_fake_dd_issue("ddi_dup", "DupCrash", 80, "android")]
+    issues = [_fake_dd_issue("ddi_dup", "DupCrash", 120, "android")]
 
     with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
                new=AsyncMock(return_value=issues)), \

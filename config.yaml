@@ -149,7 +149,7 @@ crashguard:
     new_window_days: 30            # 近 30 天首次出现 = 新增告警
     min_baseline_events: 20        # 上周同 3h 块 < 20 件则跳过百分比判定（小基数噪声）
     max_items: 10                  # 卡片最多展示前 N 项
-    min_sessions: 60               # 受影响会话 < 60 不告警（脏数据过滤；Plaud RUM 无 user 字段，sessions 代理 user）
+    min_sessions: 100              # 受影响会话 < 100 不告警（脏数据过滤；Plaud RUM 无 user 字段，sessions 代理 user；5/14 上调 60→100）
 
   # 核心指标报警（crash-free sessions % 健康度，10 分钟粒度）
   # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增；本告警补"系统级健康度"颗粒度。
@@ -159,7 +159,8 @@ crashguard:
     enabled: true
     cron: "*/10 * * * *"           # 每 10 分钟一次
     change_threshold_pp: 0.3       # crash-free % 变化绝对值 >= N pp 触发（pp=百分点）
-    min_sessions: 100              # 当前 10min 窗口 sessions < N 不告警（小流量噪声）
+    min_sessions: 500              # 当前 10min 窗口 sessions < N 不告警（5/14 上调 100→500：原门槛太低，145 sess 这种数据无统计意义）
+    min_crashed_sessions: 3        # crashed_sessions < N 不告警（防 1user×1crash 触发"全平台健康度劣化"伪信号）
     platforms:                     # 监控平台白名单
       - android
       - ios

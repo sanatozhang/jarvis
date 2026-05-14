@@ -227,7 +227,8 @@ class CrashguardSettings(BaseSettings):
     # 绝对量级阈值：单 issue 在窗口内 sessions_affected < 此值不入告警（脏数据/极低频噪声过滤）
     # 注：Plaud RUM 未 setUser，users_affected 全 0（已知 data hole），用 sessions 代理 user
     # （24h 内典型 1-3 sessions/user，相关性高）。卡片文案显示「受影响会话 ≥ N」。
-    hourly_alert_min_sessions: int = 60
+    # 100 = 至少影响 100 个 session 才有统计意义（5/14 上调：原 60 太低，单用户多 session 仍误报）
+    hourly_alert_min_sessions: int = 100
 
     # === 核心指标报警（10 分钟粒度 crash-free sessions % 监控）===
     # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增/新增；核心指标补的是
@@ -240,7 +241,12 @@ class CrashguardSettings(BaseSettings):
     # 例：基线 99.5%，当前 99.0% → 变化 0.5 pp，>=0.3 触发
     core_metric_change_threshold_pp: float = 0.3
     # 绝对量级阈值：当前 10min 窗口 total_sessions < N 不告警（小流量噪声）
-    core_metric_min_sessions: int = 100
+    # 500 = 覆盖晨间 / 周末低峰；高峰期 145 sess 这种数据统计上无意义（5/14 上调：原 100 太低）
+    core_metric_min_sessions: int = 500
+    # 最小 crashed_sessions 门槛：crashed < N 不告警（哪怕 rate Δ 过阈值）
+    # 抓手：1 个 user 挂 1 次不应升级到"全平台健康度劣化"告警。
+    # 与 min_sessions 双保险——前者过滤"分母不够"，后者过滤"分子绝对意义为 0"。
+    core_metric_min_crashed_sessions: int = 3
     # 监控平台白名单（小写逗号串），空 = 不限制
     core_metric_platforms: str = "android,ios"
 
@@ -532,6 +538,8 @@ def _yaml_overrides() -> Dict[str, Any]:
                 flat["core_metric_change_threshold_pp"] = float(cm["change_threshold_pp"])
             if "min_sessions" in cm:
                 flat["core_metric_min_sessions"] = int(cm["min_sessions"])
+            if "min_crashed_sessions" in cm:
+                flat["core_metric_min_crashed_sessions"] = int(cm["min_crashed_sessions"])
             if "platforms" in cm:
                 v = cm["platforms"]
                 flat["core_metric_platforms"] = ",".join(v) if isinstance(v, list) else str(v)
