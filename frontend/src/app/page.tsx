@@ -284,9 +284,16 @@ export default function HomePage() {
   useEffect(() => { inaccurateDataRef.current = inaccurateData; }, [inaccurateData]);
 
   const _softFail = (current: unknown, label: string) => (e: any) => {
-    // AbortError（fetch 被 abort）不弹 toast：通常是组件卸载或竞态，不是真失败
-    if (e?.name === "AbortError") return;
+    // 各浏览器对 abort 报错的 name/message 不一致：
+    //   Chrome 现代：DOMException, name=AbortError, message="signal is aborted without reason"
+    //   Safari/Firefox：AbortError 但 message 不同
+    //   Edge：偶尔包成 TypeError
+    // 统一以 name + message 双判，命中即静默——abort 通常是组件卸载/竞态，不是真失败
+    const name = e?.name || "";
     const msg = e?.message || String(e);
+    if (name === "AbortError" || /abort/i.test(msg) || msg === "Failed to fetch") {
+      return;
+    }
     if (current) {
       setToast(`${label}加载失败，已保留上次数据。${msg.slice(0, 80)}`);
     } else {
