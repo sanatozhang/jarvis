@@ -178,6 +178,224 @@ def _build_tldr_elements(
     return elements
 
 
+def _cf_emoji(pct: float) -> str:
+    if pct >= 99.9:
+        return "🟩"
+    if pct >= 99.5:
+        return "🟨"
+    return "🟥"
+
+
+def _fmt_n(n: Any) -> str:
+    if n is None:
+        return "—"
+    try:
+        return f"{int(n):,}"
+    except (ValueError, TypeError):
+        return str(n)
+
+
+def _build_crash_free_column_md(
+    plat_label: str,
+    all_stats: Dict[str, Any] | None,
+    ver_stats: Dict[str, Any] | None,
+) -> str:
+    """单平台一栏的 markdown（全版本 + 主要版本两段）。"""
+    lines: List[str] = [f"**{plat_label}**", ""]
+    if all_stats:
+        pct = all_stats.get("crash_free_pct")
+        pct_str = (
+            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
+        )
+        lines.append("__全版本__")
+        lines.append(f"· 会话总数：**{_fmt_n(all_stats.get('total_sessions'))}**")
+        lines.append(f"· Crash-free：{_fmt_n(all_stats.get('crash_free_sessions'))}")
+        lines.append(f"· 崩溃：{_fmt_n(all_stats.get('crashed_sessions'))}")
+        lines.append(f"· Crash-free 率：{pct_str}")
+        lines.append("")
+    if ver_stats:
+        pct = ver_stats.get("crash_free_pct")
+        pct_str = (
+            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
+        )
+        ver = ver_stats.get("version") or "—"
+        lines.append(f"__主要版本__ `{ver}`")
+        spp = ver_stats.get("share_of_platform_pct")
+        sap = ver_stats.get("share_of_all_pct")
+        if spp is not None:
+            lines.append(f"· 占平台：{spp:.2f}% · 占全部：{sap:.2f}%")
+        lines.append(f"· 会话总数：**{_fmt_n(ver_stats.get('total_sessions'))}**")
+        lines.append(f"· Crash-free：{_fmt_n(ver_stats.get('crash_free_sessions'))}")
+        lines.append(f"· 崩溃：{_fmt_n(ver_stats.get('crashed_sessions'))}")
+        lines.append(f"· Crash-free 率：{pct_str}")
+    return "\n".join(lines)
+
+
+def _build_summary_md(
+    label: str,
+    all_summary: Dict[str, Any] | None,
+    ver_summary: Dict[str, Any] | None,
+) -> str:
+    """iOS + Android 汇总——横向一行紧凑."""
+    parts: List[str] = []
+    if all_summary:
+        pct = all_summary.get("crash_free_pct")
+        pct_str = (
+            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
+        )
+        parts.append(
+            f"**全版本汇总** · 会话 {_fmt_n(all_summary.get('total_sessions'))} · "
+            f"崩溃 {_fmt_n(all_summary.get('crashed_sessions'))} · {pct_str}"
+        )
+    if ver_summary:
+        pct = ver_summary.get("crash_free_pct")
+        pct_str = (
+            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
+        )
+        sap = ver_summary.get("share_of_all_pct")
+        sap_str = f"（占全部 {sap:.2f}%）" if sap is not None else ""
+        parts.append(
+            f"**主要版本汇总**{sap_str} · 会话 {_fmt_n(ver_summary.get('total_sessions'))} · "
+            f"崩溃 {_fmt_n(ver_summary.get('crashed_sessions'))} · {pct_str}"
+        )
+    return "\n\n".join(parts) if parts else ""
+
+
+def _build_dual_window_columns(dw: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """飞书 v2 column_set：双窗口对照——iOS 左 / Android 右 / 合计下方一行。
+
+    抓手：sessions + fatal events 两个口径，「今/上周→Δ」一栏一行，视觉对比 2 秒读完。
+    """
+    plats = dw.get("platforms") or {}
+    sumr = dw.get("summary") or {}
+
+    def _fatal_tag(delta_pct):
+        if delta_pct is None:
+            return ""
+        if delta_pct >= 50:
+            return " 🔴"
+        if delta_pct <= -10:
+            return " ✅"
+        return ""
+
+    def _delta(today, base, delta_pct):
+        sign = "+" if (delta_pct is not None and delta_pct >= 0) else ""
+        d_str = f"{sign}{delta_pct:.0f}%" if delta_pct is not None else "—"
+        if (base == 0 and today == 0):
+            return f"{_fmt_n(today)} / {_fmt_n(base)} → —"
+        return f"**{_fmt_n(today)}** vs {_fmt_n(base)} → **{d_str}**"
+
+    def _col_md(label: str, p: Dict[str, Any]) -> str:
+        sess_line = _delta(
+            p.get("today_sessions", 0), p.get("baseline_sessions", 0), p.get("sess_delta_pct")
+        )
+        fatal_pct = p.get("fatal_delta_pct")
+        fatal_line = _delta(
+            p.get("today_fatal", 0), p.get("baseline_fatal", 0), fatal_pct,
+        ) + _fatal_tag(fatal_pct)
+        return (
+            f"**{label}**\n\n"
+            f"__sessions__\n{sess_line}\n\n"
+            f"__fatal events__\n{fatal_line}"
+        )
+
+    ios = plats.get("IOS") or {}
+    and_ = plats.get("ANDROID") or {}
+
+    out: List[Dict[str, Any]] = []
+    out.append({
+        "tag": "column_set",
+        "flex_mode": "stretch",
+        "background_style": "default",
+        "horizontal_spacing": "default",
+        "columns": [
+            {
+                "tag": "column", "width": "weighted", "weight": 1, "vertical_align": "top",
+                "elements": [_div(_col_md("🍎 iOS", ios))],
+            },
+            {
+                "tag": "column", "width": "weighted", "weight": 1, "vertical_align": "top",
+                "elements": [_div(_col_md("📱 Android", and_))],
+            },
+        ],
+    })
+    # 合计行
+    if sumr:
+        sess_line = _delta(
+            sumr.get("today_sessions", 0), sumr.get("baseline_sessions", 0), sumr.get("sess_delta_pct"),
+        )
+        fp = sumr.get("fatal_delta_pct")
+        fatal_line = _delta(
+            sumr.get("today_fatal", 0), sumr.get("baseline_fatal", 0), fp,
+        ) + _fatal_tag(fp)
+        out.append(_div(
+            f"**📊 合计** · sessions {sess_line}  ·  fatal {fatal_line}"
+        ))
+    out.append(_div(
+        "> 💡 fatal Δ 高于 sessions Δ = crash rate 真恶化；反之 = 质量改善"
+    ))
+    return out
+
+
+def _build_crash_free_columns(detail: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """飞书 v2 column_set 双列：左 iOS / 右 Android，下方一行汇总。
+
+    抓手：把原来纵向 47 行的 bullet 列表压缩成视觉对照的双列卡片。
+    """
+    all_block = (detail.get("all_versions") or {})
+    ver_block = (detail.get("top_user_versions") or {})
+    all_plats = all_block.get("platforms") or {}
+    ver_plats = ver_block.get("platforms") or {}
+
+    out: List[Dict[str, Any]] = []
+
+    # 口径行（窄行说明）
+    out.append(_div(
+        "> 口径：Crash-free 率 = (会话数 − 崩溃会话) / 会话数。崩溃含 native + ANR + App Hang。"
+    ))
+
+    # 双列：iOS 左 / Android 右
+    ios_md = _build_crash_free_column_md(
+        "🍎 iOS", all_plats.get("IOS"), ver_plats.get("IOS"),
+    )
+    and_md = _build_crash_free_column_md(
+        "📱 Android", all_plats.get("ANDROID"), ver_plats.get("ANDROID"),
+    )
+
+    out.append({
+        "tag": "column_set",
+        "flex_mode": "stretch",
+        "background_style": "default",
+        "horizontal_spacing": "default",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "top",
+                "elements": [_div(ios_md)],
+            },
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "top",
+                "elements": [_div(and_md)],
+            },
+        ],
+    })
+
+    # 汇总行（横向，不分列）
+    summary_md = _build_summary_md(
+        "iOS + Android",
+        all_block.get("summary"),
+        ver_block.get("summary"),
+    )
+    if summary_md:
+        out.append(_div(summary_md))
+    return out
+
+
 def build_daily_card(
     report_type: str,
     target_date: str,
@@ -248,7 +466,10 @@ def build_daily_card(
     sections = _split_sections(markdown)
 
     # 主题分类：标题里含这些关键字 → 必看（默认展开）；其余 → 折叠
-    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR")
+    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR", "Crash-free 详表", "双窗口对照")
+
+    crash_free_detail = payload.get("crash_free_detail") or {}
+    dual_window = payload.get("dual_window") or {}
 
     for sec in sections:
         title = sec["title"]
@@ -257,6 +478,20 @@ def build_daily_card(
             continue
         if not title:
             # 无标题段（首段 intro）—— 跳过，已被 TL;DR 替代
+            continue
+
+        # 拦截 Crash-free 详表：飞书 lark_md 不支持 table，改用 column_set 双列原生布局
+        if "Crash-free 详表" in title and crash_free_detail:
+            elements.append(_div(f"**{title}**"))
+            elements.extend(_build_crash_free_columns(crash_free_detail))
+            elements.append({"tag": "hr"})
+            continue
+
+        # 拦截 双窗口对照：同样用 column_set 双列原生布局
+        if "双窗口对照" in title and dual_window:
+            elements.append(_div(f"**{title}**"))
+            elements.extend(_build_dual_window_columns(dual_window))
+            elements.append({"tag": "hr"})
             continue
 
         sec_elements: List[Dict[str, Any]] = []

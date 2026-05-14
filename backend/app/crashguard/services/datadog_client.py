@@ -663,6 +663,137 @@ class DatadogClient:
             out[key] = out.get(key, 0) + count
         return out
 
+    async def count_sessions_for_platform_versions(
+        self,
+        versions_by_plat: Dict[str, str],
+        window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """版本过滤版 count_sessions_by_platform.
+
+        versions_by_plat = {"ios": "3.17.0-701", "android": "3.17.0-702"}
+        每平台单独发一次 query（避免跨平台版本号撞车污染计数）。
+        返回 {"ios": int, "android": int}；某平台无 version 或失败 → 该 key 缺失。
+        """
+        if not versions_by_plat:
+            return {}
+        try:
+            return await asyncio.to_thread(
+                self._sync_count_sessions_for_platform_versions,
+                versions_by_plat, window_hours,
+            )
+        except Exception as exc:
+            logger.warning("count_sessions_for_platform_versions failed: %s", exc)
+            return {}
+
+    def _sync_count_sessions_for_platform_versions(
+        self, versions_by_plat: Dict[str, str], window_hours: int,
+    ) -> Dict[str, int]:
+        return self._versioned_count(
+            versions_by_plat, window_hours,
+            base_query="@type:session",
+        )
+
+    async def count_distinct_crash_sessions_for_platform_versions(
+        self,
+        versions_by_plat: Dict[str, str],
+        window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """版本过滤版 crashed sessions count（含 ANR + App Hang，对齐 Datadog Mobile RUM 口径）。"""
+        if not versions_by_plat:
+            return {}
+        try:
+            return await asyncio.to_thread(
+                self._sync_count_distinct_crash_sessions_for_platform_versions,
+                versions_by_plat, window_hours,
+            )
+        except Exception as exc:
+            logger.warning("count_distinct_crash_sessions_for_platform_versions failed: %s", exc)
+            return {}
+
+    def _sync_count_distinct_crash_sessions_for_platform_versions(
+        self, versions_by_plat: Dict[str, str], window_hours: int,
+    ) -> Dict[str, int]:
+        return self._versioned_count(
+            versions_by_plat, window_hours,
+            base_query="@type:session @session.crash.count:>0",
+        )
+
+    def _versioned_count(
+        self,
+        versions_by_plat: Dict[str, str],
+        window_hours: int,
+        base_query: str,
+    ) -> Dict[str, int]:
+        """共用 per-platform 版本过滤计数实现：base_query + @application.version 二级过滤。
+
+        抓手：每平台一次 Datadog API 调用；group_by @os.name 自动桶 ANDROID/IOS，
+        平台对不上号（如查 ios 版本结果落到 android 桶）的桶丢弃。
+        """
+        from datadog_api_client import ApiClient
+        from datadog_api_client.exceptions import ApiException
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        conf = self._build_configuration()
+        out: Dict[str, int] = {}
+        with ApiClient(conf) as api_client:
+            rum = RUMApi(api_client)
+            for plat, ver in versions_by_plat.items():
+                if not ver:
+                    continue
+                ver_safe = str(ver).replace('"', '\\"')
+                # Plaud RUM SDK 上报到 Datadog 的版本 facet 字段名是 `version`（短名），
+                # 不是 `@application.version`（后者在 Plaud 数据下未索引→ 永远空桶）。
+                # 与 top_user_version_by_platform 同步保持口径一致。
+                query = f'{base_query} version:"{ver_safe}"'
+                body = RUMAggregateRequest(
+                    filter=RUMQueryFilter(
+                        query=query,
+                        _from=f"now-{max(1, int(window_hours))}h",
+                        to="now",
+                    ),
+                    compute=[RUMCompute(
+                        aggregation=RUMAggregationFunction.COUNT,
+                        type=RUMComputeType.TOTAL,
+                    )],
+                    group_by=[RUMGroupBy(facet="@os.name", limit=20)],
+                )
+                try:
+                    resp = rum.aggregate_rum_events(body=body)
+                except ApiException as exc:
+                    if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                        self._record_rate_limit_event()
+                    logger.warning("versioned_count failed for %s=%s: %s", plat, ver, exc)
+                    continue
+
+                buckets = getattr(getattr(resp, "data", None), "buckets", None) or []
+                expected = (plat or "").strip().lower()
+                for b in buckets:
+                    by = getattr(b, "by", {}) or {}
+                    os_name = (by.get("@os.name") or "").strip().lower()
+                    comp = getattr(b, "computes", {}) or {}
+                    try:
+                        count = int(next(iter(comp.values())))
+                    except (StopIteration, TypeError, ValueError):
+                        count = 0
+                    if count <= 0:
+                        continue
+                    if expected == "ios" and (
+                        os_name.startswith("ipados")
+                        or os_name.startswith("ios")
+                        or "iphone" in os_name
+                    ):
+                        out[expected] = out.get(expected, 0) + count
+                    elif expected == "android" and os_name.startswith("android"):
+                        out[expected] = out.get(expected, 0) + count
+                    # 平台对不上号的桶忽略（比如 ios 版本号居然出现在 Android 上 → 数据噪声）
+        return out
+
     async def fetch_crash_breakdown_by_platform(
         self,
         window_hours: int = 24,

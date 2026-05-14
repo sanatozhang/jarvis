@@ -266,6 +266,10 @@ async def compose_report(
     realtime_baseline_events: Dict[str, int] = {}
     # 双窗口对照所需：baseline sessions by platform（today 已在上面拉过）
     baseline_sessions_by_plat: Dict[str, int] = {}
+    # 主要版本（最大用户量版本）的 crash-free 详表所需
+    top_user_versions_local: Dict[str, Dict[str, Any]] = {}
+    top_ver_total_sessions: Dict[str, int] = {}
+    top_ver_crashed_sessions: Dict[str, int] = {}
     if s_cfg.datadog_api_key:
         try:
             from app.crashguard.services.datadog_client import DatadogClient
@@ -328,8 +332,35 @@ async def compose_report(
                 }
             except Exception:
                 logger.exception("baseline sessions pull failed (non-fatal)")
+
+            # —— 主要版本（按用户量最大的版本）的 crash-free 详表 ——
+            # 抓手：让运维一眼看到「大盘」+「真正承载流量的版本」两个口径，避免被新版灰度污染拉偏。
+            top_user_versions_local: Dict[str, Dict[str, Any]] = {}
+            top_ver_total_sessions: Dict[str, int] = {}
+            top_ver_crashed_sessions: Dict[str, int] = {}
+            try:
+                top_user_versions_local = await client.top_user_version_by_platform(
+                    window_hours=data_window_hours
+                )
+                versions_by_plat = {
+                    p: info["version"]
+                    for p, info in (top_user_versions_local or {}).items()
+                    if info and info.get("version")
+                }
+                if versions_by_plat:
+                    top_ver_total_sessions = await client.count_sessions_for_platform_versions(
+                        versions_by_plat, window_hours=data_window_hours,
+                    ) or {}
+                    top_ver_crashed_sessions = await client.count_distinct_crash_sessions_for_platform_versions(
+                        versions_by_plat, window_hours=data_window_hours,
+                    ) or {}
+            except Exception:
+                logger.exception("top-version crash-free pull failed (non-fatal)")
         except Exception:
             logger.exception("count_sessions failed (non-fatal)")
+            top_user_versions_local = {}
+            top_ver_total_sessions = {}
+            top_ver_crashed_sessions = {}
 
     # 用实时窗口数据覆盖 baseline_events
     if realtime_baseline_events:
@@ -395,6 +426,13 @@ async def compose_report(
         "",
     ]
 
+    # TL;DR 需要这些聚合值——提到外层，即使没走双窗口对照分支也能用（默认 0）
+    today_fatal_by_plat: Dict[str, int] = {"ANDROID": 0, "IOS": 0, "OTHER": 0}
+    base_fatal_by_plat: Dict[str, int] = {"ANDROID": 0, "IOS": 0, "OTHER": 0}
+    today_fatal_total = 0
+    base_fatal_total = 0
+    dual_window_payload: Dict[str, Any] = {}
+
     # 双窗口对照：让用户一眼看 sessions + fatal events 是否真增长
     # 早报 24h（vs 上周同 weekday 24h）、速报 10h（vs 上周同 10h）都展示
     if (
@@ -414,8 +452,6 @@ async def compose_report(
             return f"{sign}{pct:.0f}%"
 
         # 平台 fatal 分桶需要从 realtime dict 反查 issue.platform
-        today_fatal_by_plat: Dict[str, int] = {"ANDROID": 0, "IOS": 0, "OTHER": 0}
-        base_fatal_by_plat: Dict[str, int] = {"ANDROID": 0, "IOS": 0, "OTHER": 0}
         id_to_plat: Dict[str, str] = {}
         for snap, issue in today_rows:
             p = (issue.platform or "").upper()
@@ -443,46 +479,258 @@ async def compose_report(
                 return " ✅"
             return ""
 
-        # 飞书 markdown 不支持 table，改用 bullet 列表（粗体 + 缩进）
-        cmp_lines = [
-            "",
-            f"### 📊 双窗口对照（{data_window_hours}h · 今天 {target_date.isoformat()} vs 上周 {base_date.isoformat()}）",
-            "",
-        ]
+        # 抓手：升 h2 段；同时把数据塞 payload，飞书卡片用 column_set 双列渲染
         plat_icon = {"ANDROID": "📱 Android", "IOS": "🍎 iOS"}
+
+        def _pct_num(t: int, b: int):
+            if b == 0:
+                return None
+            return (t - b) / b * 100.0
+
+        dual_window_payload: Dict[str, Any] = {
+            "data_window_hours": data_window_hours,
+            "target_date": target_date.isoformat(),
+            "base_date": base_date.isoformat(),
+            "platforms": {},
+        }
         for plat_key in ("ANDROID", "IOS"):
-            t_sess = total_sessions_by_plat.get(plat_key, 0)
-            b_sess = baseline_sessions_by_plat.get(plat_key, 0)
-            t_fatal = today_fatal_by_plat[plat_key]
-            b_fatal = base_fatal_by_plat[plat_key]
-            sess_pct = _delta_str(t_sess, b_sess)
-            fatal_pct = _delta_str(t_fatal, b_fatal)
-            cmp_lines.append(f"**{plat_icon[plat_key]}**")
-            cmp_lines.append(
-                f"- sessions: **{_fmt_num(t_sess)}** vs {_fmt_num(b_sess)} → **{sess_pct}**"
-            )
-            cmp_lines.append(
-                f"- fatal events: **{_fmt_num(t_fatal)}** vs {_fmt_num(b_fatal)} → **{fatal_pct}**{_tag(fatal_pct)}"
-            )
-            cmp_lines.append("")
-        # 合计
+            t_sess = int(total_sessions_by_plat.get(plat_key, 0) or 0)
+            b_sess = int(baseline_sessions_by_plat.get(plat_key, 0) or 0)
+            t_fatal = int(today_fatal_by_plat.get(plat_key, 0) or 0)
+            b_fatal = int(base_fatal_by_plat.get(plat_key, 0) or 0)
+            dual_window_payload["platforms"][plat_key] = {
+                "today_sessions": t_sess,
+                "baseline_sessions": b_sess,
+                "today_fatal": t_fatal,
+                "baseline_fatal": b_fatal,
+                "sess_delta_pct": _pct_num(t_sess, b_sess),
+                "fatal_delta_pct": _pct_num(t_fatal, b_fatal),
+            }
         t_sess_all = sum(total_sessions_by_plat.get(k, 0) for k in ("ANDROID", "IOS"))
         b_sess_all = sum(baseline_sessions_by_plat.get(k, 0) for k in ("ANDROID", "IOS"))
-        cmp_lines.append("**📊 合计**")
+        dual_window_payload["summary"] = {
+            "today_sessions": int(t_sess_all),
+            "baseline_sessions": int(b_sess_all),
+            "today_fatal": int(today_fatal_total),
+            "baseline_fatal": int(base_fatal_total),
+            "sess_delta_pct": _pct_num(t_sess_all, b_sess_all),
+            "fatal_delta_pct": _pct_num(today_fatal_total, base_fatal_total),
+        }
+
+        # markdown 输出：紧凑表格（前端 reports 页用）
+        cmp_lines: List[str] = [
+            "",
+            f"## 📊 双窗口对照（{data_window_hours}h · 今天 {target_date.isoformat()} vs 上周 {base_date.isoformat()}）",
+            "",
+            "|  | 🍎 iOS | 📱 Android | 合计 |",
+            "|---|---|---|---|",
+        ]
+        ios_p = dual_window_payload["platforms"]["IOS"]
+        and_p = dual_window_payload["platforms"]["ANDROID"]
+        sumr = dual_window_payload["summary"]
+
+        def _cell_delta(today: int, base: int, delta_pct):
+            sign = "+" if (delta_pct is not None and delta_pct >= 0) else ""
+            d_str = f"{sign}{delta_pct:.0f}%" if delta_pct is not None else "—"
+            if base == 0 and today == 0:
+                return f"{_fmt_num(today)} / {_fmt_num(base)} → —"
+            return f"**{_fmt_num(today)}** / {_fmt_num(base)} → **{d_str}**"
+
+        def _fatal_tag(delta_pct):
+            if delta_pct is None:
+                return ""
+            if delta_pct >= 50:
+                return " 🔴"
+            if delta_pct <= -10:
+                return " ✅"
+            return ""
+
         cmp_lines.append(
-            f"- sessions: {_fmt_num(t_sess_all)} vs {_fmt_num(b_sess_all)} → "
-            f"{_delta_str(t_sess_all, b_sess_all)}"
+            f"| sessions (今/上周→Δ) | "
+            f"{_cell_delta(ios_p['today_sessions'], ios_p['baseline_sessions'], ios_p['sess_delta_pct'])} | "
+            f"{_cell_delta(and_p['today_sessions'], and_p['baseline_sessions'], and_p['sess_delta_pct'])} | "
+            f"{_cell_delta(sumr['today_sessions'], sumr['baseline_sessions'], sumr['sess_delta_pct'])} |"
         )
         cmp_lines.append(
-            f"- fatal events: {_fmt_num(today_fatal_total)} vs {_fmt_num(base_fatal_total)} → "
-            f"{_delta_str(today_fatal_total, base_fatal_total)}"
+            f"| fatal events (今/上周→Δ) | "
+            f"{_cell_delta(ios_p['today_fatal'], ios_p['baseline_fatal'], ios_p['fatal_delta_pct'])}{_fatal_tag(ios_p['fatal_delta_pct'])} | "
+            f"{_cell_delta(and_p['today_fatal'], and_p['baseline_fatal'], and_p['fatal_delta_pct'])}{_fatal_tag(and_p['fatal_delta_pct'])} | "
+            f"{_cell_delta(sumr['today_fatal'], sumr['baseline_fatal'], sumr['fatal_delta_pct'])}{_fatal_tag(sumr['fatal_delta_pct'])} |"
         )
         cmp_lines.append("")
         cmp_lines.append(
             "> 💡 fatal Δ 大幅高于 sessions Δ = crash rate 真恶化（不是用户量增加）；反之是质量改善"
         )
         cmp_lines.append("")
+        cmp_lines.append("---")
+        cmp_lines.append("")
         lines.extend(cmp_lines)
+
+    # ── Crash-free 详表（全量 + 主要版本）──────────────────────────
+    # 抓手：让运维分清「大盘」和「真正承载流量的版本」两个口径；
+    # 数据源：Datadog Mobile RUM count(@type:session)，crashed=@session.crash.count:>0（含 ANR/AppHang）。
+    crash_free_detail_payload: Dict[str, Any] = {}
+    have_a_section = bool(total_sessions_by_plat) and bool(distinct_crash_sessions_by_plat)
+    if have_a_section:
+        # A 段：全部版本 per 平台 + 汇总
+        def _cf_stats(total: int, crashed: int) -> Dict[str, Any]:
+            crash_free = max(0, total - crashed)
+            pct = (crash_free / total * 100.0) if total > 0 else 0.0
+            return {
+                "total_sessions": int(total),
+                "crash_free_sessions": int(crash_free),
+                "crashed_sessions": int(crashed),
+                "crash_free_pct": round(pct, 4),
+            }
+
+        all_plats = {}
+        for plat_key in ("IOS", "ANDROID"):
+            t = int(total_sessions_by_plat.get(plat_key, 0) or 0)
+            c = int(distinct_crash_sessions_by_plat.get(plat_key, 0) or 0)
+            if t > 0:
+                all_plats[plat_key] = _cf_stats(t, c)
+        all_total = sum(s["total_sessions"] for s in all_plats.values())
+        all_crashed = sum(s["crashed_sessions"] for s in all_plats.values())
+        all_summary = _cf_stats(all_total, all_crashed) if all_total > 0 else None
+
+        # C 段：主要版本（按用户量最大版本）
+        top_ver_plats: Dict[str, Dict[str, Any]] = {}
+        for plat_key in ("IOS", "ANDROID"):
+            plat_lc = plat_key.lower()
+            ver_info = (top_user_versions_local or {}).get(plat_lc) or {}
+            version = ver_info.get("version") or ""
+            v_total = int((top_ver_total_sessions or {}).get(plat_lc, 0) or 0)
+            v_crashed = int((top_ver_crashed_sessions or {}).get(plat_lc, 0) or 0)
+            plat_total = int(total_sessions_by_plat.get(plat_key, 0) or 0)
+            if not version or v_total <= 0:
+                continue
+            stats = _cf_stats(v_total, v_crashed)
+            stats["version"] = version
+            stats["share_of_platform_pct"] = (
+                round(v_total / plat_total * 100.0, 2) if plat_total > 0 else None
+            )
+            stats["share_of_all_pct"] = (
+                round(v_total / all_total * 100.0, 2) if all_total > 0 else None
+            )
+            top_ver_plats[plat_key] = stats
+        top_ver_total = sum(s["total_sessions"] for s in top_ver_plats.values())
+        top_ver_crashed = sum(s["crashed_sessions"] for s in top_ver_plats.values())
+        top_ver_summary = None
+        if top_ver_total > 0:
+            top_ver_summary = _cf_stats(top_ver_total, top_ver_crashed)
+            top_ver_summary["share_of_all_pct"] = (
+                round(top_ver_total / all_total * 100.0, 2) if all_total > 0 else None
+            )
+
+        crash_free_detail_payload = {
+            "data_window_hours": data_window_hours,
+            "all_versions": {"platforms": all_plats, "summary": all_summary},
+            "top_user_versions": {"platforms": top_ver_plats, "summary": top_ver_summary},
+        }
+
+        # 渲染 markdown 段：紧凑的 markdown 表格（前端 reports 页用）
+        # 飞书卡片：build_daily_card 会拦截本段，直接读 payload.crash_free_detail 用 column_set 渲染
+        def _fmt_n(n: int) -> str:
+            return f"{n:,}"
+
+        def _cf_emoji(pct: float) -> str:
+            if pct >= 99.9:
+                return "🟩"
+            if pct >= 99.5:
+                return "🟨"
+            return "🟥"
+
+        def _num_cell(d, k):
+            v = (d or {}).get(k)
+            return _fmt_n(int(v)) if v is not None else "—"
+
+        def _pct_cell(d):
+            v = (d or {}).get("crash_free_pct")
+            return f"{_cf_emoji(float(v))} **{float(v):.2f}%**" if v is not None else "—"
+
+        ios = all_plats.get("IOS") or {}
+        and_ = all_plats.get("ANDROID") or {}
+        sm = all_summary or {}
+        ios_v = top_ver_plats.get("IOS") or {}
+        and_v = top_ver_plats.get("ANDROID") or {}
+        tvs = top_ver_summary or {}
+
+        cf_lines: List[str] = []
+        cf_lines.append("")
+        cf_lines.append("## 📊 Crash-free 详表（全量 + 主要版本）")
+        cf_lines.append("")
+        cf_lines.append(
+            "> 口径：Crash-free 率 = (会话总数 − 崩溃会话) / 会话总数。"
+            "崩溃会话含 native crash + ANR + App Hang。"
+        )
+        cf_lines.append("")
+
+        # A 段表
+        cf_lines.append("### A) 全部版本（按平台）")
+        cf_lines.append("")
+        cf_lines.append("|  | 🍎 iOS | 📱 Android | 汇总 |")
+        cf_lines.append("|---|---|---|---|")
+        cf_lines.append(
+            f"| 会话总数 | **{_num_cell(ios, 'total_sessions')}** | "
+            f"**{_num_cell(and_, 'total_sessions')}** | **{_num_cell(sm, 'total_sessions')}** |"
+        )
+        cf_lines.append(
+            f"| Crash-free 会话 | {_num_cell(ios, 'crash_free_sessions')} | "
+            f"{_num_cell(and_, 'crash_free_sessions')} | {_num_cell(sm, 'crash_free_sessions')} |"
+        )
+        cf_lines.append(
+            f"| 崩溃会话 | {_num_cell(ios, 'crashed_sessions')} | "
+            f"{_num_cell(and_, 'crashed_sessions')} | {_num_cell(sm, 'crashed_sessions')} |"
+        )
+        cf_lines.append(
+            f"| Crash-free 率 | {_pct_cell(ios)} | {_pct_cell(and_)} | {_pct_cell(sm)} |"
+        )
+        cf_lines.append("")
+
+        # C 段表
+        if top_ver_plats:
+            cf_lines.append("### C) 主要版本（按用户量最大版本）")
+            cf_lines.append("")
+            cf_lines.append("|  | 🍎 iOS | 📱 Android | 汇总 |")
+            cf_lines.append("|---|---|---|---|")
+            cf_lines.append(
+                f"| 版本 | `{ios_v.get('version') or '—'}` | "
+                f"`{and_v.get('version') or '—'}` | — |"
+            )
+            ios_pp = ios_v.get("share_of_platform_pct")
+            and_pp = and_v.get("share_of_platform_pct")
+            cf_lines.append(
+                f"| 占平台总会话 | {f'{ios_pp:.2f}%' if ios_pp is not None else '—'} | "
+                f"{f'{and_pp:.2f}%' if and_pp is not None else '—'} | — |"
+            )
+            ios_ap = ios_v.get("share_of_all_pct")
+            and_ap = and_v.get("share_of_all_pct")
+            sum_ap = tvs.get("share_of_all_pct")
+            cf_lines.append(
+                f"| 占全部会话 | {f'{ios_ap:.2f}%' if ios_ap is not None else '—'} | "
+                f"{f'{and_ap:.2f}%' if and_ap is not None else '—'} | "
+                f"{f'**{sum_ap:.2f}%**' if sum_ap is not None else '—'} |"
+            )
+            cf_lines.append(
+                f"| 会话总数 | **{_num_cell(ios_v, 'total_sessions')}** | "
+                f"**{_num_cell(and_v, 'total_sessions')}** | **{_num_cell(tvs, 'total_sessions')}** |"
+            )
+            cf_lines.append(
+                f"| Crash-free 会话 | {_num_cell(ios_v, 'crash_free_sessions')} | "
+                f"{_num_cell(and_v, 'crash_free_sessions')} | {_num_cell(tvs, 'crash_free_sessions')} |"
+            )
+            cf_lines.append(
+                f"| 崩溃会话 | {_num_cell(ios_v, 'crashed_sessions')} | "
+                f"{_num_cell(and_v, 'crashed_sessions')} | {_num_cell(tvs, 'crashed_sessions')} |"
+            )
+            cf_lines.append(
+                f"| Crash-free 率 | {_pct_cell(ios_v)} | {_pct_cell(and_v)} | {_pct_cell(tvs)} |"
+            )
+            cf_lines.append("")
+
+        cf_lines.append("---")
+        cf_lines.append("")
+        lines.extend(cf_lines)
 
     payload: Dict[str, Any] = {
         "report_date": target_date.isoformat(),
@@ -613,58 +861,104 @@ async def compose_report(
         sessions_main = sessions_total
         version_count = len(weighted_events_by_ver) or len(set(first_versions + last_versions))
 
-        # 渲染本平台标题（§1 数据快照在标题之后）
+        # 渲染本平台标题
         lines.append(f"## {plat_label}")
         lines.append("")
 
-        # § 1 — 数据快照
+        # ── 一句话「需要关注点」摘要（开头置顶，2 秒读懂） ──
         # crash-free 用 Datadog 官方口径（distinct crash sessions / total sessions），含 ANR
         total_sessions = total_sessions_by_plat.get(plat_key, 0)
         distinct_crash = distinct_crash_sessions_by_plat.get(plat_key, 0)
-        crash_free_str = ""
+        cf_str = ""
         if total_sessions > 0 and distinct_crash >= 0:
             cf_rate = max(0.0, min(1.0, 1 - distinct_crash / total_sessions))
-            crash_free_str = (
-                f" · **Crash-free {cf_rate * 100:.2f}%** "
-                f"({distinct_crash:,} crash / {total_sessions:,} sessions)"
-            )
-        lines.append("### 📊 数据快照")
+            cf_str = f" · Crash-free **{cf_rate * 100:.2f}%**"
+        # 先算关注计数（surges/news/drops/top）和 top1 占比
+        # 必须先扫一遍 fatal_rows 拿到 surges/drops/top 才能写摘要——所以摘要在 fatality 渲染前**预算一遍**
+        attn_summary_parts: List[str] = []
+        attn_new_n = attn_surge_n = attn_drop_n = 0
+        plat_top1_share = None
+        fatal_rows_pre = plat_fatality_buckets.get("fatal", [])
+        if fatal_rows_pre:
+            for snap, issue in fatal_rows_pre:
+                ev = int(snap.events_count or 0)
+                yt = baseline_events.get(snap.datadog_issue_id)
+                d = _delta_pct(ev, yt)
+                is_new = bool(snap.is_new_in_version)
+                small = (yt is None or yt < _baseline_min_for_pct())
+                if is_new:
+                    attn_new_n += 1
+                elif (d is not None and d >= surge_threshold
+                      and ev >= attention_min_events and not small):
+                    attn_surge_n += 1
+                elif (d is not None and d <= drop_threshold
+                      and (ev >= attention_min_events or (yt or 0) >= attention_min_events)):
+                    attn_drop_n += 1
+            top_one = max(fatal_rows_pre, key=lambda r: int(r[0].events_count or 0))
+            top_ev = int(top_one[0].events_count or 0)
+            fatal_total_ev = sum(int(s.events_count or 0) for s, _ in fatal_rows_pre)
+            if fatal_total_ev > 0:
+                plat_top1_share = round(top_ev / fatal_total_ev * 100, 0)
+        if attn_new_n + attn_surge_n + attn_drop_n == 0:
+            attn_status = "✅ **平稳**（无新增/突增/下降）"
+        else:
+            chips = []
+            if attn_new_n:
+                chips.append(f"🆕 **{attn_new_n}** 新增")
+            if attn_surge_n:
+                chips.append(f"📈 **{attn_surge_n}** 突增")
+            if attn_drop_n:
+                chips.append(f"📉 **{attn_drop_n}** 下降")
+            attn_status = "🔴 " + " · ".join(chips)
+        top1_str = f" · Top1 占 **{int(plat_top1_share)}%**" if plat_top1_share is not None else ""
         lines.append(
-            f"- 事件总数 **{events_total:,}** · 影响 **{sessions_total:,}** sessions（issue 累加）· "
-            f"综合影响分 **{impact_total:,.1f}** · {issue_count} 个 issue{crash_free_str}"
+            f"> 💬 **{plat_label}**：{events_total:,} fatal events / {sessions_total:,} sessions{cf_str}"
+            f" · 关注 {attn_status}{top1_str}"
         )
-        # 错误事件类型分布（仅供参考，按 error 事件计数；非 session 计数）
+        lines.append("")
+
+        # § 1 — 数据快照（紧凑表格：版本分布 + 错误事件分布）
+        lines.append("### 📊 数据快照")
+        lines.append("")
+        snapshot_rows: List[str] = []
+        snapshot_rows.append("| 指标 | 值 |")
+        snapshot_rows.append("|---|---|")
+        snapshot_rows.append(f"| 事件总数 / sessions / issue | **{events_total:,}** / **{sessions_total:,}** / **{issue_count}** |")
+        snapshot_rows.append(f"| 综合影响分 | **{impact_total:,.1f}** |")
+        if total_sessions > 0 and distinct_crash >= 0:
+            cf_rate = max(0.0, min(1.0, 1 - distinct_crash / total_sessions))
+            snapshot_rows.append(
+                f"| Crash-free 率 | **{cf_rate * 100:.2f}%** ({distinct_crash:,} crash / {total_sessions:,} sessions) |"
+            )
         bd = crash_breakdown_by_plat.get(plat_key) or {}
         if bd:
             parts: List[str] = []
             if bd.get("native_crash"):
-                parts.append(f"Native crash **{bd['native_crash']:,}**")
+                parts.append(f"Native crash {bd['native_crash']:,}")
             if bd.get("anr"):
-                parts.append(f"ANR **{bd['anr']:,}**")
+                parts.append(f"ANR {bd['anr']:,}")
             if bd.get("app_hang"):
-                parts.append(f"App Hang **{bd['app_hang']:,}**")
+                parts.append(f"App Hang {bd['app_hang']:,}")
             if parts:
-                lines.append(f"- 错误事件分布（24h）：{' · '.join(parts)}")
-        # 版本范围（基于 first_seen / last_seen）
+                snapshot_rows.append(f"| 错误事件分布 | {' · '.join(parts)} |")
         if oldest_first == newest_last:
             range_str = f"`{newest_last}`"
         else:
             range_str = f"`{oldest_first}` → `{newest_last}`"
-        lines.append(f"- 版本跨度 {range_str}")
-
-        # 真实主力版本（基于 RUM Events 加权聚合）
+        snapshot_rows.append(f"| 版本跨度 | {range_str} |")
         if top3_vers:
             top3_str = " · ".join(
                 f"**{v}** {(w / events_total * 100):.1f}%"
                 for v, w in top3_vers if events_total > 0
             )
-            lines.append(
-                f"- 主力版本（按 events 加权）{top3_str} _（基于 {issues_with_dist}/{issues_total} 个 issue 的 RUM 真实采样）_"
+            snapshot_rows.append(
+                f"| 主力版本（events 加权） | {top3_str} _(基于 {issues_with_dist}/{issues_total} issue 采样)_ |"
             )
         else:
-            lines.append(
-                f"- _⚠️ 主力版本数据待补：{issues_total} 个 issue 均无 RUM 分布采样（首次 AI 分析后自动写入 top_app_version）_"
+            snapshot_rows.append(
+                f"| 主力版本 | _⚠️ {issues_total} 个 issue 均无 RUM 分布采样_ |"
             )
+        lines.extend(snapshot_rows)
         lines.append("")
 
         # ── §2-4 按 fatality 分桶渲染 ──────────────────
@@ -755,63 +1049,79 @@ async def compose_report(
                 reverse=True,
             )[:top_n]
 
-            # 渲染本 fatality 段
+            # 渲染本 fatality 段——合并 新增/突增 + Top + 下降 到单张表，类型列 🆕/📈/🔥/📉
             f_events = sum(int(s.events_count or 0) for s, _ in f_rows)
             lines.append(f"### {flabel} — {f_events:,} events / {len(f_rows)} issue")
             lines.append("")
 
-            # § 2 渲染
-            lines.append(
-                f"#### 🆕 新增 / 突增（>= +{int(surge_threshold * 100)}% vs 上周同时段，"
-                f"突增需 events ≥ {attention_min_events}）"
-            )
-            if not surges:
-                lines.append("- _无_")
-            else:
-                for snap, issue, delta in surges[:5]:
-                    tags: List[str] = []
-                    if snap.is_new_in_version:
-                        tags.append("新版首现")
-                    if snap.is_regression:
-                        tags.append("回归")
-                    tag_str = ", ".join(tags)
-                    lines.append(_line_for_issue(
-                        snap.datadog_issue_id,
-                        issue.title or "",
-                        int(snap.events_count or 0),
-                        delta,
-                        extra=tag_str,
-                        is_new_in_version=bool(snap.is_new_in_version),
-                    ))
-            lines.append("")
+            # 组装统一表：合并 surges (含 🆕/📈) + drops (📉) + top5 (🔥) 且去重
+            # 类型优先级：🆕新 > 📈突增 > 🔥Top > 📉下降；同 issue 只出现一次取最高级
+            row_by_id: Dict[str, Dict[str, Any]] = {}
 
-            # § 3 渲染
-            lines.append(f"#### 📉 下降（<= {int(drop_threshold * 100)}% vs 上周同时段）")
-            if not drops:
-                lines.append("- _无_")
-            else:
-                for snap, issue, delta in drops[:5]:
-                    lines.append(_line_for_issue(
-                        snap.datadog_issue_id,
-                        issue.title or "",
-                        int(snap.events_count or 0),
-                        delta,
-                    ))
-            lines.append("")
+            def _push(snap, issue, delta, kind: str, rank: Optional[int] = None,
+                      tags_extra: Optional[List[str]] = None):
+                iid = snap.datadog_issue_id
+                if iid in row_by_id:
+                    return  # 已有更高级类型
+                row_by_id[iid] = {
+                    "snap": snap, "issue": issue, "delta": delta,
+                    "kind": kind, "rank": rank,
+                    "tags": tags_extra or [],
+                }
 
-            # § 4 渲染
-            lines.append(f"#### 🔥 Top {len(top5)}")
+            # 🆕 新版首现 + 📈 突增（同一池）
+            for snap, issue, delta in surges[:5]:
+                if snap.is_new_in_version:
+                    kind = "🆕"
+                    tags = ["新版首现"]
+                else:
+                    kind = "📈"
+                    tags = ["回归"] if snap.is_regression else []
+                _push(snap, issue, delta, kind, tags_extra=tags)
+            # 🔥 Top N
             for i, (snap, issue) in enumerate(top5, 1):
                 events_today = int(snap.events_count or 0)
                 yt = baseline_events.get(snap.datadog_issue_id)
-                delta = _delta_pct(events_today, yt)
-                lines.append(_line_for_issue(
-                    snap.datadog_issue_id,
-                    f"{i}. {issue.title or ''}",
-                    events_today,
-                    delta,
-                    is_new_in_version=bool(snap.is_new_in_version),
-                ))
+                d = _delta_pct(events_today, yt)
+                _push(snap, issue, d, "🔥", rank=i)
+            # 📉 下降（少量收尾，最多 3 行）
+            for snap, issue, delta in drops[:3]:
+                _push(snap, issue, delta, "📉")
+
+            # 渲染表
+            lines.append("| 类型 | Issue | events | Δ vs 上周 | 标签 |")
+            lines.append("|---|---|---:|---:|---|")
+            # 排序：先按 kind 优先级，再按 events desc
+            kind_priority = {"🆕": 0, "📈": 1, "🔥": 2, "📉": 3}
+            ordered = sorted(
+                row_by_id.values(),
+                key=lambda r: (
+                    kind_priority.get(r["kind"], 9),
+                    r.get("rank") or 999,
+                    -int(r["snap"].events_count or 0),
+                ),
+            )
+            for r in ordered:
+                snap = r["snap"]
+                issue = r["issue"]
+                ev = int(snap.events_count or 0)
+                d = r["delta"]
+                if d is None:
+                    d_str = "🆕新版" if snap.is_new_in_version else "—"
+                else:
+                    sign = "+" if d >= 0 else ""
+                    d_str = f"{sign}{d * 100:.0f}%"
+                title_short = (issue.title or "")[:55]
+                url = _frontend_issue_url(snap.datadog_issue_id)
+                kind_label = r["kind"]
+                if r["kind"] == "🔥" and r.get("rank"):
+                    kind_label = f"🔥{r['rank']}"
+                tags_str = ", ".join(r["tags"]) if r["tags"] else "—"
+                lines.append(
+                    f"| {kind_label} | [{title_short}]({url}) | **{ev:,}** | {d_str} | {tags_str} |"
+                )
+            if not ordered:
+                lines.append("| — | _无_ | — | — | — |")
             lines.append("")
 
             plat_new_total += sum(1 for s, _, d in surges if s.is_new_in_version)
@@ -928,10 +1238,118 @@ async def compose_report(
     payload["regression_count"] = total_surge
     payload["surge_count"] = total_surge
     payload["top_n"] = total_top
+    if crash_free_detail_payload:
+        payload["crash_free_detail"] = crash_free_detail_payload
+    if dual_window_payload:
+        payload["dual_window"] = dual_window_payload
     # 关注点 issue id 集合（供 send_daily_report 触发 auto-analyze → auto-PR）
     # C 路线扩展：fatal news/surges + Top10 fatal + Top10 non_fatal + 全部新增（含 non_fatal）
     auto_pr_candidates.update(item["issue_id"] for item in (fatal_news + fatal_surges))
     payload["attention_issue_ids"] = sorted(auto_pr_candidates)
+
+    # ── TL;DR：一眼速读卡片头部 ──────────────────────────────
+    # 抓手：把"今天有没有事、看哪个"压缩到 3 行，FYI 内容折叠到下方。
+    def _pct_or_none(t: int, b: int) -> Optional[float]:
+        if b == 0:
+            return None
+        return (t - b) / b * 100.0
+
+    def _status_from_pct(pct: Optional[float], has_new: bool) -> str:
+        # red: fatal ≥ +50% 或本平台有新增 issue
+        # yellow: +10%~+50% 上涨
+        # green_improve: ≤ -10% 改善
+        # green: 持平
+        # unknown: 无基线
+        if has_new:
+            return "red"
+        if pct is None:
+            return "unknown"
+        if pct >= 50:
+            return "red"
+        if pct >= 10:
+            return "yellow"
+        if pct <= -10:
+            return "green_improve"
+        return "green"
+
+    tldr_platforms: List[Dict[str, Any]] = []
+    for plat_key, plat_label in PLATFORM_DISPLAY:
+        t_fatal = int(today_fatal_by_plat.get(plat_key, 0))
+        b_fatal = int(base_fatal_by_plat.get(plat_key, 0))
+        delta_pct = _pct_or_none(t_fatal, b_fatal)
+        new_count = sum(
+            1 for it in fatal_news if it.get("platform") == plat_label
+        )
+        surge_count = sum(
+            1 for it in fatal_surges if it.get("platform") == plat_label
+        )
+        tldr_platforms.append({
+            "platform_key": plat_key,
+            "platform_label": plat_label,
+            "today_fatal": t_fatal,
+            "baseline_fatal": b_fatal,
+            "delta_pct": delta_pct,
+            "new_count": new_count,
+            "surge_count": surge_count,
+            "status": _status_from_pct(delta_pct, has_new=new_count > 0),
+        })
+
+    # 必看 issue：fatal_news 优先（新崩溃更紧急），其次 fatal_surges 按 events×|Δ| 排序
+    must_see: Optional[Dict[str, Any]] = None
+    if fatal_news:
+        top = max(fatal_news, key=lambda x: int(x.get("events") or 0))
+        must_see = {
+            "issue_id": top["issue_id"],
+            "title": (top.get("title") or "")[:80],
+            "platform": top.get("platform", ""),
+            "events": int(top.get("events") or 0),
+            "delta_pct": (float(top["delta"]) * 100.0) if top.get("delta") is not None else None,
+            "url": _frontend_issue_url(top["issue_id"]),
+            "is_new": True,
+        }
+    elif fatal_surges:
+        def _impact(it: Dict[str, Any]) -> float:
+            ev = float(it.get("events") or 0)
+            d = abs(float(it.get("delta") or 0.0))
+            return ev * (1.0 + d)
+        top = max(fatal_surges, key=_impact)
+        must_see = {
+            "issue_id": top["issue_id"],
+            "title": (top.get("title") or "")[:80],
+            "platform": top.get("platform", ""),
+            "events": int(top.get("events") or 0),
+            "delta_pct": (float(top["delta"]) * 100.0) if top.get("delta") is not None else None,
+            "url": _frontend_issue_url(top["issue_id"]),
+            "is_new": False,
+        }
+
+    # 其他无异常 issue 数 = today_rows 总数 - 已在关注点列表中的
+    attn_ids = {
+        it["issue_id"]
+        for it in (fatal_news + fatal_surges + fatal_drops)
+    }
+    other_count = sum(
+        1 for snap, _ in today_rows
+        if snap.datadog_issue_id not in attn_ids
+    )
+
+    # severity 顶部色：任一平台 red 或有新增 → red；任一 yellow → yellow；否则 green
+    if any(p["status"] == "red" for p in tldr_platforms) or fatal_news:
+        tldr_severity = "red"
+    elif any(p["status"] == "yellow" for p in tldr_platforms):
+        tldr_severity = "yellow"
+    else:
+        tldr_severity = "green"
+
+    payload["tldr"] = {
+        "severity": tldr_severity,
+        "platforms": tldr_platforms,
+        "must_see": must_see,
+        "other_count": other_count,
+        "anomaly_total": len(fatal_news) + len(fatal_surges) + len(fatal_drops),
+        "fatal_today_total": today_fatal_total,
+        "fatal_baseline_total": base_fatal_total,
+    }
 
     text = "\n".join(lines).rstrip() + "\n"
     return text, payload

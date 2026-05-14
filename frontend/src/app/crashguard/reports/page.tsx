@@ -8,6 +8,7 @@ import {
   fetchCrashReportHistory,
   fetchCrashReportDetail,
   fetchCrashHourlyAlertDetail,
+  formatSGT,
   type CrashReportHistoryItem,
   type CrashWindowHours,
 } from "@/lib/api";
@@ -199,7 +200,7 @@ function CrashReportsHistoryInner() {
     const isMorning = it.report_type === "morning";
     const icon = isAlert ? "🚨" : isMorning ? "🌅" : "🌇";
     const title = isAlert
-      ? `${(it.hour_utc || "").replace("T", " ").slice(0, 16)} UTC · ${t("实时告警")}`
+      ? `${formatSGT(it.hour_utc)} SGT · ${t("实时告警")}`
       : `${it.report_date} · ${isMorning ? t("日报（昨日 24h）") : t("日内增量（vs 上周同段）")}`;
     const total = it.attention_total;
     const hasAnomaly = total > 0;

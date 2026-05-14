@@ -685,7 +685,7 @@ const EN: Record<string, string> = {
   "近 50 次": "in last 50",
   "查看历史": "History",
   "最近 50 次心跳": "Last 50 heartbeats",
-  "时间 (UTC)": "Time (UTC)",
+  "时间 (SGT)": "Time (SGT)",
   "摘要": "Summary",
   "暂无心跳记录": "No heartbeats yet",
   "立即触发": "Run now",
