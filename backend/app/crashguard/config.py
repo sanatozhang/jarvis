@@ -205,9 +205,11 @@ class CrashguardSettings(BaseSettings):
     # 直接复用——避免 warmup/cron/batch 多入口重复烧 token。UI 重新分析按钮始终强制重跑。
     analysis_dedup_hours: int = 6
     # AI 分析定时小步分批：避免一次跑 20 个被杀。每 N 分钟 tick 一次，每次最多 K 个。
-    # 默认每 5 分钟 1 个 → 20 个 issue 约 100 分钟跑完；崩溃只损失当前 1 个，下 tick 自动续跑。
+    # 默认每 5 分钟 2 个 → Top 20 backlog 约 50 分钟跑完（之前 1 个/tick 要 100min）；
+    # 配套 scheduler._analyze_running 重入保护，前 tick 没跑完不会同时启第二批。
+    # 上调依据：今日 funnel 显示 12/20 卡 no_analysis，是最大瓶颈。
     analyze_cron: str = "*/5 * * * *"
-    analyze_max_per_tick: int = 1
+    analyze_max_per_tick: int = 2
 
     # === 3h 告警（SHoW-3h 同周同 3 小时块对比）===
     # 每 3 小时拉 Datadog，对比上周同 weekday 同 3h 块 events，超过阈值或新增 issue 发飞书告警。

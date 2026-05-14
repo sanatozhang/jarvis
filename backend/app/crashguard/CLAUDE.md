@@ -121,7 +121,7 @@ python -m scripts.check_crash_decoupling # DB 外键自检
 | # | 任务（job_name） | Cron 默认 | 触发条件 | 关键阈值 | kill switch |
 |---|------|----------|---------|----------|-------------|
 | 1 | `core_metric` 核心指标告警 | `*/10 * * * *` | 当前 10min crash-free % vs 前 1h 加权均值 | `change_threshold_pp=0.3` pp / `min_sessions=100` / `platforms="android,ios"` | `core_metric_enabled` |
-| 2 | `analyze_tick` AI 分析 tick | `*/5 * * * *` | 今日 attention pool 未 success 的 issue | `analyze_max_per_tick=1` / `analysis_dedup_hours=6` | `enabled` |
+| 2 | `analyze_tick` AI 分析 tick | `*/5 * * * *` | 今日 attention pool 未 success 的 issue | `analyze_max_per_tick=2` / `analysis_dedup_hours=6` / `_analyze_running` 重入保护 | `enabled` |
 | 3 | `hourly_alert` 小时级告警 (SHoW-3h) | `5 */3 * * *` | 过去 3h fatal events vs 上周同 3h 块 | `growth_threshold_pct=10`%/`min_baseline_events=20`/`min_sessions=60`/`max_items=10` | `hourly_alert_enabled` |
 | 4 | `pr_sync` PR 状态同步 | `*/30 * * * *` | DB 内 draft/open PR 拉 GitHub 现态 | 无阈值 | `enabled` |
 | 5 | `pipeline` 数据 pipeline | `0 */4 * * *` | 全量拉 Datadog → snapshot + issue upsert + auto-analyze + auto-PR | `datadog_window_hours=24`/`pr_dedup_days=30`/`feasibility_pr_threshold=0.7` | `enabled` |

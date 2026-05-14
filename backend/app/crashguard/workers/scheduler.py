@@ -24,6 +24,7 @@ _TICK_INTERVAL_SEC = 60
 _last_fired: dict[str, str] = {}  # report_type → "YYYY-MM-DD HH:MM"
 _pr_sync_last_fired: str = ""    # "YYYY-MM-DD HH:MM" 防同分钟重跑
 _analyze_last_fired: str = ""    # 定时分析 tick 防同分钟重跑
+_analyze_running: bool = False   # 上一 tick 还在跑就跳——max_per_tick>1 防 5min cron 互相踩
 _hourly_alert_last_fired: str = ""  # 进程级幂等；DB UNIQUE(hour_utc) 兜多机
 _core_metric_last_fired: str = ""   # 10min tick 进程级幂等；DB UNIQUE(window_start) 兜多机
 _job_health_last_fired: str = ""    # 兜底告警 tick 进程级幂等
@@ -170,23 +171,32 @@ async def _tick_once() -> None:
             logger.exception("crashguard top_crash_auto_pr tick failed")
 
     # AI 分析定时小步分批（独立 cron，默认 */5）
-    global _analyze_last_fired
+    global _analyze_last_fired, _analyze_running
     analyze_cron = getattr(s, "analyze_cron", "") or ""
     if analyze_cron and _analyze_last_fired != tag and _cron_matches(analyze_cron, now):
         _analyze_last_fired = tag  # 先打 tag 防异常重试
         max_per_tick = int(getattr(s, "analyze_max_per_tick", 1) or 1)
-        try:
-            async with record_heartbeat("analyze_tick") as hb:
-                res = await _run_analyze_tick(max_per_tick=max_per_tick)
-                hb.set_summary(res)
-                if res.get("picked", 0) == 0:
-                    hb.status = "skipped"
-                logger.info(
-                    "crashguard analyze tick fired: picked=%d completed=%d remaining=%d",
-                    res.get("picked", 0), res.get("completed", 0), res.get("remaining", 0),
-                )
-        except Exception:
-            logger.exception("crashguard analyze tick failed")
+        # 重入保护：max_per_tick>1 时，3 个 issue × ~90s = 4.5min，可能跨过下个 5min
+        # tick。如果上一 tick 还在跑，本 tick 直接 skip——避免一队 issue 被分两批
+        # 同时争 agent/git push 资源。
+        if _analyze_running:
+            logger.info("analyze_tick skipped: previous tick still running")
+        else:
+            _analyze_running = True
+            try:
+                async with record_heartbeat("analyze_tick") as hb:
+                    res = await _run_analyze_tick(max_per_tick=max_per_tick)
+                    hb.set_summary(res)
+                    if res.get("picked", 0) == 0:
+                        hb.status = "skipped"
+                    logger.info(
+                        "crashguard analyze tick fired: picked=%d completed=%d remaining=%d",
+                        res.get("picked", 0), res.get("completed", 0), res.get("remaining", 0),
+                    )
+            except Exception:
+                logger.exception("crashguard analyze tick failed")
+            finally:
+                _analyze_running = False
 
     # Hourly alert（SHoW 对比；独立 cron，默认每小时第 5 分钟）
     global _hourly_alert_last_fired
