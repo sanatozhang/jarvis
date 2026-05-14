@@ -286,8 +286,23 @@ def _default_base_ref(repo_path: str) -> str:
     """解析远端默认分支，避免把所有移动端仓库都硬编码成 origin/main。
 
     远端名通过 _resolve_remote_name 自适应（102 Plaud 仓库 remote 叫 'merge'）。
+
+    ⚠️ PR #1004 教训：之前先信 `origin/HEAD` symbolic ref，但 102 服务器上
+    `origin/HEAD` 被指错到 `origin/feature/merge_flavor`（不是 main）→ Gate#13
+    用错误 base 对比 → 误放行 pubspec bump。
+    治本：优先认 canonical 默认 `main` / `master`，`origin/HEAD` 仅作最后兜底。
     """
     remote = _resolve_remote_name(repo_path)
+    # 优先：直接 verify 标准默认分支（不被 origin/HEAD 误配置带偏）
+    for canonical in (f"{remote}/main", f"{remote}/master"):
+        rc, _, _ = _run_git(
+            ["git", "rev-parse", "--verify", canonical],
+            repo_path,
+            timeout=15,
+        )
+        if rc == 0:
+            return canonical
+    # 兜底：使用 remote/HEAD（symbolic ref）
     rc, stdout, _ = _run_git(
         ["git", "rev-parse", "--abbrev-ref", f"{remote}/HEAD"],
         repo_path,
@@ -296,15 +311,6 @@ def _default_base_ref(repo_path: str) -> str:
     ref = stdout.strip()
     if rc == 0 and ref.startswith(f"{remote}/") and ref != f"{remote}/HEAD":
         return ref
-
-    for fallback in (f"{remote}/main", f"{remote}/master"):
-        rc, _, _ = _run_git(
-            ["git", "rev-parse", "--verify", fallback],
-            repo_path,
-            timeout=15,
-        )
-        if rc == 0:
-            return fallback
     return f"{remote}/main"
 
 
@@ -1602,9 +1608,12 @@ async def draft_pr_for_analysis(
         # Gate#13：版本号字段保护——pubspec/build.gradle/Info.plist 一律禁碰
         # ⚠️ diff_text 只覆盖未 commit 工作区；agent 用 Bash(git:*) 自己 commit pubspec
         # 可绕过（PR #994/#995 教训：agent 直接 git commit "version: 3.2.0+510"）。
-        # 治本：Gate#13 用 base_ref...HEAD 全量分支 diff，覆盖 agent 自有 commit。
+        # 治本：Gate#13 用 base_ref..HEAD 全量分支 diff，覆盖 agent 自有 commit。
+        # ⚠️ PR #1004 教训：用 `base_ref...HEAD`（三点）需要 merge-base，local main
+        # 老旧时 fatal: no merge base → 返回空 → fallback worktree → 漏检。
+        # 改用两点 diff（A HEAD）直接逐文件对比，不依赖 merge-base，永远 work。
         rc_bd, branch_diff_text, _ = _run_git(
-            ["git", "diff", f"{base_ref}...HEAD"],
+            ["git", "diff", base_ref, "HEAD"],
             repo_path, timeout=30,
         )
         gate13_input = branch_diff_text if (rc_bd == 0 and branch_diff_text) else diff_text
