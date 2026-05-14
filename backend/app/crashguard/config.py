@@ -241,6 +241,19 @@ class CrashguardSettings(BaseSettings):
     # 默认 12h：覆盖早晚报+下一 hourly cron，防同 issue 跨告警类型反复点名。
     hourly_alert_dedup_hours: int = 12
 
+    # ===== 通道 1：新版本桶（C3）=====
+    hourly_alert_new_version_enabled: bool = True
+    hourly_alert_new_version_shadow_mode: bool = True       # Phase 0 影子模式，仅写 audit log 不发卡
+    hourly_alert_new_version_min_events: int = 30           # events 地板
+    hourly_alert_new_version_user_rate_pct: float = 0.005   # 0.5% 用户占比
+
+    # ===== 通道 3：全局新 crash 兜底（D3）=====
+    hourly_alert_new_crash_enabled: bool = True
+    hourly_alert_new_crash_shadow_mode: bool = True
+    hourly_alert_new_crash_window_hours: int = 24           # 累计窗口
+    hourly_alert_new_crash_min_events: int = 150            # events 地板
+    hourly_alert_new_crash_min_sessions: int = 300          # sessions 地板
+
     # === 核心指标报警（10 分钟粒度 crash-free sessions % 监控）===
     # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增/新增；核心指标补的是
     # "整体健康度"颗粒度——即使没有单 issue 飙升，整体 crash-free 跌穿基线也要报警。
@@ -547,6 +560,28 @@ def _yaml_overrides() -> Dict[str, Any]:
                 flat["hourly_alert_min_events_absolute"] = int(ha["min_events_absolute"])
             if "dedup_hours" in ha:
                 flat["hourly_alert_dedup_hours"] = int(ha["dedup_hours"])
+            # 通道 1 / 3 配置
+            new_version = (ha or {}).get("new_version") or {}
+            if "enabled" in new_version:
+                flat["hourly_alert_new_version_enabled"] = bool(new_version["enabled"])
+            if "shadow_mode" in new_version:
+                flat["hourly_alert_new_version_shadow_mode"] = bool(new_version["shadow_mode"])
+            if "min_events" in new_version:
+                flat["hourly_alert_new_version_min_events"] = int(new_version["min_events"])
+            if "user_rate_pct" in new_version:
+                flat["hourly_alert_new_version_user_rate_pct"] = float(new_version["user_rate_pct"])
+
+            new_crash = (ha or {}).get("new_crash") or {}
+            if "enabled" in new_crash:
+                flat["hourly_alert_new_crash_enabled"] = bool(new_crash["enabled"])
+            if "shadow_mode" in new_crash:
+                flat["hourly_alert_new_crash_shadow_mode"] = bool(new_crash["shadow_mode"])
+            if "window_hours" in new_crash:
+                flat["hourly_alert_new_crash_window_hours"] = int(new_crash["window_hours"])
+            if "min_events" in new_crash:
+                flat["hourly_alert_new_crash_min_events"] = int(new_crash["min_events"])
+            if "min_sessions" in new_crash:
+                flat["hourly_alert_new_crash_min_sessions"] = int(new_crash["min_sessions"])
     if "core_metric" in cfg:
         cm = cfg["core_metric"] or {}
         if isinstance(cm, dict):

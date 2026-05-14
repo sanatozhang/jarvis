@@ -35,6 +35,8 @@ from app.crashguard.models import (
     CrashHourlySnapshot,
     CrashIssue,
 )
+from app.crashguard.services.datadog_cache import DatadogCache
+from app.crashguard.services.version_classifier import classify_version
 from app.db.database import get_session
 
 logger = logging.getLogger("crashguard.hourly_alerter")
@@ -76,6 +78,36 @@ async def _fetch_hourly_events(
         tracks=s.datadog_tracks,
         query=s.datadog_query_fatal or s.datadog_query or "*",
         use_cache=False,  # 告警走实时口径，不走缓存
+    )
+
+
+async def _fetch_24h_events(now: datetime) -> List[Dict[str, Any]]:
+    """拉过去 24h 累计 events for 通道 3 (新 crash 兜底)。走 DatadogCache TTL 6h。
+
+    复用 _fetch_hourly_events 同款 DatadogClient.list_issues_for_window，仅窗口改 24h。
+    """
+    async def _do_fetch() -> List[Dict[str, Any]]:
+        s = get_crashguard_settings()
+        if not s.datadog_api_key:
+            return []
+        from app.crashguard.services.datadog_client import DatadogClient
+        client = DatadogClient(
+            api_key=s.datadog_api_key, app_key=s.datadog_app_key, site=s.datadog_site,
+        )
+        window_end = now
+        window_start = now - timedelta(hours=24)
+        return await client.list_issues_for_window(
+            start_ms=int(window_start.timestamp() * 1000),
+            end_ms=int(window_end.timestamp() * 1000),
+            tracks=s.datadog_tracks,
+            query=s.datadog_query_fatal or s.datadog_query or "*",
+            use_cache=False,
+        )
+
+    return await DatadogCache.get_or_fetch(
+        key="hourly_alert:new_crash:24h",
+        ttl_seconds=6 * 3600,
+        fetch_fn=_do_fetch,
     )
 
 
@@ -215,13 +247,33 @@ async def run_hourly_alert_tick(
         logger.exception("hourly_alerter: datadog fetch failed")
         return {"ok": False, "error": f"datadog: {exc}", "hour_utc": now_hour.isoformat()}
 
-    if not raw_issues:
+    if not raw_issues and not s.hourly_alert_new_crash_enabled:
         logger.info("hourly_alerter: no events in window %s ~ %s", window_start, window_end)
         return {"ok": True, "alerted": False, "reason": "no_events",
                 "hour_utc": now_hour.isoformat()}
 
+    # === 获取各平台「用户量最大版本」（通道 1 分桶依据）===
+    top_versions: Dict[str, Any] = {}
+    if s.hourly_alert_new_version_enabled:
+        try:
+            from app.crashguard.services.datadog_client import DatadogClient
+            _ddclient = DatadogClient(
+                api_key=s.datadog_api_key,
+                app_key=s.datadog_app_key,
+                site=s.datadog_site,
+            )
+            top_versions = await DatadogCache.get_or_fetch(
+                "top_user_version:24",
+                ttl_seconds=6 * 3600,
+                fetch_fn=lambda: _ddclient.top_user_version_by_platform(window_hours=24),
+            )
+        except Exception:
+            logger.exception("hourly_alerter: top_user_version fetch failed, fallback to {}")
+            top_versions = {}
+
     new_items: List[Dict[str, Any]] = []
     surge_items: List[Dict[str, Any]] = []
+    new_version_items: List[Dict[str, Any]] = []
     new_window_cutoff = now_hour - timedelta(days=s.hourly_alert_new_window_days)
     threshold_ratio = s.hourly_alert_growth_threshold_pct / 100.0
     min_baseline = s.hourly_alert_min_baseline_events
@@ -271,6 +323,29 @@ async def run_hourly_alert_tick(
             )).scalars().first()
             title = (issue_row.title if issue_row else "") or (attrs.get("title") or "") or issue_id
             platform = (issue_row.platform if issue_row else "") or (attrs.get("platform") or "")
+
+            # === 通道 1：版本分桶 ===
+            issue_ver = attrs.get("version") or (issue_row.last_seen_version if issue_row else "") or ""
+            bucket = classify_version(issue_ver, platform.lower(), top_versions)
+            if bucket == "new" and s.hourly_alert_new_version_enabled:
+                denom = (top_versions.get(platform.lower()) or {}).get("users") or 0
+                user_rate = events_h / denom if denom > 0 else None
+                if (
+                    events_h >= s.hourly_alert_new_version_min_events
+                    and user_rate is not None
+                    and user_rate >= s.hourly_alert_new_version_user_rate_pct
+                ):
+                    new_version_items.append({
+                        "issue_id": issue_id,
+                        "title": title[:100],
+                        "platform": platform,
+                        "version": issue_ver,
+                        "first_seen_version": (issue_row.first_seen_version if issue_row else "") or "",
+                        "events_h": events_h,
+                        "sessions_h": sessions_h,
+                        "user_rate_pct": round((user_rate or 0) * 100, 3),
+                    })
+                continue  # 新版本桶：无论是否触发，不走通道 2 逻辑
 
             # 新增判定：DB 不存在 OR first_seen_at 在 N 天内
             first_seen = issue_row.first_seen_at if issue_row else None
@@ -341,11 +416,82 @@ async def run_hourly_alert_tick(
             })
         await session.commit()
 
+    # === 通道 3：全局新 crash 兜底（24h 累计窗口）===
+    new_crash_items: List[Dict[str, Any]] = []
+    if s.hourly_alert_new_crash_enabled:
+        try:
+            raw_24h = await _fetch_24h_events(now)
+            if not isinstance(raw_24h, list):
+                logger.warning("hourly_alerter: new_crash 24h fetch returned non-list, skip")
+                raw_24h = []
+        except Exception:
+            logger.exception("hourly_alerter: new_crash 24h fetch failed")
+            raw_24h = []
+
+        new_crash_cutoff = now_hour - timedelta(days=s.hourly_alert_new_window_days)
+        new_crash_min_events = s.hourly_alert_new_crash_min_events
+        new_crash_min_sessions = s.hourly_alert_new_crash_min_sessions
+        async with get_session() as _s24:
+            for raw in raw_24h:
+                iid = raw.get("id") or ""
+                if not iid or iid in dedup_set:
+                    continue
+                attrs = raw.get("attributes") or {}
+                ev24 = int(attrs.get("events_count") or 0)
+                ses24 = int(attrs.get("sessions_affected") or 0)
+                if ev24 < new_crash_min_events:
+                    continue
+                if ses24 < new_crash_min_sessions:
+                    continue
+                # first_seen 判定: DB 中 issue 的 first_seen_at 必须在 N 天内
+                issue_row = (await _s24.execute(
+                    select(CrashIssue).where(CrashIssue.datadog_issue_id == iid)
+                )).scalars().first()
+                first_seen = issue_row.first_seen_at if issue_row else None
+                if first_seen is None or first_seen < new_crash_cutoff:
+                    continue
+                new_crash_items.append({
+                    "issue_id": iid,
+                    "title": ((issue_row.title if issue_row else None) or
+                              attrs.get("title") or iid)[:100],
+                    "platform": (issue_row.platform if issue_row else "") or
+                                (attrs.get("platform") or ""),
+                    "first_seen_version": (issue_row.first_seen_version
+                                           if issue_row else "") or "",
+                    "first_seen_at": first_seen.isoformat() if first_seen else None,
+                    "events_24h": ev24,
+                    "sessions_24h": ses24,
+                })
+
+    # === 多通道合卡 dedup：优先级 new_version > new_crash > new > surge ===
+    _seen_ids: set = set()
+    _dedup = lambda items: [it for it in items
+                             if it["issue_id"] not in _seen_ids
+                             and not _seen_ids.add(it["issue_id"])]
+    new_version_items = _dedup(new_version_items)
+    new_crash_items = _dedup(new_crash_items)
+    new_items = _dedup(new_items)
+    surge_items = _dedup(surge_items)
+
+    # === Shadow mode 判定 ===
+    # 只有 new_version / new_crash 通道有命中，且全部处于 shadow_mode → 跳过飞书发送
+    def _is_shadow_only(items: list, shadow_flag: bool) -> bool:
+        return (not items) or shadow_flag
+
+    has_any_hit = bool(new_version_items or new_crash_items or new_items or surge_items)
+    shadow_mode_active = (
+        has_any_hit
+        and (not new_items)
+        and (not surge_items)
+        and _is_shadow_only(new_version_items, s.hourly_alert_new_version_shadow_mode)
+        and _is_shadow_only(new_crash_items, s.hourly_alert_new_crash_shadow_mode)
+    )
+
     # 按事件量 desc 排序
     new_items.sort(key=lambda x: x["events_h"], reverse=True)
     surge_items.sort(key=lambda x: x["growth_pct"], reverse=True)
 
-    if not new_items and not surge_items:
+    if not new_items and not surge_items and not new_version_items and not new_crash_items:
         return {
             "ok": True, "alerted": False, "reason": "no_anomaly",
             "hour_utc": now_hour.isoformat(),
@@ -354,7 +500,8 @@ async def run_hourly_alert_tick(
 
     # === 先记账拿 alert_id：卡片 URL 要用 ID 做深链跳转 ===
     payload = {
-        "new": new_items, "surge": surge_items,
+        "new": new_items, "surge": surge_items, "new_version": new_version_items,
+        "new_crash": new_crash_items,
         "threshold_pct": s.hourly_alert_growth_threshold_pct,
         "min_sessions": min_sessions,
         "window_start": window_start.isoformat(),
@@ -376,12 +523,27 @@ async def run_hourly_alert_tick(
     except Exception:
         logger.exception("hourly_alerter: alert row insert failed (likely race; ignored)")
 
+    # === Shadow mode 短路：仅 shadow 通道有命中 → 跳过飞书，audit log 已写 ===
+    if shadow_mode_active:
+        logger.info(
+            "hourly_alerter: shadow_mode active (only new_version/new_crash channels in shadow), skip feishu send"
+        )
+        return {
+            "ok": True, "alerted": False, "shadow": True,
+            "new": len(new_items), "surge": len(surge_items),
+            "new_version": len(new_version_items),
+            "new_crash": len(new_crash_items),
+            "hour_utc": now_hour.isoformat(),
+        }
+
     # === 构造并发送 feishu 卡片（URL 带 alert_id，点击直接打开 reports 页对应详情）===
     from app.crashguard.services.feishu_card import build_hourly_alert_card
     card = build_hourly_alert_card(
         hour_utc=now_hour,
         new_items=new_items[: s.hourly_alert_max_items],
         surge_items=surge_items[: s.hourly_alert_max_items],
+        new_version_items=new_version_items[: s.hourly_alert_max_items],
+        new_crash_items=new_crash_items[: s.hourly_alert_max_items],
         threshold_pct=s.hourly_alert_growth_threshold_pct,
         frontend_base_url=s.frontend_base_url,
         alert_id=alert_id,
@@ -413,11 +575,13 @@ async def run_hourly_alert_tick(
             logger.exception("hourly_alerter: feishu send error")
 
     logger.info(
-        "hourly_alerter fired: hour=%s new=%d surge=%d sent=%s",
-        now_hour.isoformat(), len(new_items), len(surge_items), sent_ok,
+        "hourly_alerter fired: hour=%s new=%d surge=%d nv=%d nc=%d sent=%s",
+        now_hour.isoformat(), len(new_items), len(surge_items), len(new_version_items),
+        len(new_crash_items), sent_ok,
     )
     return {
         "ok": True, "alerted": True, "sent": sent_ok,
-        "new": len(new_items), "surge": len(surge_items),
+        "new": len(new_items), "surge": len(surge_items), "new_version": len(new_version_items),
+        "new_crash": len(new_crash_items),
         "hour_utc": now_hour.isoformat(),
     }

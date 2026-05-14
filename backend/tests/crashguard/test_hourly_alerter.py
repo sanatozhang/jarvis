@@ -662,3 +662,450 @@ async def test_kill_switch_skips_when_disabled(tmp_path, monkeypatch):
     from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
     result = await run_hourly_alert_tick()
     assert result.get("skipped") == "hourly_alert_disabled"
+
+
+# ===== 通道 1：新版本桶（Task 4）=====
+
+@pytest.mark.asyncio
+async def test_channel_1_new_version_triggers_when_user_rate_meets(tmp_path, monkeypatch):
+    """通道 1：新版本桶，events ≥ min_events AND user_rate ≥ threshold → 告警。
+
+    50 events / 10000 users = 0.5%，恰好等于 threshold=0.005 → 应触发（>= 语义）。
+    注意：issue version 3.20.0-700 > top_version 3.19.0-600 → bucket=new
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    # 打开通道 1，关闭影子模式
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.005")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    # 新版本 issue：version > top_version
+    issues = [{
+        "id": "test_new_ver_1",
+        "type": "issue",
+        "attributes": {
+            "events_count": 50,
+            "sessions_affected": 800,
+            "title": "NewVersionCrash",
+            "platform": "android",
+            "version": "3.20.0-700",
+        },
+    }]
+    # top_version = 3.19.0-600，用户量 10000
+    top_version_data = {"android": {"version": "3.19.0-600", "users": 10000}}
+
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(return_value=top_version_data)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result["alerted"] is True
+    assert result["new_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_channel_1_blocked_by_user_rate(tmp_path, monkeypatch):
+    """通道 1：user_rate = 50/1_000_000 = 0.000005 << threshold=0.005 → 不告警。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.005")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    issues = [{
+        "id": "test_new_ver_2",
+        "type": "issue",
+        "attributes": {
+            "events_count": 50,
+            "sessions_affected": 800,
+            "title": "NewVersionCrash",
+            "platform": "android",
+            "version": "3.20.0-700",
+        },
+    }]
+    # 1M 用户 → user_rate = 50/1_000_000 远小于 0.5%
+    top_version_data = {"android": {"version": "3.19.0-600", "users": 1_000_000}}
+
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(return_value=top_version_data)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result.get("new_version", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_channel_1_blocked_by_min_events(tmp_path, monkeypatch):
+    """通道 1：events_count=20 < min_events=30 → 不触发。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.005")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+    issues = [{
+        "id": "test_new_ver_3",
+        "type": "issue",
+        "attributes": {
+            "events_count": 20,  # < min_events=30
+            "sessions_affected": 800,
+            "title": "NewVersionCrash",
+            "platform": "android",
+            "version": "3.20.0-700",
+        },
+    }]
+    top_version_data = {"android": {"version": "3.19.0-600", "users": 10000}}
+
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(return_value=top_version_data)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result.get("new_version", 0) == 0
+
+
+# ===== 通道 3：全局新 crash 兜底（Task 5）=====
+
+@pytest.mark.asyncio
+async def test_channel_3_triggers_when_thresholds_met(tmp_path, monkeypatch):
+    """通道 3：first_seen 在 10 天内 + events=200 ≥ 150 + sessions=400 ≥ 300 → 告警。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "150")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "300")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="newcrash1",
+            platform="ios",
+            title="NewBug",
+            first_seen_at=fake_now - timedelta(days=10),
+        ))
+        await session.commit()
+
+    raw_24h = [{"id": "newcrash1", "attributes": {
+        "events_count": 200, "sessions_affected": 400, "title": "NewBug", "platform": "ios",
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result["alerted"] is True
+    assert result.get("new_crash", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_channel_3_blocked_when_first_seen_too_old(tmp_path, monkeypatch):
+    """通道 3：first_seen 在 60 天前（> new_window_days=30）→ 不触发。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "150")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "300")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="oldcrash1",
+            platform="ios",
+            title="OldBug",
+            first_seen_at=fake_now - timedelta(days=60),
+        ))
+        await session.commit()
+
+    raw_24h = [{"id": "oldcrash1", "attributes": {
+        "events_count": 200, "sessions_affected": 400, "title": "OldBug", "platform": "ios",
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result.get("new_crash", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_channel_3_blocked_when_events_below_threshold(tmp_path, monkeypatch):
+    """通道 3：events_count=100 < min_events=150 → 不触发。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "150")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "300")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="lowevents1",
+            platform="android",
+            title="LowEventsBug",
+            first_seen_at=fake_now - timedelta(days=10),
+        ))
+        await session.commit()
+
+    raw_24h = [{"id": "lowevents1", "attributes": {
+        "events_count": 100, "sessions_affected": 400, "title": "LowEventsBug", "platform": "android",
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result.get("new_crash", 0) == 0
+
+
+# ===== Task 6: 三通道合卡 dedup + shadow_mode =====
+
+@pytest.mark.asyncio
+async def test_multi_channel_merge_keeps_new_version_priority(tmp_path, monkeypatch):
+    """三通道合卡 dedup：同一 issue_id 在通道 1（new_version）和通道 3（new_crash）均命中时，
+    new_version 优先级更高，通道 3 中该 issue 应被去重移除。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    # 打开通道 1（new_version）和通道 3（new_crash），关闭 shadow mode
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.005")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "50")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "100")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    # Pre-seed issue with first_seen_at within 30 days → channel 3 would also match
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="dup1",
+            platform="android",
+            title="DupCrash",
+            first_seen_at=fake_now - timedelta(days=5),
+        ))
+        await session.commit()
+
+    # Channel 1: hourly events, version 3.20.0 > top_version 3.19.0 → bucket=new
+    # events=50 >= min_events=30, user_rate = 50/10000 = 0.5% >= threshold=0.005
+    hourly_issues = [{
+        "id": "dup1",
+        "type": "issue",
+        "attributes": {
+            "events_count": 50,
+            "sessions_affected": 800,
+            "title": "DupCrash",
+            "platform": "android",
+            "version": "3.20.0",
+        },
+    }]
+    top_version_data = {"android": {"version": "3.19.0", "users": 10000}}
+
+    # Channel 3: same issue_id "dup1" in 24h data, meets channel 3 thresholds
+    raw_24h = [{"id": "dup1", "attributes": {
+        "events_count": 200, "sessions_affected": 400, "title": "DupCrash", "platform": "android",
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=hourly_issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(return_value=top_version_data)), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    # Channel 1 (new_version) wins; channel 3 (new_crash) dedup'd
+    assert result["new_version"] == 1, f"expected new_version=1, got {result}"
+    assert result["new_crash"] == 0, f"expected new_crash=0 (dedup'd), got {result}"
+
+
+@pytest.mark.asyncio
+async def test_shadow_mode_skips_feishu_when_only_new_version_hits(tmp_path, monkeypatch):
+    """Shadow mode：仅通道 1 有命中且处于 shadow_mode=true，不发飞书但保留 audit log。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "true")  # shadow on
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.005")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "false")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 11, 5, 0)  # different hour to avoid idempotency conflict
+
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    # Channel 1 has 1 hit (shadow); channels 2/3 have 0 hits
+    hourly_issues = [{
+        "id": "shadow_ver_1",
+        "type": "issue",
+        "attributes": {
+            "events_count": 50,
+            "sessions_affected": 800,
+            "title": "ShadowVersionCrash",
+            "platform": "android",
+            "version": "3.20.0",
+        },
+    }]
+    top_version_data = {"android": {"version": "3.19.0", "users": 10000}}
+
+    mock_send = AsyncMock(return_value=True)
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=hourly_issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(return_value=top_version_data)), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.services.feishu_cli.send_interactive_card", mock_send):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    # Shadow mode: audit log written but feishu NOT sent
+    assert result.get("shadow") is True, f"expected shadow=True, got {result}"
+    assert result.get("alerted") is False, f"expected alerted=False, got {result}"
+    assert mock_send.call_count == 0, \
+        f"send_interactive_card should NOT be called in shadow mode, got {mock_send.call_count} calls"
+
+
+@pytest.mark.asyncio
+async def test_real_send_when_mixed_shadow_and_real_hit(tmp_path, monkeypatch):
+    """混合场景：通道 1 shadow_mode=true 有命中，但通道 2（new_items）也有命中 →
+    通道 2 强制真发，shadow_mode 不生效。
+    """
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_SHADOW_MODE", "true")  # shadow on
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_MIN_EVENTS", "30")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_VERSION_USER_RATE_PCT", "0.005")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "false")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 12, 5, 0)  # different hour
+
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
+    # Two issues:
+    # 1. "shadow_ver_2": version > top_version → channel 1 hit (shadow)
+    # 2. "real_new_1": no DB record → channel 2 hit (new_items, always real)
+    hourly_issues = [
+        {
+            "id": "shadow_ver_2",
+            "type": "issue",
+            "attributes": {
+                "events_count": 50,
+                "sessions_affected": 800,
+                "title": "ShadowVersionCrash2",
+                "platform": "android",
+                "version": "3.20.0",
+            },
+        },
+        {
+            "id": "real_new_1",
+            "type": "issue",
+            "attributes": {
+                "events_count": 200,
+                "sessions_affected": 300,
+                "title": "RealNewCrash",
+                "platform": "android",
+                "version": "3.19.0",  # same as top_version → not "new" bucket → channel 2
+            },
+        },
+    ]
+    top_version_data = {"android": {"version": "3.19.0", "users": 10000}}
+
+    mock_send = AsyncMock(return_value=True)
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=hourly_issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(return_value=top_version_data)), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.services.feishu_cli.send_interactive_card", mock_send):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    # Channel 2 (new_items) forces real send despite channel 1 being in shadow
+    assert result.get("shadow") is not True, f"shadow should not be active, got {result}"
+    assert result.get("alerted") is True, f"expected alerted=True (real send), got {result}"
+    assert mock_send.call_count == 1, \
+        f"send_interactive_card should be called once, got {mock_send.call_count}"

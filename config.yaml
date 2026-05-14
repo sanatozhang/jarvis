@@ -153,6 +153,21 @@ crashguard:
     min_events_absolute: 200       # 事件绝对量底线：events < 200 不告警（基线低 + 小涨幅伪信号过滤；与 daily_attention_min_events=100 形成阶梯）
     dedup_hours: 12                # 跨告警去重窗口：同 issue 12h 内已 hourly 告警过 → 后续 hourly tick + 早晚报 attention 列表都跳过（防三连发）
 
+    # 通道 1：新版本桶（按版本切片，user_rate 主信号）
+    new_version:
+      enabled: true
+      shadow_mode: true            # Phase 0 影子模式，验证 24h 后改 false
+      min_events: 30
+      user_rate_pct: 0.005         # 0.5%
+
+    # 通道 3：全局新 crash 兜底（24h 累计 + events 量级）
+    new_crash:
+      enabled: true
+      shadow_mode: true
+      window_hours: 24
+      min_events: 150
+      min_sessions: 300
+
   # 核心指标报警（crash-free sessions % 健康度，10 分钟粒度）
   # 底层逻辑：早晚报是 24h 大盘，hourly_alert 是单 issue 突增；本告警补"系统级健康度"颗粒度。
   # 用 Datadog Mobile RUM 原生 crash-free sessions % 口径；对比基线 = 前 1h 加权均值。
