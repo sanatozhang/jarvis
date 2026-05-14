@@ -118,6 +118,68 @@ async def get_rule_accuracy(
     return await get_rule_accuracy_stats(days=days)
 
 
+@router.get("/engineer-label-accuracy")
+async def get_engineer_label_accuracy(
+    days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),
+):
+    """T3: AI needs_engineer 标签准确性 — 基于客服反馈做混淆矩阵 + precision/recall。
+
+    抓手：让"AI 标得准不准"从拍脑袋变成可量化数据。
+    - TP: AI=True, 实际=True（漏不掉，研发该接的接住了）
+    - FP: AI=True, 实际=False（误报，AI 把客服自助能搞定的也甩给研发）
+    - FN: AI=False, 实际=True（漏报，研发该接的被 AI 放过了——最危险）
+    - TN: AI=False, 实际=False（正确放行）
+    """
+    from sqlalchemy import select, func, and_, or_
+    from app.db import database as db
+    from datetime import datetime, timedelta
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    async with db.get_session() as session:
+        # 只看有客服反馈的 analyses
+        stmt = select(
+            db.AnalysisRecord.needs_engineer,
+            db.AnalysisRecord.engineer_label_feedback,
+            func.count(),
+        ).where(
+            and_(
+                db.AnalysisRecord.created_at >= cutoff,
+                db.AnalysisRecord.engineer_label_feedback.is_not(None),
+            )
+        ).group_by(
+            db.AnalysisRecord.needs_engineer,
+            db.AnalysisRecord.engineer_label_feedback,
+        )
+        rows = (await session.execute(stmt)).all()
+
+    matrix = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+    for ai, actual, n in rows:
+        if ai and actual:        matrix["tp"] += n
+        elif ai and not actual:  matrix["fp"] += n
+        elif not ai and actual:  matrix["fn"] += n
+        else:                    matrix["tn"] += n
+
+    total = sum(matrix.values())
+    tp, fp, fn, tn = matrix["tp"], matrix["fp"], matrix["fn"], matrix["tn"]
+
+    precision = round(tp / (tp + fp) * 100, 2) if (tp + fp) else None
+    recall = round(tp / (tp + fn) * 100, 2) if (tp + fn) else None
+    f1 = round(2 * precision * recall / (precision + recall), 2) if (precision and recall) else None
+    accuracy = round((tp + tn) / total * 100, 2) if total else None
+
+    return {
+        "window_days": days,
+        "labeled_total": total,
+        "confusion_matrix": matrix,
+        "precision_pct": precision,   # AI 说要工程师里，实际真的要的占比（高 = 不乱甩单）
+        "recall_pct": recall,         # 真的要工程师里，AI 抓到的占比（高 = 不漏）
+        "f1_pct": f1,
+        "accuracy_pct": accuracy,
+        "hint": "precision 低 = 误报多（骚扰研发）；recall 低 = 漏报多（客服漏接 → 用户投诉）",
+    }
+
+
 @router.get("/fallback-extraction")
 async def get_fallback_extraction_rate(
     days: int = Query(7, ge=1, le=3650, description="Number of days to look back"),

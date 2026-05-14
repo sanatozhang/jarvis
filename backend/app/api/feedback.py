@@ -236,3 +236,68 @@ async def import_from_zendesk(zendesk_input: str = Form(..., description="Zendes
     except Exception as e:
         logger.error("Zendesk import failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# T3 客服反馈闭环 — 让"AI 工程师标签准不准"从拍脑袋变成可量化数据
+# ---------------------------------------------------------------------------
+from pydantic import BaseModel
+from sqlalchemy import select, update, and_
+
+
+class EngineerLabelFeedbackRequest(BaseModel):
+    issue_id: str
+    task_id: str = ""                # 可选：精确到某次分析
+    actually_needed_engineer: bool   # True=确实需要 / False=AI 误判无需
+    feedback_by: str = ""            # 客服用户名
+    note: str = ""                   # 可选备注
+
+
+@router.post("/engineer-label", tags=["Feedback"])
+async def submit_engineer_label_feedback(req: EngineerLabelFeedbackRequest):
+    """客服在工单详情页对 AI 的 needs_engineer 标签做事后纠偏。
+
+    标签语义：
+    - actually_needed_engineer=True : 实际确实需要研发介入（AI 标 false 时为漏报）
+    - actually_needed_engineer=False: 实际不需要（AI 标 true 时为误报）
+
+    用途：长期校准 + few-shot 训练样本来源；通过 /api/analytics/engineer-label-accuracy 可看 precision/recall。
+    """
+    async with db.get_session() as session:
+        # 定位 analysis：优先精确 task_id，没给就拿最新一条
+        stmt = select(db.AnalysisRecord).where(db.AnalysisRecord.issue_id == req.issue_id)
+        if req.task_id:
+            stmt = stmt.where(db.AnalysisRecord.task_id == req.task_id)
+        stmt = stmt.order_by(db.AnalysisRecord.created_at.desc()).limit(1)
+        analysis = (await session.execute(stmt)).scalar_one_or_none()
+        if analysis is None:
+            raise HTTPException(status_code=404, detail=f"No analysis found for issue_id={req.issue_id}")
+
+        analysis.engineer_label_feedback = req.actually_needed_engineer
+        analysis.engineer_label_feedback_by = req.feedback_by[:64]
+        analysis.engineer_label_feedback_at = datetime.utcnow()
+        analysis.engineer_label_feedback_note = req.note[:1000]
+        await session.commit()
+        analysis_id = analysis.id
+        ai_said = bool(analysis.needs_engineer)
+
+    # 同时打 event，方便 analytics 聚合
+    await db.log_event(
+        event_type="engineer_label_feedback",
+        issue_id=req.issue_id,
+        username=req.feedback_by,
+        detail={
+            "ai_needs_engineer": ai_said,
+            "actually_needed_engineer": req.actually_needed_engineer,
+            "matched": ai_said == req.actually_needed_engineer,
+            "note": req.note[:200],
+        },
+    )
+
+    return {
+        "status": "ok",
+        "analysis_id": analysis_id,
+        "ai_needs_engineer": ai_said,
+        "actually_needed_engineer": req.actually_needed_engineer,
+        "matched": ai_said == req.actually_needed_engineer,
+    }

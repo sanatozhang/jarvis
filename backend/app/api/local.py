@@ -144,6 +144,13 @@ async def get_issue_analyses(issue_id: str):
             "needs_engineer": a.needs_engineer,
             "system_failure": getattr(a, "system_failure", False) or False,
             "needs_user_retry": getattr(a, "needs_user_retry", False) or False,
+            "engineer_label_feedback": getattr(a, "engineer_label_feedback", None),
+            "engineer_label_feedback_by": getattr(a, "engineer_label_feedback_by", "") or "",
+            "engineer_label_feedback_at": (
+                (a.engineer_label_feedback_at.isoformat() + "Z")
+                if getattr(a, "engineer_label_feedback_at", None) else ""
+            ),
+            "engineer_label_feedback_note": getattr(a, "engineer_label_feedback_note", "") or "",
             "fix_suggestion": a.fix_suggestion or "",
             "rule_type": a.rule_type or "",
             "agent_type": a.agent_type or "",

@@ -21,6 +21,7 @@ import {
   deleteIssue,
   fetchIssueDetail,
   fetchIssueAnalyses,
+  submitEngineerLabelFeedback,
   loginUser,
   subscribeTaskProgress,
   fetchTaskResult,
@@ -1357,6 +1358,56 @@ export default function HomePage() {
                                 </span>
                               )}
                             </div>
+                            {/* T3 客服反馈闭环：对 AI 的"需工程师"标签做事后纠偏 */}
+                            {r.needs_engineer && detailId && (
+                              <EngineerLabelFeedbackWidget
+                                issueId={detailId}
+                                taskId={r.task_id}
+                                feedback={r.engineer_label_feedback ?? null}
+                                feedbackBy={r.engineer_label_feedback_by || ""}
+                                feedbackAt={r.engineer_label_feedback_at || ""}
+                                lang={lang}
+                                onSubmit={(actually_needed_engineer, note) => {
+                                  const me = (typeof window !== "undefined"
+                                    ? localStorage.getItem("appllo_username") || ""
+                                    : "");
+                                  return submitEngineerLabelFeedback({
+                                    issue_id: detailId,
+                                    task_id: r.task_id,
+                                    actually_needed_engineer,
+                                    feedback_by: me,
+                                    note: note || "",
+                                  }).then((resp) => {
+                                    // Optimistic 本地更新：把反馈写回当前 analyses 列表
+                                    setIssueAnalyses((prev) => {
+                                      const arr = prev[detailId];
+                                      if (!arr) return prev;
+                                      return {
+                                        ...prev,
+                                        [detailId]: arr.map((a) =>
+                                          a.task_id === r.task_id
+                                            ? {
+                                                ...a,
+                                                engineer_label_feedback: resp.actually_needed_engineer,
+                                                engineer_label_feedback_by: me,
+                                                engineer_label_feedback_at: new Date().toISOString(),
+                                                engineer_label_feedback_note: note || "",
+                                              }
+                                            : a
+                                        ),
+                                      };
+                                    });
+                                    setToast(
+                                      lang === "cn"
+                                        ? `反馈已记录：${resp.actually_needed_engineer ? "确实需要工程师" : "AI 误判"}`
+                                        : `Feedback recorded: ${resp.actually_needed_engineer ? "engineer needed" : "AI false-positive"}`
+                                    );
+                                  }).catch((e: Error) => {
+                                    setToast((lang === "cn" ? "反馈失败：" : "Failed: ") + e.message);
+                                  });
+                                }}
+                              />
+                            )}
                             {/* Lost recording tool hint */}
                             {r.problem_type && /录音.{0,8}找不到|找不到.{0,8}录音|recording.*lost|lost.*recording|missing.*recording/i.test(r.problem_type + " " + (r.problem_type_en || "")) && (
                               <a href="/tools"
@@ -1682,6 +1733,103 @@ export default function HomePage() {
       )}
 
       {toast && <Toast msg={toast} onClose={() => setToast("")} />}
+    </div>
+  );
+}
+
+// ── T3 客服反馈 widget ─────────────────────────────────────────────────────
+function EngineerLabelFeedbackWidget(props: {
+  issueId: string;
+  taskId: string;
+  feedback: boolean | null;
+  feedbackBy: string;
+  feedbackAt: string;
+  lang: "cn" | "en";
+  onSubmit: (actuallyNeededEngineer: boolean, note?: string) => Promise<void>;
+}) {
+  const { feedback, feedbackBy, feedbackAt, lang, onSubmit } = props;
+  const [submitting, setSubmitting] = useState<boolean>(false);
+
+  const formatTime = (iso: string) => {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString(lang === "cn" ? "zh-CN" : "en-US", {
+        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      });
+    } catch { return ""; }
+  };
+
+  // 已有反馈：展示状态，不再让点
+  if (feedback !== null && feedback !== undefined) {
+    const isCorrect = feedback === true;
+    const bg = isCorrect ? "rgba(34,197,94,0.08)" : "rgba(234,179,8,0.08)";
+    const fg = isCorrect ? "#16A34A" : "#CA8A04";
+    const border = isCorrect ? "rgba(34,197,94,0.25)" : "rgba(234,179,8,0.25)";
+    return (
+      <div className="flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-xs"
+        style={{ background: bg, color: fg, border: `1px solid ${border}` }}>
+        <span className="font-semibold">
+          {isCorrect
+            ? (lang === "cn" ? "✅ 客服已确认确实需要工程师" : "✅ Confirmed: engineer was needed")
+            : (lang === "cn" ? "🟡 客服反馈：AI 误判，实际无需工程师" : "🟡 Feedback: AI false positive")}
+        </span>
+        {feedbackBy && (
+          <span className="opacity-60">
+            {lang === "cn" ? "由" : "by"} {feedbackBy}
+            {feedbackAt && ` · ${formatTime(feedbackAt)}`}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  // 未反馈：给两按钮
+  const handleClick = async (actuallyNeeded: boolean) => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onSubmit(actuallyNeeded);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-xs"
+      style={{ background: "rgba(0,0,0,0.02)", border: `1px dashed ${S.border}` }}>
+      <span style={{ color: S.text3 }}>
+        {lang === "cn" ? "这单实际是否需要工程师？" : "Did this actually need an engineer?"}
+      </span>
+      <button
+        onClick={() => handleClick(false)}
+        disabled={submitting}
+        className="rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50"
+        style={{
+          background: "rgba(34,197,94,0.08)",
+          color: "#16A34A",
+          border: "1px solid rgba(34,197,94,0.25)",
+        }}
+        title={lang === "cn" ? "AI 误判，客服自己能解决" : "AI false positive — CS resolved it"}>
+        {lang === "cn" ? "✅ 不需要（AI 误判）" : "✅ No (AI false positive)"}
+      </button>
+      <button
+        onClick={() => handleClick(true)}
+        disabled={submitting}
+        className="rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50"
+        style={{
+          background: "rgba(234,179,8,0.08)",
+          color: "#CA8A04",
+          border: "1px solid rgba(234,179,8,0.25)",
+        }}
+        title={lang === "cn" ? "确实交给了研发处理" : "Engineer involvement was actually required"}>
+        {lang === "cn" ? "⚠️ 确实需要" : "⚠️ Yes (escalated)"}
+      </button>
+      {submitting && (
+        <span className="text-[10px]" style={{ color: S.text3 }}>
+          {lang === "cn" ? "提交中..." : "submitting..."}
+        </span>
+      )}
     </div>
   );
 }

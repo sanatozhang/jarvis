@@ -180,6 +180,14 @@ export interface AnalysisResult {
   user_reply: string;
   user_reply_en?: string;
   needs_engineer: boolean;
+  // T1: 字段拆分
+  system_failure?: boolean;
+  needs_user_retry?: boolean;
+  // T3: 客服反馈状态（null=未反馈, true=确实需要, false=AI 误判）
+  engineer_label_feedback?: boolean | null;
+  engineer_label_feedback_by?: string;
+  engineer_label_feedback_at?: string;
+  engineer_label_feedback_note?: string;
   requires_more_info: boolean;
   more_info_guidance: string;
   next_steps: string[];
@@ -1572,6 +1580,31 @@ export interface CrashLatestRelease {
 
 export const fetchCrashLatestRelease = () =>
   request<CrashLatestRelease>("/crash/latest-release");
+
+// ---------------------------------------------------------------------------
+// T3 客服反馈闭环：对 AI 的 needs_engineer 标签做事后纠偏
+// ---------------------------------------------------------------------------
+export interface EngineerLabelFeedbackResponse {
+  status: string;
+  analysis_id: number;
+  ai_needs_engineer: boolean;
+  actually_needed_engineer: boolean;
+  matched: boolean;
+}
+
+export async function submitEngineerLabelFeedback(params: {
+  issue_id: string;
+  task_id?: string;
+  actually_needed_engineer: boolean;
+  feedback_by?: string;
+  note?: string;
+}): Promise<EngineerLabelFeedbackResponse> {
+  return request<EngineerLabelFeedbackResponse>("/feedback/engineer-label", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+}
 
 // Lightweight feature flag check — used by Sidebar to conditionally show entry
 export async function fetchCrashEnabled(): Promise<boolean> {

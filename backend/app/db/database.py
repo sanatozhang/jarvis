@@ -98,6 +98,12 @@ class AnalysisRecord(Base):
     # - needs_user_retry: 日志解密失败/缺关键截图 → 客服找用户重传，不是研发问题
     system_failure = Column(Boolean, default=False)
     needs_user_retry = Column(Boolean, default=False)
+    # T3 客服反馈闭环：让客服在工单详情页标记"AI 的工程师标签是否准确"
+    # NULL=未反馈, True=确实需要工程师, False=AI 误判无需工程师
+    engineer_label_feedback = Column(Boolean, nullable=True, default=None)
+    engineer_label_feedback_by = Column(String(64), default="")
+    engineer_label_feedback_at = Column(DateTime, nullable=True)
+    engineer_label_feedback_note = Column(Text, default="")
     fix_suggestion = Column(Text, default="")
     problem_categories_json = Column(Text, default="[]")  # JSON: [{"category":"蓝牙连接","subcategory":"搜索不到设备"},...]
     device_type = Column(String(64), default="")           # "Note" / "Note Pin" / "Note Pro" / "NotePin 2" / "iZYREC"
@@ -339,6 +345,10 @@ async def init_db():
             ("log_metadata_json", "TEXT", "'{}'"),
             ("system_failure", "BOOLEAN", "0"),       # T1: 系统失败标志（ops 重跑）
             ("needs_user_retry", "BOOLEAN", "0"),     # T1: 用户需重传日志/截图
+            ("engineer_label_feedback", "BOOLEAN", "NULL"),       # T3: 客服反馈
+            ("engineer_label_feedback_by", "VARCHAR(64)", "''"),  # T3
+            ("engineer_label_feedback_at", "DATETIME", "NULL"),   # T3
+            ("engineer_label_feedback_note", "TEXT", "''"),       # T3
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -1017,6 +1027,14 @@ def _issue_to_dict(
             "needs_engineer": analysis.needs_engineer,
             "system_failure": getattr(analysis, "system_failure", False) or False,
             "needs_user_retry": getattr(analysis, "needs_user_retry", False) or False,
+            # T3: 客服反馈状态
+            "engineer_label_feedback": getattr(analysis, "engineer_label_feedback", None),
+            "engineer_label_feedback_by": getattr(analysis, "engineer_label_feedback_by", "") or "",
+            "engineer_label_feedback_at": (
+                (analysis.engineer_label_feedback_at.isoformat() + "Z")
+                if getattr(analysis, "engineer_label_feedback_at", None) else ""
+            ),
+            "engineer_label_feedback_note": getattr(analysis, "engineer_label_feedback_note", "") or "",
             "fix_suggestion": analysis.fix_suggestion or "",
             "rule_type": analysis.rule_type or "",
             "agent_type": analysis.agent_type or "",
