@@ -793,3 +793,129 @@ async def test_channel_1_blocked_by_min_events(tmp_path, monkeypatch):
         result = await run_hourly_alert_tick(force=True, now=fake_now)
 
     assert result.get("new_version", 0) == 0
+
+
+# ===== 通道 3：全局新 crash 兜底（Task 5）=====
+
+@pytest.mark.asyncio
+async def test_channel_3_triggers_when_thresholds_met(tmp_path, monkeypatch):
+    """通道 3：first_seen 在 10 天内 + events=200 ≥ 150 + sessions=400 ≥ 300 → 告警。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "150")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "300")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="newcrash1",
+            platform="ios",
+            title="NewBug",
+            first_seen_at=fake_now - timedelta(days=10),
+        ))
+        await session.commit()
+
+    raw_24h = [{"id": "newcrash1", "attributes": {
+        "events_count": 200, "sessions_affected": 400, "title": "NewBug", "platform": "ios",
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result["alerted"] is True
+    assert result.get("new_crash", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_channel_3_blocked_when_first_seen_too_old(tmp_path, monkeypatch):
+    """通道 3：first_seen 在 60 天前（> new_window_days=30）→ 不触发。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "150")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "300")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="oldcrash1",
+            platform="ios",
+            title="OldBug",
+            first_seen_at=fake_now - timedelta(days=60),
+        ))
+        await session.commit()
+
+    raw_24h = [{"id": "oldcrash1", "attributes": {
+        "events_count": 200, "sessions_affected": 400, "title": "OldBug", "platform": "ios",
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result.get("new_crash", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_channel_3_blocked_when_events_below_threshold(tmp_path, monkeypatch):
+    """通道 3：events_count=100 < min_events=150 → 不触发。"""
+    await _setup_db_and_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_ENABLED", "true")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_SHADOW_MODE", "false")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_EVENTS", "150")
+    monkeypatch.setenv("CRASHGUARD_HOURLY_ALERT_NEW_CRASH_MIN_SESSIONS", "300")
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    fake_now = datetime(2026, 5, 15, 10, 5, 0)
+
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="lowevents1",
+            platform="android",
+            title="LowEventsBug",
+            first_seen_at=fake_now - timedelta(days=10),
+        ))
+        await session.commit()
+
+    raw_24h = [{"id": "lowevents1", "attributes": {
+        "events_count": 100, "sessions_affected": 400, "title": "LowEventsBug", "platform": "android",
+    }}]
+
+    with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
+               new=AsyncMock(return_value=[])), \
+         patch("app.crashguard.services.hourly_alerter._fetch_24h_events",
+               new=AsyncMock(return_value=raw_24h)), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               new=AsyncMock(return_value=True)):
+        from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
+        result = await run_hourly_alert_tick(force=True, now=fake_now)
+
+    assert result.get("new_crash", 0) == 0
