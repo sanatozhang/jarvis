@@ -142,7 +142,7 @@ class CrashAnalysis(Base):
     crash_type = Column(String(16), default="")             # crash|anr|freeze|oom|native_crash
     hypotheses = Column(Text, default="[]")                  # JSON: List[Hypothesis]
     data_gaps = Column(Text, default="[]")                   # JSON: List[DataGap]
-    confirmed_hypothesis_id = Column(String(16), default="")
+    confirmed_hypothesis_id = Column(String(64), default="")
     investigation_log = Column(Text, default="[]")           # JSON: List[str]，AI 调查步骤
     parent_diagnosis_run_id = Column(String(64), default="") # Phase2 行 → Phase1 run_id
     created_at = Column(DateTime, default=datetime.utcnow)

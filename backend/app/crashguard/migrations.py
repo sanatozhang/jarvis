@@ -57,7 +57,7 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_analyses", "crash_type", "VARCHAR(16)", "''"),
     ("crash_analyses", "hypotheses", "TEXT", "'[]'"),
     ("crash_analyses", "data_gaps", "TEXT", "'[]'"),
-    ("crash_analyses", "confirmed_hypothesis_id", "VARCHAR(16)", "''"),
+    ("crash_analyses", "confirmed_hypothesis_id", "VARCHAR(64)", "''"),
     ("crash_analyses", "investigation_log", "TEXT", "'[]'"),
     ("crash_analyses", "parent_diagnosis_run_id", "VARCHAR(64)", "''"),
 ]
