@@ -1977,6 +1977,10 @@ function DetailDrawer({
   onConfirmHypothesis: (runId: string, hypothesisId: string, issueId: string) => void;
   t: (k: string) => string;
 }) {
+  const [stackExpanded, setStackExpanded] = useState(false);
+  // Reset expansion when switching to a different issue
+  useEffect(() => { setStackExpanded(false); }, [detail?.datadog_issue_id]);
+
   return (
     <div
       className="flex flex-col flex-shrink-0"
@@ -2169,17 +2173,39 @@ function DetailDrawer({
             )}
 
             <Section title={t("代表性堆栈")}>
-              <pre
-                className="rounded p-3 text-xs font-mono overflow-auto whitespace-pre-wrap"
-                style={{
-                  background: D.surfaceAlt,
-                  border: `1px solid ${D.border}`,
-                  maxHeight: 320,
-                  color: D.text1,
-                }}
-              >
-                {detail.representative_stack || t("无堆栈信息")}
-              </pre>
+              {(() => {
+                const raw = detail.representative_stack || "";
+                const lines = raw.split("\n");
+                const PREVIEW = 20;
+                const hasMore = lines.length > PREVIEW;
+                const visible = stackExpanded ? lines : lines.slice(0, PREVIEW);
+                return (
+                  <div>
+                    <pre
+                      className="rounded p-3 text-xs font-mono overflow-auto whitespace-pre"
+                      style={{
+                        background: D.surfaceAlt,
+                        border: `1px solid ${D.border}`,
+                        color: D.text1,
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      {visible.length > 0 ? visible.join("\n") : t("无堆栈信息")}
+                    </pre>
+                    {hasMore && (
+                      <button
+                        onClick={() => setStackExpanded((v) => !v)}
+                        className="mt-2 text-xs font-medium"
+                        style={{ color: D.accent, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                      >
+                        {stackExpanded
+                          ? `▲ ${t("收起堆栈")}`
+                          : `▼ ${t("查看更多")}（${t("共")} ${lines.length} ${t("行")}，${t("已显示")} ${PREVIEW} ${t("行")}）`}
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
             </Section>
 
             <Section
