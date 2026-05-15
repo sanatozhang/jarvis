@@ -1113,6 +1113,7 @@ class DailyReportRunRequest(BaseModel):
     target_date: Optional[date] = Field(None, description="默认今日")
     top_n: int = Field(10, ge=1, le=50)
     chat_id: Optional[str] = Field(None, description="覆盖 config 的 target_chat_id（测试用）")
+    email: Optional[str] = Field(None, description="发送到指定邮箱对应飞书用户的私聊（DM）")
     dry_run: bool = Field(False, description="True 时只生成 markdown 不发飞书")
 
 
@@ -1140,6 +1141,7 @@ async def run_daily_report_now(req: DailyReportRunRequest) -> Dict[str, Any]:
             target_date=req.target_date,
             top_n=req.top_n,
             chat_id_override=req.chat_id or "",
+            email_override=req.email or "",
         )
     except Exception as e:
         logger.exception("send_daily_report failed")
