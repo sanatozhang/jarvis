@@ -204,7 +204,8 @@ class RuleUpdateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 class AgentConfigUpdate(BaseModel):
     default_agent: Optional[str] = None
-    call_mode: Optional[str] = None         # "api" | "cli"
+    call_mode: Optional[str] = None         # "api" | "cli" — kept for backward compat
+    api_traffic_ratio: Optional[float] = None  # 0.0–1.0; overrides call_mode split
     timeout: Optional[int] = None
     max_turns: Optional[int] = None
     routing: Optional[Dict[str, str]] = None

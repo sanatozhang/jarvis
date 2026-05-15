@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -16,6 +17,18 @@ from app.agents.base import AgentConfig, BaseAgent
 from app.models.schemas import AnalysisResult
 
 logger = logging.getLogger("jarvis.agent.claude_code")
+
+# Env vars that must not leak into the CLI subprocess: they trigger an interactive
+# "Do you want to use this API key?" prompt that blocks non-TTY subprocess stdin.
+_CLI_ENV_EXCLUDE = frozenset({
+    "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_VERTEX",
+    "ANTHROPIC_VERTEX_BASE_URL", "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+})
+
+
+def _make_cli_env() -> dict:
+    return {k: v for k, v in os.environ.items() if k not in _CLI_ENV_EXCLUDE}
 
 
 class ClaudeCodeAgent(BaseAgent):
@@ -42,6 +55,8 @@ class ClaudeCodeAgent(BaseAgent):
         cmd = self._build_command()
         logger.info("Running Claude Code in %s (prompt: %d chars, piped via stdin)", workspace, len(prompt))
 
+        cli_env = _make_cli_env()
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -49,6 +64,7 @@ class ClaudeCodeAgent(BaseAgent):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=cli_env,
             )
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -371,6 +387,7 @@ class ClaudeCodeAgent(BaseAgent):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=_make_cli_env(),
             )
             try:
                 stdout_b, stderr_b = await asyncio.wait_for(

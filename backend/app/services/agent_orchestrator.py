@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -65,11 +66,18 @@ class AgentOrchestrator:
         # Determine which agent to use
         agent_name = override or agent_cfg.routing.get(rule_type) or agent_cfg.default
 
-        # Apply call_mode toggle: when set to "api", swap any Claude CLI selection to claude_api
-        # (and vice versa). codex is never swapped.
-        if agent_cfg.call_mode == "api" and agent_name == "claude_code":
-            agent_name = "claude_api"
-        elif agent_cfg.call_mode == "cli" and agent_name == "claude_api":
+        # Probabilistic API/CLI split — only when no explicit override.
+        # api_traffic_ratio=0.0 → 100% CLI; 0.2 → 20% API; 1.0 → 100% API.
+        # Backward compat: call_mode=="api" treated as ratio=1.0.
+        if not override and agent_name == "claude_code":
+            ratio = agent_cfg.api_traffic_ratio
+            if agent_cfg.call_mode == "api" and ratio == 0.0:
+                ratio = 1.0
+            if ratio > 0.0 and random.random() < ratio:
+                api_provider = agent_cfg.providers.get("claude_api")
+                if api_provider and api_provider.enabled:
+                    agent_name = "claude_api"
+        elif not override and agent_name == "claude_api" and agent_cfg.call_mode == "cli" and agent_cfg.api_traffic_ratio == 0.0:
             agent_name = "claude_code"
 
         # Get provider config

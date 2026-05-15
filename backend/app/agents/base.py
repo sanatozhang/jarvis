@@ -425,11 +425,24 @@ output/       ← 请将 result.json 写入此目录
         # Strategy 1: read output/result.json (expected path)
         result_file = workspace / "output" / "result.json"
         if result_file.exists():
+            content = ""
             try:
-                content = result_file.read_text(encoding="utf-8")
-                content = content.lstrip("\ufeff")  # strip BOM
+                content = result_file.read_text(encoding="utf-8").lstrip("\ufeff")
                 data = json.loads(content)
                 logger.info("Parsed result.json (%d bytes, keys: %s)", len(content), list(data.keys()))
+            except json.JSONDecodeError as e:
+                # Agent may have been killed (max_turns) mid-write \u2014 try truncation repair:
+                # cut at the error position, strip trailing comma, close the object.
+                logger.warning("Failed to parse result.json at %s: %s \u2014 trying truncation repair", result_file, e)
+                try:
+                    truncated = content[: e.pos].rstrip().rstrip(",") + "}"
+                    data = json.loads(truncated)
+                    logger.info(
+                        "Repaired truncated result.json (recovered %d of %d bytes, keys: %s)",
+                        e.pos, len(content), list(data.keys()),
+                    )
+                except Exception as e2:
+                    logger.warning("Truncation repair failed for result.json: %s", e2)
             except Exception as e:
                 logger.warning("Failed to parse result.json at %s: %s", result_file, e)
         else:

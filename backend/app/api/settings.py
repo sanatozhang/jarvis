@@ -48,6 +48,7 @@ async def get_agent_config():
     return {
         "default": ag.default,
         "call_mode": ag.call_mode,
+        "api_traffic_ratio": ag.api_traffic_ratio,
         "timeout": ag.timeout,
         "max_turns": ag.max_turns,
         "providers": providers,
@@ -67,6 +68,11 @@ async def update_agent_config(req: AgentConfigUpdate):
         if mode not in ("api", "cli"):
             raise HTTPException(status_code=400, detail="call_mode must be 'api' or 'cli'")
         settings.agent.call_mode = mode
+    if req.api_traffic_ratio is not None:
+        ratio = float(req.api_traffic_ratio)
+        if not (0.0 <= ratio <= 1.0):
+            raise HTTPException(status_code=400, detail="api_traffic_ratio must be between 0.0 and 1.0")
+        settings.agent.api_traffic_ratio = ratio
     if req.timeout is not None:
         settings.agent.timeout = req.timeout
     if req.max_turns is not None:
@@ -78,6 +84,7 @@ async def update_agent_config(req: AgentConfigUpdate):
         "status": "updated",
         "agent": settings.agent.default,
         "call_mode": settings.agent.call_mode,
+        "api_traffic_ratio": settings.agent.api_traffic_ratio,
     }
 
 

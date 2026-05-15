@@ -5,6 +5,7 @@ import { useT, useLang } from "@/lib/i18n";
 import { Toast } from "@/components/Toast";
 import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
 import MarkdownText from "@/components/MarkdownText";
+import { AgentTraceBlock } from "@/components/AgentTraceBlock";
 import {
   fetchPendingIssues,
   refreshIssuesCache,
@@ -1323,8 +1324,20 @@ export default function HomePage() {
                     {[...analyses].reverse().map((r, idx) => {
                       const chronoIdx = analyses.length - 1 - idx;
                       const isLatest = chronoIdx === 0;
-                      const problemType = lang === "en" ? (r.problem_type_en || r.problem_type) : r.problem_type;
-                      const rootCause = lang === "en" ? (r.root_cause_en || r.root_cause) : r.root_cause;
+                      // Known Chinese system-error strings that have no _en field
+                      const ZH_SYS: Record<string, string> = {
+                        "未知": "Unknown",
+                        "分析未产出结构化结果": "Analysis did not produce structured results",
+                        "服务器重启，任务中断": "Server restart — task interrupted",
+                        "分析超时": "Analysis timeout",
+                        "Agent 不可用": "Agent unavailable",
+                      };
+                      const problemType = lang === "en"
+                        ? (r.problem_type_en || ZH_SYS[r.problem_type] || r.problem_type)
+                        : r.problem_type;
+                      const rootCause = lang === "en"
+                        ? (r.root_cause_en || ZH_SYS[r.root_cause] || r.root_cause)
+                        : r.root_cause;
                       const userReply = lang === "en" ? (r.user_reply_en || r.user_reply) : r.user_reply;
                       const hasEnTranslation = !!(r.problem_type_en && r.root_cause_en);
                       const isFollowup = !!(r as any).followup_question;
@@ -1383,6 +1396,14 @@ export default function HomePage() {
                                 <span className="rounded-lg px-2.5 py-1 text-[10px] font-medium"
                                   style={{ background: "rgba(96,165,250,0.1)", color: "rgba(96,165,250,0.8)", border: "1px solid rgba(96,165,250,0.2)" }}>
                                   {r.agent_model.replace(/^claude-/, "").replace(/-\d{8}$/, "")}
+                                </span>
+                              )}
+                              {r.agent_type && (
+                                <span className="rounded-lg px-2 py-1 text-[10px] font-medium"
+                                  style={r.agent_type === "claude_api"
+                                    ? { background: "rgba(167,139,250,0.1)", color: "rgba(167,139,250,0.85)", border: "1px solid rgba(167,139,250,0.2)" }
+                                    : { background: "rgba(107,114,128,0.08)", color: "rgba(107,114,128,0.7)", border: "1px solid rgba(107,114,128,0.15)" }}>
+                                  {r.agent_type === "claude_api" ? "API" : "CLI"}
                                 </span>
                               )}
                               {r.needs_engineer && (() => {
@@ -1520,6 +1541,21 @@ export default function HomePage() {
                                   </div>
                                 )}
                               </div>
+                            )}
+                            {/* Agent execution trace — only for claude_api tasks */}
+                            {r.agent_type === "claude_api" && r.task_id && (
+                              <AgentTraceBlock
+                                taskId={r.task_id}
+                                palette={{
+                                  surface: S.surface,
+                                  overlay: S.overlay,
+                                  border: S.border,
+                                  text1: S.text1,
+                                  text2: S.text2,
+                                  text3: S.text3,
+                                  accent: S.accent,
+                                }}
+                              />
                             )}
                             {userReply && (
                               <div>

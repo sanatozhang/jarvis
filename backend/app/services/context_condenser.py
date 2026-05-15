@@ -27,8 +27,11 @@ logger = logging.getLogger("jarvis.context_condenser")
 
 # Max chars to send to the LLM per chunk (~800K tokens for Gemini Flash)
 _DEFAULT_MAX_INPUT_CHARS = 2_800_000
-# Max chars for models with smaller context (Haiku: 200K tokens)
-_SMALL_CONTEXT_MAX_CHARS = 600_000
+# Max chars for models with smaller context (Haiku: 200K tokens ≈ 200K chars worst-case CJK).
+# Plaud logs contain heavy CJK content (1 CJK char ≈ 1 token), so 600K chars would push
+# ~400K+ tokens into Haiku and cause "Prompt is too long" from the CLI.
+# 150K chars leaves ~50K token headroom for the prompt wrapper.
+_SMALL_CONTEXT_MAX_CHARS = 150_000
 
 
 @dataclass

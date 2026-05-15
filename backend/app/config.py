@@ -101,7 +101,8 @@ class AgentProviderConfig(BaseSettings):
 
 class AgentSettings(BaseSettings):
     default: str = "claude_code"
-    call_mode: str = "cli"         # "cli" | "api" — toggled from Settings UI
+    call_mode: str = "cli"         # "cli" | "api" — kept for backward compat; use api_traffic_ratio instead
+    api_traffic_ratio: float = 0.0  # 0.0=100% CLI, 0.2=20% API, 1.0=100% API
     timeout: int = 600
     max_turns: int = 25
     providers: Dict[str, AgentProviderConfig] = Field(default_factory=dict)

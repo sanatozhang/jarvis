@@ -254,6 +254,7 @@ export interface DailyReport {
 export interface AgentConfig {
   default: string;
   call_mode: "api" | "cli";
+  api_traffic_ratio: number;  // 0.0–1.0
   timeout: number;
   max_turns: number;
   providers: Record<string, any>;

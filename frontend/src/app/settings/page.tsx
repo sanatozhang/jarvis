@@ -192,7 +192,7 @@ export default function SettingsPage() {
     if (!config) return;
     setSaving(true);
     try {
-      await updateAgentConfig({ default_agent: config.default, call_mode: config.call_mode, timeout: config.timeout, max_turns: config.max_turns, routing: config.routing });
+      await updateAgentConfig({ default_agent: config.default, call_mode: config.call_mode, api_traffic_ratio: config.api_traffic_ratio, timeout: config.timeout, max_turns: config.max_turns, routing: config.routing });
       setToast(t("Agent 配置已保存"));
     } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
     finally { setSaving(false); }
@@ -401,49 +401,39 @@ export default function SettingsPage() {
         {config && (
           <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
             <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("Claude 调用方式")}</h2>
-            <p className="text-xs mb-3" style={{ color: S.text3 }}>
-              {t("切换后下一个分析任务立即生效；L1.5 浓缩永远走 API（与此开关无关）。")}
+            <p className="text-xs mb-4" style={{ color: S.text3 }}>
+              {t("调整后下一个分析任务立即生效；L1.5 浓缩永远走 API（与此开关无关）。")}
             </p>
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                {
-                  value: "api" as const,
-                  title: t("API 直连（推荐）"),
-                  desc: t("通过公司 Vertex 代理调用 API；可观测每一步、无 CLI 依赖、容器轻量。"),
-                },
-                {
-                  value: "cli" as const,
-                  title: t("CLI 子进程（兼容回滚）"),
-                  desc: t("保留原 claude CLI 调用方式，行为与历史一致。"),
-                },
-              ].map((opt) => {
-                const selected = config.call_mode === opt.value;
-                return (
-                  <label
-                    key={opt.value}
-                    className="rounded-lg p-3 cursor-pointer transition-colors"
-                    style={{
-                      background: selected ? S.accentBg : S.overlay,
-                      border: `1px solid ${selected ? S.accent : S.border}`,
-                    }}
-                  >
-                    <div className="flex items-start gap-2.5">
-                      <input
-                        type="radio"
-                        name="call_mode"
-                        value={opt.value}
-                        checked={selected}
-                        onChange={() => setConfig({ ...config, call_mode: opt.value })}
-                        style={{ marginTop: 2, accentColor: S.accent }}
-                      />
-                      <div className="flex-1">
-                        <div className="text-sm font-medium" style={{ color: S.text1 }}>{opt.title}</div>
-                        <div className="text-xs mt-1" style={{ color: S.text3 }}>{opt.desc}</div>
-                      </div>
-                    </div>
-                  </label>
-                );
-              })}
+            {/* API traffic ratio slider */}
+            <div className="rounded-lg p-4" style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-medium" style={{ color: S.text1 }}>{t("API 流量比例")}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs px-2 py-0.5 rounded font-mono"
+                    style={{ background: S.accentBg, color: S.accent, border: `1px solid ${S.accent}33` }}>
+                    API {Math.round((config.api_traffic_ratio ?? 0) * 100)}%
+                  </span>
+                  <span className="text-xs" style={{ color: S.text3 }}>
+                    CLI {100 - Math.round((config.api_traffic_ratio ?? 0) * 100)}%
+                  </span>
+                </div>
+              </div>
+              <input
+                type="range"
+                min={0} max={100} step={5}
+                value={Math.round((config.api_traffic_ratio ?? 0) * 100)}
+                onChange={(e) => setConfig({ ...config, api_traffic_ratio: Number(e.target.value) / 100 })}
+                style={{ width: "100%", accentColor: S.accent }}
+              />
+              <div className="flex justify-between mt-1">
+                <span className="text-[10px]" style={{ color: S.text3 }}>0% (全 CLI)</span>
+                <span className="text-[10px]" style={{ color: S.text3 }}>50%</span>
+                <span className="text-[10px]" style={{ color: S.text3 }}>100% (全 API)</span>
+              </div>
+              <p className="text-xs mt-3" style={{ color: S.text3 }}>
+                {t("API 直连")}：{t("通过公司 Vertex 代理调用；可观测每一步、无 CLI 依赖。")}<br />
+                {t("CLI 子进程")}：{t("保留原 claude CLI 调用方式，行为与历史一致。")}
+              </p>
             </div>
           </section>
         )}
