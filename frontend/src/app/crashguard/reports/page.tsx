@@ -8,6 +8,7 @@ import {
   fetchCrashReportHistory,
   fetchCrashReportDetail,
   fetchCrashHourlyAlertDetail,
+  fetchCoreMetricAlertDetail,
   formatSGT,
   type CrashReportHistoryItem,
   type CrashWindowHours,
@@ -30,10 +31,10 @@ const D = {
   dangerBg: "rgba(220,38,38,0.08)",
 } as const;
 
-type FilterKey = "all" | "morning" | "evening" | "hourly_alert";
+type FilterKey = "all" | "morning" | "evening" | "hourly_alert" | "core_metric_alert";
 
 const PAGE_SIZE = 20;
-const FILTER_VALUES: FilterKey[] = ["all", "morning", "evening", "hourly_alert"];
+const FILTER_VALUES: FilterKey[] = ["all", "morning", "evening", "hourly_alert", "core_metric_alert"];
 
 function parseFilter(v: string | null): FilterKey {
   return FILTER_VALUES.includes((v || "") as FilterKey) ? (v as FilterKey) : "all";
@@ -136,12 +137,15 @@ function CrashReportsHistoryInner() {
     if (autoOpenAlertId === null) return;
     const aid = autoOpenAlertId;
     setAutoOpenAlertId(null);
-    // 构造最小 item 触发 modal（kind=hourly_alert → onOpen 走详情接口）
+    // 构造最小 item 触发 modal（type query 决定 kind）
+    const typeParam = searchParams.get("type") || "";
+    const stubKind: CrashReportHistoryItem["kind"] =
+      typeParam === "core_metric_alert" ? "core_metric_alert" : "hourly_alert";
     const stub: CrashReportHistoryItem = {
-      kind: "hourly_alert",
+      kind: stubKind,
       id: aid,
       report_date: null,
-      report_type: "hourly_alert",
+      report_type: stubKind === "core_metric_alert" ? "core_metric_alert" : "hourly_alert",
       top_n: 0,
       new_count: 0,
       regression_count: 0,
@@ -166,8 +170,10 @@ function CrashReportsHistoryInner() {
       setDetailMd("");
       try {
         if (it.kind === "hourly_alert") {
-          // hourly alert 是即时告警，无跨日聚合语义；忽略 win
           const r = await fetchCrashHourlyAlertDetail(it.id);
+          setDetailMd(r.markdown);
+        } else if (it.kind === "core_metric_alert") {
+          const r = await fetchCoreMetricAlertDetail(it.id);
           setDetailMd(r.markdown);
         } else {
           const r = await fetchCrashReportDetail(it.id, win);
@@ -187,9 +193,9 @@ function CrashReportsHistoryInner() {
     loadDetail(it, detailWindow);
   };
 
-  // 切换窗口时若 modal 已打开且是早晚报，则重新拉取
+  // 切换窗口时若 modal 已打开且是早晚报（非即时告警），则重新拉取
   useEffect(() => {
-    if (openItem && openItem.kind !== "hourly_alert") {
+    if (openItem && openItem.kind !== "hourly_alert" && openItem.kind !== "core_metric_alert") {
       loadDetail(openItem, detailWindow);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -197,13 +203,20 @@ function CrashReportsHistoryInner() {
 
   const renderItem = (it: CrashReportHistoryItem) => {
     const isAlert = it.kind === "hourly_alert";
+    const isMetric = it.kind === "core_metric_alert";
     const isMorning = it.report_type === "morning";
-    const icon = isAlert ? "🚨" : isMorning ? "🌅" : "🌇";
-    const title = isAlert
-      ? `${formatSGT(it.hour_utc)} SGT · ${t("实时告警")}`
-      : `${it.report_date} · ${isMorning ? t("日报（昨日 24h）") : t("日内增量（vs 上周同段）")}`;
+    const icon = isMetric ? "📉" : isAlert ? "🚨" : isMorning ? "🌅" : "🌇";
+    const metricDir = it.direction === "down" ? "🔻" : it.direction === "up" ? "🔺" : "";
+    const metricLabel = it.platforms_alerted
+      ? `${it.platforms_alerted.toUpperCase()} ${metricDir}`
+      : t("核心指标");
+    const title = isMetric
+      ? `${it.window_start ? formatSGT(it.window_start) : (it.report_date || "")} SGT · ${t("核心指标告警")} · ${metricLabel}`
+      : isAlert
+        ? `${formatSGT(it.hour_utc)} SGT · ${t("实时告警")}`
+        : `${it.report_date} · ${isMorning ? t("日报（昨日 24h）") : t("日内增量（vs 上周同段）")}`;
     const total = it.attention_total;
-    const hasAnomaly = total > 0;
+    const hasAnomaly = isMetric ? (it.direction === "down") : total > 0;
     return (
       <div
         key={`${it.kind}-${it.id}`}
@@ -321,7 +334,7 @@ function CrashReportsHistoryInner() {
           }}
         >
           <span style={{ color: D.text2, fontSize: 13 }}>{t("类型")}：</span>
-          {(["all", "morning", "evening", "hourly_alert"] as const).map((k) => (
+          {(["all", "morning", "evening", "hourly_alert", "core_metric_alert"] as const).map((k) => (
             <button
               key={k}
               onClick={() => setFilter(k)}
@@ -341,7 +354,9 @@ function CrashReportsHistoryInner() {
                 ? "🌅 日报"
                 : k === "evening"
                 ? "🌇 日内增量"
-                : "🚨 实时告警"}
+                : k === "hourly_alert"
+                ? "🚨 实时告警"
+                : "📉 核心指标"}
             </button>
           ))}
           <span style={{ flex: 1 }} />
@@ -483,10 +498,10 @@ function CrashReportsHistoryInner() {
               }}
             >
               <strong style={{ fontSize: 15 }}>
-                {openItem.kind === "hourly_alert" ? t("告警详情") : t("报告详情")}
+                {openItem.kind === "hourly_alert" || openItem.kind === "core_metric_alert" ? t("告警详情") : t("报告详情")}
               </strong>
-              {/* 早晚报详情：时间窗口切换；hourly_alert 不需要（即时告警无跨日聚合）*/}
-              {openItem.kind !== "hourly_alert" && (
+              {/* 早晚报详情：时间窗口切换；即时告警（hourly / core_metric）不需要 */}
+              {openItem.kind !== "hourly_alert" && openItem.kind !== "core_metric_alert" && (
                 <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                   <span style={{ fontSize: 11, color: D.text2 }}>{t("展示窗口")}：</span>
                   {([

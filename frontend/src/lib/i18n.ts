@@ -473,6 +473,8 @@ const EN: Record<string, string> = {
   "上一页": "Prev",
   "下一页": "Next",
   "实时告警": "Real-time Alert",
+  "核心指标告警": "Core Metric Alert",
+  "核心指标": "Core Metric",
   "告警详情": "Alert details",
   "报告与告警历史": "Reports & Alerts",
   "异常": "Anomaly",

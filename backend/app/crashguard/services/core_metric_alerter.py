@@ -270,8 +270,9 @@ async def run_core_metric_tick(
                     "crashed": crashed, "cf_pct": cf_pct,
                 })
 
-                # 量级闸（版本维度用更低阈值，因为版本流量天然 < 大盘）
-                dim_min_sessions = min_sessions if dimension == "overall" else max(50, min_sessions // 5)
+                # 版本维度与大盘用相同 min_sessions 门槛——样本太小的版本数据噪声太大，
+                # 宁可漏报也不误报。100 条 session 不足以判定版本健康度变化。
+                dim_min_sessions = min_sessions
                 if total < dim_min_sessions:
                     continue
                 if crashed < min_crashed:

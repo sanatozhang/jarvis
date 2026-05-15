@@ -1345,12 +1345,16 @@ export const fetchCrashAuditSummary = (hours = 48) =>
   request<CrashAuditSummary>(`/crash/audit-summary?hours=${hours}`);
 
 export interface CrashReportHistoryItem {
-  kind: "daily" | "hourly_alert";
+  kind: "daily" | "hourly_alert" | "core_metric_alert";
   id: number;
   sort_key?: string | null;
   report_date: string | null;
-  report_type: "morning" | "evening" | "hourly_alert";
+  report_type: "morning" | "evening" | "hourly_alert" | "core_metric_alert";
   hour_utc?: string | null;
+  // core_metric_alert 专属
+  window_start?: string | null;
+  platforms_alerted?: string | null;
+  direction?: string | null;
   top_n: number;
   new_count: number;
   regression_count: number;
@@ -1361,9 +1365,22 @@ export interface CrashReportHistoryItem {
   attention_total: number;
 }
 
+export const fetchCoreMetricAlertDetail = (id: number) =>
+  request<{
+    id: number;
+    kind: "core_metric_alert";
+    window_start: string | null;
+    direction: string;
+    platforms_alerted: string;
+    feishu_message_id: string;
+    markdown: string;
+    payload: Record<string, unknown>;
+    created_at: string | null;
+  }>(`/crash/alerts/core-metric/${id}`);
+
 export const fetchCrashReportHistory = (opts?: {
   days?: number;
-  report_type?: "morning" | "evening" | "hourly_alert";
+  report_type?: "morning" | "evening" | "hourly_alert" | "core_metric_alert";
   page?: number;
   page_size?: number;
 }) => {
