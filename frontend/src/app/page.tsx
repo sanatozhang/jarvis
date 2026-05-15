@@ -1014,13 +1014,17 @@ export default function HomePage() {
                               {item.root_cause_summary && (
                                 <div className="flex items-start gap-1.5">
                                   <span className="mt-px flex-shrink-0 text-[10px] font-semibold" style={{ color: S.accent }}>{t("原因")}</span>
-                                  <p className="text-xs" style={{ color: S.text2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.root_cause_summary}</p>
+                                  <p className="text-xs" style={{ color: S.text2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                                    {lang === "en" ? (item.root_cause_summary_en || item.root_cause_summary) : item.root_cause_summary}
+                                  </p>
                                 </div>
                               )}
                               {item.result_summary && (
                                 <div className="flex items-start gap-1.5">
                                   <span className="mt-px flex-shrink-0 text-[10px] font-semibold" style={{ color: "#16A34A" }}>{t("结果")}</span>
-                                  <p className="text-xs" style={{ color: S.text2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.result_summary}</p>
+                                  <p className="text-xs" style={{ color: S.text2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                                    {lang === "en" ? (item.result_summary_en || item.result_summary) : item.result_summary}
+                                  </p>
                                 </div>
                               )}
                             </div>
@@ -1049,7 +1053,11 @@ export default function HomePage() {
                               </button>
                             )}
                             {item.analysis?.user_reply && (
-                              <button onClick={() => copy(item.analysis!.user_reply)}
+                              <button onClick={() => copy(
+                                lang === "en"
+                                  ? (item.analysis!.user_reply_en || item.analysis!.user_reply)
+                                  : item.analysis!.user_reply
+                              )}
                                 className="rounded-lg px-2.5 py-1 text-[11px] font-medium"
                                 style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                                 {t("复制回复")}
