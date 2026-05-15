@@ -2,8 +2,10 @@
 # Appllo Global Configuration
 # ===========================
 
-# Jarvis 前端 URL — 告警飞书消息深链使用（两台服务器共用同一前端入口）
-frontend_base_url: "http://10.0.52.102:3000"
+# Jarvis 前端 URL — 告警深链，各服务器通过 env 各自配置
+# 100 号裸机: 在 .env 加 APPLLO_BASE_URL=http://10.0.52.100:3000
+# 102 号 Docker: docker-compose.yml 已有 CRASHGUARD_FRONTEND_BASE_URL=http://10.0.52.102:3000
+frontend_base_url: ""
 
 # Feishu Bitable 配置
 feishu:
