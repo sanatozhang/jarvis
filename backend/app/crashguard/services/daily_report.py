@@ -508,13 +508,17 @@ async def compose_report(
             }
         t_sess_all = sum(total_sessions_by_plat.get(k, 0) for k in ("ANDROID", "IOS"))
         b_sess_all = sum(baseline_sessions_by_plat.get(k, 0) for k in ("ANDROID", "IOS"))
+        # 合计 fatal 只统计 ANDROID + IOS，与卡片显示口径一致。
+        # today_fatal_total 含 OTHER（Flutter issue 无法 resolve 的），不应入合计。
+        t_fatal_all = today_fatal_by_plat["ANDROID"] + today_fatal_by_plat["IOS"]
+        b_fatal_all = base_fatal_by_plat["ANDROID"] + base_fatal_by_plat["IOS"]
         dual_window_payload["summary"] = {
             "today_sessions": int(t_sess_all),
             "baseline_sessions": int(b_sess_all),
-            "today_fatal": int(today_fatal_total),
-            "baseline_fatal": int(base_fatal_total),
+            "today_fatal": int(t_fatal_all),
+            "baseline_fatal": int(b_fatal_all),
             "sess_delta_pct": _pct_num(t_sess_all, b_sess_all),
-            "fatal_delta_pct": _pct_num(today_fatal_total, base_fatal_total),
+            "fatal_delta_pct": _pct_num(t_fatal_all, b_fatal_all),
         }
 
         # markdown 输出：紧凑表格（前端 reports 页用）

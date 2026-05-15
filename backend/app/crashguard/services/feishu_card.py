@@ -199,19 +199,34 @@ def _build_crash_free_column_md(
     plat_label: str,
     all_stats: Dict[str, Any] | None,
     ver_stats: Dict[str, Any] | None,
+    wow: Dict[str, Any] | None = None,
 ) -> str:
-    """单平台一栏的 markdown（全版本 + 主要版本两段）。"""
+    """单平台一栏的 markdown（全版本 + 主要版本两段）。
+    wow: dual_window platform dict with today_fatal/baseline_fatal/fatal_delta_pct/sess_delta_pct.
+    """
     lines: List[str] = [f"**{plat_label}**", ""]
     if all_stats:
         pct = all_stats.get("crash_free_pct")
         pct_str = (
             f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
         )
-        lines.append("__全版本__")
+        lines.append("__全版本（大盘）__")
         lines.append(f"· 会话总数：**{_fmt_n(all_stats.get('total_sessions'))}**")
         lines.append(f"· Crash-free：{_fmt_n(all_stats.get('crash_free_sessions'))}")
         lines.append(f"· 崩溃：{_fmt_n(all_stats.get('crashed_sessions'))}")
         lines.append(f"· Crash-free 率：{pct_str}")
+        # WoW 对比（来自双窗口数据，不重复显示 sessions，只看 fatal 趋势）
+        if wow:
+            sess_pct = wow.get("sess_delta_pct")
+            fat_pct = wow.get("fatal_delta_pct")
+            def _wow_str(v):
+                if v is None:
+                    return "—"
+                sign = "+" if v >= 0 else ""
+                return f"{sign}{v:.0f}%"
+            lines.append(
+                f"· vs 上周：sessions {_wow_str(sess_pct)} · fatal {_wow_str(fat_pct)}"
+            )
         lines.append("")
     if ver_stats:
         pct = ver_stats.get("crash_free_pct")
@@ -337,15 +352,16 @@ def _build_dual_window_columns(dw: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def _build_crash_free_columns(detail: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     """飞书 v2 column_set 双列：左 iOS / 右 Android，下方一行汇总。
 
-    抓手：把原来纵向 47 行的 bullet 列表压缩成视觉对照的双列卡片。
+    dual_window: 双窗口 payload，用于在全版本块追加 vs 上周 WoW 对比行。
     """
     all_block = (detail.get("all_versions") or {})
     ver_block = (detail.get("top_user_versions") or {})
     all_plats = all_block.get("platforms") or {}
     ver_plats = ver_block.get("platforms") or {}
+    dw_plats = (dual_window or {}).get("platforms") or {}
 
     out: List[Dict[str, Any]] = []
 
@@ -357,9 +373,11 @@ def _build_crash_free_columns(detail: Dict[str, Any]) -> List[Dict[str, Any]]:
     # 双列：iOS 左 / Android 右
     ios_md = _build_crash_free_column_md(
         "🍎 iOS", all_plats.get("IOS"), ver_plats.get("IOS"),
+        wow=dw_plats.get("IOS"),
     )
     and_md = _build_crash_free_column_md(
         "📱 Android", all_plats.get("ANDROID"), ver_plats.get("ANDROID"),
+        wow=dw_plats.get("ANDROID"),
     )
 
     out.append({
@@ -466,7 +484,7 @@ def build_daily_card(
     sections = _split_sections(markdown)
 
     # 主题分类：标题里含这些关键字 → 必看（默认展开）；其余 → 折叠
-    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR", "Crash-free 详表", "双窗口对照")
+    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR", "Crash-free 详表")
 
     crash_free_detail = payload.get("crash_free_detail") or {}
     dual_window = payload.get("dual_window") or {}
@@ -481,17 +499,15 @@ def build_daily_card(
             continue
 
         # 拦截 Crash-free 详表：飞书 lark_md 不支持 table，改用 column_set 双列原生布局
+        # 同时注入 dual_window WoW 对比（替代已移除的「双窗口对照」section）
         if "Crash-free 详表" in title and crash_free_detail:
             elements.append(_div(f"**{title}**"))
-            elements.extend(_build_crash_free_columns(crash_free_detail))
+            elements.extend(_build_crash_free_columns(crash_free_detail, dual_window=dual_window))
             elements.append({"tag": "hr"})
             continue
 
-        # 拦截 双窗口对照：同样用 column_set 双列原生布局
-        if "双窗口对照" in title and dual_window:
-            elements.append(_div(f"**{title}**"))
-            elements.extend(_build_dual_window_columns(dual_window))
-            elements.append({"tag": "hr"})
+        # 双窗口对照已合并入 Crash-free 详表，直接跳过不渲染
+        if "双窗口对照" in title:
             continue
 
         sec_elements: List[Dict[str, Any]] = []
