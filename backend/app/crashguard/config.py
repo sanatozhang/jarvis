@@ -559,6 +559,12 @@ def _yaml_overrides() -> Dict[str, Any]:
         flat["deep_analysis_auto_proceed_threshold"] = float(
             cfg["deep_analysis_auto_proceed_threshold"]
         )
+    if "deep_analysis_auto_enabled" in cfg:
+        flat["deep_analysis_auto_enabled"] = bool(cfg["deep_analysis_auto_enabled"])
+    if "deep_analysis_auto_max_per_tick" in cfg:
+        flat["deep_analysis_auto_max_per_tick"] = int(cfg["deep_analysis_auto_max_per_tick"])
+    if "deep_analyze_auto_cron" in cfg:
+        flat["deep_analyze_auto_cron"] = str(cfg["deep_analyze_auto_cron"])
     if "analyze_cron" in cfg:
         flat["analyze_cron"] = str(cfg["analyze_cron"])
     if "analyze_max_per_tick" in cfg:
