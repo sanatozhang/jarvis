@@ -254,18 +254,21 @@ async def start_analysis(
         if dedup_hours > 0:
             cutoff = datetime.utcnow() - timedelta(hours=dedup_hours)
             async with get_session() as session:
+                # 同时去重 success + running/pending：防并发触发导致同一 issue 同时跑多条分析
+                # phase != "diagnosis"：Phase 1（深度诊断）不算 Phase 2（修复分析）的去重依据
                 latest = (await session.execute(
                     select(CrashAnalysis)
                     .where(CrashAnalysis.datadog_issue_id == issue_id)
-                    .where(CrashAnalysis.status == "success")
+                    .where(CrashAnalysis.status.in_(["success", "running", "pending"]))
+                    .where(CrashAnalysis.phase != "diagnosis")
                     .where(CrashAnalysis.created_at >= cutoff)
                     .order_by(CrashAnalysis.created_at.desc())
                     .limit(1)
                 )).scalar_one_or_none()
                 if latest is not None:
                     logger.info(
-                        "start_analysis dedup hit: issue=%s reusing run_id=%s (age=%.1fh)",
-                        issue_id, latest.analysis_run_id,
+                        "start_analysis dedup hit: issue=%s reusing run_id=%s status=%s (age=%.1fh)",
+                        issue_id, latest.analysis_run_id, latest.status,
                         (datetime.utcnow() - latest.created_at).total_seconds() / 3600.0,
                     )
                     return latest.analysis_run_id
@@ -1228,11 +1231,12 @@ def _format_top_dist(items: list, max_n: int = 3) -> str:
 
 
 async def _persist_distribution_to_issue(issue_id: str, detail: Dict[str, Any]) -> None:
-    """把 RUM 事件分布回写到 CrashIssue 缓存字段"""
+    """把 RUM 事件分布 + 完整堆栈回写到 CrashIssue 缓存字段"""
     top_os = _format_top_dist(detail.get("os_distribution") or [])
     top_device = _format_top_dist(detail.get("device_distribution") or [])
     top_ver = _format_top_dist(detail.get("version_distribution") or [])
-    if not (top_os or top_device or top_ver):
+    full_stack = (detail.get("full_stack") or "").strip()
+    if not (top_os or top_device or top_ver or full_stack):
         return
     async with get_session() as session:
         row = (await session.execute(
@@ -1246,4 +1250,7 @@ async def _persist_distribution_to_issue(issue_id: str, detail: Dict[str, Any]) 
             row.top_device = top_device
         if top_ver:
             row.top_app_version = top_ver
+        # 用 RUM 事件里 score 最高的完整堆栈覆盖 search_issues 返回的单行错误消息
+        if full_stack and len(full_stack) > len(row.representative_stack or ""):
+            row.representative_stack = full_stack[:8000]
         await session.commit()
