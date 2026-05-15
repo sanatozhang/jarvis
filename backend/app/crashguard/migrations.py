@@ -52,6 +52,14 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     # 三维度核心指标：dimension=overall/main_version/latest_version；version_tag 存实际版本号
     ("crash_metric_snapshots", "dimension", "VARCHAR(32)", "'overall'"),
     ("crash_metric_snapshots", "version_tag", "VARCHAR(64)", "''"),
+    # Phase 1 深度诊断列
+    ("crash_analyses", "phase", "VARCHAR(16)", "'fix'"),
+    ("crash_analyses", "crash_type", "VARCHAR(16)", "''"),
+    ("crash_analyses", "hypotheses", "TEXT", "'[]'"),
+    ("crash_analyses", "data_gaps", "TEXT", "'[]'"),
+    ("crash_analyses", "confirmed_hypothesis_id", "VARCHAR(16)", "''"),
+    ("crash_analyses", "investigation_log", "TEXT", "'[]'"),
+    ("crash_analyses", "parent_diagnosis_run_id", "VARCHAR(64)", "''"),
 ]
 
 
