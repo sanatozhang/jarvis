@@ -66,7 +66,7 @@ function _isRetriableStatus(status: number): boolean {
   return status >= 500 && status <= 599;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const headers = new Headers(init?.headers || {});
   const isFormDataBody =
     typeof FormData !== "undefined" && init?.body instanceof FormData;
@@ -74,6 +74,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
+  const timeoutMs = init?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const method = (init?.method || "GET").toUpperCase();
   const canRetry = _isRetriableMethod(method);
   const maxAttempts = canRetry ? RETRY_DELAYS_MS.length + 1 : 1;
@@ -82,7 +83,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // 每次 attempt 用独立 AbortController + 超时
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), DEFAULT_TIMEOUT_MS);
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
     try {
       const res = await fetch(`${BASE}${path}`, {
         ...init,
@@ -1333,6 +1334,7 @@ export const runCrashDailyReport = (
       dry_run: opts?.dry_run ?? true,
       chat_id: opts?.chat_id,
     }),
+    timeoutMs: 120_000,  // report generation can take 30-60s; default 15s would abort it
   });
 
 export interface CrashAuditSummary {
