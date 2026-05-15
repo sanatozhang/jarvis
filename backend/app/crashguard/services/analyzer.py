@@ -568,6 +568,33 @@ async def _maybe_auto_draft_pr(analysis_id: int, feasibility: float) -> None:
         # multi 返回 {ok, prs:[...], total, succeeded, failed}
         prs = result.get("prs", [])
         urls = [p.get("pr_url") for p in prs if p.get("pr_url")]
+
+        # 自愈 retry：实现 agent 找不到文件（no_real_patch）时等 10s 重试一次。
+        # 背景：Gate#5 宽扫描在第一次调用时已扫出真实文件列表，第二次调用时这些文件
+        # 路径会被注入 agent prompt，大概率能找到目标；等 10s 是为了让 OS inode cache
+        # 稳定（git clean -fdx 之后的文件系统重扫）。
+        first_errors = [p.get("error", "") for p in prs if not p.get("ok")]
+        is_no_patch = any("no_real_patch" in (e or "") for e in first_errors)
+        if is_no_patch and not result.get("ok"):
+            logger.info(
+                "auto_draft_pr: no_real_patch on first attempt (ana=%d) → "
+                "retrying in 10s with Gate#5 broad scan",
+                analysis_id,
+            )
+            await asyncio.sleep(10)
+            retry_result = await draft_prs_multi(analysis_id, approver="auto_retry")
+            if retry_result.get("ok"):
+                result = retry_result
+                prs = result.get("prs", [])
+                urls = [p.get("pr_url") for p in prs if p.get("pr_url")]
+                logger.info("auto_draft_pr: retry succeeded → %s", urls)
+            else:
+                logger.warning(
+                    "auto_draft_pr: retry also failed (ana=%d): %s",
+                    analysis_id,
+                    [p.get("error") for p in retry_result.get("prs", []) if not p.get("ok")][:3],
+                )
+
         await write_audit(
             op="auto_draft_pr",
             target_id=str(analysis_id),

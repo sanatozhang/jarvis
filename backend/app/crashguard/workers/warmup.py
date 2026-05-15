@@ -84,12 +84,29 @@ async def _collect_attention_ids(today: date) -> List[str]:
             ordered.append(iid)
         return len(ordered) >= cap
 
+    # 只分析能自动修复的平台（BROWSER/JS 错误无对应 mobile repo，分析后无法生成 PR，
+    # 浪费 AI token 并挤占 Top N 名额）
+    from app.crashguard.models import CrashIssue as _CrashIssue
+    s_cfg = get_crashguard_settings()
+    _FIXABLE = frozenset(
+        p.lower() for p in
+        getattr(s_cfg, "auto_pr_fixable_platforms", ["android", "ios", "flutter"])
+    )
+
     async with get_session() as session:
+        # 可修复平台 issue id 集合（用于过滤 snapshot 选出的 id）
+        fixable_issue_ids: set[str] = set(r[0] for r in (await session.execute(
+            select(_CrashIssue.datadog_issue_id).where(
+                _CrashIssue.platform.in_([p.upper() for p in _FIXABLE] + list(_FIXABLE))
+            )
+        )).all())
+
         top_fatal = await pick_top_n(
             session, today=today, n=cap, kinds=(), fatality="fatal", dedup_days=0,
         )
         for item in top_fatal:
-            if _add(item.get("datadog_issue_id") or ""):
+            iid = item.get("datadog_issue_id") or ""
+            if iid in fixable_issue_ids and _add(iid):
                 return ordered
 
         new_rows = (await session.execute(
@@ -99,14 +116,15 @@ async def _collect_attention_ids(today: date) -> List[str]:
             )
         )).scalars().all()
         for iid in new_rows:
-            if _add(iid or ""):
+            if (iid or "") in fixable_issue_ids and _add(iid or ""):
                 return ordered
 
         top_nonfatal = await pick_top_n(
             session, today=today, n=cap, kinds=(), fatality="non_fatal", dedup_days=0,
         )
         for item in top_nonfatal:
-            if _add(item.get("datadog_issue_id") or ""):
+            iid = item.get("datadog_issue_id") or ""
+            if iid in fixable_issue_ids and _add(iid):
                 return ordered
 
     return ordered

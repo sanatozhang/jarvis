@@ -326,6 +326,9 @@ class CrashguardSettings(BaseSettings):
     # 抓手：#987 stale-base 链遗留的 pubspec bump 类问题，源头治理后兜底清扫。
     gate_draft_pollution_enabled: bool = True
     gate_draft_pollution_min_age_hours: int = 24
+    # 可自动修复的平台白名单——不在名单内（如 BROWSER）的 issue 直接跳过 AI 分析和 PR，
+    # 避免浪费 token 且永远无法生成 PR（BROWSER 是 JS，无对应 mobile 代码仓库）
+    auto_pr_fixable_platforms: List[str] = Field(default_factory=lambda: ["android", "ios", "flutter"])
 
     # === PR Review 自动响应（Step 3）===
     # 默认关，启用前先在测试 PR 上验过。开启后 pr_sync tick 内会拉每条 open PR 的
