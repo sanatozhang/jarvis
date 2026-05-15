@@ -364,6 +364,12 @@ class CrashguardSettings(BaseSettings):
     # 选项: low / medium / high；默认 medium（high 太严会卡掉大半 Top crash）
     top_crash_min_confidence: str = "medium"
 
+    # === Phase 1 深度诊断 ===
+    deep_analysis_enabled: bool = True
+    deep_analysis_timeout_seconds: int = 1800          # 30 分钟，可调
+    deep_analysis_dedup_hours: int = 6                 # 6h 内不重复跑
+    deep_analysis_auto_proceed_threshold: float = 0.9  # 快车道置信度门槛
+
     model_config = {
         "env_prefix": "CRASHGUARD_",
         "env_file": str(PROJECT_ROOT / ".env"),
@@ -535,6 +541,16 @@ def _yaml_overrides() -> Dict[str, Any]:
         flat["latest_version_min_events"] = int(cfg["latest_version_min_events"])
     if "analysis_dedup_hours" in cfg:
         flat["analysis_dedup_hours"] = int(cfg["analysis_dedup_hours"])
+    if "deep_analysis_enabled" in cfg:
+        flat["deep_analysis_enabled"] = bool(cfg["deep_analysis_enabled"])
+    if "deep_analysis_timeout_seconds" in cfg:
+        flat["deep_analysis_timeout_seconds"] = int(cfg["deep_analysis_timeout_seconds"])
+    if "deep_analysis_dedup_hours" in cfg:
+        flat["deep_analysis_dedup_hours"] = int(cfg["deep_analysis_dedup_hours"])
+    if "deep_analysis_auto_proceed_threshold" in cfg:
+        flat["deep_analysis_auto_proceed_threshold"] = float(
+            cfg["deep_analysis_auto_proceed_threshold"]
+        )
     if "analyze_cron" in cfg:
         flat["analyze_cron"] = str(cfg["analyze_cron"])
     if "analyze_max_per_tick" in cfg:
