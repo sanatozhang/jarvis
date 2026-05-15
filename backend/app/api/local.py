@@ -364,7 +364,19 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
     problem_type = ""
     analysis = await db.get_analysis_by_issue(issue_id)
     if analysis:
-        problem_type = analysis.problem_type or ""
+        # 优先用英文字段；中文 fallback 通过映射表翻译
+        _pt_en = (analysis.problem_type_en or "").strip()
+        _pt_zh = (analysis.problem_type or "").strip()
+        _ZH_TO_EN = {
+            "未知": "Unknown", "蓝牙连接": "Bluetooth Connection",
+            "固件升级": "Firmware Upgrade", "时间戳问题": "Timestamp Issue",
+            "录音问题": "Recording Issue", "设备故障": "Device Failure",
+            "文件传输": "File Transfer", "云同步": "Cloud Sync",
+            "转写问题": "Transcription Issue", "软件bug": "Software Bug",
+            "用户操作": "User Operation", "会员与支付": "Membership & Payment",
+            "其他": "Other",
+        }
+        problem_type = _pt_en or _ZH_TO_EN.get(_pt_zh, _pt_zh)
 
     issue_link = ""
     if is_feishu_source(issue_id):

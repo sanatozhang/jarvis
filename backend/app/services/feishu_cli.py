@@ -824,7 +824,10 @@ async def create_escalation_group(
             msg_lines.append(f"Ticket Link: {appllo_url}")
         else:
             msg_lines.append(f"Ticket ID: {issue_id}")
-        msg_lines.append(f"Issue Description: {description[:300]}")
+        # Strip leading [Platform][Chinese category] prefix so only English user description shows
+        import re as _re
+        clean_desc = _re.sub(r"^\s*(\[[^\]]*\])+\s*", "", description).strip() or description
+        msg_lines.append(f"Issue Description: {clean_desc[:300]}")
         if problem_type:
             msg_lines.append(f"Issue Category: {problem_type}")
         if zendesk_id:

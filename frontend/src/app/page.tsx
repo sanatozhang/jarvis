@@ -34,6 +34,12 @@ import {
 } from "@/lib/api";
 
 // ── URL helpers ──────────────────────────────────────────────
+/** Strip leading [Platform][Chinese category] brackets from issue description.
+ *  Used when site language is EN so only the actual (English) text is shown. */
+function stripCategoryPrefix(desc: string): string {
+  return desc.replace(/^(\[[^\]]*\])+\s*/, "").trim() || desc;
+}
+
 function getUrlParam(key: string): string {
   if (typeof window === "undefined") return "";
   return new URLSearchParams(window.location.search).get(key) || "";
@@ -935,7 +941,7 @@ export default function HomePage() {
                       <td className={tdBase} style={{ width: "64px" }}><SourceBadge source={issue.source} linearUrl={issue.linear_issue_url} /></td>
                       <td className="px-3 py-3 max-w-md">
                         <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                          {issue.description}
+                          {lang === "en" ? stripCategoryPrefix(issue.description || "") : issue.description}
                         </p>
                       </td>
                       <td className={tdBase} style={{ width: "112px" }}>
@@ -1001,7 +1007,7 @@ export default function HomePage() {
                         <td className={tdBase} style={{ width: "64px" }}><SourceBadge source={item.source} linearUrl={item.linear_issue_url} /></td>
                         <td className="px-3 py-3 max-w-md">
                           <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                            {item.description}
+                            {lang === "en" ? stripCategoryPrefix(item.description || "") : item.description}
                           </p>
                           {item.source === "linear" && item.linear_issue_url && (
                             <a href={item.linear_issue_url} target="_blank" onClick={(e) => e.stopPropagation()}
@@ -1191,7 +1197,7 @@ export default function HomePage() {
               <section>
                 <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("问题描述")}</h3>
                 <div className="whitespace-pre-wrap rounded-lg p-3 text-sm leading-relaxed" style={{ background: S.overlay, color: S.text2 }}>
-                  {detailData.issue.description || t("无")}
+                  {lang === "en" ? stripCategoryPrefix(detailData.issue.description || "") : (detailData.issue.description || t("无"))}
                 </div>
               </section>
 
