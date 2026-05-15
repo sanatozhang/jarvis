@@ -145,6 +145,7 @@ class CrashAnalysis(Base):
     confirmed_hypothesis_id = Column(String(64), default="")
     investigation_log = Column(Text, default="[]")           # JSON: List[str]，AI 调查步骤
     parent_diagnosis_run_id = Column(String(64), default="") # Phase2 行 → Phase1 run_id
+    recommended_hypothesis = Column(String(64), default="")  # Phase 1 推荐假设 id
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

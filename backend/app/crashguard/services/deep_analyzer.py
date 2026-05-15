@@ -390,6 +390,8 @@ async def get_diagnosis_status(run_id: str) -> Optional[Dict[str, Any]]:
             "confirmed_hypothesis_id": row.confirmed_hypothesis_id or "",
             "parent_diagnosis_run_id": row.parent_diagnosis_run_id or "",
             "feasibility_score": float(row.feasibility_score or 0.0),
+            "overall_confidence": float(row.feasibility_score or 0.0),    # 与 diagnosis.json 命名一致
+            "recommended_hypothesis": getattr(row, "recommended_hypothesis", "") or "",
             "confidence": row.confidence or "",
             "agent_name": row.agent_name or "",
             "agent_model": row.agent_model or "",
@@ -592,10 +594,11 @@ async def _run_diagnosis_in_background(issue_id: str, run_id: str) -> None:
             )).scalar_one_or_none()
             if row is None:
                 return
-            row.hypotheses = json.dumps(hypotheses[:5], ensure_ascii=False)
+            row.hypotheses = json.dumps(hypotheses[:10], ensure_ascii=False)
             row.data_gaps = json.dumps(data_gaps, ensure_ascii=False)
             row.investigation_log = json.dumps(investigation_log, ensure_ascii=False)
             row.feasibility_score = overall_conf
+            row.recommended_hypothesis = recommended  # 使用已有的 recommended 变量
             row.confidence = (
                 "high" if overall_conf >= 0.7
                 else ("medium" if overall_conf >= 0.4 else "low")
