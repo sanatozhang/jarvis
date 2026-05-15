@@ -155,6 +155,7 @@ class Settings(BaseSettings):
     workers: int = 1
     log_level: str = "info"
     secret_key: str = "change-me"
+    frontend_base_url: str = ""    # Jarvis 前端 URL，用于告警深链（env: APPLLO_BASE_URL）
 
     # --- Sub-configs (populated from yaml + env) ---
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
@@ -252,6 +253,14 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
     for k, v in sc.items():
         if hasattr(settings.storage, k):
             setattr(settings.storage, k, v)
+
+    # frontend_base_url: yaml 优先，其次 env APPLLO_BASE_URL，再次 CRASHGUARD_FRONTEND_BASE_URL
+    if not settings.frontend_base_url:
+        settings.frontend_base_url = (
+            cfg.get("frontend_base_url", "")
+            or os.getenv("APPLLO_BASE_URL", "")
+            or os.getenv("CRASHGUARD_FRONTEND_BASE_URL", "")
+        ).rstrip("/")
 
     return settings
 

@@ -510,11 +510,16 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             if os.environ.get("ENABLE_ONCALL_NOTIFY", "false").lower() == "true":
                 try:
                     from app.services.notify import notify_oncall
+                    from app.config import get_settings as _gs
+                    _base = (_gs().frontend_base_url or "").rstrip("/")
+                    _path = "/" if (issue_id or "").startswith("fb_") else "/tracking"
+                    _link = f"{_base}{_path}?detail={issue_id}" if _base else ""
                     await notify_oncall(
                         issue_id=issue_id,
                         description=result.root_cause[:200],
                         reason=f"AI 分析失败: {result.problem_type}",
                         zendesk_id="",
+                        link=_link,
                     )
                 except Exception as ne:
                     logger.warning("Failed to notify oncall on analysis failure: %s", ne)

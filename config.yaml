@@ -2,6 +2,9 @@
 # Appllo Global Configuration
 # ===========================
 
+# Jarvis 前端 URL — 告警飞书消息深链使用（两台服务器共用同一前端入口）
+frontend_base_url: "http://10.0.52.102:3000"
+
 # Feishu Bitable 配置
 feishu:
   app_token: "BmjmbSpxxabP2dsuxbtcUTYAn4g"

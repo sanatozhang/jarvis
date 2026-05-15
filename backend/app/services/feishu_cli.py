@@ -899,16 +899,19 @@ async def notify_analysis_failure(
     Includes a deep link to /tracking?detail={issue_id} when APPLLO_BASE_URL is set.
     """
     import os as _os
+    from app.config import get_settings as _get_settings
     raw = (_os.environ.get("ANALYSIS_FAILURE_ALERT_EMAILS", "") or "").strip()
     recipients = [e.strip() for e in raw.split(",") if e.strip()] or ["sanato.zhang@plaud.ai"]
 
-    # APPLLO_BASE_URL preferred; fall back to CRASHGUARD_FRONTEND_BASE_URL which is
-    # always configured in docker-compose (same host, same frontend port).
-    base = (
-        _os.environ.get("APPLLO_BASE_URL", "")
-        or _os.environ.get("CRASHGUARD_FRONTEND_BASE_URL", "")
-    ).rstrip("/")
-    link = f"{base}/tracking?detail={issue_id}" if base else ""
+    # 读 config.yaml frontend_base_url（env APPLLO_BASE_URL / CRASHGUARD_FRONTEND_BASE_URL 兜底）
+    # 裸机服务器（100）无 Docker env，必须从 config.yaml 拿。
+    base = (_get_settings().frontend_base_url or "").rstrip("/")
+    # fb_ 前缀是本地工单（首页），其余是 zendesk/feishu 工单（tracking 页）
+    if base and issue_id:
+        path = "/" if (issue_id or "").startswith("fb_") else "/tracking"
+        link = f"{base}{path}?detail={issue_id}"
+    else:
+        link = ""
 
     # Unified title: distinguish severity via label, not separate emoji+title combos.
     severity = "⚠️ Soft" if kind == "soft" else "🚨 Hard"
