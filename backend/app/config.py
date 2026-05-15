@@ -219,21 +219,7 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
         if hasattr(settings.context_condensation, k) and not os.getenv(f"CONDENSER_{k.upper()}"):
             setattr(settings.context_condensation, k, v)
 
-    # L1.5 always goes through the company Vertex proxy (per spec §4.6):
-    # when provider=anthropic and api_base_url is not explicitly set, inherit
-    # base_url from the claude_api provider so traffic stays inside the VPN.
-    if (
-        settings.context_condensation.provider == "anthropic"
-        and not settings.context_condensation.api_base_url
-        and not os.getenv("CONDENSER_API_BASE_URL")
-    ):
-        claude_api_provider = settings.agent.providers.get("claude_api")
-        if claude_api_provider and claude_api_provider.base_url:
-            settings.context_condensation.api_base_url = (
-                claude_api_provider.base_url.rstrip("/") + "/v1/messages"
-            )
-
-    # L1.5 shares the main agent's API key when CONDENSER_API_KEY isn't set
+    # L1.5 api_key: 先从 ANTHROPIC_API_KEY 拿直连 key（优先于 Vertex proxy）
     if (
         settings.context_condensation.provider == "anthropic"
         and not settings.context_condensation.api_key
@@ -241,6 +227,20 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
         anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
         if anthropic_key:
             settings.context_condensation.api_key = anthropic_key
+
+    # L1.5 Vertex proxy 继承：仅当没有直连 api_key 时才走 Vertex。
+    # 若已有 ANTHROPIC_API_KEY，走标准 Anthropic API，Vertex 代理不支持 Haiku → 400。
+    if (
+        settings.context_condensation.provider == "anthropic"
+        and not settings.context_condensation.api_base_url
+        and not os.getenv("CONDENSER_API_BASE_URL")
+        and not settings.context_condensation.api_key  # 有直连 key → 不走 Vertex
+    ):
+        claude_api_provider = settings.agent.providers.get("claude_api")
+        if claude_api_provider and claude_api_provider.base_url:
+            settings.context_condensation.api_base_url = (
+                claude_api_provider.base_url.rstrip("/") + "/v1/messages"
+            )
 
     # Concurrency
     cc = cfg.get("concurrency", {})
