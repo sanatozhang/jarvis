@@ -208,13 +208,51 @@ cmd_logs() {
 cmd_update() {
     log "Updating Jarvis..."
 
+    local backend_changed=0 frontend_changed=0
+
     if [ -d .git ]; then
         log "Pulling latest code..."
+        local before
+        before=$(git rev-parse HEAD)
         git pull
+        local after
+        after=$(git rev-parse HEAD)
+
+        if [ "$before" != "$after" ]; then
+            # 检测哪个部分有变更，只重建需要的镜像
+            if git diff --name-only "$before" "$after" | grep -qE '^backend/'; then
+                backend_changed=1
+            fi
+            if git diff --name-only "$before" "$after" | grep -qE '^frontend/'; then
+                frontend_changed=1
+            fi
+            # 根目录文件变更（docker-compose.yml 等）→ 全量重建
+            if git diff --name-only "$before" "$after" | grep -qvE '^(backend|frontend)/'; then
+                backend_changed=1
+                frontend_changed=1
+            fi
+        else
+            log "Already up to date — force rebuilding current images..."
+            backend_changed=1
+            frontend_changed=1
+        fi
+    else
+        backend_changed=1
+        frontend_changed=1
     fi
 
-    log "Rebuilding images..."
-    dc build
+    if [ "$backend_changed" -eq 1 ] && [ "$frontend_changed" -eq 1 ]; then
+        log "Rebuilding all images (backend + frontend)..."
+        dc build
+    elif [ "$backend_changed" -eq 1 ]; then
+        log "Backend changed — rebuilding backend only (~10s, skipping frontend)..."
+        dc build backend
+    elif [ "$frontend_changed" -eq 1 ]; then
+        log "Frontend changed — rebuilding frontend only (~2min)..."
+        dc build frontend
+    else
+        log "No file changes detected — skipping rebuild."
+    fi
 
     log "Restarting with new images..."
     dc down
