@@ -975,48 +975,37 @@ async def compose_report(
         )
         lines.append("")
 
-        # § 1 — 数据快照（紧凑表格：版本分布 + 错误事件分布）
+        # § 1 — 数据快照（紧凑内联，Crash-free 率已在详表展示不重复）
         lines.append("### 📊 数据快照")
         lines.append("")
-        snapshot_rows: List[str] = []
-        snapshot_rows.append("| 指标 | 值 |")
-        snapshot_rows.append("|---|---|")
-        snapshot_rows.append(f"| 事件总数 / sessions / issue | **{events_total:,}** / **{sessions_total:,}** / **{issue_count}** |")
-        snapshot_rows.append(f"| 综合影响分 | **{impact_total:,.1f}** |")
-        if total_sessions > 0 and distinct_crash >= 0:
-            cf_rate = max(0.0, min(1.0, 1 - distinct_crash / total_sessions))
-            snapshot_rows.append(
-                f"| Crash-free 率 | **{cf_rate * 100:.2f}%** ({distinct_crash:,} crash / {total_sessions:,} sessions) |"
-            )
+        # 第一行：核心计数
+        lines.append(
+            f"**events** {events_total:,} · **sessions** {sessions_total:,} · **issues** {issue_count} · **影响分** {impact_total:,.0f}"
+        )
+        # 第二行：错误类型分布（仅当有细分数据时）
         bd = crash_breakdown_by_plat.get(plat_key) or {}
-        if bd:
-            parts: List[str] = []
-            if bd.get("native_crash"):
-                parts.append(f"Native crash {bd['native_crash']:,}")
-            if bd.get("anr"):
-                parts.append(f"ANR {bd['anr']:,}")
-            if bd.get("app_hang"):
-                parts.append(f"App Hang {bd['app_hang']:,}")
-            if parts:
-                snapshot_rows.append(f"| 错误事件分布 | {' · '.join(parts)} |")
+        bd_parts: List[str] = []
+        if bd.get("native_crash"):
+            bd_parts.append(f"Native crash {bd['native_crash']:,}")
+        if bd.get("anr"):
+            bd_parts.append(f"ANR {bd['anr']:,}")
+        if bd.get("app_hang"):
+            bd_parts.append(f"App Hang {bd['app_hang']:,}")
+        if bd_parts:
+            lines.append(f"**错误分布**：{' · '.join(bd_parts)}")
+        # 第三行：版本信息
         if oldest_first == newest_last:
             range_str = f"`{newest_last}`"
         else:
             range_str = f"`{oldest_first}` → `{newest_last}`"
-        snapshot_rows.append(f"| 版本跨度 | {range_str} |")
         if top3_vers:
-            top3_str = " · ".join(
-                f"**{v}** {(w / events_total * 100):.1f}%"
+            top3_str = "  ".join(
+                f"**{v}** {(w / events_total * 100):.0f}%"
                 for v, w in top3_vers if events_total > 0
             )
-            snapshot_rows.append(
-                f"| 主力版本（events 加权） | {top3_str} _(基于 {issues_with_dist}/{issues_total} issue 采样)_ |"
-            )
+            lines.append(f"**版本跨度**：{range_str}　主力：{top3_str}")
         else:
-            snapshot_rows.append(
-                f"| 主力版本 | _⚠️ {issues_total} 个 issue 均无 RUM 分布采样_ |"
-            )
-        lines.extend(snapshot_rows)
+            lines.append(f"**版本跨度**：{range_str}")
         lines.append("")
 
         # ── §2-4 按 fatality 分桶渲染 ──────────────────
