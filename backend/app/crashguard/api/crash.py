@@ -2645,3 +2645,73 @@ async def pr_diagnose() -> Dict[str, Any]:
         "blockers 为空但 audit_logs 仍有 fail → 看 error_buckets，对症"
     )
     return out
+
+
+# ── Phase 1 深度诊断端点 ──────────────────────────────────────────────
+
+class DeepAnalyzeResponse(BaseModel):
+    run_id: str
+    status: str = "pending"
+
+
+class ConfirmHypothesisRequest(BaseModel):
+    hypothesis_id: str = Field(..., description="用户选择的假设 ID，如 'h1'")
+
+
+class ConfirmHypothesisResponse(BaseModel):
+    diagnosis_run_id: str
+    phase2_run_id: str
+    hypothesis_id: str
+
+
+class MarkDataNeededRequest(BaseModel):
+    note: str = Field(default="", description="工程师备注")
+
+
+@router.post("/issues/{issue_id}/deep-analyze", response_model=DeepAnalyzeResponse)
+async def deep_analyze_issue(issue_id: str) -> Any:
+    """触发 Phase 1 深度诊断（异步执行，立即返回 run_id）。
+
+    6h 内已有成功诊断记录时复用（dedup）。
+    """
+    from app.crashguard.services.deep_analyzer import start_deep_analysis
+    try:
+        run_id = await start_deep_analysis(issue_id=issue_id, triggered_by="manual_ui")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return DeepAnalyzeResponse(run_id=run_id)
+
+
+@router.post("/analyses/{run_id}/confirm-hypothesis", response_model=ConfirmHypothesisResponse)
+async def confirm_hypothesis_endpoint(run_id: str, body: ConfirmHypothesisRequest) -> Any:
+    """人工确认诊断假设，触发 Phase 2 修复分析。"""
+    from app.crashguard.services.deep_analyzer import confirm_hypothesis
+    try:
+        phase2_run_id = await confirm_hypothesis(run_id, body.hypothesis_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return ConfirmHypothesisResponse(
+        diagnosis_run_id=run_id,
+        phase2_run_id=phase2_run_id,
+        hypothesis_id=body.hypothesis_id,
+    )
+
+
+@router.post("/analyses/{run_id}/mark-data-needed")
+async def mark_data_needed_endpoint(run_id: str, body: MarkDataNeededRequest) -> Any:
+    """标记该诊断处于'等待数据'状态（工程师已安排监控埋点）。"""
+    from sqlalchemy import select as _select
+    from app.crashguard.models import CrashAnalysis
+    from app.db.database import get_session as _get_session
+
+    async with _get_session() as session:
+        row = (await session.execute(
+            _select(CrashAnalysis).where(CrashAnalysis.analysis_run_id == run_id)
+        )).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+        row.status = "waiting_data"
+        if body.note:
+            row.error = f"[data_needed] {body.note}"[:500]
+        await session.commit()
+    return {"run_id": run_id, "status": "waiting_data", "note": body.note}

@@ -67,7 +67,7 @@ class AnalysisOutput:
 
 
 _PROMPT_TEMPLATE = """你是 Plaud 移动端崩溃分析专家。基于下方崩溃信息 + 真实源码给出深度分析。
-
+{confirmed_hypothesis_block}
 ## 待分析的崩溃
 
 - **平台**: {platform}
@@ -210,6 +210,8 @@ async def start_analysis(
     parent_run_id: str = "",
     force: bool = False,
     dedup_hours: Optional[int] = None,
+    confirmed_hypothesis_block: str = "",   # Phase 2 注入的确认假设文本
+    parent_diagnosis_run_id: str = "",      # 对应 Phase 1 run_id
 ) -> str:
     """
     异步启动一次分析。立即返回 run_id；后台 task 跑完后更新同一行。
@@ -279,6 +281,8 @@ async def start_analysis(
             parent_run_id=parent_run_id or "",
             answer="",
             created_at=datetime.utcnow(),
+            phase="fix",
+            parent_diagnosis_run_id=parent_diagnosis_run_id or "",
         ))
         await session.commit()
 
@@ -349,6 +353,8 @@ async def _run_in_background(issue_id: str, run_id: str) -> None:
             snapshot_data = _issue_to_dict(issue)
             is_followup = bool((run.followup_question or "").strip())
             followup_q = run.followup_question or ""
+            parent_diag_id = getattr(run, "parent_diagnosis_run_id", "") or ""
+            confirmed_hyp_id = getattr(run, "confirmed_hypothesis_id", "") or ""
 
         snapshot_data["enrichment_block"] = await _build_enrichment_block(issue_id)
         workspace = _prepare_workspace(issue_id)
@@ -358,6 +364,24 @@ async def _run_in_background(issue_id: str, run_id: str) -> None:
             snapshot_data.get("platform", ""),
             workspace,
         )
+
+        # Phase 2 注入：如果来自 Phase 1 确认路径，把假设文本注入 prompt
+        confirmed_hypothesis_block = ""
+        if parent_diag_id and confirmed_hyp_id:
+            try:
+                from app.crashguard.services.deep_analyzer import (
+                    get_diagnosis_status, _format_confirmed_hypothesis_block,
+                )
+                diag = await get_diagnosis_status(parent_diag_id)
+                if diag:
+                    hyp = next(
+                        (h for h in diag.get("hypotheses", []) if h.get("id") == confirmed_hyp_id),
+                        None,
+                    ) or (diag.get("hypotheses") or [{}])[0]
+                    confirmed_hypothesis_block = _format_confirmed_hypothesis_block(hyp, diag)
+            except Exception as exc:
+                logger.warning("failed to load confirmed hypothesis for Phase 2: %s", exc)
+        snapshot_data["confirmed_hypothesis_block"] = confirmed_hypothesis_block
 
         if is_followup:
             snapshot_data["followup_block"] = await _build_followup_block(issue_id, followup_q)
@@ -620,6 +644,7 @@ def _build_prompt(d: Dict[str, Any]) -> str:
     data.setdefault("code_hint", "")
     data.setdefault("followup_block", "")
     data.setdefault("stack_paths_block", "")
+    data.setdefault("confirmed_hypothesis_block", "")
     return _PROMPT_TEMPLATE.format(**data)
 
 
