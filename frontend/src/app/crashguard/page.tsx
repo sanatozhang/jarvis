@@ -20,6 +20,11 @@ import {
   fetchAutoPrQueue,
   fetchCrashLatestRelease,
   triggerCrashWarmup,
+  startDeepAnalysis,
+  fetchDiagnosisStatus,
+  confirmDiagnosisHypothesis,
+  type DiagnosisStatus,
+  type DiagnosisHypothesis,
   type AutoPrQueueResponse,
   type CrashAnalysisRecord,
   type CrashTopItem,
@@ -273,6 +278,11 @@ function CrashguardPageInner() {
   const [reanalyzePrompt, setReanalyzePrompt] = useState("");
   // 自动化修复 PR 创建状态：按 analysis_id 跟踪 loading
   const [creatingPr, setCreatingPr] = useState<number | null>(null);
+  // Phase 1 深度诊断
+  const [diagRunId, setDiagRunId] = useState<string | null>(null);
+  const [diagStatus, setDiagStatus] = useState<DiagnosisStatus | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagConfirming, setDiagConfirming] = useState<string | null>(null);
 
   const platforms = useMemo(() => {
     const set = new Set<string>();
@@ -357,6 +367,10 @@ function CrashguardPageInner() {
     setDetail(null);
     setAnalyses([]);
     setFollowupText("");
+    setDiagRunId(null);
+    setDiagStatus(null);
+    setDiagLoading(false);
+    setDiagConfirming(null);
     syncSelectedToUrl(issueId);
     try {
       const [d, list] = await Promise.all([
@@ -457,6 +471,45 @@ function CrashguardPageInner() {
       setToast({ msg: e.message || "create PR failed", type: "error" });
     } finally {
       setCreatingPr(null);
+    }
+  };
+
+  const onStartDeepAnalysis = async (issueId: string) => {
+    setDiagLoading(true);
+    setDiagStatus(null);
+    try {
+      const { run_id } = await startDeepAnalysis(issueId);
+      setDiagRunId(run_id);
+      const poll = async () => {
+        try {
+          const st = await fetchDiagnosisStatus(run_id);
+          setDiagStatus(st as DiagnosisStatus);
+          if (st.status === "pending" || st.status === "running") {
+            setTimeout(poll, 8000);
+          }
+        } catch {
+          // ignore poll error
+        }
+      };
+      setTimeout(poll, 3000);
+    } catch (e: any) {
+      setToast({ msg: e.message || "deep analysis failed", type: "error" });
+    } finally {
+      setDiagLoading(false);
+    }
+  };
+
+  const onConfirmHypothesis = async (runId: string, hypothesisId: string, issueId: string) => {
+    setDiagConfirming(hypothesisId);
+    try {
+      const { phase2_run_id } = await confirmDiagnosisHypothesis(runId, hypothesisId);
+      setToast({ msg: `Phase 2 已触发，run_id: ${phase2_run_id.slice(0, 8)}`, type: "success" });
+      const list = await fetchCrashAnalyses(issueId).catch(() => ({ analyses: [] }));
+      setAnalyses((list as any).analyses || []);
+    } catch (e: any) {
+      setToast({ msg: e.message || "confirm failed", type: "error" });
+    } finally {
+      setDiagConfirming(null);
     }
   };
 
@@ -1407,6 +1460,11 @@ function CrashguardPageInner() {
           creatingPr={creatingPr}
           onCreatePr={onCreatePr}
           autoPrThreshold={autoPrQueue?.threshold ?? 0.7}
+          diagStatus={diagStatus}
+          diagLoading={diagLoading}
+          diagConfirming={diagConfirming}
+          onStartDeepAnalysis={onStartDeepAnalysis}
+          onConfirmHypothesis={onConfirmHypothesis}
           t={t}
         />
       )}
@@ -1890,6 +1948,11 @@ function DetailDrawer({
   creatingPr,
   onCreatePr,
   autoPrThreshold,
+  diagStatus,
+  diagLoading,
+  diagConfirming,
+  onStartDeepAnalysis,
+  onConfirmHypothesis,
   t,
 }: {
   loading: boolean;
@@ -1907,6 +1970,11 @@ function DetailDrawer({
   creatingPr: number | null;
   onCreatePr: (analysisId: number, issueId: string) => void;
   autoPrThreshold: number;
+  diagStatus: DiagnosisStatus | null;
+  diagLoading: boolean;
+  diagConfirming: string | null;
+  onStartDeepAnalysis: (issueId: string) => void;
+  onConfirmHypothesis: (runId: string, hypothesisId: string, issueId: string) => void;
   t: (k: string) => string;
 }) {
   return (
@@ -2468,6 +2536,111 @@ function DetailDrawer({
                 </div>
               </section>
             )}
+
+            {/* 深度诊断区块 */}
+            <div style={{ marginTop: 24, borderTop: "1px solid #E5E7EB", paddingTop: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <span style={{ fontWeight: 600, fontSize: 14 }}>🔍 深度诊断</span>
+                {!diagStatus && !diagLoading && (
+                  <button
+                    onClick={() => onStartDeepAnalysis(detail.datadog_issue_id || "")}
+                    style={{
+                      padding: "4px 12px", fontSize: 12, borderRadius: 6,
+                      background: "#1D4ED8", color: "#fff", border: "none", cursor: "pointer",
+                    }}
+                  >
+                    启动（15-30 分钟）
+                  </button>
+                )}
+                {diagLoading && <span style={{ fontSize: 12, color: "#6B7280" }}>启动中…</span>}
+              </div>
+
+              {diagStatus && (diagStatus.status === "pending" || diagStatus.status === "running") && (
+                <div style={{ fontSize: 12, color: "#6B7280" }}>
+                  ⏳ AI 正在调查中… 每 8 秒自动刷新
+                  {(diagStatus.investigation_log?.length ?? 0) > 0 && (
+                    <details style={{ marginTop: 6 }}>
+                      <summary style={{ cursor: "pointer" }}>调查日志（{diagStatus.investigation_log.length} 步）</summary>
+                      <ul style={{ paddingLeft: 16, marginTop: 4 }}>
+                        {diagStatus.investigation_log.map((s, i) => (
+                          <li key={i} style={{ marginBottom: 2 }}>{s}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {diagStatus?.status === "success" && (
+                <div>
+                  <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 8 }}>
+                    总体置信度: {((diagStatus.overall_confidence ?? 0) * 100).toFixed(0)}% · 类型: {diagStatus.crash_type}
+                  </div>
+                  {diagStatus.hypotheses.map((h) => (
+                    <div
+                      key={h.id}
+                      style={{
+                        border: `1px solid ${h.id === diagStatus.recommended_hypothesis ? "#1D4ED8" : "#E5E7EB"}`,
+                        borderRadius: 8, padding: "10px 14px", marginBottom: 10,
+                        background: h.id === diagStatus.recommended_hypothesis ? "#EFF6FF" : "#F9FAFB",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div>
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>{h.title}</span>
+                          {h.id === diagStatus.recommended_hypothesis && (
+                            <span style={{
+                              marginLeft: 6, fontSize: 10, background: "#1D4ED8", color: "#fff",
+                              padding: "1px 6px", borderRadius: 4,
+                            }}>推荐</span>
+                          )}
+                        </div>
+                        <span style={{ fontSize: 12, color: "#6B7280" }}>{((h.confidence ?? 0) * 100).toFixed(0)}%</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#6B7280", margin: "4px 0" }}>
+                        {h.fix_direction}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#374151", marginBottom: 6 }}>
+                        {(h.evidence ?? []).slice(0, 3).map((ev, i) => (
+                          <div key={i}>• {ev}</div>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => onConfirmHypothesis(diagStatus.run_id, h.id, detail.datadog_issue_id || "")}
+                        disabled={diagConfirming === h.id}
+                        style={{
+                          fontSize: 11, padding: "3px 10px", borderRadius: 5,
+                          background: "#16A34A", color: "#fff", border: "none", cursor: "pointer",
+                          opacity: diagConfirming === h.id ? 0.6 : 1,
+                        }}
+                      >
+                        {diagConfirming === h.id ? "触发中…" : "✓ 确认此假设 → 生成修复 PR"}
+                      </button>
+                    </div>
+                  ))}
+
+                  {(diagStatus.data_gaps?.length ?? 0) > 0 && (
+                    <div style={{ marginTop: 8, padding: "8px 12px", background: "#FEF3C7", borderRadius: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>⚠️ 数据缺口（需要更多监控数据）</span>
+                      {diagStatus.data_gaps.map((gap, i) => (
+                        <div key={i} style={{ fontSize: 11, marginTop: 4 }}>
+                          <div>• {gap.description}</div>
+                          {gap.collection_method && (
+                            <div style={{ color: "#6B7280" }}>采集方式：{gap.collection_method}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {diagStatus?.status === "failed" && (
+                <div style={{ fontSize: 12, color: "#DC2626" }}>
+                  诊断失败: {diagStatus.error || "未知错误"}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

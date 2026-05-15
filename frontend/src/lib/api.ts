@@ -1696,3 +1696,60 @@ export const triggerCrashWarmup = () =>
   }>(
     "/crash/warmup", { method: "POST" }
   );
+
+// ── Phase 1 深度诊断 ───────────────────────────────────────────
+
+export interface DiagnosisHypothesis {
+  id: string;
+  title: string;
+  evidence: string[];
+  confidence: number;
+  fix_direction: string;
+  code_pointers: string[];
+  can_fix_now: boolean;
+  complexity: "simple" | "complex";
+}
+
+export interface DiagnosisDataGap {
+  description: string;
+  collection_method: string;
+  instrumentation_code: string;
+  datadog_query: string;
+}
+
+export interface DiagnosisStatus {
+  run_id: string;
+  datadog_issue_id: string;
+  phase: "diagnosis" | "fix";
+  status: "pending" | "running" | "success" | "failed" | "empty" | "waiting_data";
+  crash_type: string;
+  hypotheses: DiagnosisHypothesis[];
+  data_gaps: DiagnosisDataGap[];
+  investigation_log: string[];
+  overall_confidence: number;
+  recommended_hypothesis: string;
+  confirmed_hypothesis_id: string;
+  error: string;
+  created_at: string | null;
+}
+
+export const startDeepAnalysis = (issueId: string) =>
+  request<{ run_id: string; status: string }>(
+    `/crash/issues/${encodeURIComponent(issueId)}/deep-analyze`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+
+export const fetchDiagnosisStatus = (runId: string) =>
+  request<DiagnosisStatus>(`/crash/analyses/${encodeURIComponent(runId)}`);
+
+export const confirmDiagnosisHypothesis = (runId: string, hypothesisId: string) =>
+  request<{ diagnosis_run_id: string; phase2_run_id: string; hypothesis_id: string }>(
+    `/crash/analyses/${encodeURIComponent(runId)}/confirm-hypothesis`,
+    { method: "POST", body: JSON.stringify({ hypothesis_id: hypothesisId }) },
+  );
+
+export const markDiagnosisDataNeeded = (runId: string, note: string) =>
+  request<{ run_id: string; status: string; note: string }>(
+    `/crash/analyses/${encodeURIComponent(runId)}/mark-data-needed`,
+    { method: "POST", body: JSON.stringify({ note }) },
+  );
