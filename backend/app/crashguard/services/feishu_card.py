@@ -200,9 +200,11 @@ def _build_crash_free_column_md(
     all_stats: Dict[str, Any] | None,
     ver_stats: Dict[str, Any] | None,
     wow: Dict[str, Any] | None = None,
+    latest_stats: Dict[str, Any] | None = None,
 ) -> str:
-    """单平台一栏的 markdown（全版本 + 主要版本两段）。
+    """单平台一栏的 markdown（全版本 + 主要版本 + 最新版本三段）。
     wow: dual_window platform dict with today_fatal/baseline_fatal/fatal_delta_pct/sess_delta_pct.
+    latest_stats: 最新版本 crash-free stats dict.
     """
     lines: List[str] = [f"**{plat_label}**", ""]
     if all_stats:
@@ -242,6 +244,22 @@ def _build_crash_free_column_md(
         lines.append(f"· 会话总数：**{_fmt_n(ver_stats.get('total_sessions'))}**")
         lines.append(f"· Crash-free：{_fmt_n(ver_stats.get('crash_free_sessions'))}")
         lines.append(f"· 崩溃：{_fmt_n(ver_stats.get('crashed_sessions'))}")
+        lines.append(f"· Crash-free 率：{pct_str}")
+        lines.append("")
+    if latest_stats:
+        pct = latest_stats.get("crash_free_pct")
+        pct_str = (
+            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
+        )
+        ver = latest_stats.get("version") or "—"
+        lines.append(f"__🆕 最新版本__ `{ver}`")
+        spp = latest_stats.get("share_of_platform_pct")
+        sap = latest_stats.get("share_of_all_pct")
+        if spp is not None:
+            lines.append(f"· 占平台：{spp:.2f}% · 占全部：{sap:.2f}%")
+        lines.append(f"· 会话总数：**{_fmt_n(latest_stats.get('total_sessions'))}**")
+        lines.append(f"· Crash-free：{_fmt_n(latest_stats.get('crash_free_sessions'))}")
+        lines.append(f"· 崩溃：{_fmt_n(latest_stats.get('crashed_sessions'))}")
         lines.append(f"· Crash-free 率：{pct_str}")
     return "\n".join(lines)
 
@@ -359,8 +377,10 @@ def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any
     """
     all_block = (detail.get("all_versions") or {})
     ver_block = (detail.get("top_user_versions") or {})
+    latest_block = (detail.get("latest_versions") or {})
     all_plats = all_block.get("platforms") or {}
     ver_plats = ver_block.get("platforms") or {}
+    latest_plats = latest_block.get("platforms") or {}
     dw_plats = (dual_window or {}).get("platforms") or {}
 
     out: List[Dict[str, Any]] = []
@@ -374,10 +394,12 @@ def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any
     ios_md = _build_crash_free_column_md(
         "🍎 iOS", all_plats.get("IOS"), ver_plats.get("IOS"),
         wow=dw_plats.get("IOS"),
+        latest_stats=latest_plats.get("IOS"),
     )
     and_md = _build_crash_free_column_md(
         "📱 Android", all_plats.get("ANDROID"), ver_plats.get("ANDROID"),
         wow=dw_plats.get("ANDROID"),
+        latest_stats=latest_plats.get("ANDROID"),
     )
 
     out.append({

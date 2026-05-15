@@ -270,6 +270,10 @@ async def compose_report(
     top_user_versions_local: Dict[str, Dict[str, Any]] = {}
     top_ver_total_sessions: Dict[str, int] = {}
     top_ver_crashed_sessions: Dict[str, int] = {}
+    # 最新版本（线上当前发布版本）的 crash-free 详表所需
+    latest_versions_local: Dict[str, str] = {}   # {"ios": "3.18.1-715", "android": "3.18.1-716"}
+    latest_ver_total_sessions: Dict[str, int] = {}
+    latest_ver_crashed_sessions: Dict[str, int] = {}
     if s_cfg.datadog_api_key:
         try:
             from app.crashguard.services.datadog_client import DatadogClient
@@ -356,6 +360,27 @@ async def compose_report(
                     ) or {}
             except Exception:
                 logger.exception("top-version crash-free pull failed (non-fatal)")
+
+            # —— 最新版本（线上当前发布版本）的 crash-free 详表 ——
+            try:
+                from app.db.database import get_session as _get_db_session
+                from app.crashguard.services.version_util import resolve_effective_latest_release
+                async with _get_db_session() as _db_sess:
+                    for _plat in ("ios", "android"):
+                        _override = getattr(s_cfg, f"current_release_{_plat}", "") or ""
+                        _v = await resolve_effective_latest_release(_db_sess, _plat, override=_override)
+                        if _v:
+                            latest_versions_local[_plat] = _v
+                if latest_versions_local:
+                    latest_ver_total_sessions = await client.count_sessions_for_platform_versions(
+                        latest_versions_local, window_hours=data_window_hours,
+                    ) or {}
+                    latest_ver_crashed_sessions = await client.count_distinct_crash_sessions_for_platform_versions(
+                        latest_versions_local, window_hours=data_window_hours,
+                    ) or {}
+            except Exception:
+                logger.exception("latest-version crash-free pull failed (non-fatal)")
+
         except Exception:
             logger.exception("count_sessions failed (non-fatal)")
             top_user_versions_local = {}
@@ -626,10 +651,39 @@ async def compose_report(
                 round(top_ver_total / all_total * 100.0, 2) if all_total > 0 else None
             )
 
+        # D 段：最新版本（线上当前发布版本）
+        latest_ver_plats: Dict[str, Dict[str, Any]] = {}
+        for plat_key in ("IOS", "ANDROID"):
+            plat_lc = plat_key.lower()
+            version = (latest_versions_local or {}).get(plat_lc, "")
+            v_total = int((latest_ver_total_sessions or {}).get(plat_lc, 0) or 0)
+            v_crashed = int((latest_ver_crashed_sessions or {}).get(plat_lc, 0) or 0)
+            plat_total = int(total_sessions_by_plat.get(plat_key, 0) or 0)
+            if not version or v_total <= 0:
+                continue
+            stats = _cf_stats(v_total, v_crashed)
+            stats["version"] = version
+            stats["share_of_platform_pct"] = (
+                round(v_total / plat_total * 100.0, 2) if plat_total > 0 else None
+            )
+            stats["share_of_all_pct"] = (
+                round(v_total / all_total * 100.0, 2) if all_total > 0 else None
+            )
+            latest_ver_plats[plat_key] = stats
+        latest_ver_total = sum(s["total_sessions"] for s in latest_ver_plats.values())
+        latest_ver_crashed = sum(s["crashed_sessions"] for s in latest_ver_plats.values())
+        latest_ver_summary = None
+        if latest_ver_total > 0:
+            latest_ver_summary = _cf_stats(latest_ver_total, latest_ver_crashed)
+            latest_ver_summary["share_of_all_pct"] = (
+                round(latest_ver_total / all_total * 100.0, 2) if all_total > 0 else None
+            )
+
         crash_free_detail_payload = {
             "data_window_hours": data_window_hours,
             "all_versions": {"platforms": all_plats, "summary": all_summary},
             "top_user_versions": {"platforms": top_ver_plats, "summary": top_ver_summary},
+            "latest_versions": {"platforms": latest_ver_plats, "summary": latest_ver_summary},
         }
 
         # 渲染 markdown 段：紧凑的 markdown 表格（前端 reports 页用）
