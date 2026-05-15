@@ -625,7 +625,7 @@ export default function HomePage() {
                 <div className="flex items-center gap-1">
                   <input autoFocus value={assigneeInput} onChange={(e) => setAssigneeInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") applyAssignee(); if (e.key === "Escape") setShowAssigneeEdit(false); }}
-                    placeholder="指派人"
+                    placeholder={t("指派人")}
                     className="w-28 rounded-lg px-2.5 py-1 text-xs outline-none font-sans"
                     style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }} />
                   <button onClick={applyAssignee} className="rounded-lg px-2 py-1 text-[11px] font-semibold"
@@ -673,7 +673,7 @@ export default function HomePage() {
                 <div className="flex items-center gap-1">
                   <input autoFocus value={usernameInput} onChange={(e) => setUsernameInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") saveUsername(usernameInput); if (e.key === "Escape") setShowUsernameEdit(false); }}
-                    placeholder="用户名"
+                    placeholder={t("用户名")}
                     className="w-24 rounded-lg px-2.5 py-1 text-xs outline-none font-sans"
                     style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }} />
                   <button onClick={() => saveUsername(usernameInput)} className="rounded-lg px-2 py-1 text-[11px] font-semibold"
@@ -801,7 +801,7 @@ export default function HomePage() {
                           style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}>
                           <td className="px-3 py-3 max-w-xs">
                             <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                              {issue.description || "—"}
+                              {lang === "en" ? stripCategoryPrefix(issue.description || "") : (issue.description || "—")}
                             </p>
                           </td>
                           <td className="px-3 py-3 max-w-[180px]">

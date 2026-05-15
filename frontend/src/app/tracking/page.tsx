@@ -22,6 +22,10 @@ const CATEGORY_SHORT: Record<string, string> = {};
 const CATEGORY_SHORT_EN: Record<string, string> = {};
 CATEGORIES_DATA.forEach((c) => { CATEGORY_SHORT[c.value] = c.cn; CATEGORY_SHORT_EN[c.value] = c.en; });
 
+function stripCategoryPrefix(desc: string): string {
+  return desc.replace(/^(\[[^\]]*\])+\s*/, "").trim() || desc;
+}
+
 function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }) {
   const t = useT();
   const cfg: Record<string, { bg: string; color: string; border: string; label: string }> = {
@@ -469,7 +473,7 @@ export default function TrackingPage() {
                   <td className={tdBase} style={{ width: "56px" }}><PriorityBadge p={item.priority} /></td>
                   <td className="px-3 py-3 max-w-md">
                     <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                      {item.description}
+                      {currentLang === "en" ? stripCategoryPrefix(item.description || "") : item.description}
                     </p>
                     {(item.root_cause_summary || item.root_cause_summary_en) && (
                       <div className="mt-1.5 flex items-start gap-1.5">
@@ -659,7 +663,7 @@ export default function TrackingPage() {
               <section>
                 <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("问题描述")}</h3>
                 <div className="whitespace-pre-wrap rounded-lg p-3 text-sm leading-relaxed" style={{ background: S.overlay, color: S.text2 }}>
-                  {detailItem.description}
+                  {currentLang === "en" ? stripCategoryPrefix(detailItem.description || "") : detailItem.description}
                 </div>
               </section>
               {/* Attachments / Log Files */}
