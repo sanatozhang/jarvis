@@ -177,7 +177,7 @@ crashguard:
     cron: "*/10 * * * *"           # 每 10 分钟一次
     change_threshold_pp: 0.3       # crash-free % 变化绝对值 >= N pp 触发（pp=百分点）
     min_sessions: 500              # 当前 10min 窗口 sessions < N 不告警（5/14 上调 100→500：原门槛太低，145 sess 这种数据无统计意义）
-    min_crashed_sessions: 3        # crashed_sessions < N 不告警（防 1user×1crash 触发"全平台健康度劣化"伪信号）
+    min_crashed_sessions: 10       # crashed_sessions < 10 不告警（5/15 上调 3→10：配合 30min 滑动均值，个位数崩溃统计意义不足）
     platforms:                     # 监控平台白名单
       - android
       - ios

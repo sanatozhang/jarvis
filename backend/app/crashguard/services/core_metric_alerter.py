@@ -171,6 +171,40 @@ async def _baseline_crash_free(
     return weighted / total_w
 
 
+SMOOTH_BUCKETS = 3  # 30 分钟滑动窗口（3 × 10min）
+
+
+async def _smoothed_crash_free(
+    session, platform: str, current_window_start: datetime,
+    dimension: str = "overall",
+    n_buckets: int = SMOOTH_BUCKETS,
+) -> Optional[float]:
+    """最近 N 个 10min bucket（含当前）的加权 crash_free_pct 均值。
+
+    权重 = total_sessions；至少需 1 条有效 snapshot（含刚写入的当前 bucket）。
+    用于平滑瞬时噪声——个位数崩溃导致的 10min 毛刺不再穿透告警。
+    """
+    platform_key = platform if dimension == "overall" else f"{platform}:{dimension.replace('_version', '')}"
+    window_from = current_window_start - timedelta(minutes=WINDOW_MINUTES * (n_buckets - 1))
+    rows = (await session.execute(
+        select(CrashMetricSnapshot).where(
+            CrashMetricSnapshot.platform == platform_key,
+            CrashMetricSnapshot.window_start >= window_from,
+            CrashMetricSnapshot.window_start <= current_window_start,
+        )
+    )).scalars().all()
+    if not rows:
+        return None
+    total_w = sum(int(r.total_sessions or 0) for r in rows)
+    if total_w <= 0:
+        return None
+    weighted = sum(
+        float(r.crash_free_pct or 0.0) * int(r.total_sessions or 0)
+        for r in rows
+    )
+    return weighted / total_w
+
+
 async def run_core_metric_tick(
     *, force: bool = False, now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
@@ -247,7 +281,10 @@ async def run_core_metric_tick(
 
     alert_items: List[Dict[str, Any]] = []
     snapshot_log: List[Dict[str, Any]] = []
+    # raw 快照暂存，供第 2 趟读 smoothed + 计算告警
+    raw_snapshots: List[Dict[str, Any]] = []
 
+    # ── 第 1 趟：写所有 snapshot ──────────────────────────────────────────
     async with get_session() as session:
         for dimension, dim_data in dimension_data.items():
             ver_map = version_maps.get(dimension, {})
@@ -259,7 +296,6 @@ async def run_core_metric_tick(
                 cf_pct = float(metrics.get("crash_free_pct") or 0.0)
                 version_tag = ver_map.get(platform, "") if dimension != "overall" else ""
 
-                # 写 snapshot（不论是否报警都入库——下次 tick 复用为基线）
                 await _upsert_snapshot(
                     session, window_start, platform, total, crashed, cf_pct,
                     dimension=dimension, version_tag=version_tag,
@@ -269,34 +305,58 @@ async def run_core_metric_tick(
                     "version": version_tag, "total": total,
                     "crashed": crashed, "cf_pct": cf_pct,
                 })
-
-                # 版本维度与大盘用相同 min_sessions 门槛——样本太小的版本数据噪声太大，
-                # 宁可漏报也不误报。100 条 session 不足以判定版本健康度变化。
-                dim_min_sessions = min_sessions
-                if total < dim_min_sessions:
-                    continue
-                if crashed < min_crashed:
-                    continue
-
-                baseline_cf = await _baseline_crash_free(session, platform, window_start, dimension=dimension)
-                if baseline_cf is None:
-                    continue
-                delta_pp = cf_pct - baseline_cf
-                if abs(delta_pp) < threshold_pp:
-                    continue
-                direction = "down" if delta_pp < 0 else "up"
-                alert_items.append({
-                    "platform": platform,
-                    "dimension": dimension,
+                raw_snapshots.append({
+                    "platform": platform, "dimension": dimension,
                     "version_tag": version_tag,
-                    "total_sessions": total,
-                    "crashed_sessions": crashed,
-                    "crash_free_pct": round(cf_pct, 3),
-                    "baseline_pct": round(baseline_cf, 3),
-                    "delta_pp": round(delta_pp, 3),
-                    "direction": direction,
+                    "total": total, "crashed": crashed, "cf_pct": cf_pct,
                 })
-        await session.commit()
+        await session.commit()  # 先落库，第 2 趟 smoothed 才能读到当前 bucket
+
+    # ── 第 2 趟：读 30min 滑动均值 → 比基线 → 判告警 ─────────────────────
+    async with get_session() as session:
+        for snap in raw_snapshots:
+            platform = snap["platform"]
+            dimension = snap["dimension"]
+            total = snap["total"]
+            crashed = snap["crashed"]
+            version_tag = snap["version_tag"]
+
+            # 闸门 1：单 bucket 样本量（噪声太大直接跳过）
+            if total < min_sessions:
+                continue
+            # 闸门 2：崩溃绝对数 >= 10（个位数崩溃不触发告警）
+            if crashed < min_crashed:
+                continue
+
+            # 30min 滑动均值作为 current（含刚写入的当前 bucket）
+            smoothed_cf = await _smoothed_crash_free(
+                session, platform, window_start, dimension=dimension,
+            )
+            if smoothed_cf is None:
+                continue
+
+            baseline_cf = await _baseline_crash_free(
+                session, platform, window_start, dimension=dimension,
+            )
+            if baseline_cf is None:
+                continue
+
+            delta_pp = smoothed_cf - baseline_cf
+            if abs(delta_pp) < threshold_pp:
+                continue
+            direction = "down" if delta_pp < 0 else "up"
+            alert_items.append({
+                "platform": platform,
+                "dimension": dimension,
+                "version_tag": version_tag,
+                "total_sessions": total,
+                "crashed_sessions": crashed,
+                "crash_free_pct": round(smoothed_cf, 3),   # 展示 30min 均值
+                "raw_cf_pct": round(snap["cf_pct"], 3),    # 保留瞬时值供 debug
+                "baseline_pct": round(baseline_cf, 3),
+                "delta_pp": round(delta_pp, 3),
+                "direction": direction,
+            })
 
     if not alert_items:
         return {

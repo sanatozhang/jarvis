@@ -756,8 +756,8 @@ def build_core_metric_alert_card(
 
     elements: List[Dict[str, Any]] = []
     summary_md = (
-        f"**Σ** 10 分钟窗口 · 触发 **{len(items)}** 条  ·  "
-        f"阈值 ±{threshold_pp:.2f} pp（vs 前 1h 加权均值）"
+        f"**Σ** 30 分钟滑动均值 · 触发 **{len(items)}** 条  ·  "
+        f"阈值 ±{threshold_pp:.2f} pp（vs 前 1h 加权均值）  ·  崩溃数 ≥ 10"
     )
     elements.append({"tag": "div", "text": {"tag": "lark_md", "content": summary_md}})
     elements.append({"tag": "hr"})
