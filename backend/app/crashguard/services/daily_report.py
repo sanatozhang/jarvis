@@ -975,40 +975,7 @@ async def compose_report(
         )
         lines.append("")
 
-        # § 1 — 数据快照（紧凑内联，Crash-free 率已在详表展示不重复）
-        lines.append("### 📊 数据快照")
-        lines.append("")
-        # 第一行：核心计数
-        lines.append(
-            f"**events** {events_total:,} · **sessions** {sessions_total:,} · **issues** {issue_count} · **影响分** {impact_total:,.0f}"
-        )
-        # 第二行：错误类型分布（仅当有细分数据时）
-        bd = crash_breakdown_by_plat.get(plat_key) or {}
-        bd_parts: List[str] = []
-        if bd.get("native_crash"):
-            bd_parts.append(f"Native crash {bd['native_crash']:,}")
-        if bd.get("anr"):
-            bd_parts.append(f"ANR {bd['anr']:,}")
-        if bd.get("app_hang"):
-            bd_parts.append(f"App Hang {bd['app_hang']:,}")
-        if bd_parts:
-            lines.append(f"**错误分布**：{' · '.join(bd_parts)}")
-        # 第三行：版本信息
-        if oldest_first == newest_last:
-            range_str = f"`{newest_last}`"
-        else:
-            range_str = f"`{oldest_first}` → `{newest_last}`"
-        if top3_vers:
-            top3_str = "  ".join(
-                f"**{v}** {(w / events_total * 100):.0f}%"
-                for v, w in top3_vers if events_total > 0
-            )
-            lines.append(f"**版本跨度**：{range_str}　主力：{top3_str}")
-        else:
-            lines.append(f"**版本跨度**：{range_str}")
-        lines.append("")
-
-        # ── §2-4 按 fatality 分桶渲染 ──────────────────
+        # ── 按 fatality 分桶渲染 ──────────────────
         # C 路线核心：fatal / non_fatal 各自独立 Top N + 突增/下降，互不挤压。
         plat_surge_total = 0
         plat_drop_total = 0
@@ -1135,10 +1102,7 @@ async def compose_report(
             for snap, issue, delta in drops[:3]:
                 _push(snap, issue, delta, "📉")
 
-            # 渲染表
-            lines.append("| 类型 | Issue | events | Δ vs 上周 | 标签 |")
-            lines.append("|---|---|---:|---:|---|")
-            # 排序：先按 kind 优先级，再按 events desc
+            # 渲染 bullet list（表格在飞书折叠面板里宽度受限，bullet 更清晰）
             kind_priority = {"🆕": 0, "📈": 1, "🔥": 2, "📉": 3}
             ordered = sorted(
                 row_by_id.values(),
@@ -1158,17 +1122,17 @@ async def compose_report(
                 else:
                     sign = "+" if d >= 0 else ""
                     d_str = f"{sign}{d * 100:.0f}%"
-                title_short = (issue.title or "")[:55]
+                title_short = (issue.title or "")[:60]
                 url = _frontend_issue_url(snap.datadog_issue_id)
                 kind_label = r["kind"]
                 if r["kind"] == "🔥" and r.get("rank"):
                     kind_label = f"🔥{r['rank']}"
-                tags_str = ", ".join(r["tags"]) if r["tags"] else "—"
+                tags_str = f" · {', '.join(r['tags'])}" if r["tags"] else ""
                 lines.append(
-                    f"| {kind_label} | [{title_short}]({url}) | **{ev:,}** | {d_str} | {tags_str} |"
+                    f"- {kind_label} **{ev:,}** events ({d_str}){tags_str} · [{title_short}]({url})"
                 )
             if not ordered:
-                lines.append("| — | _无_ | — | — | — |")
+                lines.append("- _无_")
             lines.append("")
 
             plat_new_total += sum(1 for s, _, d in surges if s.is_new_in_version)
@@ -1525,12 +1489,13 @@ async def _auto_analyze_attention(issue_ids: List[str]) -> int:
     from app.crashguard.services.analyzer import analyze_issue
 
     async with get_session() as session:
-        # 已有 success root 的 / 正在跑的 → 跳
+        # 已有 success/running/pending 的 fix 分析 → 跳（diagnosis Phase 1 不算）
         existing = (await session.execute(
             select(CrashAnalysis.datadog_issue_id, CrashAnalysis.status).where(
                 CrashAnalysis.datadog_issue_id.in_(issue_ids),
                 CrashAnalysis.followup_question == "",
                 CrashAnalysis.status.in_(["success", "running", "pending"]),
+                CrashAnalysis.phase != "diagnosis",
             )
         )).all()
     skip_set = {row[0] for row in existing}
