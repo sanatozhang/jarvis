@@ -153,6 +153,15 @@ _PROMPT_TEMPLATE = """你是 Plaud 移动端崩溃分析专家。基于下方崩
 未验证的路径**禁止写入**输出——宁可 `code_pointer: ""`，也不要假路径。
 fix_suggestion 不需要给确切路径时，只描述模块层逻辑修复（如"在 X 模块的 try-catch 里加 fallback"）即可。
 
+⚠️ **Plaud 项目命名红线**（历史高频 Gate 失败根因）：
+
+Plaud 项目的类名与 Android/iOS/Flutter 标准模板命名**完全不同**，禁止凭训练数据猜测：
+- ❌ Android 入口不叫 `MainActivity.kt` → 必须 Glob `app/src/**/*.kt` 找实际入口类
+- ❌ iOS 入口不叫 `AppDelegate.swift` 那个默认名 → 必须 Glob `**/*.swift` 找实际文件
+- ❌ Flutter 不要假设标准目录结构 → 必须 Grep 关键词（如类名、方法名）找真实文件路径
+
+**正确做法**：先 `Glob code/<子仓库>/**/*.kt`（或 .dart/.swift）列出所有源文件，Grep 关键字定位到具体文件，再 Read 确认内容，然后才能在 fix_suggestion/code_pointer 中给出文件名。不知道真实文件名时，**只描述功能模块**（如"在 Android Application 初始化类中"），不命名具体文件。
+
 ### ⚠️ 平台锁定（Gate#2 防线）
 
 **本崩溃的目标平台是 `{platform}`**——这是 Datadog `@platform` tag 的地面真相。

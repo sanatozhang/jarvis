@@ -336,6 +336,45 @@ def collect_existing_paths_for_keywords(
             if len(out) >= max_n:
                 break
 
+    # 4. 兜底宽扫描：前三步找不到任何文件时，扫主源码目录喂给 agent。
+    #    根因：AI 分析常使用训练数据里的标准类名（如 `MainActivity.kt`），
+    #    但 Plaud 项目用自定义命名（如 `NiceBuildApplication.kt`）。
+    #    不给 agent 任何实存文件 → agent 找不到目标 → 无改动 → PR 失败。
+    #    宽扫描确保 agent 拿到真实文件菜单，自行判断改哪个。
+    if len(out) < 3:
+        _NOISE = (".git", "build", ".gradle", "node_modules", ".dart_tool",
+                  "DerivedData", "Pods", ".idea", "test", "androidTest",
+                  "generated", "GeneratedPluginRegistrant")
+        _PLATFORM_SCAN: list[tuple[str, str]] = []
+        text_lower = (fix_suggestion or "").lower()
+        if ".kt" in text_lower or ".java" in text_lower or "android" in text_lower:
+            _PLATFORM_SCAN += [("app/src/main", ".kt"), ("app/src/main", ".java"),
+                               ("app/src/global", ".kt")]
+        if ".dart" in text_lower or "flutter" in text_lower or "pubspec" in text_lower:
+            _PLATFORM_SCAN += [("lib", ".dart")]
+        if ".swift" in text_lower or "ios" in text_lower:
+            _PLATFORM_SCAN += [("", ".swift"), ("Runner", ".swift")]
+        # 如果 fix_suggestion 没有平台信号，扫所有主流源码类型
+        if not _PLATFORM_SCAN:
+            _PLATFORM_SCAN = [("app/src/main", ".kt"), ("lib", ".dart"),
+                              ("", ".swift"), ("app/src/main", ".java")]
+        for scan_dir, ext in _PLATFORM_SCAN:
+            scan_root = repo / scan_dir if scan_dir else repo
+            if not scan_root.is_dir():
+                continue
+            for h in scan_root.rglob(f"*{ext}"):
+                if len(out) >= max_n:
+                    break
+                rel = h.relative_to(repo).as_posix()
+                if rel in seen:
+                    continue
+                if any(seg in _NOISE for seg in h.parts):
+                    continue
+                out.append(rel)
+                seen.add(rel)
+            if len(out) >= max_n:
+                break
+
     return out[:max_n]
 
 

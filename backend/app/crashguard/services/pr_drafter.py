@@ -872,9 +872,17 @@ async def _run_implementation_agent(
 {fix_text[:4500]}
 {files_hint_block}{sm_hint_block}
 ## 严格工作流
-1. **必须先 Glob 校验文件存在**：fix_suggestion 提到的目标路径必须用 Glob 确认实存——
-   不存在就 Grep 搜关键类名/方法名定位真实文件；都找不到 → 立即 STOP，
-   Write `.crashguard/impl_report.json` 写 `changed_files=[]` + `summary="target_not_found"`
+1. **必须先定位真实目标文件**（按优先级逐步降级，直到找到为止）：
+   a. Glob fix_suggestion 提到的具体文件名（如 `**/*MainActivity*.kt`）
+   b. 找不到 → Grep 搜 fix_suggestion 里的关键类名/方法名（如 `HeadlessInAppWebViewManager`、`WebView`、`Application`）
+   c. 还找不到 → **不要 STOP！** 执行平台目录宽扫描：
+      - Android Kotlin：`find app/src/main -name "*.kt" | grep -v test | head -40`
+      - Android Java：`find app/src/main -name "*.java" | grep -v test | head -20`
+      - Flutter Dart：`find lib -name "*.dart" | grep -v test | grep -v generated | head -40`
+      - iOS Swift：`find . -name "*.swift" -not -path "*/Pods/*" | head -30`
+      列出文件后，**根据 fix_suggestion 的语义选 1-2 个最可能的目标文件**（如 Application 初始化类、WebView 管理类），用 Read 读取确认内容，再决定在哪里加代码。
+   d. 所有扫描都找不到任何适合的既有文件 → 才 STOP，Write impl_report.json 写 `changed_files=[]` + `summary` 说明原因
+   ⚠️ **注意**：Plaud 项目类名与 Android/iOS 标准命名不同（如主入口叫 `NiceBuildApplication` 不是 `MainActivity`）——必须从实际扫描结果选文件，禁止凭印象假设类名。
 2. 用 Read 读关键文件确认行号和上下文
 3. **只能用 Edit 修改既有文件**——⚠️ 严禁用 Write 新建源文件（除非 fix_suggestion 明确要求新建测试文件，且必须落在 test/ 路径下）
 4. 单文件单函数，改动 ≤ 30 行
