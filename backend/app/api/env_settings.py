@@ -25,44 +25,15 @@ ENV_PATH = PROJECT_ROOT / ".env"
 # Fields exposed to the UI (grouped), with display labels
 # Sensitive fields show masked values when reading
 ENV_FIELDS = {
-    "feishu": {
-        "label": "飞书 API",
-        "fields": {
-            "FEISHU_APP_ID": {"label": "App ID", "sensitive": False},
-            "FEISHU_APP_SECRET": {"label": "App Secret", "sensitive": True},
-        },
-    },
-    "openai": {
-        "label": "OpenAI",
-        "fields": {
-            "OPENAI_API_KEY": {"label": "API Key", "sensitive": True},
-            "OPENAI_SUMMARY_MODEL": {"label": "Summary Model", "sensitive": False},
-        },
-    },
-    "zendesk": {
-        "label": "Zendesk",
-        "fields": {
-            "ZENDESK_SUBDOMAIN": {"label": "Subdomain", "sensitive": False},
-            "ZENDESK_EMAIL": {"label": "Email", "sensitive": False},
-            "ZENDESK_API_TOKEN": {"label": "API Token", "sensitive": True},
-        },
-    },
     "code": {
         "label": "代码仓库",
         "fields": {
             "CODE_REPO_PATH": {"label": "本地源码路径", "sensitive": False},
         },
     },
-    "api": {
-        "label": "Public API",
-        "fields": {
-            "JARVIS_API_KEY": {"label": "API Key", "sensitive": True},
-        },
-    },
     "server": {
         "label": "服务器",
         "fields": {
-            "LOG_LEVEL": {"label": "日志级别", "sensitive": False},
             "SECRET_KEY": {"label": "Secret Key", "sensitive": True},
         },
     },

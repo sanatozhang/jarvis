@@ -484,28 +484,6 @@ export default function SettingsPage() {
               </div>
             </section>
 
-            <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
-              <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                {t("问题类型 → Agent 路由")}
-              </h2>
-              <div className="space-y-1.5">
-                {ruleTypes.map((rt) => (
-                  <div key={rt} className="flex items-center justify-between rounded-lg px-4 py-2"
-                    style={{ background: S.overlay }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = S.hover)}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = S.overlay)}>
-                    <span className="text-sm font-mono" style={{ color: S.text2 }}>{rt}</span>
-                    <select
-                      value={config.routing[rt] || config.default}
-                      onChange={(e) => setConfig({ ...config, routing: { ...config.routing, [rt]: e.target.value } })}
-                      className="rounded-md px-2 py-1 text-xs font-sans outline-none"
-                      style={{ background: "#F8F9FA", border: `1px solid ${S.border}`, color: S.text1 }}>
-                      {Object.keys(config.providers).map((p) => <option key={p} value={p}>{p}</option>)}
-                    </select>
-                  </div>
-                ))}
-              </div>
-            </section>
           </>
         )}
 
