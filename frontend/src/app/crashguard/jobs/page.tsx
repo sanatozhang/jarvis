@@ -106,6 +106,28 @@ export default function CrashguardJobsPage() {
     };
   }, [load, loadAlertChannels]);
 
+  const runAllUnhealthy = async () => {
+    const unhealthy = items.filter((it) => it.health !== "ok");
+    if (!unhealthy.length) { setToast("✓ 所有任务状态正常，无需触发"); return; }
+    setToast(`⏳ 正在触发 ${unhealthy.length} 个异常任务…`);
+    const results: string[] = [];
+    for (const it of unhealthy) {
+      setRunning((m) => ({ ...m, [it.name]: true }));
+      try {
+        const r = await triggerCrashJobNow(it.name);
+        const s = (r.result as any) || {};
+        const label = s.skipped ? `skipped` : s.alerted ? `alerted ✅` : s.error ? `error` : "ok";
+        results.push(`${it.name} → ${label}`);
+      } catch (e: any) {
+        results.push(`${it.name} → 失败`);
+      } finally {
+        setRunning((m) => ({ ...m, [it.name]: false }));
+      }
+    }
+    setToast(`✓ 完成：${results.join(" · ")}`);
+    await load();
+  };
+
   const runNow = async (jobName: string) => {
     if (running[jobName]) return;
     setRunning((m) => ({ ...m, [jobName]: true }));
@@ -151,9 +173,35 @@ export default function CrashguardJobsPage() {
               {t("每 30 秒自动刷新；")}{t("超期未跑/连续失败会以红色高亮")}
             </p>
           </div>
-          <Link href="/crashguard" style={{ color: D.accent, fontSize: 13, textDecoration: "none" }}>
-            ← {t("返回主页")}
-          </Link>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {(() => {
+              const unhealthyCount = items.filter((it) => it.health !== "ok").length;
+              const anyRunning = Object.values(running).some(Boolean);
+              return (
+                <button
+                  onClick={runAllUnhealthy}
+                  disabled={anyRunning || loading}
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    padding: "6px 14px",
+                    borderRadius: 6,
+                    border: "none",
+                    cursor: anyRunning || loading ? "not-allowed" : "pointer",
+                    background: unhealthyCount > 0 ? D.danger : "rgba(22,163,74,0.12)",
+                    color: unhealthyCount > 0 ? "#fff" : D.ok,
+                    opacity: anyRunning || loading ? 0.6 : 1,
+                    transition: "opacity 0.15s",
+                  }}
+                >
+                  {anyRunning ? "⏳ 触发中…" : unhealthyCount > 0 ? `⚡ 一键修复（${unhealthyCount} 个异常）` : "✅ 全部正常"}
+                </button>
+              );
+            })()}
+            <Link href="/crashguard" style={{ color: D.accent, fontSize: 13, textDecoration: "none" }}>
+              ← {t("返回主页")}
+            </Link>
+          </div>
         </div>
 
         {/* Alert Channels Tile */}
