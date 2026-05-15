@@ -39,3 +39,13 @@ def test_default_crash():
 def test_anr_beats_default():
     """ANR title + normal stack → still anr."""
     assert classify_crash_type("ANR in Service", "java.lang.Thread.sleep", {}) == "anr"
+
+
+def test_priority_freeze_over_oom():
+    """freeze title + OOM stack → freeze 优先。"""
+    assert classify_crash_type("App freeze detected", "OutOfMemoryError at bitmap", {}) == "freeze"
+
+
+def test_priority_oom_over_native():
+    """OOM title + SIGSEGV stack → oom 优先。"""
+    assert classify_crash_type("OOM crash on image load", "SIGSEGV at 0x0000dead", {}) == "oom"

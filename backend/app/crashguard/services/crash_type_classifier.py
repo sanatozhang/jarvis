@@ -14,11 +14,11 @@ _ANR_STACK_RE = re.compile(
     re.IGNORECASE,
 )
 _FREEZE_RE = re.compile(
-    r"\bfreeze\b|卡顿|hang\b|Watchdog|WatchDog|CADisplayLink|runloop.*stall",
+    r"\bfreeze\b|卡顿|hang(?:s|ing|ed)?\b|\bhung\b|Watchdog|WatchDog|CADisplayLink|runloop.*stall",
     re.IGNORECASE,
 )
 _OOM_RE = re.compile(
-    r"\bOOM\b|OutOfMemory|out.of.memory|low.memory|MemoryError", re.IGNORECASE
+    r"\bOOM\b|OutOfMemory|out[.\s_-]of[.\s_-]memory|low[.\s_-]memory|MemoryError", re.IGNORECASE
 )
 _NATIVE_STACK_RE = re.compile(
     r"SIGSEGV|SIGABRT|SIGBUS|EXC_BAD_ACCESS|EXC_CRASH|fatal signal",
@@ -32,6 +32,7 @@ def classify_crash_type(title: str, stack: str, tags: Dict) -> str:
     优先级：anr > freeze > oom > native_crash > crash（默认）。
     title 和 stack 都检查，title 权重略高（先检查）。
     """
+    _ = tags  # 预留给未来按 os/platform 区分，当前未使用
     text_title = title or ""
     text_stack = stack or ""
 
