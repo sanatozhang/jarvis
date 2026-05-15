@@ -748,15 +748,36 @@ def build_core_metric_alert_card(
     template = "red" if has_down else "yellow"
     title_text = f"📉 Crashguard 核心指标告警 · {window_label}"
 
+    _DIM_LABEL = {
+        "overall":        "📊 大盘",
+        "main_version":   "👥 主要版本",
+        "latest_version": "🆕 最新版本",
+    }
+
     elements: List[Dict[str, Any]] = []
     summary_md = (
-        f"**Σ** 10 分钟窗口 · 触发 **{len(items)}** 平台  ·  "
+        f"**Σ** 10 分钟窗口 · 触发 **{len(items)}** 条  ·  "
         f"阈值 ±{threshold_pp:.2f} pp（vs 前 1h 加权均值）"
     )
     elements.append({"tag": "div", "text": {"tag": "lark_md", "content": summary_md}})
     elements.append({"tag": "hr"})
 
-    for it in items:
+    # 按维度分组展示
+    from itertools import groupby as _groupby
+    dim_order = ["overall", "main_version", "latest_version"]
+    items_sorted = sorted(items, key=lambda x: dim_order.index(x.get("dimension", "overall"))
+                          if x.get("dimension", "overall") in dim_order else 99)
+
+    last_dim = None
+    for it in items_sorted:
+        dim = it.get("dimension", "overall")
+        if dim != last_dim:
+            dim_label = _DIM_LABEL.get(dim, dim)
+            ver = it.get("version_tag", "")
+            dim_header = f"**{dim_label}**" + (f"  `{ver}`" if ver else "")
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": dim_header}})
+            last_dim = dim
+
         pe = _platform_emoji(it.get("platform", ""))
         direction = it.get("direction", "")
         arrow = "🔻" if direction == "down" else "🔺"

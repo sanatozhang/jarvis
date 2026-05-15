@@ -49,6 +49,9 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_hourly_alerts", "feedback", "VARCHAR(16)", "NULL"),
     ("crash_hourly_alerts", "feedback_at", "DATETIME", "NULL"),
     ("crash_hourly_alerts", "feedback_by", "VARCHAR(64)", "NULL"),
+    # 三维度核心指标：dimension=overall/main_version/latest_version；version_tag 存实际版本号
+    ("crash_metric_snapshots", "dimension", "VARCHAR(32)", "'overall'"),
+    ("crash_metric_snapshots", "version_tag", "VARCHAR(64)", "''"),
 ]
 
 

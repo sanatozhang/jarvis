@@ -42,59 +42,119 @@ def _floor_to_window(dt: datetime) -> datetime:
     return dt.replace(minute=minute, second=0, microsecond=0)
 
 
-async def _fetch_crash_free(start: datetime, end: datetime) -> Dict[str, Dict[str, Any]]:
+def _make_datadog_client():
     s = get_crashguard_settings()
     if not s.datadog_api_key:
+        return None
+    from app.crashguard.services.datadog_client import DatadogClient
+    return DatadogClient(api_key=s.datadog_api_key, app_key=s.datadog_app_key, site=s.datadog_site)
+
+
+async def _fetch_crash_free(start: datetime, end: datetime) -> Dict[str, Dict[str, Any]]:
+    client = _make_datadog_client()
+    if not client:
         logger.warning("core_metric_alerter: datadog_api_key not configured")
         return {}
-    from app.crashguard.services.datadog_client import DatadogClient
-    client = DatadogClient(
-        api_key=s.datadog_api_key,
-        app_key=s.datadog_app_key,
-        site=s.datadog_site,
-    )
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
     return await client.crash_free_sessions_by_platform(start_ms=start_ms, end_ms=end_ms)
 
 
+async def _fetch_crash_free_by_version(
+    start: datetime, end: datetime, versions_by_plat: Dict[str, str],
+) -> Dict[str, Dict[str, Any]]:
+    """版本过滤 crash-free，给主要版本 / 最新版本维度用。"""
+    client = _make_datadog_client()
+    if not client or not versions_by_plat:
+        return {}
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+    return await client.crash_free_sessions_by_version(
+        start_ms=start_ms, end_ms=end_ms, versions_by_plat=versions_by_plat,
+    )
+
+
+async def _resolve_version_maps(platforms: list) -> Dict[str, Dict[str, str]]:
+    """解析主要版本 / 最新版本，返回 {dimension: {platform: version}}。
+
+    dimension keys: "main_version", "latest_version"
+    失败时对应 platform key 缺失（不触发该平台告警）。
+    """
+    from app.crashguard.services.version_util import (
+        resolve_effective_latest_release,
+        derive_top_user_version_from_crashes,
+    )
+    s = get_crashguard_settings()
+    latest: Dict[str, str] = {}
+    main: Dict[str, str] = {}
+
+    async with get_session() as session:
+        for plat in platforms:
+            # 最新版本：config 优先 > 崩溃数据派生
+            override = getattr(s, f"current_release_{plat}", "") or ""
+            v = await resolve_effective_latest_release(session, plat, override=override)
+            if v:
+                latest[plat] = v
+            # 主要版本：用户量最大版本（DB fallback）
+            top = await derive_top_user_version_from_crashes(session, plat)
+            if top and top.get("version"):
+                main[plat] = top["version"]
+
+    return {"latest_version": latest, "main_version": main}
+
+
 async def _upsert_snapshot(
     session, window_start: datetime, platform: str,
     total: int, crashed: int, cf_pct: float,
+    dimension: str = "overall", version_tag: str = "",
 ) -> None:
+    # platform_key encodes dimension to avoid UNIQUE(window_start, platform) collisions.
+    # e.g. "android" = overall, "android:main" = main_version, "android:latest" = latest_version
+    platform_key = platform if dimension == "overall" else f"{platform}:{dimension.replace('_version', '')}"
     existing = (await session.execute(
         select(CrashMetricSnapshot).where(
             CrashMetricSnapshot.window_start == window_start,
-            CrashMetricSnapshot.platform == platform,
+            CrashMetricSnapshot.platform == platform_key,
         )
     )).scalars().first()
     if existing is None:
-        session.add(CrashMetricSnapshot(
+        row = CrashMetricSnapshot(
             window_start=window_start,
-            platform=platform,
+            platform=platform_key,
             total_sessions=total,
             crashed_sessions=crashed,
             crash_free_pct=cf_pct,
-        ))
+        )
+        # Set dimension/version_tag if columns exist (added by migration)
+        if hasattr(row, "dimension"):
+            row.dimension = dimension
+        if hasattr(row, "version_tag"):
+            row.version_tag = version_tag
+        session.add(row)
     else:
         existing.total_sessions = total
         existing.crashed_sessions = crashed
         existing.crash_free_pct = cf_pct
+        if hasattr(existing, "version_tag"):
+            existing.version_tag = version_tag
 
 
 async def _baseline_crash_free(
     session, platform: str, current_window_start: datetime,
+    dimension: str = "overall",
 ) -> Optional[float]:
     """前 1h 同平台 snapshot 的加权 crash_free_pct。
 
     权重 = total_sessions，避开小窗口的极值噪声。
     至少要 2 个有效 snapshot 才返回。
+    platform_key 已编码 dimension（e.g. "android:latest"）。
     """
+    platform_key = platform if dimension == "overall" else f"{platform}:{dimension.replace('_version', '')}"
     base_from = current_window_start - timedelta(minutes=BASELINE_MINUTES)
     base_to = current_window_start
     rows = (await session.execute(
         select(CrashMetricSnapshot).where(
-            CrashMetricSnapshot.platform == platform,
+            CrashMetricSnapshot.platform == platform_key,
             CrashMetricSnapshot.window_start >= base_from,
             CrashMetricSnapshot.window_start < base_to,
         )
@@ -143,70 +203,98 @@ async def run_core_metric_tick(
                     "window_start": window_start.isoformat(),
                 }
 
-    # 拉当前窗口
-    try:
-        current = await _fetch_crash_free(window_start, window_end)
-    except Exception as exc:
-        logger.exception("core_metric_alerter: datadog fetch failed")
-        return {"ok": False, "error": f"datadog: {exc}",
-                "window_start": window_start.isoformat()}
-
-    if not current:
-        return {"ok": True, "alerted": False, "reason": "no_data",
-                "window_start": window_start.isoformat()}
-
     # 平台白名单
     platforms_filter = {
         p.strip().lower()
         for p in (getattr(s, "core_metric_platforms", "") or "").split(",")
         if p.strip()
     }
-
     threshold_pp = float(getattr(s, "core_metric_change_threshold_pp", 0.3) or 0.3)
     min_sessions = int(getattr(s, "core_metric_min_sessions", 500) or 0)
     min_crashed = int(getattr(s, "core_metric_min_crashed_sessions", 3) or 0)
+
+    # 拉数据：大盘 + 解析版本维度
+    try:
+        overall_data = await _fetch_crash_free(window_start, window_end)
+    except Exception as exc:
+        logger.exception("core_metric_alerter: datadog fetch failed")
+        return {"ok": False, "error": f"datadog: {exc}",
+                "window_start": window_start.isoformat()}
+
+    if not overall_data:
+        return {"ok": True, "alerted": False, "reason": "no_data",
+                "window_start": window_start.isoformat()}
+
+    active_platforms = [p for p in overall_data if not platforms_filter or p in platforms_filter]
+
+    # 解析版本映射（best-effort；版本不可用时该维度跳过）
+    version_maps: Dict[str, Dict[str, str]] = {}
+    try:
+        version_maps = await _resolve_version_maps(active_platforms)
+    except Exception as exc:
+        logger.warning("core_metric_alerter: version resolve failed (skip version dims): %s", exc)
+
+    # 三维度数据集：overall + main_version + latest_version
+    dimension_data: Dict[str, Dict[str, Dict[str, Any]]] = {"overall": overall_data}
+    for dim, ver_map in version_maps.items():
+        if ver_map:
+            try:
+                vdata = await _fetch_crash_free_by_version(window_start, window_end, ver_map)
+                if vdata:
+                    dimension_data[dim] = vdata
+            except Exception as exc:
+                logger.warning("core_metric_alerter: version fetch failed dim=%s: %s", dim, exc)
 
     alert_items: List[Dict[str, Any]] = []
     snapshot_log: List[Dict[str, Any]] = []
 
     async with get_session() as session:
-        for platform, metrics in current.items():
-            if platforms_filter and platform not in platforms_filter:
-                continue
-            total = int(metrics.get("total_sessions") or 0)
-            crashed = int(metrics.get("crashed_sessions") or 0)
-            cf_pct = float(metrics.get("crash_free_pct") or 0.0)
+        for dimension, dim_data in dimension_data.items():
+            ver_map = version_maps.get(dimension, {})
+            for platform, metrics in dim_data.items():
+                if platforms_filter and platform not in platforms_filter:
+                    continue
+                total = int(metrics.get("total_sessions") or 0)
+                crashed = int(metrics.get("crashed_sessions") or 0)
+                cf_pct = float(metrics.get("crash_free_pct") or 0.0)
+                version_tag = ver_map.get(platform, "") if dimension != "overall" else ""
 
-            # 写 snapshot（不论是否报警都入库——下次 tick 复用为基线）
-            await _upsert_snapshot(session, window_start, platform, total, crashed, cf_pct)
-            snapshot_log.append({"platform": platform, "total": total,
-                                 "crashed": crashed, "cf_pct": cf_pct})
+                # 写 snapshot（不论是否报警都入库——下次 tick 复用为基线）
+                await _upsert_snapshot(
+                    session, window_start, platform, total, crashed, cf_pct,
+                    dimension=dimension, version_tag=version_tag,
+                )
+                snapshot_log.append({
+                    "platform": platform, "dimension": dimension,
+                    "version": version_tag, "total": total,
+                    "crashed": crashed, "cf_pct": cf_pct,
+                })
 
-            # 量级闸 1：小流量分母 → 跳过
-            if total < min_sessions:
-                continue
-            # 量级闸 2：crashed 绝对数太低（哪怕 rate 跳变）→ 跳过
-            # 抓手：1 user × 1 crash 不应触发"全平台健康度告警"——颗粒度不对齐
-            if crashed < min_crashed:
-                continue
+                # 量级闸（版本维度用更低阈值，因为版本流量天然 < 大盘）
+                dim_min_sessions = min_sessions if dimension == "overall" else max(50, min_sessions // 5)
+                if total < dim_min_sessions:
+                    continue
+                if crashed < min_crashed:
+                    continue
 
-            baseline_cf = await _baseline_crash_free(session, platform, window_start)
-            if baseline_cf is None:
-                # 冷启动：前 1h 没积累够 snapshot，跳过本次判定
-                continue
-            delta_pp = cf_pct - baseline_cf
-            if abs(delta_pp) < threshold_pp:
-                continue
-            direction = "down" if delta_pp < 0 else "up"
-            alert_items.append({
-                "platform": platform,
-                "total_sessions": total,
-                "crashed_sessions": crashed,
-                "crash_free_pct": round(cf_pct, 3),
-                "baseline_pct": round(baseline_cf, 3),
-                "delta_pp": round(delta_pp, 3),
-                "direction": direction,
-            })
+                baseline_cf = await _baseline_crash_free(session, platform, window_start, dimension=dimension)
+                if baseline_cf is None:
+                    continue
+                delta_pp = cf_pct - baseline_cf
+                if abs(delta_pp) < threshold_pp:
+                    continue
+                direction = "down" if delta_pp < 0 else "up"
+                alert_items.append({
+                    "platform": platform,
+                    "dimension": dimension,
+                    "version_tag": version_tag,
+                    "total_sessions": total,
+                    "crashed_sessions": crashed,
+                    "crash_free_pct": round(cf_pct, 3),
+                    "baseline_pct": round(baseline_cf, 3),
+                    "delta_pp": round(delta_pp, 3),
+                    "direction": direction,
+                })
         await session.commit()
 
     if not alert_items:

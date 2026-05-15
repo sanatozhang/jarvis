@@ -1009,6 +1009,103 @@ class DatadogClient:
             out[platform] = {"version": top_ver, "users": top_users}
         return out
 
+    async def crash_free_sessions_by_version(
+        self,
+        start_ms: int,
+        end_ms: int,
+        versions_by_plat: Dict[str, str],
+    ) -> Dict[str, Dict[str, Any]]:
+        """版本过滤版 crash_free_sessions_by_platform.
+
+        versions_by_plat = {"ios": "3.17.0-701", "android": "3.17.0-702"}
+        每平台加 version:"<ver>" filter，对齐 _versioned_count 口径（RUM `version` 短 facet）。
+        返回结构同 crash_free_sessions_by_platform：
+            {"android": {"total_sessions": ..., "crashed_sessions": ..., "crash_free_pct": ...}}
+        """
+        if not versions_by_plat:
+            return {}
+        try:
+            return await asyncio.to_thread(
+                self._sync_crash_free_sessions_by_version, start_ms, end_ms, versions_by_plat,
+            )
+        except Exception as exc:
+            logger.warning("crash_free_sessions_by_version failed: %s", exc)
+            return {}
+
+    def _sync_crash_free_sessions_by_version(
+        self, start_ms: int, end_ms: int, versions_by_plat: Dict[str, str],
+    ) -> Dict[str, Dict[str, Any]]:
+        from datadog_api_client import ApiClient
+        from datadog_api_client.exceptions import ApiException
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        conf = self._build_configuration()
+        result: Dict[str, Dict[str, Any]] = {}
+        with ApiClient(conf) as api_client:
+            rum = RUMApi(api_client)
+            for plat, ver in versions_by_plat.items():
+                if not ver:
+                    continue
+                ver_safe = str(ver).replace('"', '\\"')
+                def _agg(base_q: str) -> int:
+                    body = RUMAggregateRequest(
+                        filter=RUMQueryFilter(
+                            query=f'{base_q} version:"{ver_safe}"',
+                            _from=str(int(start_ms)),
+                            to=str(int(end_ms)),
+                        ),
+                        compute=[RUMCompute(
+                            aggregation=RUMAggregationFunction.CARDINALITY,
+                            metric="@session.id",
+                            type=RUMComputeType.TOTAL,
+                        )],
+                        group_by=[RUMGroupBy(facet="@os.name", limit=20)],
+                    )
+                    try:
+                        resp = rum.aggregate_rum_events(body=body)
+                    except ApiException as exc:
+                        if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                            self._record_rate_limit_event()
+                        raise
+                    buckets = getattr(getattr(resp, "data", None), "buckets", None) or []
+                    total = 0
+                    expected = (plat or "").strip().lower()
+                    for b in buckets:
+                        by = getattr(b, "by", {}) or {}
+                        os_name = (by.get("@os.name") or "").strip().lower()
+                        is_match = (
+                            (expected == "ios" and (os_name.startswith("ios") or os_name.startswith("ipados") or "iphone" in os_name))
+                            or (expected == "android" and os_name.startswith("android"))
+                        )
+                        if not is_match:
+                            continue
+                        comp = getattr(b, "computes", {}) or {}
+                        try:
+                            total += int(next(iter(comp.values())))
+                        except (StopIteration, TypeError, ValueError):
+                            pass
+                    return total
+
+                try:
+                    t = _agg("@type:session")
+                    c = _agg("@type:session @session.crash.count:>0")
+                    if t <= 0:
+                        continue
+                    result[plat] = {
+                        "total_sessions": t,
+                        "crashed_sessions": c,
+                        "crash_free_pct": round((1.0 - c / t) * 100.0, 4),
+                    }
+                except Exception as exc:
+                    logger.warning("crash_free_sessions_by_version %s=%s: %s", plat, ver, exc)
+        return result
+
     async def crash_free_sessions_by_platform(
         self,
         start_ms: int,

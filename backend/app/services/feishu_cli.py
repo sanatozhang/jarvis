@@ -902,12 +902,18 @@ async def notify_analysis_failure(
     raw = (_os.environ.get("ANALYSIS_FAILURE_ALERT_EMAILS", "") or "").strip()
     recipients = [e.strip() for e in raw.split(",") if e.strip()] or ["sanato.zhang@plaud.ai"]
 
-    base = (_os.environ.get("APPLLO_BASE_URL", "") or "").rstrip("/")
+    # APPLLO_BASE_URL preferred; fall back to CRASHGUARD_FRONTEND_BASE_URL which is
+    # always configured in docker-compose (same host, same frontend port).
+    base = (
+        _os.environ.get("APPLLO_BASE_URL", "")
+        or _os.environ.get("CRASHGUARD_FRONTEND_BASE_URL", "")
+    ).rstrip("/")
     link = f"{base}/tracking?detail={issue_id}" if base else ""
 
-    title = "🚨 Analysis Task Failed" if kind == "hard" else "⚠️ Analysis System Failure"
+    # Unified title: distinguish severity via label, not separate emoji+title combos.
+    severity = "⚠️ Soft" if kind == "soft" else "🚨 Hard"
     lines = [
-        title,
+        f"[Analysis Failed · {severity}]",
         f"Task: {task_id}",
         f"Issue: {issue_id}",
     ]
