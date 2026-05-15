@@ -367,6 +367,130 @@ async def warmup_on_startup() -> None:
         logger.exception("warmup pipeline failed (non-fatal)")
 
 
+async def run_deep_analysis_auto_tick() -> dict:
+    """自动触发 Phase 1 深度诊断：扫 attention pool 中无 PR、分析质量不够的 issue。
+
+    触发条件（全部满足才触发）：
+    - 平台在可修复白名单（android/ios/flutter）
+    - 没有 active PR（open/draft/merged）
+    - 没有正在运行的 Phase 1（pending/running）
+    - 没有高质量的 Phase 2 分析（confidence=high AND feasibility≥0.7），即：
+        (a) 完全没有 success 分析，或
+        (b) 有 success 分析但 confidence<high 或 feasibility<0.7
+    - Phase 1 dedup 窗口内未跑过（由 start_deep_analysis 内部控制）
+
+    每 tick 最多触发 deep_analysis_auto_max_per_tick 个（默认 1，因为 Phase 1 需 30min）。
+    Phase 1 结束后：
+    - auto_proceed=True（单假设 confidence≥0.9）→ 自动触发 Phase 2 → PR
+    - 否则 → 结果可在前端看到，等人工确认假设
+    """
+    from datetime import date as _date
+    from app.crashguard.config import get_crashguard_settings
+    from app.crashguard.models import CrashAnalysis, CrashIssue, CrashPullRequest
+    from app.crashguard.services.deep_analyzer import start_deep_analysis
+    from app.db.database import get_session
+    from sqlalchemy import select, desc, or_
+
+    s = get_crashguard_settings()
+    if not getattr(s, "deep_analysis_auto_enabled", False):
+        return {"skipped_reason": "kill_switch_off", "triggered": 0}
+    if not getattr(s, "deep_analysis_enabled", True):
+        return {"skipped_reason": "deep_analysis_disabled", "triggered": 0}
+
+    max_per_tick = int(getattr(s, "deep_analysis_auto_max_per_tick", 1) or 1)
+    fixable = frozenset(
+        p.lower() for p in
+        getattr(s, "auto_pr_fixable_platforms", ["android", "ios", "flutter"])
+    )
+
+    attention_ids = await _collect_attention_ids(_date.today())
+    if not attention_ids:
+        return {"triggered": 0, "scanned": 0, "skipped_reason": "no_attention_issues"}
+
+    triggered = 0
+    skipped: list[str] = []
+
+    async with get_session() as session:
+        # 预拉活跃 PR 的 issue id 集合
+        active_pr_ids: set[str] = set(r[0] for r in (await session.execute(
+            select(CrashPullRequest.datadog_issue_id).where(
+                CrashPullRequest.datadog_issue_id.in_(attention_ids),
+                CrashPullRequest.pr_status.in_(["open", "draft", "merged"]),
+            )
+        )).all())
+
+        # 预拉正在运行的 Phase 1 诊断的 issue id 集合
+        running_diag_ids: set[str] = set(r[0] for r in (await session.execute(
+            select(CrashAnalysis.datadog_issue_id).where(
+                CrashAnalysis.datadog_issue_id.in_(attention_ids),
+                CrashAnalysis.phase == "diagnosis",
+                CrashAnalysis.status.in_(["pending", "running"]),
+            )
+        )).all())
+
+        # 预拉高质量 fix 分析（confidence=high AND feasibility>=0.7）
+        high_quality_ids: set[str] = set(r[0] for r in (await session.execute(
+            select(CrashAnalysis.datadog_issue_id).where(
+                CrashAnalysis.datadog_issue_id.in_(attention_ids),
+                CrashAnalysis.status == "success",
+                CrashAnalysis.confidence == "high",
+                CrashAnalysis.feasibility_score >= 0.7,
+                or_(CrashAnalysis.phase == "fix", CrashAnalysis.phase.is_(None)),
+            )
+        )).all())
+
+        # 预拉 issue 的 platform
+        issue_platforms: dict[str, str] = dict((await session.execute(
+            select(CrashIssue.datadog_issue_id, CrashIssue.platform).where(
+                CrashIssue.datadog_issue_id.in_(attention_ids)
+            )
+        )).all())
+
+    for issue_id in attention_ids:
+        if triggered >= max_per_tick:
+            break
+
+        platform = (issue_platforms.get(issue_id) or "").lower()
+        if platform not in fixable:
+            skipped.append(f"{issue_id}:non_fixable_platform={platform}")
+            continue
+        if issue_id in active_pr_ids:
+            skipped.append(f"{issue_id}:has_active_pr")
+            continue
+        if issue_id in running_diag_ids:
+            skipped.append(f"{issue_id}:phase1_running")
+            continue
+        if issue_id in high_quality_ids:
+            skipped.append(f"{issue_id}:already_high_quality")
+            continue
+
+        # 触发 Phase 1（start_deep_analysis 内部处理 dedup 去重）
+        try:
+            run_id = await start_deep_analysis(
+                issue_id=issue_id,
+                triggered_by="auto_deep_analyze",
+                force=False,
+            )
+            triggered += 1
+            logger.info(
+                "[deep_analyze_auto] triggered Phase 1: issue=%s run_id=%s",
+                issue_id, run_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[deep_analyze_auto] failed to start Phase 1: issue=%s error=%s",
+                issue_id, exc,
+            )
+            skipped.append(f"{issue_id}:start_failed:{exc}")
+
+    return {
+        "triggered": triggered,
+        "scanned": len(attention_ids),
+        "skipped": len(skipped),
+        "skipped_detail": skipped[:5],
+    }
+
+
 def _cron_matches(expr: str, now: datetime) -> bool:
     """复用 scheduler.py 的极简 cron 解析（M H * * * 或 */N 形式）。"""
     parts = (expr or "").split()

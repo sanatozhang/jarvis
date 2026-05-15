@@ -372,6 +372,11 @@ class CrashguardSettings(BaseSettings):
     deep_analysis_timeout_seconds: int = 1800          # 30 分钟，可调
     deep_analysis_dedup_hours: int = 6                 # 6h 内不重复跑
     deep_analysis_auto_proceed_threshold: float = 0.9  # 快车道置信度门槛
+    # 自动触发 Phase 1 的 cron 配置（需先开启 deep_analysis_auto_enabled）
+    # 默认 false 需显式开启，避免未经测试就消耗大量 Anthropic token
+    deep_analysis_auto_enabled: bool = False
+    deep_analysis_auto_max_per_tick: int = 1           # 每 tick 最多触发几个（Phase 1 需 30min）
+    deep_analyze_auto_cron: str = "*/35 * * * *"       # 每 35 分钟触发一次
 
     model_config = {
         "env_prefix": "CRASHGUARD_",

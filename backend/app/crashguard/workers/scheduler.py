@@ -30,6 +30,8 @@ _core_metric_last_fired: str = ""   # 10min tick 进程级幂等；DB UNIQUE(win
 _job_health_last_fired: str = ""    # 兜底告警 tick 进程级幂等
 _top_crash_auto_pr_last_fired: str = ""  # Top crash 自动 PR 进程级幂等
 _backfill_last_fired: str = ""      # 周度 baseline 回填 tick 进程级幂等
+_deep_analyze_auto_last_fired: str = ""  # Phase 1 深度诊断自动 tick 进程级幂等
+_deep_analyze_auto_running: bool = False  # 避免上一 tick 未完成时重入
 
 
 async def _run_analyze_tick(max_per_tick: int) -> dict:
@@ -259,6 +261,34 @@ async def _tick_once() -> None:
                     )
             except Exception:
                 logger.exception("crashguard baseline_backfill tick failed")
+
+    # Phase 1 深度诊断自动触发：对 no-PR + 低置信度 issue 自动跑深度调查
+    # 默认每 35 分钟 1 个（Phase 1 最长 30min，留 5min buffer 防重叠）
+    # kill switch: deep_analysis_auto_enabled=false（默认 false，需显式开启）
+    global _deep_analyze_auto_last_fired, _deep_analyze_auto_running
+    if getattr(s, "deep_analysis_auto_enabled", False):
+        da_cron = getattr(s, "deep_analyze_auto_cron", "") or "*/35 * * * *"
+        if da_cron and _deep_analyze_auto_last_fired != tag and _cron_matches(da_cron, now):
+            _deep_analyze_auto_last_fired = tag
+            if _deep_analyze_auto_running:
+                logger.info("deep_analyze_auto tick skipped: previous tick still running")
+            else:
+                _deep_analyze_auto_running = True
+                try:
+                    async with record_heartbeat("deep_analyze_auto") as hb:
+                        from app.crashguard.workers.warmup import run_deep_analysis_auto_tick
+                        res = await run_deep_analysis_auto_tick()
+                        hb.set_summary(res)
+                        if res.get("triggered", 0) == 0:
+                            hb.status = "skipped"
+                        logger.info(
+                            "crashguard deep_analyze_auto tick fired: triggered=%d scanned=%d skipped=%d",
+                            res.get("triggered", 0), res.get("scanned", 0), res.get("skipped", 0),
+                        )
+                except Exception:
+                    logger.exception("crashguard deep_analyze_auto tick failed")
+                finally:
+                    _deep_analyze_auto_running = False
 
     # 定时任务健康度兜底告警（每 5min 扫描 heartbeat 表）
     global _job_health_last_fired
