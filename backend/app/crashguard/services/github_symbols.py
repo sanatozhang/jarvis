@@ -24,6 +24,7 @@ _GITHUB_API = "https://api.github.com"
 _ASSET_IOS_DSYM = "PLAUD.dSYMs.zip"
 _ASSET_ANDROID_MAPPING = "mapping_globalRelease.txt"
 _ASSET_DART_SYMBOLS = "flutter_symbols.tar.gz"
+_ASSET_ANDROID_NATIVE_SYMBOLS = "native_symbols.tar.gz"  # libflutter.so / libapp.so 带 debug 符号
 
 
 def _github_token() -> Optional[str]:
@@ -215,6 +216,39 @@ async def get_android_mapping(app_version: str) -> Optional[str]:
 
     result = await _download_asset(tag, _ASSET_ANDROID_MAPPING, dest)
     return str(result) if result else None
+
+
+async def get_android_native_symbols_dir(app_version: str) -> Optional[str]:
+    """
+    返回 Android native_symbols 目录路径（带 debug 符号的 libflutter.so / libapp.so 等）。
+    第一次调用从 GitHub release 下载 native_symbols.tar.gz 并解压（~661MB），后续走缓存。
+
+    这是 Plan C for Android native crash 的关键 — Plaud 自己打包了带符号版本的 .so 文件。
+    """
+    cache_dir = _github_cache_dir() / app_version / "native"
+    marker = cache_dir / ".extracted"
+    if marker.exists():
+        return str(cache_dir)
+
+    tag = await find_release_tag(app_version)
+    if not tag:
+        return None
+
+    tar_path = cache_dir / _ASSET_ANDROID_NATIVE_SYMBOLS
+    result = await _download_asset(tag, _ASSET_ANDROID_NATIVE_SYMBOLS, tar_path)
+    if not result:
+        return None
+
+    try:
+        with tarfile.open(tar_path) as tf:
+            tf.extractall(cache_dir)
+        tar_path.unlink(missing_ok=True)
+        marker.touch()
+        logger.info("Android native symbols extracted to %s", cache_dir)
+        return str(cache_dir)
+    except Exception as exc:
+        logger.warning("failed to extract Android native symbols: %s", exc)
+        return None
 
 
 async def get_dart_symbols_dir(app_version: str) -> Optional[str]:

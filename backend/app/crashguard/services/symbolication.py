@@ -109,21 +109,90 @@ def _symbolicate_stack_sync(stack: str, binary_images: list, platform: str) -> s
 
 
 async def _symbolicate_with_github(stack: str, platform: str, app_version: str) -> str:
-    """Plan C：利用 GitHub release 里的符号文件对 stack 做进一步增强。"""
-    from app.crashguard.services.github_symbols import get_ios_dsyms_dir, get_android_mapping
+    """Plan C：利用 Plaud GitHub release 里的符号文件对 stack 做进一步增强。
+
+    Android：
+      1. 优先用 native_symbols.tar.gz 里的 libflutter.so / libapp.so（带 debug 符号）解 native 帧
+      2. 用 mapping_globalRelease.txt 做 ProGuard 反混淆 Java 帧
+    iOS：用 PLAUD.dSYMs.zip 里的 dSYM bundle 用 atos 解析
+    """
+    from app.crashguard.services.github_symbols import (
+        get_ios_dsyms_dir, get_android_mapping, get_android_native_symbols_dir,
+    )
     plat = (platform or "").lower()
     try:
         if "ios" in plat or "iphone" in plat or "ipados" in plat:
             dsyms_dir = await get_ios_dsyms_dir(app_version)
             if dsyms_dir:
                 stack = await asyncio.to_thread(_symbolicate_ios_with_dir, stack, dsyms_dir)
-        elif "android" in plat:
+        elif "android" in plat or "flutter" in plat:
+            # 1. native 符号（关键：libflutter.so / libapp.so 带 debug 符号）
+            native_dir = await get_android_native_symbols_dir(app_version)
+            if native_dir:
+                stack = await asyncio.to_thread(
+                    _symbolicate_android_with_dir, stack, native_dir,
+                )
+            # 2. ProGuard mapping（Java 帧反混淆）
             mapping_path = await get_android_mapping(app_version)
             if mapping_path:
                 stack = await asyncio.to_thread(_retrace_proguard, stack, mapping_path)
     except Exception as exc:
         logger.debug("github symbolication failed (non-fatal): %s", exc)
     return stack
+
+
+def _symbolicate_android_with_dir(stack: str, native_dir: str) -> str:
+    """
+    用 Plaud release 解压出的 native_symbols 目录里的 .so 文件（含 debug 符号）
+    对 Android native crash 帧做 addr2line 符号化。
+
+    匹配策略：从 stack 文本提 BuildId → 遍历 native_dir 下所有 .so 用 file 命令验 BuildId → addr2line。
+    """
+    if not _ADDR2LINE:
+        return stack
+
+    build_ids = set(m.group(4) for m in _ANDROID_FLUTTER_FRAME_RE.finditer(stack) if m.group(4))
+    if not build_ids:
+        return stack
+
+    # 也匹配非 libflutter.so 的 native 帧（如 libapp.so）
+    build_ids_all = set()
+    extra_re = re.compile(
+        r"(#\d+\s+pc\s+)([0-9a-fA-F]+)\s+.*?(\S+\.so).*?(?:BuildId:\s*([0-9a-fA-F]+))",
+        re.MULTILINE,
+    )
+    for m in extra_re.finditer(stack):
+        if m.group(4):
+            build_ids_all.add(m.group(4).lower())
+
+    # 扫 native_dir 找所有 .so，建 build_id → so_path 映射
+    so_map: dict = {}
+    for so_path in Path(native_dir).rglob("*.so"):
+        try:
+            r = subprocess.run(
+                ["file", str(so_path)], capture_output=True, text=True, timeout=5,
+            )
+            for bid in build_ids_all:
+                if bid in r.stdout.lower():
+                    so_map[bid] = str(so_path)
+        except Exception:
+            continue
+
+    if not so_map:
+        return stack
+
+    def replace_frame(m: re.Match) -> str:
+        bid = (m.group(4) or "").lower()
+        if not bid or bid not in so_map:
+            return m.group(0)
+        offset = m.group(2)
+        sym = _addr2line_lookup(so_map[bid], offset)
+        if not sym:
+            return m.group(0)
+        # 替换 (???) 为 [function:line]
+        return m.group(0).replace("(???)", f"[{sym}]")
+
+    return extra_re.sub(replace_frame, stack)
 
 
 # ── iOS 符号化 ─────────────────────────────────────────────────────────────────
@@ -330,8 +399,10 @@ def _find_flutter_engine_hash(uuid_or_build_id: str, platform: str) -> Optional[
             index = {}
 
     # 自动遍历：从 Flutter 官方 releases 路由查 engine hash
+    # max_versions 提高到 40 + 包含 stable / beta channels（Plaud 不一定用 stable，
+    # 灰度包可能在 beta channel）；逐个验证 build-id 匹配
     try:
-        hashes = _fetch_recent_flutter_engine_hashes(max_versions=8)
+        hashes = _fetch_recent_flutter_engine_hashes(max_versions=40)
     except Exception as exc:
         logger.debug("fetch_recent_flutter_engine_hashes failed: %s", exc)
         return None
@@ -378,10 +449,12 @@ def _fetch_recent_flutter_engine_hashes(max_versions: int = 8) -> List[str]:
             with _ureq.urlopen(url, timeout=15) as resp:  # noqa: S310
                 import json as _json
                 data = _json.loads(resp.read().decode("utf-8"))
+            # 包含 stable + beta（Plaud 灰度可能用 beta channel）；按 releases 顺序遍历
+            allowed_channels = {"stable", "beta"}
             stable_hashes = []
             seen = set()
             for r in (data.get("releases") or []):
-                if r.get("channel") != "stable":
+                if r.get("channel") not in allowed_channels:
                     continue
                 h = (r.get("hash") or "").strip()
                 if h and h not in seen:

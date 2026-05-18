@@ -37,7 +37,7 @@ WORKDIR /app
 #   （symbolication.py 会优先用 llvm-symbolizer，找不到回落 addr2line）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     grep coreutils unzip git openssh-client curl ca-certificates gnupg \
-    binutils \
+    binutils file \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 2：agent 工具包（轻量，频繁迭代）。
