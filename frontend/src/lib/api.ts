@@ -1672,6 +1672,36 @@ export interface CrashDeviceDistribution {
 export const fetchCrashDeviceDistribution = (window_hours = 24) =>
   request<CrashDeviceDistribution>(`/crash/device-distribution?window_hours=${window_hours}`);
 
+export interface CrashOsVersionSlice {
+  version: string;
+  sessions: number;
+  pct: number;
+}
+
+export interface CrashOsVersionDistribution {
+  data: Partial<Record<"android" | "ios", CrashOsVersionSlice[]>>;
+  source: string;
+  window_hours: number;
+}
+
+export const fetchCrashOsVersionDistribution = (window_hours = 24) =>
+  request<CrashOsVersionDistribution>(`/crash/os-version-distribution?window_hours=${window_hours}`);
+
+export interface CrashPlatformSummary {
+  total_sessions: number;
+  crashed_sessions: number;
+  crash_free_pct: number;
+}
+
+export interface CrashPlatformSummaryResponse {
+  data: Partial<Record<"android" | "ios", CrashPlatformSummary>>;
+  source: string;
+  window_hours: number;
+}
+
+export const fetchCrashPlatformSummary = (window_hours = 24) =>
+  request<CrashPlatformSummaryResponse>(`/crash/platform-summary?window_hours=${window_hours}`);
+
 // ---------------------------------------------------------------------------
 // T3 客服反馈闭环：对 AI 的 needs_engineer 标签做事后纠偏
 // ---------------------------------------------------------------------------

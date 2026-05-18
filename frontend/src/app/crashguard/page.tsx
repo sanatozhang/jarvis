@@ -20,7 +20,8 @@ import {
   fetchAutoPrQueue,
   fetchCrashLatestRelease,
   fetchCrashVersionDistribution,
-  fetchCrashDeviceDistribution,
+  fetchCrashOsVersionDistribution,
+  fetchCrashPlatformSummary,
   triggerCrashWarmup,
   startDeepAnalysis,
   fetchDiagnosisStatus,
@@ -35,7 +36,8 @@ import {
   type CrashSortBy,
   type CrashStatus,
   type CrashVersionSlice,
-  type CrashDeviceSlice,
+  type CrashOsVersionSlice,
+  type CrashPlatformSummary,
 } from "@/lib/api";
 import { getBatchTopN } from "@/lib/crashguard-prefs";
 
@@ -148,6 +150,8 @@ function CrashguardPageInner() {
   } | null>(null);
   // 分页 + 后端过滤（全部经 URL query 同步，支持深链）
   const [aggregates, setAggregates] = useState<CrashTopAggregates | null>(null);
+  // 全量 aggregates（不受 fatality filter 影响），用于 KPI 顶栏始终展示完整 fatal/non-fatal 总量
+  const [globalAggregates, setGlobalAggregates] = useState<CrashTopAggregates | null>(null);
   const [totalCount, setTotalCount] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
   const PAGE_SIZE = 40;
@@ -166,8 +170,11 @@ function CrashguardPageInner() {
   const [versionDistribution, setVersionDistribution] = useState<
     Partial<Record<"android" | "ios", CrashVersionSlice[]>>
   >({});
-  const [deviceDistribution, setDeviceDistribution] = useState<
-    Partial<Record<"android" | "ios", CrashDeviceSlice[]>>
+  const [osVersionDistribution, setOsVersionDistribution] = useState<
+    Partial<Record<"android" | "ios", CrashOsVersionSlice[]>>
+  >({});
+  const [platformSummary, setPlatformSummary] = useState<
+    Partial<Record<"android" | "ios", CrashPlatformSummary>>
   >({});
   // 首次进入若空数据 → 自动 bootstrap（拉数 + AI 分析），避免用户面对空白
   const [bootstrapping, setBootstrapping] = useState(false);
@@ -343,23 +350,37 @@ function CrashguardPageInner() {
   const loadTop = useCallback(async () => {
     setLoading(true);
     try {
-      const [resp, h] = await Promise.all([
-        fetchCrashTop(PAGE_SIZE, undefined, {
-          page,
-          page_size: PAGE_SIZE,
-          fatality: fatalityFilter === "all" ? "" : fatalityFilter,
-          platform: platformFilter === "all" ? "" : platformFilter,
-          status: statusFilter === "all" ? "" : statusFilter,
-          search: searchParams?.get("search") || "",
-          sort_by: sortBy,
-          kinds: "all",
-          window_hours: windowHours,
-        }),
-        fetchCrashHealth(),
-      ]);
+      // 主查询：受当前 filters 影响（用于表格 + 部分聚合）
+      // 全量查询（仅当 fatalityFilter 在过滤时）：fatality="" 拉一份用于 KPI 顶栏始终展示全量
+      const mainReq = fetchCrashTop(PAGE_SIZE, undefined, {
+        page,
+        page_size: PAGE_SIZE,
+        fatality: fatalityFilter === "all" ? "" : fatalityFilter,
+        platform: platformFilter === "all" ? "" : platformFilter,
+        status: statusFilter === "all" ? "" : statusFilter,
+        search: searchParams?.get("search") || "",
+        sort_by: sortBy,
+        kinds: "all",
+        window_hours: windowHours,
+      });
+      const globalReq = fatalityFilter === "all"
+        ? Promise.resolve(null)
+        : fetchCrashTop(1, undefined, {
+            page: 1,
+            page_size: 1,
+            fatality: "",
+            platform: platformFilter === "all" ? "" : platformFilter,
+            status: statusFilter === "all" ? "" : statusFilter,
+            search: searchParams?.get("search") || "",
+            sort_by: sortBy,
+            kinds: "all",
+            window_hours: windowHours,
+          });
+      const [resp, h, globalResp] = await Promise.all([mainReq, fetchCrashHealth(), globalReq]);
       setItems(resp.issues);
       setDate(resp.date);
       setAggregates(resp.aggregates || null);
+      setGlobalAggregates(globalResp?.aggregates || resp.aggregates || null);
       setTotalCount(resp.total ?? resp.issues.length);
       setTotalPages(resp.total_pages || 1);
       setDatadogConfigured(h.datadog_configured);
@@ -727,16 +748,18 @@ function CrashguardPageInner() {
     Promise.all([
       fetchCrashLatestRelease(),
       fetchCrashVersionDistribution(24),
-      fetchCrashDeviceDistribution(24),
+      fetchCrashOsVersionDistribution(24),
+      fetchCrashPlatformSummary(24),
     ])
-      .then(([r, vd, dd]) => {
+      .then(([r, vd, od, ps]) => {
         if (cancelled) return;
         setLatestRelease(r.versions);
         setLatestReleaseSource(r.source as any);
         setTopUserVersion(r.top_user_versions ?? null);
         setTopUserVersionSource(r.top_user_versions_source ?? null);
         setVersionDistribution(vd.data ?? {});
-        setDeviceDistribution(dd.data ?? {});
+        setOsVersionDistribution(od.data ?? {});
+        setPlatformSummary(ps.data ?? {});
       })
       .catch(() => {});
     return () => {
@@ -769,11 +792,12 @@ function CrashguardPageInner() {
     <div className="flex h-full" style={{ background: D.bg, color: D.text1 }}>
       {/* Main pane */}
       <div className="flex-1 flex flex-col min-w-0 overflow-auto">
-        {/* Top filter bar (Firebase style) */}
+        {/* Top filter bar (Firebase style) — 三行合一：筛选 + 时间窗口 + 操作按钮 */}
         <div
-          className="flex items-center justify-between gap-3 px-6 py-3"
+          className="flex items-center justify-between gap-3 px-6 py-3 flex-wrap"
           style={{ background: D.bg, borderBottom: `1px solid ${D.border}` }}
         >
+          {/* Left: 筛选 pills + 时间窗口 pills */}
           <div className="flex items-center gap-2 flex-wrap">
             <Pill icon="filter" label={t("筛选")} />
             <FilterPill
@@ -822,91 +846,44 @@ function CrashguardPageInner() {
                 { v: "new_first", l: t("新增/回归优先") },
               ]}
             />
+            {/* 分隔 + 时间窗口 */}
+            <span className="mx-1" style={{ color: D.text3 }}>|</span>
+            <span className="text-xs" style={{ color: D.text3 }}>⏱</span>
+            {([
+              [24, t("Last 1d")],
+              [168, t("Last 7d")],
+              [336, t("Last 14d")],
+              [720, t("Last 30d")],
+            ] as [24 | 168 | 336 | 720, string][]).map(([w, label]) => (
+              <button
+                key={w}
+                onClick={() => setWindowHours(w)}
+                className="rounded px-2 py-0.5 text-xs"
+                style={{
+                  background: windowHours === w ? D.accent + "33" : "transparent",
+                  border: `1px solid ${windowHours === w ? D.accent : D.border}`,
+                  color: windowHours === w ? D.text1 : D.text2,
+                }}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <div className="flex items-center gap-2 text-xs" style={{ color: D.text2 }}>
-            <span>📅 {date || "—"}</span>
-          </div>
-        </div>
 
-        {/* Latest release banner — two rows: latest-release / top-by-users */}
-        <div
-          className="flex items-start justify-between px-6 py-3 mx-6 mt-4 rounded-lg"
-          style={{ background: D.surface, border: `1px solid ${D.border}` }}
-        >
-          <div className="flex items-start gap-3 flex-1 min-w-0">
-            <span
-              className="inline-flex items-center justify-center h-7 w-7 rounded-full text-xs flex-shrink-0 mt-0.5"
-              style={{ background: D.warnBg, color: D.warn }}
-            >
-              ⚠
-            </span>
-            <div className="flex flex-col gap-1 min-w-0">
-              {/* Row 1: Latest release */}
-              <span className="text-sm" style={{ color: D.text1 }}>
-                {t("最新版本")}{" "}
-                {(() => {
-                  if (!latestRelease) return <strong style={{ color: D.text3 }}>—</strong>;
-                  const order: Array<keyof typeof latestRelease> = ["flutter", "ios", "android"];
-                  const visible = order.filter((k) => {
-                    if (platformFilter !== "all" && k !== platformFilter) return false;
-                    return Boolean(latestRelease[k]);
-                  });
-                  if (visible.length === 0) return <strong style={{ color: D.text3 }}>—</strong>;
-                  return visible.map((k, i) => {
-                    const src = latestReleaseSource?.[k];
-                    const tag = src === "config_override" ? "·配置" : src === "derived" ? "·派生" : "";
-                    return (
-                      <span key={k}>
-                        {i > 0 && <span style={{ color: D.text3 }}> · </span>}
-                        <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
-                        <strong>{latestRelease[k]}</strong>
-                        <span style={{ color: D.text3, fontSize: 11 }}>{tag}</span>
-                      </span>
-                    );
-                  });
-                })()}
+          {/* Right: 操作按钮 (warning + 6 buttons) */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {datadogConfigured === false && (
+              <span
+                className="text-xs px-2 py-1 rounded"
+                style={{ color: D.danger, background: D.warnBg, border: `1px solid ${D.danger}55` }}
+              >
+                ⚠ {t("Datadog 未配置")}
               </span>
-              {/* Row 2: Top by users + totals */}
-              <span className="text-sm" style={{ color: D.text1 }}>
-                {t("用户量最大")}{" "}
-                {(() => {
-                  if (!topUserVersion) return <strong style={{ color: D.text3 }}>—</strong>;
-                  const order: Array<"ios" | "android"> = ["ios", "android"];
-                  const visible = order.filter((k) => {
-                    if (platformFilter !== "all" && platformFilter !== k && platformFilter !== "flutter") return false;
-                    return Boolean(topUserVersion[k]?.version);
-                  });
-                  if (visible.length === 0) return <strong style={{ color: D.text3 }}>—</strong>;
-                  return visible.map((k, i) => {
-                    const v = topUserVersion[k]!;
-                    const src = topUserVersionSource?.[k];
-                    const tag = src === "datadog_rum" ? "·RUM" : src === "crash_issues_fallback" ? "·崩溃回落" : "";
-                    return (
-                      <span key={k}>
-                        {i > 0 && <span style={{ color: D.text3 }}> · </span>}
-                        <span style={{ color: D.text2 }}>{PLATFORM_ALIASES[k] || k} </span>
-                        <strong>{v.version}</strong>
-                        <span style={{ color: D.text3, fontSize: 11 }}> ({compactNumber(v.users)} {t("用户")}){tag}</span>
-                      </span>
-                    );
-                  });
-                })()}
-                <span style={{ color: D.text2 }}>
-                  {" · "}{totals.sessions.toLocaleString()} {t("受影响会话")} · {totals.events.toLocaleString()} {t("总事件")}
-                </span>
-                {datadogConfigured === false && (
-                  <span style={{ color: D.danger }}>
-                    {" · "}{t("Datadog 未配置")}
-                  </span>
-                )}
-              </span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
+            )}
             <button
               onClick={onBatchAnalyze}
               disabled={batching}
-              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
               style={{
                 background: "transparent",
                 border: `1px solid ${D.borderStrong}`,
@@ -920,7 +897,7 @@ function CrashguardPageInner() {
             <button
               onClick={() => onPreviewReport("morning")}
               disabled={reportBusy}
-              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
               style={{
                 background: "transparent",
                 border: `1px solid ${D.borderStrong}`,
@@ -934,7 +911,7 @@ function CrashguardPageInner() {
             <button
               onClick={() => onPreviewReport("evening")}
               disabled={reportBusy}
-              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
               style={{
                 background: "transparent",
                 border: `1px solid ${D.borderStrong}`,
@@ -947,7 +924,7 @@ function CrashguardPageInner() {
             </button>
             <a
               href="/crashguard/reports"
-              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
               style={{
                 background: "transparent",
                 border: `1px solid ${D.borderStrong}`,
@@ -960,7 +937,7 @@ function CrashguardPageInner() {
             </a>
             <a
               href="/crashguard/pull-requests"
-              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
               style={{
                 background: "transparent",
                 border: `1px solid ${D.borderStrong}`,
@@ -994,7 +971,7 @@ function CrashguardPageInner() {
             </a>
             <a
               href="/crashguard/jobs"
-              className="rounded px-3 py-1.5 text-xs font-medium inline-flex items-center gap-1.5"
+              className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
               style={{
                 background: "transparent",
                 border: `1px solid ${D.borderStrong}`,
@@ -1008,99 +985,75 @@ function CrashguardPageInner() {
           </div>
         </div>
 
-        {/* 时间窗口选择（与 Datadog UI 时间档对齐：1d/7d/14d/30d）*/}
-        <div className="px-6 mt-3 flex items-center justify-between gap-2 flex-wrap">
-          <div className="text-xs" style={{ color: D.text2 }}>
-            ⏱ {t("时间窗口")}：
-            {([
-              [24, t("近 1 天")],
-              [168, t("近 7 天")],
-              [336, t("近 14 天")],
-              [720, t("近 30 天")],
-            ] as [24 | 168 | 336 | 720, string][]).map(([w, label]) => (
-              <button
-                key={w}
-                onClick={() => setWindowHours(w)}
-                className="ml-1 rounded px-2 py-0.5 text-xs"
-                style={{
-                  background: windowHours === w ? D.accent + "33" : "transparent",
-                  border: `1px solid ${windowHours === w ? D.accent : D.border}`,
-                  color: windowHours === w ? D.text1 : D.text2,
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="text-xs" style={{ color: D.text2 }}>
-            {t("数据口径：Datadog Mobile RUM · 跨多日 sum CrashSnapshot")}
-          </div>
-        </div>
-
-        {/* 版本分布 + 机型分布：4 列布局 */}
+        {/* KPI 顶栏（方案 C）：4 列全局指标快览 — 始终展示全量，不受 fatality filter 影响 */}
         <div className="grid grid-cols-4 gap-3 px-6 mt-3">
-          <VersionPieCard
-            title="Android"
-            slices={versionDistribution.android ?? []}
-            color={D.ok}
-          />
-          <DeviceBarCard
-            title="Android"
-            slices={deviceDistribution.android ?? []}
-            color={D.ok}
-          />
-          <VersionPieCard
-            title="iOS"
-            slices={versionDistribution.ios ?? []}
-            color={D.p1}
-          />
-          <DeviceBarCard
-            title="iOS"
-            slices={deviceDistribution.ios ?? []}
-            color={D.p1}
-          />
+          {(() => {
+            // 全量数据源：fatalityFilter==="all" 时 globalAggregates===aggregates，否则是独立拉的全量
+            const g = globalAggregates;
+            const fatalEvents = (g as { fatal_events?: number } | null)?.fatal_events ?? 0;
+            const nonFatalEvents = (g as { non_fatal_events?: number } | null)?.non_fatal_events ?? 0;
+            const fatalCount = g?.fatal_count ?? 0;
+            const nonFatalCount = g?.non_fatal_count ?? 0;
+            const cfPct = g?.crash_free_sessions_pct ?? null;
+            const cfTotalSess = g?.crash_free_total_sessions ?? 0;
+            const totalIssueCount = (g?.fatal_count ?? 0) + (g?.non_fatal_count ?? 0);
+            const p0 = g?.p0_count ?? 0;
+            const surge = g?.surge_count ?? 0;
+            return (
+              <>
+                <KpiStripCell
+                  label={t("Crash-free Sessions")}
+                  value={cfPct != null ? `${cfPct.toFixed(2)}%` : "—"}
+                  hint={cfTotalSess > 0 ? `${compactNumber(cfTotalSess)} sessions` : t("窗口内无数据")}
+                  accent={D.ok}
+                />
+                <KpiStripCell
+                  label={t("严重崩溃")}
+                  value={fatalEvents.toLocaleString()}
+                  hint={`${fatalCount} issue · native + ANR + Hang`}
+                  accent={D.danger}
+                  active={fatalityFilter === "fatal"}
+                  onClick={() => setFatalityFilter(fatalityFilter === "fatal" ? "all" : "fatal")}
+                />
+                <KpiStripCell
+                  label={t("业务异常")}
+                  value={nonFatalEvents.toLocaleString()}
+                  hint={`${nonFatalCount} issue · addError / zone guard`}
+                  accent={D.warn}
+                  active={fatalityFilter === "non_fatal"}
+                  onClick={() => setFatalityFilter(fatalityFilter === "non_fatal" ? "all" : "non_fatal")}
+                />
+                <KpiStripCell
+                  label={t("Active Issues")}
+                  value={totalIssueCount.toString()}
+                  hint={`P0 ${p0} · ${t("飙升")} ${surge}`}
+                  accent={D.accent}
+                />
+              </>
+            );
+          })()}
         </div>
 
-        {/* C 路线：fatal vs non_fatal 双卡（点击切换列表过滤）*/}
+        {/* 平台总览（方案 D）：iOS 在前 + Android */}
         <div className="grid grid-cols-2 gap-3 px-6 mt-3">
-          <button
-            onClick={() => setFatalityFilter(fatalityFilter === "fatal" ? "all" : "fatal")}
-            className="text-left rounded-lg p-4 transition"
-            style={{
-              background: D.surface,
-              border: `1px solid ${fatalityFilter === "fatal" ? D.danger : D.border}`,
-              boxShadow: fatalityFilter === "fatal" ? `0 0 0 2px ${D.danger}33` : "none",
-            }}
-          >
-            <div className="text-xs mb-1" style={{ color: D.text2 }}>
-              🔴 {t("严重崩溃（App 挂/卡）")}
-            </div>
-            <div className="text-2xl font-bold" style={{ color: D.text1 }}>
-              {totals.fatalEvents.toLocaleString()}
-            </div>
-            <div className="text-xs mt-1" style={{ color: D.text2 }}>
-              {totals.fatalCount} {t("issue")} · {t("含 native crash + ANR + App Hang")}
-            </div>
-          </button>
-          <button
-            onClick={() => setFatalityFilter(fatalityFilter === "non_fatal" ? "all" : "non_fatal")}
-            className="text-left rounded-lg p-4 transition"
-            style={{
-              background: D.surface,
-              border: `1px solid ${fatalityFilter === "non_fatal" ? D.warn : D.border}`,
-              boxShadow: fatalityFilter === "non_fatal" ? `0 0 0 2px ${D.warn}33` : "none",
-            }}
-          >
-            <div className="text-xs mb-1" style={{ color: D.text2 }}>
-              ⚠️ {t("业务失败（捕获异常）")}
-            </div>
-            <div className="text-2xl font-bold" style={{ color: D.text1 }}>
-              {totals.nonFatalEvents.toLocaleString()}
-            </div>
-            <div className="text-xs mt-1" style={{ color: D.text2 }}>
-              {totals.nonFatalCount} {t("issue")} · {t("addError / zone guard 主动上报")}
-            </div>
-          </button>
+          <PlatformOverviewCard
+            label="iOS"
+            accent={D.p1}
+            mainVersion={versionDistribution.ios?.[0]?.version}
+            mainVersionPct={versionDistribution.ios?.[0]?.pct}
+            versions={versionDistribution.ios ?? []}
+            osVersions={osVersionDistribution.ios ?? []}
+            summary={platformSummary.ios}
+          />
+          <PlatformOverviewCard
+            label="Android"
+            accent={D.ok}
+            mainVersion={versionDistribution.android?.[0]?.version}
+            mainVersionPct={versionDistribution.android?.[0]?.pct}
+            versions={versionDistribution.android ?? []}
+            osVersions={osVersionDistribution.android ?? []}
+            summary={platformSummary.android}
+          />
         </div>
 
         {/* Issues table */}
@@ -2827,53 +2780,219 @@ function VersionPieCard({
   );
 }
 
-const DEVICE_BAR_PALETTE = [
-  "#6366F1", "#8B5CF6", "#EC4899", "#F59E0B", "#10B981",
-  "#3B82F6", "#EF4444", "#14B8A6",
+// 紧凑饼图 + 右侧 legend（复用版本/OS 版本两处）
+function MiniPie({
+  slices,
+  size = 56,
+  palette,
+}: {
+  slices: { label: string; pct: number }[];
+  size?: number;
+  palette: string[];
+}) {
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size / 2 - 1;
+  if (!slices.length) {
+    return <div style={{ width: size, height: size, color: D.text3 }} className="flex items-center justify-center text-[10px]">—</div>;
+  }
+  const total = slices.reduce((a, s) => a + s.pct, 0);
+  const display = [...slices];
+  if (total < 99.5) display.push({ label: "其他", pct: Math.max(0, 100 - total) });
+  let cum = 0;
+  const paths = display.map((s, i) => {
+    const startAngle = (cum / 100) * 2 * Math.PI - Math.PI / 2;
+    cum += s.pct;
+    const endAngle = (cum / 100) * 2 * Math.PI - Math.PI / 2;
+    const x1 = cx + r * Math.cos(startAngle);
+    const y1 = cy + r * Math.sin(startAngle);
+    const x2 = cx + r * Math.cos(endAngle);
+    const y2 = cy + r * Math.sin(endAngle);
+    const largeArc = s.pct > 50 ? 1 : 0;
+    const d =
+      display.length === 1
+        ? `M ${cx - r} ${cy} A ${r} ${r} 0 1 1 ${cx + r} ${cy} A ${r} ${r} 0 1 1 ${cx - r} ${cy} Z`
+        : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+    return { d, c: palette[i % palette.length] };
+  });
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="flex-shrink-0">
+      {paths.map((p, i) => (
+        <path key={i} d={p.d} fill={p.c} stroke="#FFFFFF" strokeWidth="1" />
+      ))}
+    </svg>
+  );
+}
+
+function PieLegend({
+  items,
+  palette,
+  maxRows = 6,
+}: {
+  items: { label: string; pct: number; sessions?: number }[];
+  palette: string[];
+  maxRows?: number;
+}) {
+  const top = items.slice(0, maxRows);
+  return (
+    <ul className="flex-1 space-y-1 min-w-0">
+      {top.map((p, i) => (
+        <li
+          key={i}
+          className="flex items-center gap-1.5 text-[11px]"
+          title={`${p.label} · ${p.pct.toFixed(1)}%${p.sessions != null ? ` · ${p.sessions.toLocaleString()} sessions` : ""}`}
+        >
+          <span className="flex-shrink-0 rounded-sm" style={{ width: 8, height: 8, background: palette[i % palette.length] }} />
+          <span className="truncate flex-1" style={{ color: D.text1 }}>{p.label}</span>
+          <span className="tabular-nums flex-shrink-0" style={{ color: D.text1, minWidth: 38, textAlign: "right" }}>
+            {p.pct.toFixed(1)}%
+          </span>
+          {p.sessions != null && (
+            <span className="tabular-nums flex-shrink-0" style={{ color: D.text3, minWidth: 40, textAlign: "right" }}>
+              {compactNumber(p.sessions)}
+            </span>
+          )}
+        </li>
+      ))}
+      {items.length > maxRows && (
+        <li className="text-[10px]" style={{ color: D.text3 }}>+{items.length - maxRows}</li>
+      )}
+    </ul>
+  );
+}
+
+// KPI 顶栏单元（方案 C）
+function KpiStripCell({
+  label,
+  value,
+  hint,
+  accent,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  accent: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const interactive = !!onClick;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!interactive}
+      className={`text-left rounded-lg px-3 py-2.5 transition ${interactive ? "cursor-pointer" : "cursor-default"}`}
+      style={{
+        background: D.surface,
+        border: `1px solid ${active ? accent : D.border}`,
+        boxShadow: active ? `0 0 0 2px ${accent}33` : "none",
+      }}
+    >
+      <div className="text-[10px] uppercase tracking-wider" style={{ color: D.text3 }}>
+        {label}
+      </div>
+      <div className="text-xl font-bold mt-0.5" style={{ color: accent }}>
+        {value}
+      </div>
+      <div className="text-[10px] mt-0.5 truncate" style={{ color: D.text2 }}>
+        {hint}
+      </div>
+    </button>
+  );
+}
+
+const OS_PIE_PALETTE = [
+  "#06B6D4", "#0EA5E9", "#3B82F6", "#6366F1", "#8B5CF6",
+  "#A855F7", "#D946EF", "#EC4899",
 ];
 
-function DeviceBarCard({
-  title,
-  slices,
-  color,
+// 平台总览卡（方案 D：iOS / Android 各一张）
+function PlatformOverviewCard({
+  label,
+  accent,
+  mainVersion,
+  mainVersionPct,
+  versions,
+  osVersions,
+  summary,
 }: {
-  title: string;
-  slices: CrashDeviceSlice[];
-  color: string;
+  label: string;
+  accent: string;
+  mainVersion?: string;
+  mainVersionPct?: number;
+  versions: CrashVersionSlice[];
+  osVersions: CrashOsVersionSlice[];
+  summary?: CrashPlatformSummary;
 }) {
   const t = useT();
-  if (!slices.length) {
-    return (
-      <div className="rounded-lg p-4 flex flex-col gap-1" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
-        <div className="text-xs font-semibold" style={{ color }}>{title} {t("机型分布")}</div>
-        <div className="text-xs" style={{ color: D.text3 }}>暂无数据</div>
-      </div>
-    );
-  }
-  const top = slices.slice(0, 6);
-  const maxPct = Math.max(...top.map(s => s.pct), 1);
+  const verSlices = versions.map((v) => ({ label: v.version, pct: v.pct, sessions: v.sessions }));
+  const osSlices = osVersions.map((v) => ({ label: v.version, pct: v.pct, sessions: v.sessions }));
+  const cfPct = summary?.crash_free_pct;
+  const cfColor =
+    cfPct == null ? D.text3 : cfPct >= 99.5 ? D.ok : cfPct >= 98 ? D.warn : D.danger;
   return (
     <div className="rounded-lg p-4" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
-      <div className="text-xs font-semibold mb-3" style={{ color }}>{title} {t("机型分布")}</div>
-      <ul className="space-y-1.5">
-        {top.map((s, i) => (
-          <li key={i} className="min-w-0">
-            <div className="flex items-center justify-between mb-0.5">
-              <span className="text-[10px] truncate" style={{ color: D.text1, maxWidth: "70%" }} title={s.model}>{s.model}</span>
-              <span className="text-[10px] tabular-nums flex-shrink-0 ml-1" style={{ color: D.text2 }}>{s.pct.toFixed(1)}%</span>
-            </div>
-            <div className="w-full rounded-full overflow-hidden" style={{ height: 4, background: D.border }}>
-              <div
-                className="rounded-full transition-all"
-                style={{ width: `${(s.pct / maxPct) * 100}%`, height: 4, background: DEVICE_BAR_PALETTE[i % DEVICE_BAR_PALETTE.length] }}
-              />
-            </div>
-          </li>
-        ))}
-        {slices.length > 6 && (
-          <li className="text-[10px]" style={{ color: D.text3 }}>+{slices.length - 6} 个机型</li>
-        )}
-      </ul>
+      {/* Header: platform + main version */}
+      <div className="flex items-baseline justify-between mb-3 gap-2 flex-wrap">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="text-base font-bold" style={{ color: accent }}>{label}</span>
+          <span className="text-xs truncate" style={{ color: D.text2 }} title={mainVersion || ""}>
+            {t("主版本")} <strong style={{ color: D.text1 }}>{mainVersion || "—"}</strong>
+            {mainVersionPct != null && (
+              <span style={{ color: D.text3 }}> ({mainVersionPct.toFixed(1)}%)</span>
+            )}
+          </span>
+        </div>
+      </div>
+
+      {/* Crash-free 概要：CF% / total / crashed sessions（突出 CF rate） */}
+      <div
+        className="grid grid-cols-3 gap-2 rounded-md px-3 py-2 mb-3"
+        style={{ background: D.surfaceAlt, border: `1px solid ${D.border}` }}
+      >
+        <div>
+          <div className="text-[9.5px] uppercase tracking-wider" style={{ color: D.text3 }}>Crash-free</div>
+          <div className="text-lg font-bold tabular-nums" style={{ color: cfColor }}>
+            {cfPct != null ? `${cfPct.toFixed(2)}%` : "—"}
+          </div>
+        </div>
+        <div>
+          <div className="text-[9.5px] uppercase tracking-wider" style={{ color: D.text3 }}>Sessions</div>
+          <div className="text-lg font-bold tabular-nums" style={{ color: D.text1 }}>
+            {summary?.total_sessions != null ? compactNumber(summary.total_sessions) : "—"}
+          </div>
+        </div>
+        <div>
+          <div className="text-[9.5px] uppercase tracking-wider" style={{ color: D.text3 }}>Crashed</div>
+          <div className="text-lg font-bold tabular-nums" style={{ color: D.danger }}>
+            {summary?.crashed_sessions != null ? compactNumber(summary.crashed_sessions) : "—"}
+          </div>
+        </div>
+      </div>
+
+      {/* 两个紧凑饼图：App 版本 + OS 版本 */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: D.text3 }}>
+            {t("App 版本")}
+          </div>
+          <div className="flex items-center gap-3">
+            <MiniPie slices={verSlices} palette={VERSION_PIE_PALETTE} size={104} />
+            <PieLegend items={verSlices} palette={VERSION_PIE_PALETTE} />
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: D.text3 }}>
+            {t("OS 版本")}
+          </div>
+          <div className="flex items-center gap-3">
+            <MiniPie slices={osSlices} palette={OS_PIE_PALETTE} size={104} />
+            <PieLegend items={osSlices} palette={OS_PIE_PALETTE} />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

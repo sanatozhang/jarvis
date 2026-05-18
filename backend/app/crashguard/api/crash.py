@@ -364,20 +364,30 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
 
     返回 {"android": [{"version":"...","sessions":N,"pct":45.3},...], "ios": [...]}
     无 Datadog 配置时回落 crash_issues.top_app_version 加权聚合。
+    走 DatadogCache TTL=300s（5min）减少首页二次加载延迟。
     """
     from app.crashguard.services.datadog_client import DatadogClient
+    from app.crashguard.services.datadog_cache import DatadogCache
 
     s = get_crashguard_settings()
     if s.datadog_api_key:
-        try:
+        async def _fetch() -> Dict[str, Any]:
             client = DatadogClient(
                 api_key=s.datadog_api_key,
                 app_key=s.datadog_app_key,
                 site=s.datadog_site,
             )
             data = await client.version_distribution_by_platform(window_hours=window_hours)
-            if data:
-                return {"data": data, "source": "datadog_rum", "window_hours": window_hours}
+            if not data:
+                raise RuntimeError("empty version_distribution")
+            return data
+        try:
+            data = await DatadogCache.get_or_fetch(
+                key=f"home:version_dist:{window_hours}",
+                ttl_seconds=300,
+                fetch_fn=_fetch,
+            )
+            return {"data": data, "source": "datadog_rum", "window_hours": window_hours}
         except Exception as exc:
             logger.warning("version_distribution_by_platform failed: %s", exc)
 
@@ -415,6 +425,83 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
             for v, s in sorted_vers
         ]
     return {"data": fallback_data, "source": "crash_issues_fallback", "window_hours": window_hours}
+
+
+@router.get("/platform-summary")
+async def get_platform_summary(window_hours: int = Query(24, ge=1, le=720)) -> Dict[str, Any]:
+    """各平台 Crash-free Sessions 概要（Datadog RUM 直查）。
+
+    返回 {"android": {"total_sessions":N,"crashed_sessions":M,"crash_free_pct":99.6}, "ios": {...}}
+    走 DatadogCache TTL=300s（5min）减少首页二次加载延迟。注意：start_ms 走桶式取整，避免相邻秒级请求 miss 缓存。
+    """
+    from app.crashguard.services.datadog_client import DatadogClient
+    from app.crashguard.services.datadog_cache import DatadogCache
+    import time as _time
+
+    s = get_crashguard_settings()
+    if not s.datadog_api_key:
+        return {"data": {}, "source": "unavailable", "window_hours": window_hours}
+
+    async def _fetch() -> Dict[str, Any]:
+        client = DatadogClient(
+            api_key=s.datadog_api_key,
+            app_key=s.datadog_app_key,
+            site=s.datadog_site,
+        )
+        end_ms = int(_time.time() * 1000)
+        start_ms = end_ms - int(window_hours) * 3600 * 1000
+        data = await client.crash_free_sessions_by_platform(start_ms=start_ms, end_ms=end_ms)
+        if not data:
+            raise RuntimeError("empty platform_summary")
+        return data
+
+    try:
+        data = await DatadogCache.get_or_fetch(
+            key=f"home:platform_summary:{window_hours}",
+            ttl_seconds=300,
+            fetch_fn=_fetch,
+        )
+        return {"data": data, "source": "datadog_rum", "window_hours": window_hours}
+    except Exception as exc:
+        logger.warning("crash_free_sessions_by_platform failed: %s", exc)
+        return {"data": {}, "source": "error", "window_hours": window_hours}
+
+
+@router.get("/os-version-distribution")
+async def get_os_version_distribution(window_hours: int = Query(24, ge=1, le=720)) -> Dict[str, Any]:
+    """各平台 OS 版本 session 占比分布（Top 8），用于首页 OS 版本饼图。
+
+    返回 {"android": [{"version":"14","sessions":N,"pct":38.2},...], "ios": [...]}
+    无 Datadog 配置时返回空数据。走 DatadogCache TTL=300s。
+    """
+    from app.crashguard.services.datadog_client import DatadogClient
+    from app.crashguard.services.datadog_cache import DatadogCache
+
+    s = get_crashguard_settings()
+    if not s.datadog_api_key:
+        return {"data": {}, "source": "unavailable", "window_hours": window_hours}
+
+    async def _fetch() -> Dict[str, Any]:
+        client = DatadogClient(
+            api_key=s.datadog_api_key,
+            app_key=s.datadog_app_key,
+            site=s.datadog_site,
+        )
+        data = await client.os_version_distribution_by_platform(window_hours=window_hours)
+        if not data:
+            raise RuntimeError("empty os_version_distribution")
+        return data
+
+    try:
+        data = await DatadogCache.get_or_fetch(
+            key=f"home:os_version_dist:{window_hours}",
+            ttl_seconds=300,
+            fetch_fn=_fetch,
+        )
+        return {"data": data, "source": "datadog_rum", "window_hours": window_hours}
+    except Exception as exc:
+        logger.warning("os_version_distribution_by_platform failed: %s", exc)
+        return {"data": {}, "source": "error", "window_hours": window_hours}
 
 
 @router.get("/device-distribution")

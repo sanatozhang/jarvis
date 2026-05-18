@@ -1176,6 +1176,100 @@ class DatadogClient:
             ]
         return out
 
+    async def os_version_distribution_by_platform(
+        self,
+        window_hours: int = 24,
+        top_n: int = 8,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """最近 N 小时内各平台 OS 版本分布（Top N，按 session 数）。
+
+        返回:
+            {
+              "android": [{"version": "14", "sessions": 1234, "pct": 38.2}, ...],
+              "ios":     [{"version": "17.5.1", "sessions": 987, "pct": 35.3}, ...]
+            }
+        """
+        try:
+            return await asyncio.to_thread(
+                self._sync_os_version_distribution_by_platform, window_hours, top_n
+            )
+        except Exception as exc:
+            logger.warning("os_version_distribution_by_platform failed: %s", exc)
+            return {}
+
+    def _sync_os_version_distribution_by_platform(
+        self, window_hours: int, top_n: int
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        from datadog_api_client import ApiClient
+        from datadog_api_client.exceptions import ApiException
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        body = RUMAggregateRequest(
+            filter=RUMQueryFilter(
+                query="@type:session",
+                _from=f"now-{max(1, int(window_hours))}h",
+                to="now",
+            ),
+            compute=[RUMCompute(
+                aggregation=RUMAggregationFunction.CARDINALITY,
+                metric="@session.id",
+                type=RUMComputeType.TOTAL,
+            )],
+            group_by=[
+                RUMGroupBy(facet="@os.name", limit=10),
+                RUMGroupBy(facet="@os.version", limit=50),
+            ],
+        )
+        conf = self._build_configuration()
+        with ApiClient(conf) as api_client:
+            rum = RUMApi(api_client)
+            try:
+                resp = rum.aggregate_rum_events(body=body)
+            except ApiException as exc:
+                if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
+                raise
+
+        agg: Dict[str, Dict[str, int]] = {"android": {}, "ios": {}}
+        for b in (getattr(getattr(resp, "data", None), "buckets", None) or []):
+            by = getattr(b, "by", {}) or {}
+            os_name = (by.get("@os.name") or "").strip().lower()
+            os_ver = (by.get("@os.version") or "").strip()
+            if not os_ver:
+                continue
+            comp = getattr(b, "computes", {}) or {}
+            try:
+                sessions = int(next(iter(comp.values())))
+            except (StopIteration, TypeError, ValueError):
+                sessions = 0
+            if sessions <= 0:
+                continue
+            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                key = "ios"
+            elif os_name.startswith("android"):
+                key = "android"
+            else:
+                continue
+            agg[key][os_ver] = agg[key].get(os_ver, 0) + sessions
+
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for platform, versions in agg.items():
+            if not versions:
+                continue
+            total = sum(versions.values())
+            sorted_vers = sorted(versions.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+            out[platform] = [
+                {"version": v, "sessions": s, "pct": round(s / total * 100, 1)}
+                for v, s in sorted_vers
+            ]
+        return out
+
     async def device_distribution_by_platform(
         self,
         window_hours: int = 24,
