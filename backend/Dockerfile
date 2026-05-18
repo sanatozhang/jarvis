@@ -1,20 +1,30 @@
-# ---- Test stage: tests must pass before building production image ----
+# ---- Test stage: 门票化，默认跳过以加速本地部署；CI/release 用 --build-arg RUN_TESTS=1 ----
+# 背景：测试每次都重跑全量 pytest（>120s）+ 重装 pip deps，是本地 deploy 最大单点。
+# 改成 ARG 开关：本地 `dc build` 直接跳过；CI 跑 `dc build --build-arg RUN_TESTS=1`。
 FROM python:3.12-slim AS test
+ARG RUN_TESTS=0
 
 WORKDIR /app
 
 # git needed for crashguard pr_drafter tests (worktree / apply / status)
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
+RUN if [ "$RUN_TESTS" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends git \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN if [ "$RUN_TESTS" = "1" ]; then pip install --no-cache-dir -r requirements.txt; fi
 COPY app/ ./app/
 COPY rules/ ./rules/
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY pytest.ini .
-RUN python -m pytest --tb=short -q
+RUN if [ "$RUN_TESTS" = "1" ]; then \
+      echo "Running tests (RUN_TESTS=1)..."; \
+      python -m pytest --tb=short -q; \
+    else \
+      echo "Skipping tests (default; set --build-arg RUN_TESTS=1 to enable)"; \
+    fi
 
 # ---- Production stage ----
 FROM python:3.12-slim AS production

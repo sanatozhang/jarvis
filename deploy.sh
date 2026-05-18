@@ -77,18 +77,31 @@ dc() {
     fi
 }
 
-# ---- Prune dangling images (避免每次 rebuild 后旧 image 堆磁盘) ----
+# ---- Prune 3 件套：容器 + image + build cache ----
+# 背景：只清 dangling 时，Exited 容器钉住的 <none> image 永远清不掉，磁盘持续膨胀
+# 触发部署越来越慢。改成 container → image -a → builder 三件套闭环。
 prune_dangling() {
-    local before after freed
-    before=$(docker images -f dangling=true -q | wc -l | tr -d ' ')
-    if [ "$before" -gt 0 ]; then
-        log "Pruning $before dangling image(s)..."
-        # 仅 prune dangling，不动 named image（防误删）
-        docker image prune -f >/dev/null 2>&1 || true
-        after=$(docker images -f dangling=true -q | wc -l | tr -d ' ')
-        freed=$((before - after))
-        log "✅ Pruned $freed dangling image(s)"
+    # 1) 清掉所有 Exited 容器（解除对 <none> image 的引用）
+    local stopped
+    stopped=$(docker ps -aq --filter "status=exited" --filter "status=created" | wc -l | tr -d ' ')
+    if [ "$stopped" -gt 0 ]; then
+        log "Pruning $stopped stopped container(s)..."
+        docker container prune -f >/dev/null 2>&1 || true
     fi
+
+    # 2) 清掉所有 dangling + 未被任何容器引用的 image（包括历史 <none>）
+    local before after freed
+    before=$(docker images -aq | wc -l | tr -d ' ')
+    if [ "$before" -gt 0 ]; then
+        log "Pruning unused images..."
+        docker image prune -af >/dev/null 2>&1 || true
+        after=$(docker images -aq | wc -l | tr -d ' ')
+        freed=$((before - after))
+        [ "$freed" -gt 0 ] && log "✅ Pruned $freed image(s)"
+    fi
+
+    # 3) 清掉 7 天前的 build cache（buildx 用户才有效，旧 docker 无 op）
+    docker builder prune -af --filter until=168h >/dev/null 2>&1 || true
 }
 
 # ---- Setup (first time) ----
