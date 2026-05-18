@@ -394,14 +394,36 @@ async def compose_report(
                         if _v_sess >= _latest_ver_min_sess:
                             latest_versions_local[_plat] = _v
                             logger.info(
-                                "latest_version %s=%s sessions=%d (from %d candidates)",
-                                _plat, _v, _v_sess, len(_vers),
+                                "latest_version %s=%s sessions=%d (from crash candidates)",
+                                _plat, _v, _v_sess,
                             )
                             break
                         else:
                             logger.info(
                                 "latest_version %s=%s sessions=%d < threshold=%d, trying next",
                                 _plat, _v, _v_sess, _latest_ver_min_sess,
+                            )
+
+                # 兜底：候选全部 sessions 不足时，从 RUM 版本分布里取 semver 最新且满足阈值的版本
+                _missing_plats = [p for p in ("ios", "android") if p not in latest_versions_local]
+                if _missing_plats:
+                    from app.crashguard.services.version_util import parse_semver
+                    _rum_dist = await client.version_distribution_by_platform(
+                        window_hours=data_window_hours, top_n=20,
+                    )
+                    for _plat in _missing_plats:
+                        _plat_dist = _rum_dist.get(_plat) or []
+                        # 过滤 sessions ≥ 阈值，取 semver 最大版本
+                        _qualified_rum = [
+                            d for d in _plat_dist
+                            if int(d.get("sessions", 0)) >= _latest_ver_min_sess
+                        ]
+                        if _qualified_rum:
+                            _best = max(_qualified_rum, key=lambda d: parse_semver(d["version"]) or (0, 0, 0, ""))
+                            latest_versions_local[_plat] = _best["version"]
+                            logger.info(
+                                "latest_version %s=%s sessions=%d (RUM fallback)",
+                                _plat, _best["version"], _best["sessions"],
                             )
 
                 if latest_versions_local:
