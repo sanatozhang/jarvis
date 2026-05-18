@@ -363,67 +363,43 @@ async def compose_report(
                 logger.exception("top-version crash-free pull failed (non-fatal)")
 
             # —— 最新版本（线上当前发布版本）的 crash-free 详表 ——
-            # 策略：按 semver 从新到旧逐候选尝试，取第一个 inactive sessions ≥ 阈值的版本，
-            # 避免灰度/内测包（sessions 极少）把有意义的次新版本挤掉。
+            # 口径：从 Datadog RUM 版本分布中，取 inactive sessions >= 阈值 且 semver 最大的版本。
+            # config override 优先（手动指定时跳过 RUM 选取，直接用配置值）。
             try:
-                from app.db.database import get_session as _get_db_session
-                from app.crashguard.services.version_util import (
-                    resolve_effective_latest_release,
-                    derive_latest_release_candidates,
-                )
-                _latest_ver_min_sess = int(getattr(s_cfg, "latest_version_min_sessions", 100) or 100)
-                # 先收集每平台的候选版本列表（semver 降序）
-                _candidates: Dict[str, List[str]] = {}
-                async with _get_db_session() as _db_sess:
-                    for _plat in ("ios", "android"):
-                        _override = getattr(s_cfg, f"current_release_{_plat}", "") or ""
-                        if _override.strip():
-                            _candidates[_plat] = [_override.strip()]
-                        else:
-                            _candidates[_plat] = await derive_latest_release_candidates(
-                                _db_sess, _plat, min_events=s_cfg.latest_version_min_events,
-                            )
+                from app.crashguard.services.version_util import parse_semver
+                _latest_ver_min_sess = int(getattr(s_cfg, "latest_version_min_sessions", 300) or 300)
 
-                # 逐候选检查 sessions，取首个满足阈值的版本
-                for _plat, _vers in _candidates.items():
-                    for _v in _vers:
-                        _sess_map = await client.count_inactive_sessions_for_platform_versions(
-                            {_plat: _v}, window_hours=data_window_hours,
-                        ) or {}
-                        _v_sess = int(_sess_map.get(_plat, 0) or 0)
-                        if _v_sess >= _latest_ver_min_sess:
-                            latest_versions_local[_plat] = _v
-                            logger.info(
-                                "latest_version %s=%s sessions=%d (from crash candidates)",
-                                _plat, _v, _v_sess,
-                            )
-                            break
-                        else:
-                            logger.info(
-                                "latest_version %s=%s sessions=%d < threshold=%d, trying next",
-                                _plat, _v, _v_sess, _latest_ver_min_sess,
-                            )
+                # config override 优先
+                for _plat in ("ios", "android"):
+                    _override = getattr(s_cfg, f"current_release_{_plat}", "") or ""
+                    if _override.strip():
+                        latest_versions_local[_plat] = _override.strip()
 
-                # 兜底：候选全部 sessions 不足时，从 RUM 版本分布里取 semver 最新且满足阈值的版本
-                _missing_plats = [p for p in ("ios", "android") if p not in latest_versions_local]
-                if _missing_plats:
-                    from app.crashguard.services.version_util import parse_semver
+                # 无 override 的平台：从 RUM 版本分布选取
+                _rum_plats = [p for p in ("ios", "android") if p not in latest_versions_local]
+                if _rum_plats:
                     _rum_dist = await client.version_distribution_by_platform(
                         window_hours=data_window_hours, top_n=20,
                     )
-                    for _plat in _missing_plats:
-                        _plat_dist = _rum_dist.get(_plat) or []
-                        # 过滤 sessions ≥ 阈值，取 semver 最大版本
-                        _qualified_rum = [
-                            d for d in _plat_dist
+                    for _plat in _rum_plats:
+                        _qualified = [
+                            d for d in (_rum_dist.get(_plat) or [])
                             if int(d.get("sessions", 0)) >= _latest_ver_min_sess
                         ]
-                        if _qualified_rum:
-                            _best = max(_qualified_rum, key=lambda d: parse_semver(d["version"]) or (0, 0, 0, ""))
+                        if _qualified:
+                            _best = max(
+                                _qualified,
+                                key=lambda d: parse_semver(d["version"]) or (0, 0, 0, ""),
+                            )
                             latest_versions_local[_plat] = _best["version"]
                             logger.info(
-                                "latest_version %s=%s sessions=%d (RUM fallback)",
-                                _plat, _best["version"], _best["sessions"],
+                                "latest_version %s=%s sessions=%d (RUM, min_sess=%d)",
+                                _plat, _best["version"], _best["sessions"], _latest_ver_min_sess,
+                            )
+                        else:
+                            logger.info(
+                                "latest_version %s: no RUM version with sessions >= %d",
+                                _plat, _latest_ver_min_sess,
                             )
 
                 if latest_versions_local:

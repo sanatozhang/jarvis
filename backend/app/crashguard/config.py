@@ -202,7 +202,7 @@ class CrashguardSettings(BaseSettings):
     # 数据派生阈值：某版本累计 events 不足该值则不视作"线上版本"（过滤灰度/测试包）
     latest_version_min_events: int = 300
     # 最新版本在报表中展示的最低 session 数门槛：sessions < 该值则不展示（灰度量太小没参考价值）
-    latest_version_min_sessions: int = 100
+    latest_version_min_sessions: int = 300
     # AI 分析去重窗口（小时）：自动触发场景下，若 issue 在该窗口内已有 success 分析，
     # 直接复用——避免 warmup/cron/batch 多入口重复烧 token。UI 重新分析按钮始终强制重跑。
     analysis_dedup_hours: int = 6
