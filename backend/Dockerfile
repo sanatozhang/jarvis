@@ -33,8 +33,11 @@ WORKDIR /app
 
 # Layer 1：稳定系统依赖（重量级，含 git/perl/gnutls/krb5 等 ~120 MB），尽量不动。
 # openssh-client: crashguard pr_drafter 走 git@github.com:... ssh 协议，slim 镜像默认不带
+# binutils: 提供 addr2line，crashguard 符号化 Flutter engine native crash 帧必备
+#   （symbolication.py 会优先用 llvm-symbolizer，找不到回落 addr2line）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     grep coreutils unzip git openssh-client curl ca-certificates gnupg \
+    binutils \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 2：agent 工具包（轻量，频繁迭代）。

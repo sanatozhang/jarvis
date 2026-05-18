@@ -227,7 +227,12 @@ async def _upsert_issue(
 
 
 async def _try_symbolicate_issue(datadog_issue_id: str, platform: str) -> None:
-    """尝试符号化并回写 representative_stack（fire-and-forget，失败静默）。"""
+    """尝试符号化并回写 representative_stack（fire-and-forget，失败静默）。
+
+    传入 row.last_seen_version 让 Plan A/C 都能跑：
+      - Plan A 通过 Flutter releases.json 反查 engine hash（不依赖 app_version 本身）
+      - Plan C 根据 app_version 拉 Plaud GitHub release 符号包
+    """
     try:
         from app.crashguard.services.symbolication import symbolicate_stack
         from app.crashguard.models import CrashIssue
@@ -239,12 +244,16 @@ async def _try_symbolicate_issue(datadog_issue_id: str, platform: str) -> None:
             if row is None or not row.representative_stack:
                 return
             original = row.representative_stack
-            enhanced = await symbolicate_stack(original, [], platform or row.platform or "")
+            app_ver = (row.last_seen_version or "").strip()
+            enhanced = await symbolicate_stack(
+                original, [], platform or row.platform or "", app_ver,
+            )
             if enhanced and enhanced != original:
                 row.representative_stack = enhanced[:8000]
                 await session.commit()
                 logger.info(
-                    "symbolication updated representative_stack for %s", datadog_issue_id
+                    "symbolication updated representative_stack for %s (v=%s)",
+                    datadog_issue_id, app_ver,
                 )
     except Exception as exc:
         logger.debug("_try_symbolicate_issue failed for %s: %s", datadog_issue_id, exc)

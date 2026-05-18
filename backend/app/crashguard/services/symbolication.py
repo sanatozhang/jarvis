@@ -312,26 +312,157 @@ def _find_flutter_engine_hash(uuid_or_build_id: str, platform: str) -> Optional[
     """
     从 UUID / BuildId 推导 Flutter engine commit hash。
 
-    策略（最简可行方案）：
-    1. 检查本地 engine_hash_index（JSON 文件，运营可手动维护）
-    2. 无法查到时返回 None（跳过，不报错）
-
-    更完整的方案：
-    - 从 https://storage.googleapis.com/flutter_infra_release/flutter/<hash>/... 遍历
-      已知发布 hash 列表（太慢，暂不实现）
-    - 通过 Flutter releases JSON 查版本-hash 映射（需要先有 app_version → Flutter SDK 版本映射）
+    策略（按优先级）：
+    1. 本地 engine_hash_index.json 索引（命中即用）
+    2. 遍历 Flutter releases.json 最近 N 个 stable channel 的 engine hash，
+       下载对应平台 symbols.zip，验 build-id 是否匹配（命中后写回 index 缓存）
     """
+    key = uuid_or_build_id.lower()
     index_path = _flutter_engine_cache_dir() / "engine_hash_index.json"
+    index: dict = {}
     if index_path.exists():
-        import json
         try:
-            index = json.loads(index_path.read_text(encoding="utf-8"))
-            key = uuid_or_build_id.lower()
+            import json as _json
+            index = _json.loads(index_path.read_text(encoding="utf-8")) or {}
             if key in index:
                 return index[key]
         except Exception:
-            pass
+            index = {}
+
+    # 自动遍历：从 Flutter 官方 releases 路由查 engine hash
+    try:
+        hashes = _fetch_recent_flutter_engine_hashes(max_versions=8)
+    except Exception as exc:
+        logger.debug("fetch_recent_flutter_engine_hashes failed: %s", exc)
+        return None
+
+    for engine_hash in hashes:
+        if not engine_hash:
+            continue
+        verified = _verify_engine_hash_against_build_id(engine_hash, key, platform)
+        if verified:
+            # 命中，写回索引缓存
+            index[key] = engine_hash
+            try:
+                import json as _json
+                index_path.write_text(_json.dumps(index, indent=2), encoding="utf-8")
+                logger.info("cached engine_hash mapping: %s → %s", key, engine_hash)
+            except Exception:
+                pass
+            return engine_hash
     return None
+
+
+# Module-level cache for Flutter releases meta（防止每次重复拉）
+_FLUTTER_RELEASES_CACHE: Optional[list] = None
+_FLUTTER_RELEASES_CACHE_AT: float = 0.0
+
+
+def _fetch_recent_flutter_engine_hashes(max_versions: int = 8) -> List[str]:
+    """从 Flutter 官方 releases.json 拉最近 N 个 stable SDK 版本，按 SDK hash → engine.version 派生 engine commit hash。
+
+    Flutter releases JSON 字段：每个 release 有 `hash`(Flutter SDK commit) + `channel`。
+    engine commit 单独存在 GitHub `flutter/flutter@{sdk_hash}:bin/internal/engine.version` 文件里。
+    """
+    import time as _time
+    import urllib.request as _ureq
+
+    global _FLUTTER_RELEASES_CACHE, _FLUTTER_RELEASES_CACHE_AT
+    now = _time.time()
+    # 6h 缓存防 Flutter API 速率限制
+    if _FLUTTER_RELEASES_CACHE is not None and (now - _FLUTTER_RELEASES_CACHE_AT) < 6 * 3600:
+        stable_hashes = _FLUTTER_RELEASES_CACHE
+    else:
+        url = "https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json"
+        try:
+            with _ureq.urlopen(url, timeout=15) as resp:  # noqa: S310
+                import json as _json
+                data = _json.loads(resp.read().decode("utf-8"))
+            stable_hashes = []
+            seen = set()
+            for r in (data.get("releases") or []):
+                if r.get("channel") != "stable":
+                    continue
+                h = (r.get("hash") or "").strip()
+                if h and h not in seen:
+                    seen.add(h)
+                    stable_hashes.append(h)
+                if len(stable_hashes) >= max_versions * 2:  # 多取一些防部分 engine 查询失败
+                    break
+            _FLUTTER_RELEASES_CACHE = stable_hashes
+            _FLUTTER_RELEASES_CACHE_AT = now
+        except Exception as exc:
+            logger.warning("fetch_flutter_releases failed: %s", exc)
+            return []
+
+    # SDK hash → engine commit
+    engine_hashes: List[str] = []
+    seen_engines = set()
+    for sdk_hash in stable_hashes:
+        engine_hash = _sdk_hash_to_engine_hash(sdk_hash)
+        if engine_hash and engine_hash not in seen_engines:
+            seen_engines.add(engine_hash)
+            engine_hashes.append(engine_hash)
+        if len(engine_hashes) >= max_versions:
+            break
+    return engine_hashes
+
+
+def _sdk_hash_to_engine_hash(sdk_hash: str) -> Optional[str]:
+    """通过 GitHub raw 拉 flutter/flutter@{sdk_hash}:bin/internal/engine.version，返回 engine commit。"""
+    import urllib.request as _ureq
+
+    url = f"https://raw.githubusercontent.com/flutter/flutter/{sdk_hash}/bin/internal/engine.version"
+    try:
+        with _ureq.urlopen(url, timeout=10) as resp:  # noqa: S310
+            content = resp.read().decode("utf-8").strip()
+        # 文件里通常就是一行 hash
+        if content and re.match(r"^[0-9a-f]{40}$", content):
+            return content
+    except Exception as exc:
+        logger.debug("sdk_hash_to_engine_hash failed for %s: %s", sdk_hash, exc)
+    return None
+
+
+def _verify_engine_hash_against_build_id(engine_hash: str, build_id: str, platform: str) -> bool:
+    """下载 engine_hash 对应的 Android symbols.zip，解压找 libflutter.so，验 build-id 匹配。"""
+    plat = (platform or "").lower()
+    if "android" not in plat and plat != "" and "flutter" not in plat:
+        # iOS UUID 校验目前不支持自动反查（dSYM zip 太大，先跳过）
+        return False
+
+    cache = _flutter_engine_cache_dir() / f"android_engine_{engine_hash[:12]}"
+    so_path = cache / "libflutter.so"
+    if not so_path.exists():
+        url = (
+            f"https://storage.googleapis.com/flutter_infra_release/flutter/"
+            f"{engine_hash}/android-arm64/symbols.zip"
+        )
+        result = _download_and_extract(url, cache, "libflutter.so")
+        if not result or not Path(result).exists():
+            return False
+        so_path = Path(result)
+
+    # 读 so 的 BuildId 与 stack 里给的对比
+    try:
+        out = subprocess.run(
+            ["file", str(so_path)], capture_output=True, text=True, timeout=5,
+        ).stdout.lower()
+        if build_id.lower() in out:
+            # 把这个 .so 同时链到 android_{build_id} 目录，让 _get_or_download_android_so 命中
+            target_dir = _flutter_engine_cache_dir() / f"android_{build_id.lower()}"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_so = target_dir / "libflutter.so"
+            if not target_so.exists():
+                try:
+                    target_so.symlink_to(so_path)
+                except Exception:
+                    import shutil as _sh
+                    _sh.copy(so_path, target_so)
+            return True
+    except Exception as exc:
+        logger.debug("verify_engine_hash_against_build_id failed: %s", exc)
+    return False
 
 
 def _download_and_extract(url: str, dest_dir: Path, target_name: str) -> Optional[str]:

@@ -189,7 +189,7 @@ crashguard:
 
   thresholds:
     surge_multiplier: 1.5              # 飙升判定阈值（倍数）
-    surge_min_events: 10               # 飙升最小事件数
+    surge_min_events: 100              # 飙升最小事件数（与 daily_attention_min_events 对齐）
     regression_silent_versions: 3      # 回归判定的静默版本数
     feasibility_pr_threshold: 0.7      # 自动创建 PR 的 feasibility 触发线（>= 此值才触发自动 draft PR）
     # 早晚报关注点阈值（vs 昨日变化率 + events 量级下限）
