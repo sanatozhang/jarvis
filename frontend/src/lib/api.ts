@@ -1657,6 +1657,21 @@ export interface CrashVersionDistribution {
 export const fetchCrashVersionDistribution = (window_hours = 24) =>
   request<CrashVersionDistribution>(`/crash/version-distribution?window_hours=${window_hours}`);
 
+export interface CrashDeviceSlice {
+  model: string;
+  sessions: number;
+  pct: number;
+}
+
+export interface CrashDeviceDistribution {
+  data: Partial<Record<"android" | "ios", CrashDeviceSlice[]>>;
+  source: string;
+  window_hours: number;
+}
+
+export const fetchCrashDeviceDistribution = (window_hours = 24) =>
+  request<CrashDeviceDistribution>(`/crash/device-distribution?window_hours=${window_hours}`);
+
 // ---------------------------------------------------------------------------
 // T3 客服反馈闭环：对 AI 的 needs_engineer 标签做事后纠偏
 // ---------------------------------------------------------------------------
@@ -1770,4 +1785,16 @@ export const markDiagnosisDataNeeded = (runId: string, note: string) =>
   request<{ run_id: string; status: string; note: string }>(
     `/crash/analyses/${encodeURIComponent(runId)}/mark-data-needed`,
     { method: "POST", body: JSON.stringify({ note }) },
+  );
+
+export interface SymbolSettings {
+  symbol_upload_keep_versions: number;
+  github_cache_keep_versions: number;
+}
+export const fetchSymbolSettings = () =>
+  request<SymbolSettings>("/crash/settings/symbols");
+export const updateSymbolSettings = (patch: Partial<SymbolSettings>) =>
+  request<SymbolSettings & { updated: string[] }>(
+    "/crash/settings/symbols",
+    { method: "PATCH", body: JSON.stringify(patch) },
   );

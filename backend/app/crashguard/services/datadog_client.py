@@ -378,12 +378,13 @@ class DatadogClient:
         ev, inner, tags = best_event
         total = len(events)
 
-        # Plan A: Flutter Engine 符号化增强（容错，失败原样保留）
+        # Plan A/B/C: 符号化增强（容错，失败原样保留）
         platform_str = self._extract_path(inner, "os", "name") or ""
         binary_images = self._extract_path(inner, "error", "binary_images") or []
+        app_ver = self._extract_app_version(inner) or _tag_value(tags, "version") or ""
         try:
             from app.crashguard.services.symbolication import symbolicate_stack
-            symbolicated = await symbolicate_stack(best_stack, binary_images, platform_str)
+            symbolicated = await symbolicate_stack(best_stack, binary_images, platform_str, app_ver)
         except Exception:
             symbolicated = best_stack
 
@@ -1172,6 +1173,100 @@ class DatadogClient:
             out[platform] = [
                 {"version": v, "sessions": s, "pct": round(s / total * 100, 1)}
                 for v, s in sorted_vers
+            ]
+        return out
+
+    async def device_distribution_by_platform(
+        self,
+        window_hours: int = 24,
+        top_n: int = 8,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """最近 N 小时内各平台机型分布（Top N，按 session 数）。
+
+        返回:
+            {
+              "android": [{"model": "Pixel 7", "sessions": 1234, "pct": 18.2}, ...],
+              "ios":     [{"model": "iPhone 14 Pro", "sessions": 987, "pct": 15.3}, ...]
+            }
+        """
+        try:
+            return await asyncio.to_thread(
+                self._sync_device_distribution_by_platform, window_hours, top_n
+            )
+        except Exception as exc:
+            logger.warning("device_distribution_by_platform failed: %s", exc)
+            return {}
+
+    def _sync_device_distribution_by_platform(
+        self, window_hours: int, top_n: int
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        from datadog_api_client import ApiClient
+        from datadog_api_client.exceptions import ApiException
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        body = RUMAggregateRequest(
+            filter=RUMQueryFilter(
+                query="@type:session",
+                _from=f"now-{max(1, int(window_hours))}h",
+                to="now",
+            ),
+            compute=[RUMCompute(
+                aggregation=RUMAggregationFunction.CARDINALITY,
+                metric="@session.id",
+                type=RUMComputeType.TOTAL,
+            )],
+            group_by=[
+                RUMGroupBy(facet="@os.name", limit=10),
+                RUMGroupBy(facet="@device.model", limit=30),
+            ],
+        )
+        conf = self._build_configuration()
+        with ApiClient(conf) as api_client:
+            rum = RUMApi(api_client)
+            try:
+                resp = rum.aggregate_rum_events(body=body)
+            except ApiException as exc:
+                if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
+                raise
+
+        agg: Dict[str, Dict[str, int]] = {"android": {}, "ios": {}}
+        for b in (getattr(getattr(resp, "data", None), "buckets", None) or []):
+            by = getattr(b, "by", {}) or {}
+            os_name = (by.get("@os.name") or "").strip().lower()
+            model = (by.get("@device.model") or "").strip()
+            if not model or model in ("", "N/A", "unknown"):
+                continue
+            comp = getattr(b, "computes", {}) or {}
+            try:
+                sessions = int(next(iter(comp.values())))
+            except (StopIteration, TypeError, ValueError):
+                sessions = 0
+            if sessions <= 0:
+                continue
+            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                key = "ios"
+            elif os_name.startswith("android"):
+                key = "android"
+            else:
+                continue
+            agg[key][model] = agg[key].get(model, 0) + sessions
+
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for platform, models in agg.items():
+            if not models:
+                continue
+            total = sum(models.values())
+            sorted_models = sorted(models.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+            out[platform] = [
+                {"model": m, "sessions": s, "pct": round(s / total * 100, 1)}
+                for m, s in sorted_models
             ]
         return out
 

@@ -61,14 +61,21 @@ async def symbolicate_stack(
     stack: str,
     binary_images: list,
     platform: str,
+    app_version: str = "",
 ) -> str:
     """
-    尝试符号化 stack 中的 Flutter Engine 帧，返回增强后的 stack 字符串。
+    尝试符号化 stack 中的帧，返回增强后的 stack 字符串。
+
+    优先级：
+      1. Flutter engine 帧（Plan A：从公开存储自动下载）
+      2. 用户上传的符号包（Plan B）
+      3. GitHub release 符号包（Plan C：自动按版本下载）
 
     Args:
         stack:         原始堆栈字符串
         binary_images: Datadog RUM 事件里的 binary_images 列表（可为空 list）
         platform:      "ios" | "android" | "flutter" 等
+        app_version:   Datadog @application.version，如 "3.18.0-708"（可为空）
 
     Returns:
         符号化后的堆栈字符串（失败时原样返回 stack）
@@ -77,7 +84,12 @@ async def symbolicate_stack(
     if not stack:
         return stack
     try:
-        return await asyncio.to_thread(_symbolicate_stack_sync, stack, binary_images, platform)
+        # Plan A + Plan B（同步，在线程里跑）
+        result = await asyncio.to_thread(_symbolicate_stack_sync, stack, binary_images, platform)
+        # Plan C：GitHub release 符号（异步，按需下载）
+        if app_version:
+            result = await _symbolicate_with_github(result, platform, app_version)
+        return result
     except Exception as exc:
         logger.warning("symbolicate_stack failed (non-fatal): %s", exc)
         return stack
@@ -94,6 +106,24 @@ def _symbolicate_stack_sync(stack: str, binary_images: list, platform: str) -> s
     if out != stack:
         return out
     return _symbolicate_ios(out, binary_images)
+
+
+async def _symbolicate_with_github(stack: str, platform: str, app_version: str) -> str:
+    """Plan C：利用 GitHub release 里的符号文件对 stack 做进一步增强。"""
+    from app.crashguard.services.github_symbols import get_ios_dsyms_dir, get_android_mapping
+    plat = (platform or "").lower()
+    try:
+        if "ios" in plat or "iphone" in plat or "ipados" in plat:
+            dsyms_dir = await get_ios_dsyms_dir(app_version)
+            if dsyms_dir:
+                stack = await asyncio.to_thread(_symbolicate_ios_with_dir, stack, dsyms_dir)
+        elif "android" in plat:
+            mapping_path = await get_android_mapping(app_version)
+            if mapping_path:
+                stack = await asyncio.to_thread(_retrace_proguard, stack, mapping_path)
+    except Exception as exc:
+        logger.debug("github symbolication failed (non-fatal): %s", exc)
+    return stack
 
 
 # ── iOS 符号化 ─────────────────────────────────────────────────────────────────
@@ -389,3 +419,114 @@ def _find_user_so(build_id: str, platform: str) -> Optional[str]:
         except Exception:
             pass
     return None
+
+
+# ── Plan C：GitHub release 符号 ────────────────────────────────────────────────
+
+def _symbolicate_ios_with_dir(stack: str, dsyms_dir: str) -> str:
+    """
+    用 GitHub release 里解压出的 dSYMs 目录对 iOS stack 做符号化。
+    遍历目录下所有 .dSYM bundle，逐一尝试 atos 解析未符号化的帧。
+    """
+    if not _ATOS:
+        return stack
+
+    import re as _re
+    # 匹配尚未符号化的 iOS 帧：函数名为十六进制地址或 "???"
+    _unsym_re = _re.compile(
+        r"^(\s*\d+\s+\S+\s+)(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+\+\s+(\d+)(.*)",
+        _re.MULTILINE,
+    )
+
+    dsyms = list(Path(dsyms_dir).rglob("*.dSYM"))
+    if not dsyms:
+        return stack
+
+    lines = stack.splitlines(keepends=True)
+    result = []
+    for line in lines:
+        m = _unsym_re.match(line)
+        if not m:
+            result.append(line)
+            continue
+        addr = m.group(2)
+        base = m.group(3)
+        resolved = False
+        for dsym in dsyms:
+            dwarf = _find_dwarf_in_dsym(str(dsym))
+            if not dwarf:
+                continue
+            sym = _atos_lookup(dwarf, base, addr)
+            if sym:
+                result.append(f"{m.group(1)}{sym}{m.group(5)}\n")
+                resolved = True
+                break
+        if not resolved:
+            result.append(line)
+    return "".join(result)
+
+
+# ProGuard mapping 行格式：
+#   com.original.Class -> a.b.C:
+#       returnType originalMethod(params) -> x
+_PG_CLASS_RE = re.compile(r"^(\S+)\s+->\s+(\S+):$")
+_PG_METHOD_RE = re.compile(r"^\s+\S+\s+(\S+)\(.*?\)\s+->\s+(\S+)$")
+
+def _build_proguard_index(mapping_path: str) -> dict:
+    """解析 mapping.txt，构建 {obfuscated → original} 映射表（类名 + 方法名）。"""
+    index: dict = {}  # obfuscated_class → original_class
+    method_index: dict = {}  # (obfuscated_class, obfuscated_method) → original_method
+    current_obf = ""
+    try:
+        with open(mapping_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                cm = _PG_CLASS_RE.match(line)
+                if cm:
+                    orig, obf = cm.group(1), cm.group(2).rstrip(":")
+                    index[obf] = orig
+                    current_obf = obf
+                    continue
+                if current_obf:
+                    mm = _PG_METHOD_RE.match(line)
+                    if mm:
+                        orig_m, obf_m = mm.group(1), mm.group(2)
+                        method_index[(current_obf, obf_m)] = orig_m
+    except Exception as exc:
+        logger.warning("failed to parse ProGuard mapping %s: %s", mapping_path, exc)
+    return {"classes": index, "methods": method_index}
+
+
+# 缓存 mapping 解析结果（按文件路径），避免每次重复解析 50MB 文件
+_PG_INDEX_CACHE: dict = {}
+
+def _get_proguard_index(mapping_path: str) -> dict:
+    if mapping_path not in _PG_INDEX_CACHE:
+        logger.info("parsing ProGuard mapping %s ...", mapping_path)
+        _PG_INDEX_CACHE[mapping_path] = _build_proguard_index(mapping_path)
+        logger.info("ProGuard mapping loaded: %d classes", len(_PG_INDEX_CACHE[mapping_path]["classes"]))
+    return _PG_INDEX_CACHE[mapping_path]
+
+
+# Android Java/Kotlin 堆栈帧格式：
+#   at a.b.c.d(SourceFile:123)
+#   at a.b.c.d(Unknown Source)
+_ANDROID_FRAME_RE = re.compile(r"(\s+at\s+)([\w.$]+)\.([\w$]+)\(([^)]*)\)")
+
+def _retrace_proguard(stack: str, mapping_path: str) -> str:
+    """用 ProGuard mapping 对 Android stack 做 retrace（纯 Python，无需 retrace 工具）。"""
+    idx = _get_proguard_index(mapping_path)
+    classes = idx.get("classes", {})
+    methods = idx.get("methods", {})
+    if not classes:
+        return stack
+
+    def replace_frame(m: re.Match) -> str:
+        prefix = m.group(1)
+        obf_class = m.group(2)
+        obf_method = m.group(3)
+        rest = m.group(4)
+        orig_class = classes.get(obf_class, obf_class)
+        orig_method = methods.get((obf_class, obf_method), obf_method)
+        return f"{prefix}{orig_class}.{orig_method}({rest})"
+
+    return _ANDROID_FRAME_RE.sub(replace_frame, stack)

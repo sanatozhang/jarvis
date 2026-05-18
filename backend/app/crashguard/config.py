@@ -378,6 +378,12 @@ class CrashguardSettings(BaseSettings):
     deep_analysis_auto_max_per_tick: int = 1           # 每 tick 最多触发几个（Phase 1 需 30min）
     deep_analyze_auto_cron: str = "*/35 * * * *"       # 每 35 分钟触发一次
 
+    # === 符号化设置 ===
+    # 每次上传符号包后，同 platform+symbol_type 最多保留多少个版本（超出自动删除文件+DB）
+    symbol_upload_keep_versions: int = 10
+    # GitHub release 缓存最多保留多少个版本目录（超出按 mtime 淘汰）
+    github_cache_keep_versions: int = 10
+
     model_config = {
         "env_prefix": "CRASHGUARD_",
         "env_file": str(PROJECT_ROOT / ".env"),

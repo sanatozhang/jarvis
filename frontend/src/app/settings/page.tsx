@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchSymbolSettings, updateSymbolSettings, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type SymbolSettings } from "@/lib/api";
 import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
@@ -26,14 +26,26 @@ const inputStyle = {
 
 function CrashguardPrefsSection() {
   const t = useT();
+  // 批量分析 Top N（localStorage）
   const [n, setN] = useState<number>(BATCH_TOP_N_BOUNDS.default);
   const [draft, setDraft] = useState<string>(String(BATCH_TOP_N_BOUNDS.default));
   const [saved, setSaved] = useState(false);
+
+  // 符号化设置（服务端）
+  const [symSettings, setSymSettings] = useState<SymbolSettings>({ symbol_upload_keep_versions: 10, github_cache_keep_versions: 10 });
+  const [symDraft, setSymDraft] = useState({ symbol_upload_keep_versions: "10", github_cache_keep_versions: "10" });
+  const [symSaving, setSymSaving] = useState(false);
+  const [symSaved, setSymSaved] = useState(false);
+  const [symError, setSymError] = useState("");
 
   useEffect(() => {
     const cur = getBatchTopN();
     setN(cur);
     setDraft(String(cur));
+    fetchSymbolSettings().then((s) => {
+      setSymSettings(s);
+      setSymDraft({ symbol_upload_keep_versions: String(s.symbol_upload_keep_versions), github_cache_keep_versions: String(s.github_cache_keep_versions) });
+    }).catch(() => {});
   }, []);
 
   const onSave = () => {
@@ -45,12 +57,36 @@ function CrashguardPrefsSection() {
     setTimeout(() => setSaved(false), 1500);
   };
 
+  const onSaveSymbols = async () => {
+    setSymSaving(true);
+    setSymError("");
+    const upload = parseInt(symDraft.symbol_upload_keep_versions, 10);
+    const github = parseInt(symDraft.github_cache_keep_versions, 10);
+    if (!Number.isFinite(upload) || upload < 1 || upload > 50 || !Number.isFinite(github) || github < 1 || github > 50) {
+      setSymError(t("请输入 1–50 的整数"));
+      setSymSaving(false);
+      return;
+    }
+    try {
+      const result = await updateSymbolSettings({ symbol_upload_keep_versions: upload, github_cache_keep_versions: github });
+      setSymSettings(result);
+      setSymDraft({ symbol_upload_keep_versions: String(result.symbol_upload_keep_versions), github_cache_keep_versions: String(result.github_cache_keep_versions) });
+      setSymSaved(true);
+      setTimeout(() => setSymSaved(false), 2000);
+    } catch {
+      setSymError(t("保存失败，请重试"));
+    } finally {
+      setSymSaving(false);
+    }
+  };
+
   return (
     <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
       <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
         Crashguard
       </h2>
-      <div className="flex flex-col gap-3 max-w-md">
+      <div className="flex flex-col gap-4 max-w-md">
+        {/* 批量分析 Top N */}
         <div>
           <label className="block text-sm mb-1" style={{ color: S.text1 }}>
             {t("批量分析 Top N")}
@@ -60,30 +96,55 @@ function CrashguardPrefsSection() {
           </p>
           <div className="flex items-center gap-2">
             <input
-              type="number"
-              min={BATCH_TOP_N_BOUNDS.min}
-              max={BATCH_TOP_N_BOUNDS.max}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              className="rounded px-3 py-1.5 text-sm w-24"
-              style={inputStyle}
+              type="number" min={BATCH_TOP_N_BOUNDS.min} max={BATCH_TOP_N_BOUNDS.max}
+              value={draft} onChange={(e) => setDraft(e.target.value)}
+              className="rounded px-3 py-1.5 text-sm w-24" style={inputStyle}
             />
-            <button
-              onClick={onSave}
-              className="rounded px-3 py-1.5 text-sm font-medium"
-              style={{ background: S.accent, color: "white", border: "none", cursor: "pointer" }}
-            >
+            <button onClick={onSave} className="rounded px-3 py-1.5 text-sm font-medium"
+              style={{ background: S.accent, color: "white", border: "none", cursor: "pointer" }}>
               {t("保存")}
             </button>
-            {saved && (
-              <span className="text-xs" style={{ color: S.accent }}>
-                ✓ {t("已保存")}（{t("当前")}: {n}）
-              </span>
-            )}
+            {saved && <span className="text-xs" style={{ color: S.accent }}>✓ {t("已保存")}（{t("当前")}: {n}）</span>}
           </div>
-          <p className="text-[11px] mt-2" style={{ color: S.text3 }}>
-            {t("此偏好仅本浏览器有效（localStorage 存储）")}
-          </p>
+          <p className="text-[11px] mt-2" style={{ color: S.text3 }}>{t("此偏好仅本浏览器有效（localStorage 存储）")}</p>
+        </div>
+
+        {/* 符号化设置 */}
+        <div style={{ borderTop: `1px solid ${S.borderSm}`, paddingTop: 12 }}>
+          <label className="block text-sm font-medium mb-3" style={{ color: S.text1 }}>{t("符号化缓存保留版本数")}</label>
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className="block text-xs mb-1" style={{ color: S.text2 }}>{t("上传符号包保留版本数（symbol_upload_keep_versions）")}</label>
+              <p className="text-[11px] mb-1.5" style={{ color: S.text3 }}>{t("每次上传后，同平台+同类型最多保留最新 N 个版本，旧版本文件自动删除。范围 1–50。")}</p>
+              <input
+                type="number" min={1} max={50}
+                value={symDraft.symbol_upload_keep_versions}
+                onChange={(e) => setSymDraft((d) => ({ ...d, symbol_upload_keep_versions: e.target.value }))}
+                className="rounded px-3 py-1.5 text-sm w-24" style={inputStyle}
+              />
+            </div>
+            <div>
+              <label className="block text-xs mb-1" style={{ color: S.text2 }}>{t("GitHub Release 缓存保留版本数（github_cache_keep_versions）")}</label>
+              <p className="text-[11px] mb-1.5" style={{ color: S.text3 }}>{t("从 GitHub Release 自动下载的符号包，最多缓存 N 个版本（每版本约 200MB），按访问时间淘汰。范围 1–50。")}</p>
+              <input
+                type="number" min={1} max={50}
+                value={symDraft.github_cache_keep_versions}
+                onChange={(e) => setSymDraft((d) => ({ ...d, github_cache_keep_versions: e.target.value }))}
+                className="rounded px-3 py-1.5 text-sm w-24" style={inputStyle}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onSaveSymbols} disabled={symSaving}
+                className="rounded px-3 py-1.5 text-sm font-medium"
+                style={{ background: symSaving ? S.text3 : S.accent, color: "white", border: "none", cursor: symSaving ? "not-allowed" : "pointer" }}
+              >
+                {symSaving ? t("保存中...") : t("保存")}
+              </button>
+              {symSaved && <span className="text-xs" style={{ color: S.accent }}>✓ {t("已保存并持久化到 config.yaml")}</span>}
+              {symError && <span className="text-xs" style={{ color: "#EF4444" }}>{symError}</span>}
+            </div>
+          </div>
         </div>
       </div>
     </section>

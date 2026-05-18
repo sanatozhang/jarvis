@@ -417,6 +417,31 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
     return {"data": fallback_data, "source": "crash_issues_fallback", "window_hours": window_hours}
 
 
+@router.get("/device-distribution")
+async def get_device_distribution(window_hours: int = Query(24, ge=1, le=720)) -> Dict[str, Any]:
+    """各平台机型 session 占比分布（Top 8），用于首页机型分布图。
+
+    返回 {"android": [{"model":"Pixel 7","sessions":N,"pct":18.2},...], "ios": [...]}
+    无 Datadog 配置时返回空数据。
+    """
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    s = get_crashguard_settings()
+    if not s.datadog_api_key:
+        return {"data": {}, "source": "unavailable", "window_hours": window_hours}
+    try:
+        client = DatadogClient(
+            api_key=s.datadog_api_key,
+            app_key=s.datadog_app_key,
+            site=s.datadog_site,
+        )
+        data = await client.device_distribution_by_platform(window_hours=window_hours)
+        return {"data": data, "source": "datadog_rum", "window_hours": window_hours}
+    except Exception as exc:
+        logger.warning("device_distribution_by_platform failed: %s", exc)
+        return {"data": {}, "source": "error", "window_hours": window_hours}
+
+
 @router.get("/health")
 async def health() -> Dict[str, Any]:
     """模块健康检查"""
@@ -2778,6 +2803,58 @@ async def mark_data_needed_endpoint(run_id: str, body: MarkDataNeededRequest) ->
     return {"run_id": run_id, "status": "waiting_data", "note": body.note}
 
 
+# ── 符号化设置 GET/PATCH ────────────────────────────────────────────────────────
+
+@router.get("/settings/symbols")
+async def get_symbol_settings() -> Dict[str, Any]:
+    """返回符号化相关的可配置参数。"""
+    s = get_crashguard_settings()
+    return {
+        "symbol_upload_keep_versions": s.symbol_upload_keep_versions,
+        "github_cache_keep_versions": s.github_cache_keep_versions,
+    }
+
+
+class SymbolSettingsPatch(BaseModel):
+    symbol_upload_keep_versions: Optional[int] = Field(None, ge=1, le=50)
+    github_cache_keep_versions: Optional[int] = Field(None, ge=1, le=50)
+
+
+@router.patch("/settings/symbols")
+async def update_symbol_settings(body: SymbolSettingsPatch) -> Dict[str, Any]:
+    """
+    更新符号化相关设置并持久化到 config.yaml crashguard 段。
+    同时更新运行时配置，无需重启。
+    """
+    import yaml as _yaml
+    from app.config import PROJECT_ROOT as _PROJECT_ROOT
+
+    s = get_crashguard_settings()
+    changed: Dict[str, Any] = {}
+    if body.symbol_upload_keep_versions is not None:
+        s.symbol_upload_keep_versions = body.symbol_upload_keep_versions
+        changed["symbol_upload_keep_versions"] = body.symbol_upload_keep_versions
+    if body.github_cache_keep_versions is not None:
+        s.github_cache_keep_versions = body.github_cache_keep_versions
+        changed["github_cache_keep_versions"] = body.github_cache_keep_versions
+
+    if changed:
+        yaml_path = _PROJECT_ROOT / "config.yaml"
+        try:
+            raw = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+            cg = raw.setdefault("crashguard", {})
+            cg.update(changed)
+            yaml_path.write_text(_yaml.dump(raw, allow_unicode=True, default_flow_style=False), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("failed to persist symbol settings to config.yaml: %s", exc)
+
+    return {
+        "symbol_upload_keep_versions": s.symbol_upload_keep_versions,
+        "github_cache_keep_versions": s.github_cache_keep_versions,
+        "updated": list(changed.keys()),
+    }
+
+
 # ── Plan B: dSYM / Symbols 上传管理 ──────────────────────────────────────────
 
 @router.post("/symbols/upload")
@@ -2786,7 +2863,7 @@ async def upload_symbol_package(
     app_version: str,
     symbol_type: str,
     file: UploadFile = File(...),
-    keep_versions: int = Query(10, ge=1, le=50, description="同平台+同类型保留的最新版本数，超出部分自动删除"),
+    keep_versions: Optional[int] = Query(None, ge=1, le=50, description="同平台+同类型保留的最新版本数，不传则取服务端配置（symbol_upload_keep_versions，默认 10）"),
 ) -> Dict[str, Any]:
     """
     上传符号包（dSYM / dart_symbols / proguard_mapping）。
@@ -2794,13 +2871,17 @@ async def upload_symbol_package(
     存储路径: /data/symbols/<platform>/<symbol_type>/<app_version>/
 
     上传成功后自动清理旧版本：同 platform+symbol_type 组合下，
-    只保留最新 keep_versions（默认 5）个版本，超出的文件和 DB 记录一并删除。
+    只保留最新 keep_versions（不传则用服务端 symbol_upload_keep_versions 配置，默认 10）个版本。
     """
     import uuid as _uuid
     import os as _os
     from sqlalchemy import select as _select, delete as _delete
     from app.db.database import get_session as _get_session
     from app.crashguard.models import CrashSymbolPackage
+
+    # 使用服务端配置作为默认值，Jenkins 可通过 ?keep_versions=N 覆盖
+    _cfg_keep = get_crashguard_settings().symbol_upload_keep_versions
+    effective_keep = keep_versions if keep_versions is not None else _cfg_keep
 
     VALID_PLATFORMS = {"ios", "android", "flutter"}
     VALID_TYPES = {"dsym", "dart_symbols", "proguard_mapping"}
@@ -2845,7 +2926,7 @@ async def upload_symbol_package(
             .order_by(CrashSymbolPackage.created_at.desc())
         )).scalars().all()
 
-        to_delete = all_pkgs[keep_versions:]
+        to_delete = all_pkgs[effective_keep:]
         if to_delete:
             for old in to_delete:
                 if old.file_path and _os.path.exists(old.file_path):
@@ -2864,7 +2945,7 @@ async def upload_symbol_package(
             await session.commit()
             logger.info(
                 "auto-purged %d old symbol package(s) for platform=%s type=%s (keep_versions=%d)",
-                len(to_delete), platform, symbol_type, keep_versions,
+                len(to_delete), platform, symbol_type, effective_keep,
             )
 
     logger.info(

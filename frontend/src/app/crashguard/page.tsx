@@ -20,6 +20,7 @@ import {
   fetchAutoPrQueue,
   fetchCrashLatestRelease,
   fetchCrashVersionDistribution,
+  fetchCrashDeviceDistribution,
   triggerCrashWarmup,
   startDeepAnalysis,
   fetchDiagnosisStatus,
@@ -34,6 +35,7 @@ import {
   type CrashSortBy,
   type CrashStatus,
   type CrashVersionSlice,
+  type CrashDeviceSlice,
 } from "@/lib/api";
 import { getBatchTopN } from "@/lib/crashguard-prefs";
 
@@ -163,6 +165,9 @@ function CrashguardPageInner() {
   >(null);
   const [versionDistribution, setVersionDistribution] = useState<
     Partial<Record<"android" | "ios", CrashVersionSlice[]>>
+  >({});
+  const [deviceDistribution, setDeviceDistribution] = useState<
+    Partial<Record<"android" | "ios", CrashDeviceSlice[]>>
   >({});
   // 首次进入若空数据 → 自动 bootstrap（拉数 + AI 分析），避免用户面对空白
   const [bootstrapping, setBootstrapping] = useState(false);
@@ -716,20 +721,22 @@ function CrashguardPageInner() {
     };
   }, []);
 
-  // 「线上最新版本」+ 版本分布饼图——按平台从后端拉
+  // 「线上最新版本」+ 版本分布饼图 + 机型分布——按平台从后端并发拉
   useEffect(() => {
     let cancelled = false;
     Promise.all([
       fetchCrashLatestRelease(),
       fetchCrashVersionDistribution(24),
+      fetchCrashDeviceDistribution(24),
     ])
-      .then(([r, vd]) => {
+      .then(([r, vd, dd]) => {
         if (cancelled) return;
         setLatestRelease(r.versions);
         setLatestReleaseSource(r.source as any);
         setTopUserVersion(r.top_user_versions ?? null);
         setTopUserVersionSource(r.top_user_versions_source ?? null);
         setVersionDistribution(vd.data ?? {});
+        setDeviceDistribution(dd.data ?? {});
       })
       .catch(() => {});
     return () => {
@@ -1030,16 +1037,26 @@ function CrashguardPageInner() {
           </div>
         </div>
 
-        {/* 版本分布双饼图（Android + iOS） */}
-        <div className="grid grid-cols-2 gap-3 px-6 mt-3">
+        {/* 版本分布 + 机型分布：4 列布局 */}
+        <div className="grid grid-cols-4 gap-3 px-6 mt-3">
           <VersionPieCard
             title="Android"
             slices={versionDistribution.android ?? []}
             color={D.ok}
           />
+          <DeviceBarCard
+            title="Android"
+            slices={deviceDistribution.android ?? []}
+            color={D.ok}
+          />
           <VersionPieCard
             title="iOS"
             slices={versionDistribution.ios ?? []}
+            color={D.p1}
+          />
+          <DeviceBarCard
+            title="iOS"
+            slices={deviceDistribution.ios ?? []}
             color={D.p1}
           />
         </div>
@@ -1084,13 +1101,6 @@ function CrashguardPageInner() {
               {totals.nonFatalCount} {t("issue")} · {t("addError / zone guard 主动上报")}
             </div>
           </button>
-        </div>
-
-        {/* Trends mini-panel */}
-        <div className="grid grid-cols-3 gap-3 px-6 mt-3">
-          <TrendCard title={t("总 issue")} value={items.length.toString()} hint={t("fatal Top 40 + non_fatal Top 40")} />
-          <TrendCard title="P0" value={totals.p0.toString()} hint={t("新增 / 回归 / 飙升")} accent={D.danger} />
-          <TrendCard title={t("飙升")} value={totals.surge.toString()} hint={t("当日翻倍并 ≥ 10 events")} accent={D.warn} />
         </div>
 
         {/* Issues table */}
@@ -2753,10 +2763,10 @@ function VersionPieCard({
   color: string;
 }) {
   const t = useT();
-  const size = 100;
+  const size = 72;
   const cx = size / 2;
   const cy = size / 2;
-  const r = size / 2 - 3;
+  const r = size / 2 - 2;
 
   if (!slices.length) {
     return (
@@ -2813,6 +2823,57 @@ function VersionPieCard({
           )}
         </ul>
       </div>
+    </div>
+  );
+}
+
+const DEVICE_BAR_PALETTE = [
+  "#6366F1", "#8B5CF6", "#EC4899", "#F59E0B", "#10B981",
+  "#3B82F6", "#EF4444", "#14B8A6",
+];
+
+function DeviceBarCard({
+  title,
+  slices,
+  color,
+}: {
+  title: string;
+  slices: CrashDeviceSlice[];
+  color: string;
+}) {
+  const t = useT();
+  if (!slices.length) {
+    return (
+      <div className="rounded-lg p-4 flex flex-col gap-1" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
+        <div className="text-xs font-semibold" style={{ color }}>{title} {t("机型分布")}</div>
+        <div className="text-xs" style={{ color: D.text3 }}>暂无数据</div>
+      </div>
+    );
+  }
+  const top = slices.slice(0, 6);
+  const maxPct = Math.max(...top.map(s => s.pct), 1);
+  return (
+    <div className="rounded-lg p-4" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
+      <div className="text-xs font-semibold mb-3" style={{ color }}>{title} {t("机型分布")}</div>
+      <ul className="space-y-1.5">
+        {top.map((s, i) => (
+          <li key={i} className="min-w-0">
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[10px] truncate" style={{ color: D.text1, maxWidth: "70%" }} title={s.model}>{s.model}</span>
+              <span className="text-[10px] tabular-nums flex-shrink-0 ml-1" style={{ color: D.text2 }}>{s.pct.toFixed(1)}%</span>
+            </div>
+            <div className="w-full rounded-full overflow-hidden" style={{ height: 4, background: D.border }}>
+              <div
+                className="rounded-full transition-all"
+                style={{ width: `${(s.pct / maxPct) * 100}%`, height: 4, background: DEVICE_BAR_PALETTE[i % DEVICE_BAR_PALETTE.length] }}
+              />
+            </div>
+          </li>
+        ))}
+        {slices.length > 6 && (
+          <li className="text-[10px]" style={{ color: D.text3 }}>+{slices.length - 6} 个机型</li>
+        )}
+      </ul>
     </div>
   );
 }
