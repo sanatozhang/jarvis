@@ -98,6 +98,45 @@ async def derive_latest_release_from_crashes(
     return max_version(qualified)
 
 
+async def derive_latest_release_candidates(
+    session: AsyncSession,
+    platform: str,
+    min_events: int = 300,
+    limit: int = 5,
+) -> List[str]:
+    """从崩溃数据派生候选最新版本列表（semver 降序，最多 limit 个）。
+
+    与 derive_latest_release_from_crashes 的区别：返回全量候选而非单一最大值，
+    供调用方按 session 阈值逐个降级选取。
+    """
+    from app.crashguard.models import CrashIssue
+
+    if not platform:
+        return []
+
+    stmt = (
+        select(CrashIssue.last_seen_version, CrashIssue.total_events)
+        .where(func.lower(CrashIssue.platform) == platform.lower())
+    )
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        return []
+
+    bucket: dict[str, int] = {}
+    for ver, events in rows:
+        v = (ver or "").strip()
+        if not v:
+            continue
+        bucket[v] = bucket.get(v, 0) + int(events or 0)
+
+    qualified = [v for v, n in bucket.items() if n >= min_events]
+    if not qualified:
+        return []
+
+    qualified.sort(key=_sort_key, reverse=True)
+    return qualified[:limit]
+
+
 async def resolve_effective_latest_release(
     session: AsyncSession,
     platform: str,

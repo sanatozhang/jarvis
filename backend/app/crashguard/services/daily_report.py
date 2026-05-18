@@ -363,15 +363,47 @@ async def compose_report(
                 logger.exception("top-version crash-free pull failed (non-fatal)")
 
             # —— 最新版本（线上当前发布版本）的 crash-free 详表 ——
+            # 策略：按 semver 从新到旧逐候选尝试，取第一个 inactive sessions ≥ 阈值的版本，
+            # 避免灰度/内测包（sessions 极少）把有意义的次新版本挤掉。
             try:
                 from app.db.database import get_session as _get_db_session
-                from app.crashguard.services.version_util import resolve_effective_latest_release
+                from app.crashguard.services.version_util import (
+                    resolve_effective_latest_release,
+                    derive_latest_release_candidates,
+                )
+                _latest_ver_min_sess = int(getattr(s_cfg, "latest_version_min_sessions", 100) or 100)
+                # 先收集每平台的候选版本列表（semver 降序）
+                _candidates: Dict[str, List[str]] = {}
                 async with _get_db_session() as _db_sess:
                     for _plat in ("ios", "android"):
                         _override = getattr(s_cfg, f"current_release_{_plat}", "") or ""
-                        _v = await resolve_effective_latest_release(_db_sess, _plat, override=_override)
-                        if _v:
+                        if _override.strip():
+                            _candidates[_plat] = [_override.strip()]
+                        else:
+                            _candidates[_plat] = await derive_latest_release_candidates(
+                                _db_sess, _plat, min_events=s_cfg.latest_version_min_events,
+                            )
+
+                # 逐候选检查 sessions，取首个满足阈值的版本
+                for _plat, _vers in _candidates.items():
+                    for _v in _vers:
+                        _sess_map = await client.count_inactive_sessions_for_platform_versions(
+                            {_plat: _v}, window_hours=data_window_hours,
+                        ) or {}
+                        _v_sess = int(_sess_map.get(_plat, 0) or 0)
+                        if _v_sess >= _latest_ver_min_sess:
                             latest_versions_local[_plat] = _v
+                            logger.info(
+                                "latest_version %s=%s sessions=%d (from %d candidates)",
+                                _plat, _v, _v_sess, len(_vers),
+                            )
+                            break
+                        else:
+                            logger.info(
+                                "latest_version %s=%s sessions=%d < threshold=%d, trying next",
+                                _plat, _v, _v_sess, _latest_ver_min_sess,
+                            )
+
                 if latest_versions_local:
                     latest_ver_total_sessions = await client.count_inactive_sessions_for_platform_versions(
                         latest_versions_local, window_hours=data_window_hours,
@@ -657,9 +689,7 @@ async def compose_report(
                 round(top_ver_total / all_total * 100.0, 2) if all_total > 0 else None
             )
 
-        # D 段：最新版本（线上当前发布版本）
-        # 阈值：sessions < latest_version_min_sessions 时不展示（灰度量太小无参考价值）
-        latest_ver_min_sessions = int(getattr(s_cfg, "latest_version_min_sessions", 100) or 100)
+        # D 段：最新版本（已在拉取阶段按 session 阈值降级选取，进入此处的版本均满足阈值）
         latest_ver_plats: Dict[str, Dict[str, Any]] = {}
         for plat_key in ("IOS", "ANDROID"):
             plat_lc = plat_key.lower()
@@ -667,7 +697,7 @@ async def compose_report(
             v_total = int((latest_ver_total_sessions or {}).get(plat_lc, 0) or 0)
             v_crashed = int((latest_ver_crashed_sessions or {}).get(plat_lc, 0) or 0)
             plat_total = int(total_sessions_by_plat.get(plat_key, 0) or 0)
-            if not version or v_total < latest_ver_min_sessions:
+            if not version or v_total <= 0:
                 continue
             stats = _cf_stats(v_total, v_crashed)
             stats["version"] = version
