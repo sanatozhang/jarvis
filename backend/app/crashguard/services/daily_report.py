@@ -658,6 +658,8 @@ async def compose_report(
             )
 
         # D 段：最新版本（线上当前发布版本）
+        # 阈值：sessions < latest_version_min_sessions 时不展示（灰度量太小无参考价值）
+        latest_ver_min_sessions = int(getattr(s_cfg, "latest_version_min_sessions", 100) or 100)
         latest_ver_plats: Dict[str, Dict[str, Any]] = {}
         for plat_key in ("IOS", "ANDROID"):
             plat_lc = plat_key.lower()
@@ -665,7 +667,7 @@ async def compose_report(
             v_total = int((latest_ver_total_sessions or {}).get(plat_lc, 0) or 0)
             v_crashed = int((latest_ver_crashed_sessions or {}).get(plat_lc, 0) or 0)
             plat_total = int(total_sessions_by_plat.get(plat_key, 0) or 0)
-            if not version or v_total <= 0:
+            if not version or v_total < latest_ver_min_sessions:
                 continue
             stats = _cf_stats(v_total, v_crashed)
             stats["version"] = version
