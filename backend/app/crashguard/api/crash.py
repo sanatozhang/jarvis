@@ -286,7 +286,7 @@ async def get_latest_release() -> Dict[str, Any]:
 
     最新版本口径：
       - 配置 `current_release.{flutter,android,ios}` 优先（手动覆盖）
-      - 否则按崩溃数据派生：版本累计 events ≥ `latest_version_min_events`（默认 300）后取最大 semver
+      - 否则按崩溃数据派生：版本累计 events ≥ 300（默认）后取最大 semver
       - 都不满足返回 ""
 
     用户量最大版本口径（仅 android / ios，flutter 也跑在这俩上）：
@@ -313,7 +313,7 @@ async def get_latest_release() -> Dict[str, Any]:
                 session=session,
                 platform=platform,
                 override=override,
-                min_events=s.latest_version_min_events,
+                min_events=300,
             )
 
     # 用户量最大版本：优先 Datadog RUM，失败回落 crash_issues 聚合
@@ -347,7 +347,7 @@ async def get_latest_release() -> Dict[str, Any]:
 
     return {
         "versions": result,
-        "min_events_threshold": s.latest_version_min_events,
+        "min_events_threshold": 300,
         "source": {
             p: ("config_override" if overrides[p].strip() else
                 ("derived" if result[p] else "unknown"))

@@ -152,7 +152,7 @@ class CrashguardSettings(BaseSettings):
     # 批量自动 AI 分析的 Top N 上限
     analyze_top_n: int = 20
     surge_multiplier: float = 1.5
-    surge_min_events: int = 10
+    surge_min_events: int = 100
     regression_silent_versions: int = 3
     feasibility_pr_threshold: float = 0.7
     # 早晚报关注点阈值（vs 昨日变化率）
@@ -199,8 +199,6 @@ class CrashguardSettings(BaseSettings):
     current_release_flutter: str = ""
     current_release_android: str = ""
     current_release_ios: str = ""
-    # 数据派生阈值：某版本累计 events 不足该值则不视作"线上版本"（过滤灰度/测试包）
-    latest_version_min_events: int = 300
     # 最新版本在报表中展示的最低 session 数门槛：sessions < 该值则不展示（灰度量太小没参考价值）
     latest_version_min_sessions: int = 300
     # AI 分析去重窗口（小时）：自动触发场景下，若 issue 在该窗口内已有 success 分析，
@@ -225,7 +223,7 @@ class CrashguardSettings(BaseSettings):
     # 「新增」窗口：最近 N 天首次出现的 issue 视为新增
     hourly_alert_new_window_days: int = 30
     # SHoW 基线最小 events（< 此值不参与百分比计算，防小基数噪声）
-    hourly_alert_min_baseline_events: int = 20
+    hourly_alert_min_baseline_events: int = 50
     # 卡片最多展示 issue 数（聚合 digest）
     hourly_alert_max_items: int = 10
     # 绝对量级阈值：单 issue 在窗口内 sessions_affected < 此值不入告警（脏数据/极低频噪声过滤）
@@ -272,7 +270,7 @@ class CrashguardSettings(BaseSettings):
     # 最小 crashed_sessions 门槛：crashed < N 不告警（哪怕 rate Δ 过阈值）
     # 抓手：1 个 user 挂 1 次不应升级到"全平台健康度劣化"告警。
     # 与 min_sessions 双保险——前者过滤"分母不够"，后者过滤"分子绝对意义为 0"。
-    core_metric_min_crashed_sessions: int = 3
+    core_metric_min_crashed_sessions: int = 10
     # 监控平台白名单（小写逗号串），空 = 不限制
     core_metric_platforms: str = "android,ios"
 
@@ -547,8 +545,6 @@ def _yaml_overrides() -> Dict[str, Any]:
                 flat["current_release_android"] = str(cr["android"] or "")
             if "ios" in cr:
                 flat["current_release_ios"] = str(cr["ios"] or "")
-    if "latest_version_min_events" in cfg:
-        flat["latest_version_min_events"] = int(cfg["latest_version_min_events"])
     if "latest_version_min_sessions" in cfg:
         flat["latest_version_min_sessions"] = int(cfg["latest_version_min_sessions"])
     if "analysis_dedup_hours" in cfg:

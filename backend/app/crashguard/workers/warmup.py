@@ -47,7 +47,7 @@ async def _resolve_latest_release(settings) -> tuple[str, List[str]]:
             session=session,
             platform="flutter",
             override=settings.current_release_flutter,
-            min_events=settings.latest_version_min_events,
+            min_events=300,
         )
         if not latest:
             return "", []
@@ -280,7 +280,7 @@ async def run_data_only(reason: str = "warmup") -> dict:
     logger.info(
         "[%s] latest_release=%r recent=%s (override=%r threshold=%d)",
         reason, latest_release, recent_versions,
-        s.current_release_flutter, s.latest_version_min_events,
+        s.current_release_flutter, 300,
     )
 
     pipeline_result = await run_data_phase(
