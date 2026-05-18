@@ -150,10 +150,13 @@ async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Pat
         logger.info("downloading %s from %s (%dMB) ...", asset_name, tag, size_mb)
 
         dest.parent.mkdir(parents=True, exist_ok=True)
+        # 私有 repo 必须用 API URL `releases/assets/{id}` + Accept: octet-stream，
+        # browser_download_url 对私有 repo 直接 404（GitHub 鉴权策略）
         dl_headers = {**headers, "Accept": "application/octet-stream"}
+        asset_api_url = f"{_GITHUB_API}/repos/{_REPO}/releases/assets/{asset['id']}"
 
-        async with httpx.AsyncClient(timeout=600, follow_redirects=True) as client:
-            async with client.stream("GET", asset["browser_download_url"], headers=dl_headers) as resp:
+        async with httpx.AsyncClient(timeout=1800, follow_redirects=True) as client:
+            async with client.stream("GET", asset_api_url, headers=dl_headers) as resp:
                 resp.raise_for_status()
                 with open(dest, "wb") as f:
                     async for chunk in resp.aiter_bytes(1024 * 1024):
