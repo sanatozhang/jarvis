@@ -77,9 +77,12 @@ dc() {
     fi
 }
 
-# ---- Prune 3 件套：容器 + image + build cache ----
-# 背景：只清 dangling 时，Exited 容器钉住的 <none> image 永远清不掉，磁盘持续膨胀
-# 触发部署越来越慢。改成 container → image -a → builder 三件套闭环。
+# ---- Prune 3 件套：容器 + dangling + 超期 image ----
+# v2 修复版：上一版用 `image prune -af` 把所有未引用 image 清光，**包括 build 中间层缓存**，
+# 导致每次 deploy 后下次必 cold build。这里只清"真垃圾"：
+#   1) Exited 容器（钉住 <none> image 的元凶）
+#   2) dangling image（不带 -a，保留中间层缓存供下次 build 复用）
+#   3) 14 天前的所有未引用 image（防止极老镜像无限堆积）
 prune_dangling() {
     # 1) 清掉所有 Exited 容器（解除对 <none> image 的引用）
     local stopped
@@ -89,18 +92,18 @@ prune_dangling() {
         docker container prune -f >/dev/null 2>&1 || true
     fi
 
-    # 2) 清掉所有 dangling + 未被任何容器引用的 image（包括历史 <none>）
-    local before after freed
-    before=$(docker images -aq | wc -l | tr -d ' ')
-    if [ "$before" -gt 0 ]; then
-        log "Pruning unused images..."
-        docker image prune -af >/dev/null 2>&1 || true
-        after=$(docker images -aq | wc -l | tr -d ' ')
-        freed=$((before - after))
-        [ "$freed" -gt 0 ] && log "✅ Pruned $freed image(s)"
+    # 2) 只清 dangling image（保留中间层缓存 → 下次 build 命中加速）
+    local dangling
+    dangling=$(docker images -f dangling=true -q | wc -l | tr -d ' ')
+    if [ "$dangling" -gt 0 ]; then
+        log "Pruning $dangling dangling image(s)..."
+        docker image prune -f >/dev/null 2>&1 || true
     fi
 
-    # 3) 清掉 7 天前的 build cache（buildx 用户才有效，旧 docker 无 op）
+    # 3) 清掉 14 天前的所有未引用 image（防膨胀长尾，不影响最近缓存）
+    docker image prune -af --filter "until=336h" >/dev/null 2>&1 || true
+
+    # 4) 清掉 7 天前的 build cache（buildx 用户才有效，旧 docker 无 op）
     docker builder prune -af --filter until=168h >/dev/null 2>&1 || true
 }
 
