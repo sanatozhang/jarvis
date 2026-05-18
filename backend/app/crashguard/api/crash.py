@@ -2786,14 +2786,19 @@ async def upload_symbol_package(
     app_version: str,
     symbol_type: str,
     file: UploadFile = File(...),
+    keep_versions: int = Query(10, ge=1, le=50, description="同平台+同类型保留的最新版本数，超出部分自动删除"),
 ) -> Dict[str, Any]:
     """
     上传符号包（dSYM / dart_symbols / proguard_mapping）。
 
     存储路径: /data/symbols/<platform>/<symbol_type>/<app_version>/
+
+    上传成功后自动清理旧版本：同 platform+symbol_type 组合下，
+    只保留最新 keep_versions（默认 5）个版本，超出的文件和 DB 记录一并删除。
     """
     import uuid as _uuid
     import os as _os
+    from sqlalchemy import select as _select, delete as _delete
     from app.db.database import get_session as _get_session
     from app.crashguard.models import CrashSymbolPackage
 
@@ -2832,6 +2837,36 @@ async def upload_symbol_package(
         session.add(pkg)
         await session.commit()
 
+        # 自动清理旧版本：保留最新 keep_versions 个，其余删除文件 + DB 记录
+        all_pkgs = (await session.execute(
+            _select(CrashSymbolPackage)
+            .where(CrashSymbolPackage.platform == platform)
+            .where(CrashSymbolPackage.symbol_type == symbol_type)
+            .order_by(CrashSymbolPackage.created_at.desc())
+        )).scalars().all()
+
+        to_delete = all_pkgs[keep_versions:]
+        if to_delete:
+            for old in to_delete:
+                if old.file_path and _os.path.exists(old.file_path):
+                    try:
+                        _os.unlink(old.file_path)
+                        # 删除空目录（版本目录）
+                        old_dir = _os.path.dirname(old.file_path)
+                        if _os.path.isdir(old_dir) and not _os.listdir(old_dir):
+                            _os.rmdir(old_dir)
+                    except OSError as exc:
+                        logger.warning("failed to delete old symbol file %s: %s", old.file_path, exc)
+            old_ids = [o.id for o in to_delete]
+            await session.execute(
+                _delete(CrashSymbolPackage).where(CrashSymbolPackage.id.in_(old_ids))
+            )
+            await session.commit()
+            logger.info(
+                "auto-purged %d old symbol package(s) for platform=%s type=%s (keep_versions=%d)",
+                len(to_delete), platform, symbol_type, keep_versions,
+            )
+
     logger.info(
         "symbol package uploaded: id=%s platform=%s version=%s type=%s size=%d",
         pkg_id, platform, app_version, symbol_type, size_bytes,
@@ -2843,6 +2878,7 @@ async def upload_symbol_package(
         "symbol_type": symbol_type,
         "size_bytes": size_bytes,
         "created_at": pkg.created_at.isoformat() if pkg.created_at else None,
+        "purged_count": len(to_delete),
     }
 
 
