@@ -531,18 +531,32 @@ class DatadogClient:
         window_hours: int = 24,
     ) -> Dict[str, int]:
         """
-        统计最近 N 小时内 RUM session 总数，按平台分桶。
-        返回 {"android": int, "ios": int, "flutter": int, ...}
-        失败返回 {} 不致命。
+        统计最近 N 小时内 RUM session 总数，按平台分桶（含 active + inactive）。
+        返回 {"android": int, "ios": int, ...}；失败返回 {} 不致命。
         """
         try:
-            return await asyncio.to_thread(self._sync_count_sessions_by_platform, window_hours)
+            return await asyncio.to_thread(self._sync_count_sessions_by_platform, window_hours, False)
         except Exception as exc:
             logger.warning("count_sessions_by_platform failed: %s", exc)
             return {}
 
-    def _sync_count_sessions_by_platform(self, window_hours: int) -> Dict[str, int]:
-        """同步实现：用 aggregate_rum_events 按 service.platform group_by。"""
+    async def count_inactive_sessions_by_platform(
+        self,
+        window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """
+        统计最近 N 小时内已结束（inactive）RUM session 数，按平台分桶。
+        口径对齐 Firebase / Datadog 官方 Crash-free Sessions 分母（`@session.is_active:false`）。
+        失败返回 {} 不致命。
+        """
+        try:
+            return await asyncio.to_thread(self._sync_count_sessions_by_platform, window_hours, True)
+        except Exception as exc:
+            logger.warning("count_inactive_sessions_by_platform failed: %s", exc)
+            return {}
+
+    def _sync_count_sessions_by_platform(self, window_hours: int, inactive_only: bool = False) -> Dict[str, int]:
+        """同步实现：用 aggregate_rum_events 按 @os.name group_by。"""
         from datadog_api_client import ApiClient
         from datadog_api_client.exceptions import ApiException
         from datadog_api_client.v2.api.rum_api import RUMApi
@@ -554,9 +568,13 @@ class DatadogClient:
         from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
         from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
 
+        q = "@type:session"
+        if inactive_only:
+            q += " @session.is_active:false"
+
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query="@type:session",
+                query=q,
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -599,28 +617,37 @@ class DatadogClient:
         window_hours: int = 24,
     ) -> Dict[str, int]:
         """
-        统计最近 N 小时内 crash sessions 数，按平台分桶。
-
-        与 Datadog 官方 RUM Mobile "Crash-free sessions" 面板对齐：
-            filter   = @type:session AND @session.crash.count:>0
-            agg      = COUNT (每个 session 是一条 event，自带 crash.count 字段)
-            group_by = @os.name → 归桶 ANDROID / IOS / OTHER
-
-        说明：Datadog Mobile RUM SDK 在 session 上注入 `session.crash.count` 字段，
-        包含 NDK crash + ANR + iOS crash + App Hang 等所有崩溃类型。
-        直接按 session 维度 count 即可，无需通过 error 事件 distinct 反推。
-
+        统计最近 N 小时内有崩溃的 session 数（含 active），按平台分桶。
+        崩溃定义：`@session.crash.count:>0`（含 NDK crash + ANR + iOS crash + App Hang）。
         返回 {"android": int, "ios": int, "other": int}；失败返回 {} 不致命。
         """
         try:
             return await asyncio.to_thread(
-                self._sync_count_distinct_crash_sessions_by_platform, window_hours
+                self._sync_count_distinct_crash_sessions_by_platform, window_hours, False
             )
         except Exception as exc:
             logger.warning("count_distinct_crash_sessions_by_platform failed: %s", exc)
             return {}
 
-    def _sync_count_distinct_crash_sessions_by_platform(self, window_hours: int) -> Dict[str, int]:
+    async def count_inactive_crash_sessions_by_platform(
+        self,
+        window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """
+        统计最近 N 小时内已结束（inactive）且有崩溃的 session 数，按平台分桶。
+        口径：`@type:session @session.is_active:false @session.crash.count:>0`
+        对齐 Firebase / Datadog 官方 Crash-free Sessions 的分子口径（崩溃 session 数）。
+        失败返回 {} 不致命。
+        """
+        try:
+            return await asyncio.to_thread(
+                self._sync_count_distinct_crash_sessions_by_platform, window_hours, True
+            )
+        except Exception as exc:
+            logger.warning("count_inactive_crash_sessions_by_platform failed: %s", exc)
+            return {}
+
+    def _sync_count_distinct_crash_sessions_by_platform(self, window_hours: int, inactive_only: bool = False) -> Dict[str, int]:
         from datadog_api_client import ApiClient
         from datadog_api_client.exceptions import ApiException
         from datadog_api_client.v2.api.rum_api import RUMApi
@@ -631,9 +658,13 @@ class DatadogClient:
         from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
         from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
 
+        q = "@type:session @session.crash.count:>0"
+        if inactive_only:
+            q += " @session.is_active:false"
+
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query="@type:session @session.crash.count:>0",
+                query=q,
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -678,12 +709,7 @@ class DatadogClient:
         versions_by_plat: Dict[str, str],
         window_hours: int = 24,
     ) -> Dict[str, int]:
-        """版本过滤版 count_sessions_by_platform.
-
-        versions_by_plat = {"ios": "3.17.0-701", "android": "3.17.0-702"}
-        每平台单独发一次 query（避免跨平台版本号撞车污染计数）。
-        返回 {"ios": int, "android": int}；某平台无 version 或失败 → 该 key 缺失。
-        """
+        """版本过滤版 count_sessions_by_platform（含 active + inactive）。"""
         if not versions_by_plat:
             return {}
         try:
@@ -698,17 +724,33 @@ class DatadogClient:
     def _sync_count_sessions_for_platform_versions(
         self, versions_by_plat: Dict[str, str], window_hours: int,
     ) -> Dict[str, int]:
-        return self._versioned_count(
-            versions_by_plat, window_hours,
-            base_query="@type:session",
-        )
+        return self._versioned_count(versions_by_plat, window_hours, base_query="@type:session")
+
+    async def count_inactive_sessions_for_platform_versions(
+        self,
+        versions_by_plat: Dict[str, str],
+        window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """版本过滤版 count_inactive_sessions_by_platform（已结束会话，CF 率分母）。"""
+        if not versions_by_plat:
+            return {}
+        try:
+            return await asyncio.to_thread(
+                lambda: self._versioned_count(
+                    versions_by_plat, window_hours,
+                    base_query="@type:session @session.is_active:false",
+                )
+            )
+        except Exception as exc:
+            logger.warning("count_inactive_sessions_for_platform_versions failed: %s", exc)
+            return {}
 
     async def count_distinct_crash_sessions_for_platform_versions(
         self,
         versions_by_plat: Dict[str, str],
         window_hours: int = 24,
     ) -> Dict[str, int]:
-        """版本过滤版 crashed sessions count（含 ANR + App Hang，对齐 Datadog Mobile RUM 口径）。"""
+        """版本过滤版 crashed sessions count（含 active，含 ANR + App Hang）。"""
         if not versions_by_plat:
             return {}
         try:
@@ -727,6 +769,25 @@ class DatadogClient:
             versions_by_plat, window_hours,
             base_query="@type:session @session.crash.count:>0",
         )
+
+    async def count_inactive_crash_sessions_for_platform_versions(
+        self,
+        versions_by_plat: Dict[str, str],
+        window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """版本过滤版 inactive crashed sessions count（已结束 + 有崩溃，CF 率分子补集）。"""
+        if not versions_by_plat:
+            return {}
+        try:
+            return await asyncio.to_thread(
+                lambda: self._versioned_count(
+                    versions_by_plat, window_hours,
+                    base_query="@type:session @session.is_active:false @session.crash.count:>0",
+                )
+            )
+        except Exception as exc:
+            logger.warning("count_inactive_crash_sessions_for_platform_versions failed: %s", exc)
+            return {}
 
     def _versioned_count(
         self,

@@ -282,9 +282,10 @@ async def compose_report(
                 app_key=s_cfg.datadog_app_key,
                 site=s_cfg.datadog_site,
             )
-            raw_total = await client.count_sessions_by_platform(window_hours=data_window_hours)
+            # 使用 inactive-only 口径（已结束会话），对齐 Firebase / Datadog 官方 Crash-free Sessions 定义
+            raw_total = await client.count_inactive_sessions_by_platform(window_hours=data_window_hours)
             total_sessions_by_plat = {k.upper(): v for k, v in (raw_total or {}).items()}
-            raw_crash = await client.count_distinct_crash_sessions_by_platform(
+            raw_crash = await client.count_inactive_crash_sessions_by_platform(
                 window_hours=data_window_hours
             )
             distinct_crash_sessions_by_plat = {k.upper(): v for k, v in (raw_crash or {}).items()}
@@ -352,10 +353,10 @@ async def compose_report(
                     if info and info.get("version")
                 }
                 if versions_by_plat:
-                    top_ver_total_sessions = await client.count_sessions_for_platform_versions(
+                    top_ver_total_sessions = await client.count_inactive_sessions_for_platform_versions(
                         versions_by_plat, window_hours=data_window_hours,
                     ) or {}
-                    top_ver_crashed_sessions = await client.count_distinct_crash_sessions_for_platform_versions(
+                    top_ver_crashed_sessions = await client.count_inactive_crash_sessions_for_platform_versions(
                         versions_by_plat, window_hours=data_window_hours,
                     ) or {}
             except Exception:
@@ -372,10 +373,10 @@ async def compose_report(
                         if _v:
                             latest_versions_local[_plat] = _v
                 if latest_versions_local:
-                    latest_ver_total_sessions = await client.count_sessions_for_platform_versions(
+                    latest_ver_total_sessions = await client.count_inactive_sessions_for_platform_versions(
                         latest_versions_local, window_hours=data_window_hours,
                     ) or {}
-                    latest_ver_crashed_sessions = await client.count_distinct_crash_sessions_for_platform_versions(
+                    latest_ver_crashed_sessions = await client.count_inactive_crash_sessions_for_platform_versions(
                         latest_versions_local, window_hours=data_window_hours,
                     ) or {}
             except Exception:
@@ -617,7 +618,12 @@ async def compose_report(
             t = int(total_sessions_by_plat.get(plat_key, 0) or 0)
             c = int(distinct_crash_sessions_by_plat.get(plat_key, 0) or 0)
             if t > 0:
-                all_plats[plat_key] = _cf_stats(t, c)
+                stats = _cf_stats(t, c)
+                # 附带 breakdown（native_crash / anr / app_hang 事件数）供展示
+                bd = (crash_breakdown_by_plat or {}).get(plat_key, {})
+                if bd:
+                    stats["breakdown"] = bd
+                all_plats[plat_key] = stats
         all_total = sum(s["total_sessions"] for s in all_plats.values())
         all_crashed = sum(s["crashed_sessions"] for s in all_plats.values())
         all_summary = _cf_stats(all_total, all_crashed) if all_total > 0 else None

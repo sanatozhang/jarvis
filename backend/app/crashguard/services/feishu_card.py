@@ -212,12 +212,26 @@ def _build_crash_free_column_md(
         pct_str = (
             f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
         )
-        lines.append("__全版本（大盘）__")
+        lines.append("__全版本（大盘，已结束会话）__")
         lines.append(f"· 会话总数：**{_fmt_n(all_stats.get('total_sessions'))}**")
         lines.append(f"· Crash-free：{_fmt_n(all_stats.get('crash_free_sessions'))}")
-        lines.append(f"· 崩溃：{_fmt_n(all_stats.get('crashed_sessions'))}")
+        lines.append(f"· 崩溃会话：{_fmt_n(all_stats.get('crashed_sessions'))}")
         lines.append(f"· Crash-free 率：{pct_str}")
-        # WoW 对比（来自双窗口数据，不重复显示 sessions，只看 fatal 趋势）
+        # ANR / App Hang 明细（来自 breakdown，error 事件数）
+        bd = all_stats.get("breakdown") or {}
+        anr = bd.get("anr") or bd.get("ANR")
+        hang = bd.get("app_hang") or bd.get("App Hang")
+        native = bd.get("native_crash")
+        breakdown_parts = []
+        if native:
+            breakdown_parts.append(f"native {_fmt_n(native)}")
+        if anr:
+            breakdown_parts.append(f"ANR {_fmt_n(anr)}")
+        if hang:
+            breakdown_parts.append(f"Hang {_fmt_n(hang)}")
+        if breakdown_parts:
+            lines.append(f"· 崩溃明细：{' · '.join(breakdown_parts)}")
+        # WoW 对比（来自双窗口数据，只看 fatal 趋势）
         if wow:
             sess_pct = wow.get("sess_delta_pct")
             fat_pct = wow.get("fatal_delta_pct")
@@ -387,7 +401,8 @@ def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any
 
     # 口径行（窄行说明）
     out.append(_div(
-        "> 口径：Crash-free 率 = (会话数 − 崩溃会话) / 会话数。崩溃含 native + ANR + App Hang。"
+        "> 口径：已结束会话（inactive）Crash-free 率 = (会话数 − 崩溃会话) / 会话数。"
+        "崩溃含 native crash + ANR + App Hang。ANR/Hang 单独列出供参考。"
     ))
 
     # 双列：iOS 左 / Android 右
