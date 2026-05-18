@@ -314,7 +314,7 @@ async def run_hourly_alert_tick(
     if dedup_hours > 0:
         from app.crashguard.services.alert_dedup import recently_alerted_issue_ids_within_hours
         async with get_session() as _session:
-            dedup_set = await recently_alerted_issue_ids_within_hours(_session, hours=dedup_hours)
+            dedup_set = await recently_alerted_issue_ids_within_hours(_session, hours=dedup_hours, now=now)
 
     async with get_session() as session:
         for raw in raw_issues:

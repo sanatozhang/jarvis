@@ -55,8 +55,11 @@ async def recently_alerted_issue_ids(
 
 
 async def recently_alerted_issue_ids_within_hours(
-    session, hours: int = 12,
+    session, hours: int = 12, now: datetime | None = None,
 ) -> Set[str]:
-    """便捷封装：取最近 N 小时已告警过的 issue_id 集合。"""
-    cutoff = datetime.utcnow() - timedelta(hours=int(hours or 12))
+    """便捷封装：取最近 N 小时已告警过的 issue_id 集合。
+    now 默认 utcnow()；测试可传 fake_now 对齐时序。
+    """
+    reference = now if now is not None else datetime.utcnow()
+    cutoff = reference - timedelta(hours=int(hours or 12))
     return await recently_alerted_issue_ids(session, cutoff)

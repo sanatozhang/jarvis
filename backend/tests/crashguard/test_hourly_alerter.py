@@ -640,8 +640,13 @@ async def test_dedup_skips_issue_alerted_recently(tmp_path, monkeypatch):
     # 同 issue 在本 tick 又出现（新增条件成立，但 dedup 应拦截）
     issues = [_fake_dd_issue("ddi_repeat", "Repeat", events=300, sessions=150, platform="ios")]
 
+    from app.crashguard.services.datadog_cache import DatadogCache
+    DatadogCache.clear()
+
     with patch("app.crashguard.services.hourly_alerter._fetch_hourly_events",
                new=AsyncMock(return_value=issues)), \
+         patch("app.crashguard.services.hourly_alerter.DatadogCache.get_or_fetch",
+               new=AsyncMock(return_value={})), \
          patch("app.services.feishu_cli.send_interactive_card",
                new=AsyncMock(return_value=True)):
         from app.crashguard.services.hourly_alerter import run_hourly_alert_tick
