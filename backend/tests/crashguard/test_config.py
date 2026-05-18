@@ -25,7 +25,7 @@ def test_settings_loads_defaults(monkeypatch):
     assert s.feishu_enabled is True
     assert s.max_top_n == 20
     assert s.surge_multiplier == 1.5
-    assert s.surge_min_events == 10
+    assert s.surge_min_events == 100
     assert s.regression_silent_versions == 3
     assert s.feasibility_pr_threshold == 0.7
 
