@@ -1642,6 +1642,21 @@ export interface CrashLatestRelease {
 export const fetchCrashLatestRelease = () =>
   request<CrashLatestRelease>("/crash/latest-release");
 
+export interface CrashVersionSlice {
+  version: string;
+  sessions: number;
+  pct: number;
+}
+
+export interface CrashVersionDistribution {
+  data: Partial<Record<"android" | "ios", CrashVersionSlice[]>>;
+  source: "datadog_rum" | "crash_issues_fallback";
+  window_hours: number;
+}
+
+export const fetchCrashVersionDistribution = (window_hours = 24) =>
+  request<CrashVersionDistribution>(`/crash/version-distribution?window_hours=${window_hours}`);
+
 // ---------------------------------------------------------------------------
 // T3 客服反馈闭环：对 AI 的 needs_engineer 标签做事后纠偏
 // ---------------------------------------------------------------------------

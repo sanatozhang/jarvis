@@ -74,9 +74,30 @@ async def ensure_columns() -> None:
             await session.execute(text(ddl))
             logger.info("crashguard migration: %s.%s added", table, column)
         await session.commit()
+        await _ensure_symbol_packages_table(session)
     await _backfill_kind()
     await _backfill_agent_model()
     await rescue_orphan_analyses()
+
+
+async def _ensure_symbol_packages_table(session) -> None:
+    """创建 crash_symbol_packages 表（如不存在）。"""
+    ddl = """
+    CREATE TABLE IF NOT EXISTS crash_symbol_packages (
+        id TEXT PRIMARY KEY,
+        platform TEXT NOT NULL,
+        app_version TEXT NOT NULL,
+        symbol_type TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        size_bytes INTEGER,
+        build_id TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    await session.execute(text(ddl))
+    await session.commit()
+    logger.debug("crashguard migration: crash_symbol_packages ensured")
 
 
 async def _backfill_agent_model() -> None:

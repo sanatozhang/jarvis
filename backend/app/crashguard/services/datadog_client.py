@@ -377,8 +377,18 @@ class DatadogClient:
             return None
         ev, inner, tags = best_event
         total = len(events)
+
+        # Plan A: Flutter Engine 符号化增强（容错，失败原样保留）
+        platform_str = self._extract_path(inner, "os", "name") or ""
+        binary_images = self._extract_path(inner, "error", "binary_images") or []
+        try:
+            from app.crashguard.services.symbolication import symbolicate_stack
+            symbolicated = await symbolicate_stack(best_stack, binary_images, platform_str)
+        except Exception:
+            symbolicated = best_stack
+
         return {
-            "full_stack": best_stack,
+            "full_stack": symbolicated,
             "stack_quality": self._stack_quality_label(best_stack),
             "error_message": self._extract_path(inner, "error", "message") or "",
             "error_type": self._extract_path(inner, "error", "type") or "",
@@ -1007,6 +1017,101 @@ class DatadogClient:
                 continue
             top_ver, top_users = max(versions.items(), key=lambda kv: kv[1])
             out[platform] = {"version": top_ver, "users": top_users}
+        return out
+
+    async def version_distribution_by_platform(
+        self,
+        window_hours: int = 24,
+        top_n: int = 10,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        最近 N 小时内，每个平台各版本的 session 分布（Top N）。
+
+        返回:
+            {
+              "android": [{"version": "3.16.0-634", "sessions": 12345, "pct": 45.3}, ...],
+              "ios":     [{"version": "3.17.0-712", "sessions": 9876, "pct": 40.1}, ...]
+            }
+        """
+        try:
+            return await asyncio.to_thread(
+                self._sync_version_distribution_by_platform, window_hours, top_n
+            )
+        except Exception as exc:
+            logger.warning("version_distribution_by_platform failed: %s", exc)
+            return {}
+
+    def _sync_version_distribution_by_platform(
+        self, window_hours: int, top_n: int
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        from datadog_api_client import ApiClient
+        from datadog_api_client.exceptions import ApiException
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        body = RUMAggregateRequest(
+            filter=RUMQueryFilter(
+                query="@type:session",
+                _from=f"now-{max(1, int(window_hours))}h",
+                to="now",
+            ),
+            compute=[RUMCompute(
+                aggregation=RUMAggregationFunction.CARDINALITY,
+                metric="@session.id",
+                type=RUMComputeType.TOTAL,
+            )],
+            group_by=[
+                RUMGroupBy(facet="@os.name", limit=30),
+                RUMGroupBy(facet="version", limit=50),
+            ],
+        )
+        conf = self._build_configuration()
+        with ApiClient(conf) as api_client:
+            rum = RUMApi(api_client)
+            try:
+                resp = rum.aggregate_rum_events(body=body)
+            except ApiException as exc:
+                if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
+                raise
+
+        agg: Dict[str, Dict[str, int]] = {"android": {}, "ios": {}}
+        for b in (getattr(getattr(resp, "data", None), "buckets", None) or []):
+            by = getattr(b, "by", {}) or {}
+            os_name = (by.get("@os.name") or "").strip().lower()
+            version = (by.get("version") or "").strip()
+            if not version:
+                continue
+            comp = getattr(b, "computes", {}) or {}
+            try:
+                sessions = int(next(iter(comp.values())))
+            except (StopIteration, TypeError, ValueError):
+                sessions = 0
+            if sessions <= 0:
+                continue
+            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                key = "ios"
+            elif os_name.startswith("android"):
+                key = "android"
+            else:
+                continue
+            agg[key][version] = agg[key].get(version, 0) + sessions
+
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for platform, versions in agg.items():
+            if not versions:
+                continue
+            total = sum(versions.values())
+            sorted_vers = sorted(versions.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+            out[platform] = [
+                {"version": v, "sessions": s, "pct": round(s / total * 100, 1)}
+                for v, s in sorted_vers
+            ]
         return out
 
     async def crash_free_sessions_by_version(

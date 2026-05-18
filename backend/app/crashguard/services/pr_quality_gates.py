@@ -635,19 +635,38 @@ def pick_primary_platform(
 
     优先级（强 → 弱）：
       1. Gate#2 强制平台命中 → 选该平台
-      2. claimed_platform 在候选里 → 选 claimed
-      3. 候选第一个
+      2. fix_suggestion 主要指向 .dart 文件 → 选 flutter（即便 claimed=android/ios）
+         Plaud Flutter 双端 app：Datadog 在 Android 设备上采集的崩溃 platform=ANDROID，
+         但修复往往在 .dart 层；本规则防止把 dart 修复错误路由到 android 仓库导致 Gate#1 失败。
+      3. claimed_platform 在候选里 → 选 claimed
+      4. 候选第一个
 
     返回 (primary_tuple, reason)；primary_tuple=None 表示候选为空。
     """
     if not candidates:
         return None, "no_candidates"
+
+    # Step 0（最优先）：fix 主要指向 .dart / lib/ 路径 + flutter 候选存在 → 选 flutter
+    # 必须在 detect_forced_platform 之前检查：
+    #   Flutter app 的 ANR 堆栈含 java.lang.* / android.os.* 等 native 帧，
+    #   detect_forced_platform 会误锁 android，但实际修复在 dart 层（.dart 文件），
+    #   必须路由到 flutter 仓才能找到文件，否则 Gate#1 必然失败。
+    fix_lower = (fix_suggestion or "").lower()
+    _dart_signals = (".dart", "lib/", "pubspec.yaml", "flutter_")
+    fix_is_dart_primary = sum(1 for s in _dart_signals if s in fix_lower) >= 2
+    if fix_is_dart_primary:
+        for name, path in candidates:
+            if name == "flutter":
+                return (name, path), "fix_targets_dart_prefer_flutter"
+
+    # Step 1：崩溃栈强制锁定平台（仅在 fix 不指向 dart 时生效）
     forced, why = detect_forced_platform(stack, claimed_platform)
     if forced:
         for name, path in candidates:
             if name == forced:
                 return (name, path), f"forced_by_stack: {why}"
-    # claimed 在候选里
+
+    # Step 2：claimed 在候选里
     cl = (claimed_platform or "").lower()
     for name, path in candidates:
         if name == cl:

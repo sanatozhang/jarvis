@@ -496,6 +496,7 @@ const EN: Record<string, string> = {
   "分析耗时": "Analysis Duration",
   "查看详情": "View Details",
   "收起": "Collapse",
+  "版本分布": "Version Distribution",
   "收起堆栈": "Collapse stack",
   "查看更多": "Show more",
   "行": "lines",

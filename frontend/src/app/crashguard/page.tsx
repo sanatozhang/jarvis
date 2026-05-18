@@ -19,6 +19,7 @@ import {
   approveCrashPr,
   fetchAutoPrQueue,
   fetchCrashLatestRelease,
+  fetchCrashVersionDistribution,
   triggerCrashWarmup,
   startDeepAnalysis,
   fetchDiagnosisStatus,
@@ -32,6 +33,7 @@ import {
   type CrashIssueDetail,
   type CrashSortBy,
   type CrashStatus,
+  type CrashVersionSlice,
 } from "@/lib/api";
 import { getBatchTopN } from "@/lib/crashguard-prefs";
 
@@ -159,6 +161,9 @@ function CrashguardPageInner() {
   const [topUserVersionSource, setTopUserVersionSource] = useState<
     Partial<Record<"android" | "ios", string>> | null
   >(null);
+  const [versionDistribution, setVersionDistribution] = useState<
+    Partial<Record<"android" | "ios", CrashVersionSlice[]>>
+  >({});
   // 首次进入若空数据 → 自动 bootstrap（拉数 + AI 分析），避免用户面对空白
   const [bootstrapping, setBootstrapping] = useState(false);
   const [bootstrapElapsed, setBootstrapElapsed] = useState(0);
@@ -711,20 +716,22 @@ function CrashguardPageInner() {
     };
   }, []);
 
-  // 「线上最新版本」——按平台从后端拉，替换硬编码 3.16.0
+  // 「线上最新版本」+ 版本分布饼图——按平台从后端拉
   useEffect(() => {
     let cancelled = false;
-    fetchCrashLatestRelease()
-      .then((r) => {
+    Promise.all([
+      fetchCrashLatestRelease(),
+      fetchCrashVersionDistribution(24),
+    ])
+      .then(([r, vd]) => {
         if (cancelled) return;
         setLatestRelease(r.versions);
         setLatestReleaseSource(r.source as any);
         setTopUserVersion(r.top_user_versions ?? null);
         setTopUserVersionSource(r.top_user_versions_source ?? null);
+        setVersionDistribution(vd.data ?? {});
       })
-      .catch(() => {
-        // 接口不通 → 不显示，比错显 3.16.0 强
-      });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -1023,28 +1030,17 @@ function CrashguardPageInner() {
           </div>
         </div>
 
-        {/* Two-card stat row (Firebase Crash-free style) */}
+        {/* 版本分布双饼图（Android + iOS） */}
         <div className="grid grid-cols-2 gap-3 px-6 mt-3">
-          <StatCardLarge
-            title={t("Crash-free 会话")}
-            primary={
-              totals.crashFreeSessionsPct !== null
-                ? `${totals.crashFreeSessionsPct.toFixed(2)}%`
-                : "—"
-            }
-            secondary={
-              totals.crashFreeTotalSessions > 0
-                ? `${totals.crashFreeTotalSessions.toLocaleString()} ${t("总会话")} · ${totals.sessions.toLocaleString()} ${t("受影响会话")}`
-                : `${totals.sessions.toLocaleString()} ${t("受影响会话")}`
-            }
-            hint={t("session-level，crash_metric_snapshots 窗口聚合")}
+          <VersionPieCard
+            title="Android"
+            slices={versionDistribution.android ?? []}
+            color={D.ok}
           />
-          <StatCardLarge
-            title={t("Crash-free 用户")}
-            primary={"—"}
-            secondary={t("Datadog Error Tracking 不返回 user 维度（Plan 2.5 接入 RUM Events API）")}
-            hint=""
-            muted
+          <VersionPieCard
+            title="iOS"
+            slices={versionDistribution.ios ?? []}
+            color={D.p1}
           />
         </div>
 
@@ -2739,6 +2735,82 @@ function PieChart({ title, slices }: { title: string; slices: { label: string; p
               </span>
             </li>
           ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+const VERSION_PIE_PALETTE = ["#2563EB", "#16A34A", "#B8922E", "#7C3AED", "#DC2626", "#D97706", "#9CA3AF", "#0891B2", "#DB2777", "#65A30D"];
+
+function VersionPieCard({
+  title,
+  slices,
+  color,
+}: {
+  title: string;
+  slices: { version: string; sessions: number; pct: number }[];
+  color: string;
+}) {
+  const t = useT();
+  const size = 100;
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size / 2 - 3;
+
+  if (!slices.length) {
+    return (
+      <div className="rounded-lg p-4 flex flex-col gap-1" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
+        <div className="text-xs font-semibold" style={{ color }}>{title}</div>
+        <div className="text-xs" style={{ color: D.text3 }}>暂无数据</div>
+      </div>
+    );
+  }
+
+  const total = slices.reduce((a, s) => a + s.pct, 0);
+  const display = [...slices];
+  if (total < 99.5) display.push({ version: "其他", sessions: 0, pct: Math.max(0, 100 - total) });
+
+  let cum = 0;
+  const paths = display.map((s, i) => {
+    const startAngle = (cum / 100) * 2 * Math.PI - Math.PI / 2;
+    cum += s.pct;
+    const endAngle = (cum / 100) * 2 * Math.PI - Math.PI / 2;
+    const x1 = cx + r * Math.cos(startAngle);
+    const y1 = cy + r * Math.sin(startAngle);
+    const x2 = cx + r * Math.cos(endAngle);
+    const y2 = cy + r * Math.sin(endAngle);
+    const largeArc = s.pct > 50 ? 1 : 0;
+    const d =
+      display.length === 1
+        ? `M ${cx - r} ${cy} A ${r} ${r} 0 1 1 ${cx + r} ${cy} A ${r} ${r} 0 1 1 ${cx - r} ${cy} Z`
+        : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+    return { d, c: VERSION_PIE_PALETTE[i % VERSION_PIE_PALETTE.length], label: s.version, pct: s.pct, sessions: s.sessions };
+  });
+
+  // 只展示 top5 in legend，其余折叠
+  const legendItems = paths.slice(0, 5);
+
+  return (
+    <div className="rounded-lg p-4" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
+      <div className="text-xs font-semibold mb-3" style={{ color }}>{title} {t("版本分布")}</div>
+      <div className="flex items-center gap-3">
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="flex-shrink-0">
+          {paths.map((p, i) => (
+            <path key={i} d={p.d} fill={p.c} stroke="#FFFFFF" strokeWidth="1.5" />
+          ))}
+        </svg>
+        <ul className="flex-1 space-y-1 min-w-0">
+          {legendItems.map((p, i) => (
+            <li key={i} className="flex items-center gap-1.5 text-[10.5px] truncate" title={`${p.label} ${p.pct.toFixed(1)}%`}>
+              <span className="flex-shrink-0 rounded-sm" style={{ width: 8, height: 8, background: p.c, display: "inline-block" }} />
+              <span className="truncate" style={{ color: D.text1 }}>{p.label}</span>
+              <span className="ml-auto tabular-nums flex-shrink-0" style={{ color: D.text2 }}>{p.pct.toFixed(1)}%</span>
+            </li>
+          ))}
+          {paths.length > 5 && (
+            <li className="text-[10px]" style={{ color: D.text3 }}>+{paths.length - 5} 个版本</li>
+          )}
         </ul>
       </div>
     </div>

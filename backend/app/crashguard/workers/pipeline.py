@@ -109,6 +109,18 @@ async def run_data_phase(
                 fatality=fatality_by_id.get(norm["datadog_issue_id"], "unknown"),
             )
 
+            # 后台符号化（fire-and-forget，失败不阻塞）
+            try:
+                import asyncio as _asyncio
+                _asyncio.create_task(
+                    _try_symbolicate_issue(
+                        norm["datadog_issue_id"],
+                        norm.get("platform", ""),
+                    )
+                )
+            except Exception:
+                pass
+
             # 关联 fingerprint 表
             await upsert_fingerprint_link(
                 session=session,
@@ -212,6 +224,30 @@ async def _upsert_issue(
         # fatality 仅在本次 fetch 提供了明确分类时覆盖（避免历史"unknown"覆盖已分类的行）
         if fatality and fatality != "unknown":
             row.fatality = fatality
+
+
+async def _try_symbolicate_issue(datadog_issue_id: str, platform: str) -> None:
+    """尝试符号化并回写 representative_stack（fire-and-forget，失败静默）。"""
+    try:
+        from app.crashguard.services.symbolication import symbolicate_stack
+        from app.crashguard.models import CrashIssue
+
+        async with get_session() as session:
+            row = (await session.execute(
+                select(CrashIssue).where(CrashIssue.datadog_issue_id == datadog_issue_id)
+            )).scalar_one_or_none()
+            if row is None or not row.representative_stack:
+                return
+            original = row.representative_stack
+            enhanced = await symbolicate_stack(original, [], platform or row.platform or "")
+            if enhanced and enhanced != original:
+                row.representative_stack = enhanced[:8000]
+                await session.commit()
+                logger.info(
+                    "symbolication updated representative_stack for %s", datadog_issue_id
+                )
+    except Exception as exc:
+        logger.debug("_try_symbolicate_issue failed for %s: %s", datadog_issue_id, exc)
 
 
 async def _upsert_snapshot(

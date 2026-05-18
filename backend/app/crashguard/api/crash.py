@@ -5,7 +5,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from app.crashguard.config import get_crashguard_settings
@@ -356,6 +356,65 @@ async def get_latest_release() -> Dict[str, Any]:
         "top_user_versions": top_user,           # {"android": {"version":"...","users":N}, "ios": {...}}
         "top_user_versions_source": top_user_source,
     }
+
+
+@router.get("/version-distribution")
+async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) -> Dict[str, Any]:
+    """各平台 App 版本 session 占比分布（Top 10），用于首页饼图。
+
+    返回 {"android": [{"version":"...","sessions":N,"pct":45.3},...], "ios": [...]}
+    无 Datadog 配置时回落 crash_issues.top_app_version 加权聚合。
+    """
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    s = get_crashguard_settings()
+    if s.datadog_api_key:
+        try:
+            client = DatadogClient(
+                api_key=s.datadog_api_key,
+                app_key=s.datadog_app_key,
+                site=s.datadog_site,
+            )
+            data = await client.version_distribution_by_platform(window_hours=window_hours)
+            if data:
+                return {"data": data, "source": "datadog_rum", "window_hours": window_hours}
+        except Exception as exc:
+            logger.warning("version_distribution_by_platform failed: %s", exc)
+
+    # Fallback：从 crash_issues.top_app_version 按平台聚合
+    from collections import defaultdict
+    from app.db.database import get_session
+
+    platform_ver_sessions: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    async with get_session() as session:
+        from sqlalchemy import select, and_
+        from app.crashguard.models import CrashIssue
+        rows = (await session.execute(
+            select(CrashIssue.platform, CrashIssue.top_app_version, CrashIssue.total_events)
+            .where(and_(CrashIssue.top_app_version.isnot(None), CrashIssue.top_app_version != ""))
+        )).all()
+        for platform, top_ver_str, total_events in rows:
+            plat = (platform or "").lower()
+            if plat not in ("android", "ios"):
+                continue
+            weight = total_events or 1
+            for part in (top_ver_str or "").split(","):
+                m = __import__("re").match(r"^(.+?)\s*\(([\d.]+)\s*%\)\s*$", part.strip())
+                if m:
+                    ver, pct = m.group(1).strip(), float(m.group(2))
+                    platform_ver_sessions[plat][ver] += weight * pct / 100
+
+    fallback_data: Dict[str, list] = {}
+    for plat, ver_map in platform_ver_sessions.items():
+        total = sum(ver_map.values())
+        if total <= 0:
+            continue
+        sorted_vers = sorted(ver_map.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        fallback_data[plat] = [
+            {"version": v, "sessions": round(s), "pct": round(s / total * 100, 1)}
+            for v, s in sorted_vers
+        ]
+    return {"data": fallback_data, "source": "crash_issues_fallback", "window_hours": window_hours}
 
 
 @router.get("/health")
@@ -2717,3 +2776,132 @@ async def mark_data_needed_endpoint(run_id: str, body: MarkDataNeededRequest) ->
             row.error = f"[data_needed] {body.note}"[:500]
         await session.commit()
     return {"run_id": run_id, "status": "waiting_data", "note": body.note}
+
+
+# ── Plan B: dSYM / Symbols 上传管理 ──────────────────────────────────────────
+
+@router.post("/symbols/upload")
+async def upload_symbol_package(
+    platform: str,
+    app_version: str,
+    symbol_type: str,
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    """
+    上传符号包（dSYM / dart_symbols / proguard_mapping）。
+
+    存储路径: /data/symbols/<platform>/<symbol_type>/<app_version>/
+    """
+    import uuid as _uuid
+    import os as _os
+    from app.db.database import get_session as _get_session
+    from app.crashguard.models import CrashSymbolPackage
+
+    VALID_PLATFORMS = {"ios", "android", "flutter"}
+    VALID_TYPES = {"dsym", "dart_symbols", "proguard_mapping"}
+
+    if platform not in VALID_PLATFORMS:
+        raise HTTPException(status_code=400, detail=f"platform must be one of {VALID_PLATFORMS}")
+    if symbol_type not in VALID_TYPES:
+        raise HTTPException(status_code=400, detail=f"symbol_type must be one of {VALID_TYPES}")
+
+    data_dir = _os.environ.get("DATA_DIR", "/data")
+    dest_dir = _os.path.join(data_dir, "symbols", platform, symbol_type, app_version)
+    _os.makedirs(dest_dir, exist_ok=True)
+
+    original_name = file.filename or "upload.zip"
+    dest_path = _os.path.join(dest_dir, original_name)
+
+    content = await file.read()
+    with open(dest_path, "wb") as f:
+        f.write(content)
+
+    size_bytes = len(content)
+    pkg_id = str(_uuid.uuid4())
+
+    async with _get_session() as session:
+        pkg = CrashSymbolPackage(
+            id=pkg_id,
+            platform=platform,
+            app_version=app_version,
+            symbol_type=symbol_type,
+            file_path=dest_path,
+            file_name=original_name,
+            size_bytes=size_bytes,
+        )
+        session.add(pkg)
+        await session.commit()
+
+    logger.info(
+        "symbol package uploaded: id=%s platform=%s version=%s type=%s size=%d",
+        pkg_id, platform, app_version, symbol_type, size_bytes,
+    )
+    return {
+        "id": pkg_id,
+        "platform": platform,
+        "app_version": app_version,
+        "symbol_type": symbol_type,
+        "size_bytes": size_bytes,
+        "created_at": pkg.created_at.isoformat() if pkg.created_at else None,
+    }
+
+
+@router.get("/symbols")
+async def list_symbol_packages(
+    platform: Optional[str] = Query(None),
+    app_version: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    """列出已上传的符号包，支持按 platform / app_version 过滤。"""
+    from sqlalchemy import select as _select
+    from app.db.database import get_session as _get_session
+    from app.crashguard.models import CrashSymbolPackage
+
+    async with _get_session() as session:
+        q = _select(CrashSymbolPackage).order_by(CrashSymbolPackage.created_at.desc())
+        if platform:
+            q = q.where(CrashSymbolPackage.platform == platform)
+        if app_version:
+            q = q.where(CrashSymbolPackage.app_version == app_version)
+        rows = (await session.execute(q)).scalars().all()
+
+    items = [
+        {
+            "id": r.id,
+            "platform": r.platform,
+            "app_version": r.app_version,
+            "symbol_type": r.symbol_type,
+            "file_name": r.file_name,
+            "size_bytes": r.size_bytes,
+            "build_id": r.build_id,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+    return {"items": items}
+
+
+@router.delete("/symbols/{symbol_id}")
+async def delete_symbol_package(symbol_id: str) -> Dict[str, Any]:
+    """删除指定符号包记录及文件。"""
+    import os as _os
+    from sqlalchemy import select as _select
+    from app.db.database import get_session as _get_session
+    from app.crashguard.models import CrashSymbolPackage
+
+    async with _get_session() as session:
+        row = (await session.execute(
+            _select(CrashSymbolPackage).where(CrashSymbolPackage.id == symbol_id)
+        )).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"symbol package {symbol_id} not found")
+        file_path = row.file_path
+        await session.delete(row)
+        await session.commit()
+
+    try:
+        if file_path and _os.path.exists(file_path):
+            _os.unlink(file_path)
+    except Exception as exc:
+        logger.warning("failed to delete symbol file %s: %s", file_path, exc)
+
+    return {"ok": True}

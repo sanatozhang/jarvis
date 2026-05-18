@@ -345,6 +345,21 @@ class CrashAuditLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class CrashSymbolPackage(Base):
+    """用户上传的符号包记录（dSYM / dart_symbols / proguard_mapping）。"""
+    __tablename__ = "crash_symbol_packages"
+
+    id = Column(String(64), primary_key=True)
+    platform = Column(String(16), nullable=False)       # ios | android | flutter
+    app_version = Column(String(64), nullable=False)
+    symbol_type = Column(String(32), nullable=False)    # dsym | dart_symbols | proguard_mapping
+    file_path = Column(String(512), nullable=False)
+    file_name = Column(String(256), nullable=False)
+    size_bytes = Column(Integer, nullable=True)
+    build_id = Column(String(128), nullable=True)       # BuildId / UUID（可选）
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class CrashPrReviewIteration(Base):
     """PR review 自动响应记录：每条 reviewer 评论 → agent 评判 → 修复 or 解释。
 
