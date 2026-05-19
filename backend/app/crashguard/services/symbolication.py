@@ -43,16 +43,24 @@ def _probe_tools() -> None:
 
 
 # ── 缓存目录 ──────────────────────────────────────────────────────────────────
+def _data_root() -> Path:
+    env = os.environ.get("DATA_DIR")
+    if env:
+        return Path(env)
+    if os.access("/data", os.W_OK):
+        return Path("/data")
+    # repo_root/data : symbolication.py → services/ → crashguard/ → app/ → backend/ → repo
+    return Path(__file__).resolve().parents[4] / "data"
+
+
 def _flutter_engine_cache_dir() -> Path:
-    base = Path(os.environ.get("DATA_DIR", "/data"))
-    p = base / "symbols" / "flutter_engine_cache"
+    p = _data_root() / "symbols" / "flutter_engine_cache"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def _user_symbols_dir() -> Path:
-    base = Path(os.environ.get("DATA_DIR", "/data"))
-    p = base / "symbols"
+    p = _data_root() / "symbols"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -120,6 +128,7 @@ async def _symbolicate_with_github(stack: str, platform: str, app_version: str) 
     """
     from app.crashguard.services.github_symbols import (
         get_ios_dsyms_dir, get_android_mapping, get_android_native_symbols_dir,
+        get_dart_symbols_dir,
     )
     plat = (platform or "").lower()
     try:
@@ -128,11 +137,14 @@ async def _symbolicate_with_github(stack: str, platform: str, app_version: str) 
             if dsyms_dir:
                 stack = await asyncio.to_thread(_symbolicate_ios_with_dir, stack, dsyms_dir)
         elif "android" in plat or "flutter" in plat:
-            # 1. native 符号（关键：libflutter.so / libapp.so 带 debug 符号）
+            # 1. native 符号（关键：libflutter.so / libapp.so 带 debug 符号）+
+            #    Dart AOT 符号包 flutter_symbols.tar.gz 里的 app.android-arm64.symbols
+            #    （libapp.so stripped 后真正的 DWARF 在这里）
             native_dir = await get_android_native_symbols_dir(app_version)
-            if native_dir:
+            dart_dir = await get_dart_symbols_dir(app_version)
+            if native_dir or dart_dir:
                 stack = await asyncio.to_thread(
-                    _symbolicate_android_with_dir, stack, native_dir,
+                    _symbolicate_android_with_dir, stack, native_dir, dart_dir,
                 )
             # 2. ProGuard mapping（Java 帧反混淆）
             mapping_path = await get_android_mapping(app_version)
@@ -143,70 +155,142 @@ async def _symbolicate_with_github(stack: str, platform: str, app_version: str) 
     return stack
 
 
-def _symbolicate_android_with_dir(stack: str, native_dir: str) -> str:
+def _symbolicate_android_with_dir(
+    stack: str,
+    native_dir: Optional[str],
+    dart_dir: Optional[str] = None,
+) -> str:
     """
-    用 Plaud release 解压出的 native_symbols 目录里的 .so 文件（含 debug 符号）
-    对 Android native crash 帧做 addr2line 符号化。
+    用 Plaud release 解压出的符号文件对 Android native crash 帧做 addr2line 符号化。
 
-    匹配策略：从 stack 文本提 BuildId → 遍历 native_dir 下所有 .so 用 file 命令验 BuildId → addr2line。
+    扫描来源：
+      - native_dir: native_symbols.tar.gz 里的 *.so（libflutter.so / libapp.so，
+        merged_native_libs 下是 unstripped）
+      - dart_dir:   flutter_symbols.tar.gz 里的 *.symbols（libapp.so 真正的 DWARF
+        debug ELF，stripped libapp.so 替不了它）
+
+    匹配策略：
+      1. 优先按 BuildId 精确匹配（同 BuildId 下优先 with debug_info > merged > size）
+      2. 精确不命中时按 lib 名 fuzzy fallback（用户场景：一个 crash 跨多版本，
+        GitHub 上传的 release 与设备实际跑的 build 不同 commit → BuildId 不同
+        但函数表大致同源；fallback 后输出标记 [fuzzy] 提示）
     """
     if not _ADDR2LINE:
         return stack
 
-    build_ids = set(m.group(4) for m in _ANDROID_FLUTTER_FRAME_RE.finditer(stack) if m.group(4))
-    if not build_ids:
-        return stack
-
-    # 也匹配非 libflutter.so 的 native 帧（如 libapp.so）
-    build_ids_all = set()
     extra_re = re.compile(
         r"(#\d+\s+pc\s+)([0-9a-fA-F]+)\s+.*?(\S+\.so).*?(?:BuildId:\s*([0-9a-fA-F]+))",
         re.MULTILINE,
     )
+
+    # 从 stack 收 (lib_basename, arch, BuildId) 集合
+    # arch 用于 fuzzy fallback 时区分 app.android-arm64.symbols / arm.symbols / x64.symbols
+    stack_libs: set = set()
     for m in extra_re.finditer(stack):
-        if m.group(4):
-            build_ids_all.add(m.group(4).lower())
+        path = m.group(3) or ""
+        lib = path.rsplit("/", 1)[-1].lower()
+        bid = (m.group(4) or "").lower()
+        if "arm64" in path or "arm64-v8a" in path:
+            arch = "arm64"
+        elif "armeabi" in path or "/arm/" in path:
+            arch = "arm"
+        elif "x86_64" in path or "/x64/" in path:
+            arch = "x64"
+        elif "x86" in path:
+            arch = "x86"
+        else:
+            arch = "arm64"  # Android 主流，默认猜 arm64
+        if lib and bid:
+            stack_libs.add((lib, arch, bid))
+    if not stack_libs:
+        return stack
 
-    # 扫 native_dir 找所有 .so，建 build_id → so_path 映射
-    # 关键：同 BuildId 下选 merged（unstripped, 带 debug symbols）而非 stripped
-    # Plaud native_symbols.tar.gz 同时包含 merged_native_libs（~144MB）和
-    # stripped_native_libs（~11MB），后者无 debug 无法解符号，必须选前者
-    so_candidates: dict = {}  # bid → list[(so_path, size, is_merged)]
-    for so_path in Path(native_dir).rglob("*.so"):
-        try:
-            r = subprocess.run(
-                ["file", str(so_path)], capture_output=True, text=True, timeout=5,
-            )
-            out_lower = r.stdout.lower()
-            for bid in build_ids_all:
-                if bid in out_lower:
-                    size = so_path.stat().st_size
-                    is_merged = "merged_native_libs" in str(so_path) or "not stripped" in out_lower
-                    so_candidates.setdefault(bid, []).append((str(so_path), size, is_merged))
-        except Exception:
+    # 扫描所有候选符号文件（.so + .symbols）
+    candidates: list = []  # list[(file_path, lib_hint, bid, size, score)]
+    for root in (native_dir, dart_dir):
+        if not root:
             continue
+        for fp in list(Path(root).rglob("*.so")) + list(Path(root).rglob("*.symbols")):
+            try:
+                r = subprocess.run(
+                    ["file", str(fp)], capture_output=True, text=True, timeout=5,
+                )
+                out_lower = r.stdout.lower()
+                # 抽 BuildId（file 命令格式：BuildID[md5/uuid]=<hex>）
+                bid_match = re.search(r"buildid\[[^\]]+\]=([0-9a-f]+)", out_lower)
+                bid = bid_match.group(1) if bid_match else ""
+                has_debug = "with debug_info" in out_lower or "not stripped" in out_lower
+                size = fp.stat().st_size
+                # lib_hint：app.android-arm64.symbols ⇔ libapp.so；libflutter.so ⇔ libflutter.so
+                # arch：从文件名/路径推断（用于 fuzzy fallback 按架构匹配）
+                name = fp.name.lower()
+                full = str(fp).lower()
+                if "libflutter" in name:
+                    lib_hint = "libflutter.so"
+                elif "libapp" in name or name.startswith("app.android"):
+                    lib_hint = "libapp.so"
+                else:
+                    lib_hint = name
+                if "arm64" in full or "arm64-v8a" in full:
+                    arch_hint = "arm64"
+                elif "armeabi" in full or "android-arm.symbols" in full:
+                    arch_hint = "arm"
+                elif "x86_64" in full or "android-x64.symbols" in full:
+                    arch_hint = "x64"
+                elif "x86" in full:
+                    arch_hint = "x86"
+                else:
+                    arch_hint = "arm64"
+                # 评分：debug > merged path > size
+                score = (1 if has_debug else 0, 1 if "merged_native_libs" in str(fp) else 0, size)
+                candidates.append((str(fp), lib_hint, arch_hint, bid, size, score))
+            except Exception:
+                continue
 
-    # 每个 BuildId 选最佳：优先 is_merged=True，其次按大小降序
-    so_map: dict = {}
-    for bid, candidates in so_candidates.items():
-        candidates.sort(key=lambda x: (x[2], x[1]), reverse=True)
-        so_map[bid] = candidates[0][0]
-        logger.debug("BuildId %s → %s (size=%d merged=%s)",
-                     bid, candidates[0][0], candidates[0][1], candidates[0][2])
+    if not candidates:
+        return stack
 
-    if not so_map:
+    # 建索引：bid → best file（精确匹配）；(lib_hint, arch_hint) → best file（fuzzy fallback）
+    by_bid: dict = {}
+    by_lib_arch: dict = {}
+    for path, lib_hint, arch_hint, bid, size, score in candidates:
+        if bid:
+            cur = by_bid.get(bid)
+            if cur is None or score > cur[1]:
+                by_bid[bid] = (path, score)
+        key = (lib_hint, arch_hint)
+        cur = by_lib_arch.get(key)
+        if cur is None or score > cur[1]:
+            by_lib_arch[key] = (path, score)
+
+    # 构造 stack 帧的 BuildId → 符号文件映射（精确优先，fuzzy fallback 按 (lib, arch) 严格匹配）
+    resolved: dict = {}  # bid → (path, is_fuzzy)
+    for lib, arch, bid in stack_libs:
+        if bid in by_bid:
+            resolved[bid] = (by_bid[bid][0], False)
+            continue
+        key = (lib, arch)
+        if key in by_lib_arch:
+            resolved[bid] = (by_lib_arch[key][0], True)
+            logger.info(
+                "fuzzy symbolicate: stack BuildId %s not found, falling back to %s for %s/%s",
+                bid, by_lib_arch[key][0], lib, arch,
+            )
+
+    if not resolved:
         return stack
 
     def replace_frame(m: re.Match) -> str:
         bid = (m.group(4) or "").lower()
-        if not bid or bid not in so_map:
+        if bid not in resolved:
             return m.group(0)
         offset = m.group(2)
-        sym = _addr2line_lookup(so_map[bid], offset)
+        path, is_fuzzy = resolved[bid]
+        sym = _addr2line_lookup(path, offset)
         if not sym:
             return m.group(0)
-        # 替换 (???) 为 [function:line]
-        return m.group(0).replace("(???)", f"[{sym}]")
+        suffix = " [fuzzy]" if is_fuzzy else ""
+        return m.group(0).replace("(???)", f"[{sym}{suffix}]")
 
     return extra_re.sub(replace_frame, stack)
 

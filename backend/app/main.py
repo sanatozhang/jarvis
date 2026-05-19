@@ -8,6 +8,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 把项目根 .env 落进 os.environ，让 os.environ.get(...) 类代码（GH_TOKEN 等）拿得到。
+# pydantic-settings 的 env_file 只塞进 Settings 实例，不写 os.environ。
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 import uvicorn
 from fastapi import FastAPI

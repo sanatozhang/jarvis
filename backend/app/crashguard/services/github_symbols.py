@@ -35,7 +35,13 @@ _GITHUB_CACHE_KEEP_VERSIONS = 10  # fallback，优先使用 crashguard config
 
 
 def _github_cache_dir() -> Path:
-    base = Path(os.environ.get("DATA_DIR", "/data"))
+    env = os.environ.get("DATA_DIR")
+    if env:
+        base = Path(env)
+    elif os.access("/data", os.W_OK):
+        base = Path("/data")
+    else:
+        base = Path(__file__).resolve().parents[4] / "data"
     p = base / "symbols" / "github_cache"
     p.mkdir(parents=True, exist_ok=True)
     return p
@@ -150,10 +156,7 @@ async def find_release_tag(app_version: str, allow_fallback: bool = True) -> Opt
 
 
 async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Path]:
-    """下载单个 release asset 到 dest。已存在则直接返回。"""
-    if dest.exists():
-        return dest
-
+    """下载单个 release asset 到 dest。已存在且大小匹配则直接返回；不完整则重下。"""
     token = _github_token()
     headers: dict = {"Accept": "application/vnd.github+json"}
     if token:
@@ -161,9 +164,11 @@ async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Pat
 
     try:
         import httpx
+        from urllib.parse import quote
+        encoded_tag = quote(tag, safe="")  # `+` 必须编码为 %2B，否则 GitHub API 404
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
-                f"{_GITHUB_API}/repos/{_REPO}/releases/tags/{tag}",
+                f"{_GITHUB_API}/repos/{_REPO}/releases/tags/{encoded_tag}",
                 headers=headers,
             )
             resp.raise_for_status()
@@ -174,7 +179,18 @@ async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Pat
             logger.warning("asset %s not found in release %s", asset_name, tag)
             return None
 
-        size_mb = asset["size"] // 1024 // 1024
+        expected_size = int(asset.get("size") or 0)
+        if dest.exists():
+            actual_size = dest.stat().st_size
+            if expected_size and actual_size == expected_size:
+                return dest
+            logger.warning(
+                "cache %s size mismatch (have %d, expect %d) — re-downloading",
+                dest, actual_size, expected_size,
+            )
+            dest.unlink(missing_ok=True)
+
+        size_mb = expected_size // 1024 // 1024
         logger.info("downloading %s from %s (%dMB) ...", asset_name, tag, size_mb)
 
         dest.parent.mkdir(parents=True, exist_ok=True)
