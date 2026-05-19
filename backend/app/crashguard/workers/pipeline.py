@@ -233,7 +233,7 @@ async def _upsert_issue(
             last_seen_version=norm["last_seen_version"],
             total_events=norm["events_count"],
             total_users_affected=norm["users_affected"],
-            representative_stack=norm["stack_trace"][:8000],  # 限长
+            representative_stack=norm["stack_trace"][:32000],  # 限长（符号化后约 100~150 帧足够 AI 分析）
             tags=json.dumps(norm["tags"]),
             kind=kind,
             fatality=fatality,
@@ -247,7 +247,7 @@ async def _upsert_issue(
         row.total_events = max(row.total_events or 0, norm["events_count"])
         row.total_users_affected = max(row.total_users_affected or 0, norm["users_affected"])
         if not row.representative_stack:
-            row.representative_stack = norm["stack_trace"][:8000]
+            row.representative_stack = norm["stack_trace"][:32000]
         row.kind = kind
         # fatality 仅在本次 fetch 提供了明确分类时覆盖（避免历史"unknown"覆盖已分类的行）
         if fatality and fatality != "unknown":
@@ -277,7 +277,7 @@ async def _try_symbolicate_issue(datadog_issue_id: str, platform: str) -> None:
                 original, [], platform or row.platform or "", app_ver,
             )
             if enhanced and enhanced != original:
-                row.representative_stack = enhanced[:8000]
+                row.representative_stack = enhanced[:32000]
                 await session.commit()
                 logger.info(
                     "symbolication updated representative_stack for %s (v=%s)",

@@ -496,7 +496,7 @@ def _issue_to_snapshot(issue: CrashIssue) -> Dict[str, Any]:
         "first_seen_at": issue.first_seen_at.isoformat() if issue.first_seen_at else "—",
         "last_seen_at": issue.last_seen_at.isoformat() if issue.last_seen_at else "—",
         "total_events": issue.total_events or 0,
-        "stack_trace": (issue.representative_stack or "")[:8000],
+        "stack_trace": (issue.representative_stack or "")[:32000],
         "stack_fingerprint": getattr(issue, "stack_fingerprint", "") or "",
     }
 

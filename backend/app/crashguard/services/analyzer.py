@@ -673,7 +673,7 @@ def _issue_to_dict(issue: CrashIssue) -> Dict[str, Any]:
         "first_seen_at": issue.first_seen_at.isoformat() if issue.first_seen_at else "—",
         "last_seen_at": issue.last_seen_at.isoformat() if issue.last_seen_at else "—",
         "total_events": issue.total_events or 0,
-        "stack_trace": (issue.representative_stack or "")[:8000],
+        "stack_trace": (issue.representative_stack or "")[:32000],
     }
 
 
@@ -1252,5 +1252,5 @@ async def _persist_distribution_to_issue(issue_id: str, detail: Dict[str, Any]) 
             row.top_app_version = top_ver
         # 用 RUM 事件里 score 最高的完整堆栈覆盖 search_issues 返回的单行错误消息
         if full_stack and len(full_stack) > len(row.representative_stack or ""):
-            row.representative_stack = full_stack[:8000]
+            row.representative_stack = full_stack[:32000]
         await session.commit()
