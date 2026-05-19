@@ -168,17 +168,31 @@ def _symbolicate_android_with_dir(stack: str, native_dir: str) -> str:
             build_ids_all.add(m.group(4).lower())
 
     # 扫 native_dir 找所有 .so，建 build_id → so_path 映射
-    so_map: dict = {}
+    # 关键：同 BuildId 下选 merged（unstripped, 带 debug symbols）而非 stripped
+    # Plaud native_symbols.tar.gz 同时包含 merged_native_libs（~144MB）和
+    # stripped_native_libs（~11MB），后者无 debug 无法解符号，必须选前者
+    so_candidates: dict = {}  # bid → list[(so_path, size, is_merged)]
     for so_path in Path(native_dir).rglob("*.so"):
         try:
             r = subprocess.run(
                 ["file", str(so_path)], capture_output=True, text=True, timeout=5,
             )
+            out_lower = r.stdout.lower()
             for bid in build_ids_all:
-                if bid in r.stdout.lower():
-                    so_map[bid] = str(so_path)
+                if bid in out_lower:
+                    size = so_path.stat().st_size
+                    is_merged = "merged_native_libs" in str(so_path) or "not stripped" in out_lower
+                    so_candidates.setdefault(bid, []).append((str(so_path), size, is_merged))
         except Exception:
             continue
+
+    # 每个 BuildId 选最佳：优先 is_merged=True，其次按大小降序
+    so_map: dict = {}
+    for bid, candidates in so_candidates.items():
+        candidates.sort(key=lambda x: (x[2], x[1]), reverse=True)
+        so_map[bid] = candidates[0][0]
+        logger.debug("BuildId %s → %s (size=%d merged=%s)",
+                     bid, candidates[0][0], candidates[0][1], candidates[0][2])
 
     if not so_map:
         return stack
@@ -329,31 +343,73 @@ def _symbolicate_android(stack: str, binary_images: list) -> str:
             return m.group(0)
         offset = m.group(2)
         sym = _addr2line_lookup(so_path, offset)
-        if sym:
-            prefix = m.group(1)
-            rest = m.group(3)
-            return f"{prefix}{offset}  [{sym}]{rest}"
-        return m.group(0)
+        if not sym:
+            return m.group(0)
+        # 统一输出格式：把 .so (???) 替换成 .so [symname]，与 Plan C 一致
+        # 若原帧没有 (???)（已被符号化或本来就有），追加 [sym] 到行尾
+        original = m.group(0)
+        if "(???)" in original:
+            return original.replace("(???)", f"[{sym}]")
+        return f"{original}  [{sym}]"
 
     return _ANDROID_FLUTTER_FRAME_RE.sub(replace_frame, stack)
 
 
 def _addr2line_lookup(so_path: str, offset: str) -> Optional[str]:
+    """对 ELF .so 文件按 offset 查符号名 + 文件:行；支持 inlined 帧。
+
+    优先 llvm-symbolizer（输出更结构化），回落 addr2line。
+    返回格式示例：
+      "InternalFlutterGpu_Texture_AsImage → Gpu::TextureCreate impeller/gpu.cc:142"
+      （innermost → outermost 链式 inline 展示，innermost 最具体）
+    """
     if not _ADDR2LINE:
         return None
     try:
         if _IS_LLVM_SYMBOLIZER:
-            # llvm-symbolizer 用 --obj，不加 -a（避免地址行干扰输出解析）
-            cmd = [_ADDR2LINE, "--obj", so_path, f"0x{offset}"]
+            # --inlines 默认开启；显式 --pretty-print 让一帧一行 "func at file:line"
+            cmd = [_ADDR2LINE, "--obj", so_path, "--inlines", "--pretty-print",
+                   "--demangle", f"0x{offset}"]
         else:
-            # addr2line: -f 输出函数名，不加 -a
-            cmd = [_ADDR2LINE, "-f", "-e", so_path, f"0x{offset}"]
+            # GNU addr2line: -i 输出 inlined frames，-f 函数名，-C demangle
+            cmd = [_ADDR2LINE, "-f", "-i", "-C", "-e", so_path, f"0x{offset}"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        lines = result.stdout.strip().splitlines()
-        # 两种工具均输出：函数名 / 文件:行（过滤 ?? 行）
-        sym_parts = [l.strip() for l in lines if l.strip() and "??" not in l]
-        if sym_parts:
-            return " ".join(sym_parts[:2])
+        out = result.stdout.strip()
+        if not out:
+            return None
+
+        if _IS_LLVM_SYMBOLIZER:
+            # llvm-symbolizer --pretty-print 输出每行：
+            #   "funcName at /path/file.cpp:50:0"
+            # inlined 时多行，innermost 在前
+            frames = []
+            for line in out.splitlines():
+                line = line.strip()
+                if not line or "??" in line:
+                    continue
+                # 简化路径：只保留 basename
+                if " at " in line:
+                    func, _, loc = line.partition(" at ")
+                    loc_basename = loc.rsplit("/", 1)[-1] if "/" in loc else loc
+                    frames.append(f"{func} {loc_basename}".strip())
+                else:
+                    frames.append(line)
+            if frames:
+                # innermost → outermost；最多展示 2 层避免过长
+                return " → ".join(frames[:2])
+        else:
+            # addr2line -f -i 输出交替的：func / file:line
+            lines = [l.strip() for l in out.splitlines() if l.strip() and "??" not in l]
+            frames = []
+            i = 0
+            while i < len(lines):
+                func = lines[i]
+                loc = lines[i + 1] if i + 1 < len(lines) else ""
+                loc_basename = loc.rsplit("/", 1)[-1] if "/" in loc else loc
+                frames.append(f"{func} {loc_basename}".strip())
+                i += 2
+            if frames:
+                return " → ".join(frames[:2])
     except Exception as exc:
         logger.debug("addr2line failed for offset %s: %s", offset, exc)
     return None

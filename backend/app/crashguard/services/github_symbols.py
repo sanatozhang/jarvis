@@ -67,9 +67,14 @@ def _version_to_tag_prefix(app_version: str) -> Optional[str]:
     return f"v{parts[0]}+{parts[1]}-"
 
 
-async def find_release_tag(app_version: str) -> Optional[str]:
+async def find_release_tag(app_version: str, allow_fallback: bool = True) -> Optional[str]:
     """
     查找对应 app_version 的 GitHub release tag（仅 global flavor）。
+
+    若精确版本未找到且 allow_fallback=True，回落到最近的 global release。
+    底层逻辑：Plaud Android libflutter.so 是 fork engine，多 build 共用同一份；
+    libapp.so 每 build 重新 AOT 编译，BuildId 不同。fallback 用最近 release 的 libflutter.so，
+    BuildId 仍能匹配，能解出 Dart engine / GC 帧；libapp.so 自然 BuildId 不对会跳过——安全。
     结果缓存到本地，避免每次调 API。
     """
     prefix = _version_to_tag_prefix(app_version)
@@ -88,6 +93,8 @@ async def find_release_tag(app_version: str) -> Optional[str]:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
+    latest_global_tag: Optional[str] = None  # fallback 候选
+
     try:
         import httpx
         async with httpx.AsyncClient(timeout=20) as client:
@@ -104,6 +111,9 @@ async def find_release_tag(app_version: str) -> Optional[str]:
                     break
                 for release in releases:
                     tag = release.get("tag_name", "")
+                    # 第一个见到的 global tag（API 默认按 published_at desc）作为 fallback
+                    if latest_global_tag is None and tag.endswith("-global"):
+                        latest_global_tag = tag
                     if tag.startswith(prefix) and tag.endswith("-global"):
                         cache_dir.mkdir(parents=True, exist_ok=True)
                         tag_cache.write_text(tag)
@@ -117,6 +127,24 @@ async def find_release_tag(app_version: str) -> Optional[str]:
                         return tag
     except Exception as exc:
         logger.warning("find_release_tag failed for %s: %s", app_version, exc)
+        return None
+
+    # 精确版本未命中：回落到最近 global release（仅当 allow_fallback）
+    if allow_fallback and latest_global_tag:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tag_cache.write_text(latest_global_tag)
+        logger.info(
+            "no exact GitHub release for %s, fallback to latest global %s "
+            "(libflutter.so 共用 fork engine 时 BuildId 仍可匹配)",
+            app_version, latest_global_tag,
+        )
+        try:
+            from app.crashguard.config import get_crashguard_settings as _gs
+            _keep = _gs().github_cache_keep_versions
+        except Exception:
+            _keep = _GITHUB_CACHE_KEEP_VERSIONS
+        _cleanup_github_cache(_keep)
+        return latest_global_tag
 
     return None
 
