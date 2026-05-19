@@ -43,9 +43,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Layer 2：agent 工具包（轻量，频繁迭代）。
 # 把这层放在稳定层之后、彼此独立——下次加 agent 工具不再触发 Layer 1 重拉。
 # ripgrep: claude_api 的 grep 工具用 rg 替代 shell grep（更快 + 结构化输出）
+# llvm: 提供 llvm-symbolizer，可在 Linux 上读取 Mach-O DWARF，作为 atos 的 Linux 替代品
+#   用于 iOS dSYM 符号化（atos 是 macOS-only，容器内用 llvm-symbolizer 兜底）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+    ripgrep llvm \
+    && rm -rf /var/lib/apt/lists/* \
+    && find /usr/bin -name 'llvm-symbolizer-*' | sort -V | tail -1 \
+       | xargs -I{} ln -sf {} /usr/bin/llvm-symbolizer 2>/dev/null || true
 
 # Install Node.js 20 (needed for Codex CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \

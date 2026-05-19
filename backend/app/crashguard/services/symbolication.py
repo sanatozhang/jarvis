@@ -25,18 +25,20 @@ logger = logging.getLogger("crashguard.symbolication")
 # ── 工具可用性缓存（进程级，启动时探测一次）──────────────────────────────────
 _ADDR2LINE: Optional[str] = None   # addr2line 或 llvm-symbolizer 路径
 _ATOS: Optional[str] = None        # atos 路径（仅 macOS）
+_IS_LLVM_SYMBOLIZER: bool = False  # True 时 _ADDR2LINE 是 llvm-symbolizer（可读 Mach-O）
 _TOOLS_PROBED = False
 
 def _probe_tools() -> None:
-    global _ADDR2LINE, _ATOS, _TOOLS_PROBED
+    global _ADDR2LINE, _ATOS, _TOOLS_PROBED, _IS_LLVM_SYMBOLIZER
     if _TOOLS_PROBED:
         return
     _ADDR2LINE = shutil.which("llvm-symbolizer") or shutil.which("addr2line")
+    _IS_LLVM_SYMBOLIZER = bool(_ADDR2LINE and "llvm-symbolizer" in _ADDR2LINE)
     _ATOS = shutil.which("atos")
     _TOOLS_PROBED = True
     logger.info(
-        "symbolication tools: addr2line/llvm-symbolizer=%s  atos=%s",
-        _ADDR2LINE, _ATOS,
+        "symbolication tools: addr2line/llvm-symbolizer=%s  atos=%s  is_llvm=%s",
+        _ADDR2LINE, _ATOS, _IS_LLVM_SYMBOLIZER,
     )
 
 
@@ -220,7 +222,7 @@ def _symbolicate_ios(stack: str, binary_images: list) -> str:
     if not dsym_path:
         # 尝试用户上传的符号包
         dsym_path = _find_user_dsym(uuid, "ios")
-    if not dsym_path or not _ATOS:
+    if not dsym_path or (not _ATOS and not _IS_LLVM_SYMBOLIZER):
         return stack
 
     dwarf_path = _find_dwarf_in_dsym(dsym_path)
@@ -251,18 +253,38 @@ def _find_ios_flutter_image(binary_images: list) -> Optional[dict]:
 
 
 def _atos_lookup(dwarf_path: str, load_addr: str, addr: str) -> Optional[str]:
-    if not _ATOS:
-        return None
-    try:
-        result = subprocess.run(
-            [_ATOS, "-arch", "arm64", "-o", dwarf_path, "-l", str(load_addr), str(addr)],
-            capture_output=True, text=True, timeout=10,
-        )
-        out = result.stdout.strip()
-        if out and out != addr and "???" not in out:
-            return out
-    except Exception as exc:
-        logger.debug("atos failed for %s: %s", addr, exc)
+    # Primary: atos（macOS-only，精确处理 ASLR slide）
+    if _ATOS:
+        try:
+            result = subprocess.run(
+                [_ATOS, "-arch", "arm64", "-o", dwarf_path, "-l", str(load_addr), str(addr)],
+                capture_output=True, text=True, timeout=10,
+            )
+            out = result.stdout.strip()
+            if out and out != addr and "???" not in out:
+                return out
+        except Exception as exc:
+            logger.debug("atos failed for %s: %s", addr, exc)
+
+    # Fallback: llvm-symbolizer（Linux，可读 Mach-O DWARF）
+    # iOS arm64 text segment 在 DWARF 中的 VA 起点固定为 0x100000000；
+    # ASLR slide = load_addr - 0x100000000，文件偏移 = addr - load_addr。
+    # 因此 DWARF 地址 = 0x100000000 + (addr - load_addr)
+    if _IS_LLVM_SYMBOLIZER and _ADDR2LINE:
+        try:
+            iaddr = int(addr, 16)
+            ibase = int(load_addr, 16) if load_addr else 0
+            dwarf_addr = 0x100000000 + (iaddr - ibase)
+            result = subprocess.run(
+                [_ADDR2LINE, "--obj", dwarf_path, hex(dwarf_addr)],
+                capture_output=True, text=True, timeout=10,
+            )
+            out = result.stdout.strip()
+            lines = [l.strip() for l in out.splitlines() if l.strip() and "??" not in l]
+            if lines:
+                return " ".join(lines[:2])
+        except Exception as exc:
+            logger.debug("llvm-symbolizer (iOS) failed for %s: %s", addr, exc)
     return None
 
 
@@ -320,11 +342,15 @@ def _addr2line_lookup(so_path: str, offset: str) -> Optional[str]:
     if not _ADDR2LINE:
         return None
     try:
-        cmd = [_ADDR2LINE, "-f", "-e", so_path, "-a", f"0x{offset}"]
+        if _IS_LLVM_SYMBOLIZER:
+            # llvm-symbolizer 用 --obj，不加 -a（避免地址行干扰输出解析）
+            cmd = [_ADDR2LINE, "--obj", so_path, f"0x{offset}"]
+        else:
+            # addr2line: -f 输出函数名，不加 -a
+            cmd = [_ADDR2LINE, "-f", "-e", so_path, f"0x{offset}"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         lines = result.stdout.strip().splitlines()
-        # llvm-symbolizer 输出：地址 / 函数名 / 文件:行
-        # addr2line 输出：函数名 / 文件:行
+        # 两种工具均输出：函数名 / 文件:行（过滤 ?? 行）
         sym_parts = [l.strip() for l in lines if l.strip() and "??" not in l]
         if sym_parts:
             return " ".join(sym_parts[:2])
@@ -630,9 +656,9 @@ def _find_user_so(build_id: str, platform: str) -> Optional[str]:
 def _symbolicate_ios_with_dir(stack: str, dsyms_dir: str) -> str:
     """
     用 GitHub release 里解压出的 dSYMs 目录对 iOS stack 做符号化。
-    遍历目录下所有 .dSYM bundle，逐一尝试 atos 解析未符号化的帧。
+    遍历目录下所有 .dSYM bundle，逐一尝试 atos（macOS）或 llvm-symbolizer（Linux）解析帧。
     """
-    if not _ATOS:
+    if not _ATOS and not _IS_LLVM_SYMBOLIZER:
         return stack
 
     import re as _re
