@@ -383,6 +383,18 @@ class CrashguardSettings(BaseSettings):
     symbol_upload_keep_versions: int = 10
     # GitHub release 缓存最多保留多少个版本目录（超出按 mtime 淘汰）
     github_cache_keep_versions: int = 10
+    # 是否启用 stock Flutter engine 遍历下载（默认关闭）
+    # Plaud 用自定义 fork engine，stock 公网符号库永远不匹配，遍历下载只是磁盘污染。
+    # Plan C（GitHub release 的 native_symbols.tar.gz）已覆盖 fork engine 场景。
+    # 仅当下游确实用上游 Flutter 官方 engine 时设为 True。
+    enable_stock_engine_lookup: bool = False
+
+    # Android native_symbols.tar.gz 解压白名单（仅保留这些 .so 文件，节省磁盘）
+    # 默认只留 libflutter.so + libapp.so（占 crash 帧 99%+，每版本 ~172MB）
+    # 想要更全覆盖填更多文件名（如 librive_text.so / libonnxruntime.so）
+    android_extract_so_allowlist: List[str] = Field(
+        default_factory=lambda: ["libflutter.so", "libapp.so"]
+    )
 
     # === 版本过滤 ===
     # 版本号第三段（patch）>= 此阈值时视为 QA 内测包，跳过 Top N 分析和 PR 生成

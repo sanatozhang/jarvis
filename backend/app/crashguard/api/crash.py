@@ -3084,6 +3084,54 @@ async def list_symbol_packages(
     return {"items": items}
 
 
+@router.post("/symbols/cleanup-engine-cache")
+async def cleanup_flutter_engine_cache() -> Dict[str, Any]:
+    """清理本地 Flutter engine 缓存（stock 遍历下载的 android_engine_*/ios_* 残骸）。
+
+    保留 engine_hash_index.json（用户预先配置的有效映射）。
+    Plaud 使用 fork engine 时此目录全是无效下载，可放心清理。
+    """
+    import os as _os
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
+    base = _Path(_os.environ.get("DATA_DIR", "/data")) / "symbols" / "flutter_engine_cache"
+    if not base.exists():
+        return {"removed_dirs": 0, "freed_bytes": 0, "freed_mb": 0}
+
+    removed = 0
+    freed = 0
+    for child in base.iterdir():
+        if child.name == "engine_hash_index.json":
+            continue  # 保留用户配置的有效映射
+        try:
+            if child.is_dir():
+                # 累加大小
+                for f in child.rglob("*"):
+                    if f.is_file():
+                        try:
+                            freed += f.stat().st_size
+                        except Exception:
+                            pass
+                _shutil.rmtree(child)
+                removed += 1
+            elif child.is_file():
+                try:
+                    freed += child.stat().st_size
+                except Exception:
+                    pass
+                child.unlink()
+                removed += 1
+        except Exception as exc:
+            logger.warning("failed to remove %s: %s", child, exc)
+
+    return {
+        "removed_dirs": removed,
+        "freed_bytes": freed,
+        "freed_mb": round(freed / 1024 / 1024, 1),
+    }
+
+
 @router.delete("/symbols/{symbol_id}")
 async def delete_symbol_package(symbol_id: str) -> Dict[str, Any]:
     """删除指定符号包记录及文件。"""

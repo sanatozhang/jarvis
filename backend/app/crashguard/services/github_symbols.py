@@ -200,19 +200,31 @@ async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Pat
         return None
 
 
+def _tag_cache_dir(tag: str) -> Path:
+    """按 GitHub tag（而非 app_version）建 cache 目录，避免 fallback 时重复下载。
+
+    底层逻辑：多个 app_version 可能 fallback 到同一个 release tag（如 3.18.1-715 与
+    3.19.102-711 都用 v3.18.0+708-...），按 app_version 分目录会让同一个 661MB 文件
+    被存 N 份。按 tag 分目录可让所有 fallback 共享同一份解压结果。
+    """
+    # tag 含 + 符号在文件系统上合法但易引起 shell 问题，统一替换为 -
+    safe = tag.replace("+", "-")
+    return _github_cache_dir() / "_by_tag" / safe
+
+
 async def get_ios_dsyms_dir(app_version: str) -> Optional[str]:
     """
     返回 iOS dSYMs 目录路径（含 .dSYM bundles）。
-    第一次调用从 GitHub release 下载 PLAUD.dSYMs.zip 并解压，后续走缓存。
+    按 tag 共享 cache：多个 app_version 命中同一 release 时不重复下载/解压。
     """
-    cache_dir = _github_cache_dir() / app_version / "ios"
-    marker = cache_dir / ".extracted"
-    if marker.exists():
-        return str(cache_dir)
-
     tag = await find_release_tag(app_version)
     if not tag:
         return None
+
+    cache_dir = _tag_cache_dir(tag) / "ios"
+    marker = cache_dir / ".extracted"
+    if marker.exists():
+        return str(cache_dir)
 
     zip_path = cache_dir / _ASSET_IOS_DSYM
     result = await _download_asset(tag, _ASSET_IOS_DSYM, zip_path)
@@ -224,7 +236,8 @@ async def get_ios_dsyms_dir(app_version: str) -> Optional[str]:
             zf.extractall(cache_dir)
         zip_path.unlink(missing_ok=True)
         marker.touch()
-        logger.info("iOS dSYMs extracted to %s", cache_dir)
+        logger.info("iOS dSYMs extracted to %s (tag=%s, shared by app_version=%s)",
+                    cache_dir, tag, app_version)
         return str(cache_dir)
     except Exception as exc:
         logger.warning("failed to extract iOS dSYMs: %s", exc)
@@ -233,17 +246,16 @@ async def get_ios_dsyms_dir(app_version: str) -> Optional[str]:
 
 async def get_android_mapping(app_version: str) -> Optional[str]:
     """
-    返回 Android ProGuard mapping 文件路径。
-    第一次调用从 GitHub release 下载，后续走缓存。
+    返回 Android ProGuard mapping 文件路径。按 tag 共享 cache。
     """
-    cache_dir = _github_cache_dir() / app_version / "android"
-    dest = cache_dir / _ASSET_ANDROID_MAPPING
-    if dest.exists():
-        return str(dest)
-
     tag = await find_release_tag(app_version)
     if not tag:
         return None
+
+    cache_dir = _tag_cache_dir(tag) / "android"
+    dest = cache_dir / _ASSET_ANDROID_MAPPING
+    if dest.exists():
+        return str(dest)
 
     result = await _download_asset(tag, _ASSET_ANDROID_MAPPING, dest)
     return str(result) if result else None
@@ -252,18 +264,18 @@ async def get_android_mapping(app_version: str) -> Optional[str]:
 async def get_android_native_symbols_dir(app_version: str) -> Optional[str]:
     """
     返回 Android native_symbols 目录路径（带 debug 符号的 libflutter.so / libapp.so 等）。
-    第一次调用从 GitHub release 下载 native_symbols.tar.gz 并解压（~661MB），后续走缓存。
+    按 tag 共享 cache：661MB 文件不会被多个 app_version 重复下载。
 
     这是 Plan C for Android native crash 的关键 — Plaud 自己打包了带符号版本的 .so 文件。
     """
-    cache_dir = _github_cache_dir() / app_version / "native"
-    marker = cache_dir / ".extracted"
-    if marker.exists():
-        return str(cache_dir)
-
     tag = await find_release_tag(app_version)
     if not tag:
         return None
+
+    cache_dir = _tag_cache_dir(tag) / "native"
+    marker = cache_dir / ".extracted"
+    if marker.exists():
+        return str(cache_dir)
 
     tar_path = cache_dir / _ASSET_ANDROID_NATIVE_SYMBOLS
     result = await _download_asset(tag, _ASSET_ANDROID_NATIVE_SYMBOLS, tar_path)
@@ -271,11 +283,45 @@ async def get_android_native_symbols_dir(app_version: str) -> Optional[str]:
         return None
 
     try:
+        # 选择性解压：只保留 global_apk merged_native_libs arm64-v8a 下的
+        # libflutter.so 和 libapp.so（占 crash 帧 99%+），其他全丢。
+        # 原 661MB tar → 全解 2GB → 仅 arm64 merged 380MB → 仅 flutter+app ~172MB
+        #
+        # 决策依据：
+        #   - libflutter.so 144MB: Dart engine / GC / Skia / Impeller 全在这里
+        #   - libapp.so 28MB: Plaud Dart AOT 代码
+        #   - 其余 33 个 .so（rive/onnx/avcodec 等）每个独立 BuildId，可能出现在
+        #     stack 里但概率 <1%；不保留时这些帧会原样保留（不影响主流分析）
+        # 想覆盖更多 .so 时 config 改 android_extract_so_allowlist
+        kept = 0
+        skipped = 0
+        try:
+            from app.crashguard.config import get_crashguard_settings as _gs
+            allowlist = getattr(_gs(), "android_extract_so_allowlist", None) \
+                or ["libflutter.so", "libapp.so"]
+        except Exception:
+            allowlist = ["libflutter.so", "libapp.so"]
+
         with tarfile.open(tar_path) as tf:
-            tf.extractall(cache_dir)
+            members_to_extract = []
+            for member in tf.getmembers():
+                name = member.name
+                if (
+                    "global_apk/merged_native_libs" in name
+                    and "/arm64-v8a/" in name
+                    and any(name.endswith("/" + so) for so in allowlist)
+                ):
+                    members_to_extract.append(member)
+                    kept += 1
+                else:
+                    skipped += 1
+            tf.extractall(cache_dir, members=members_to_extract)
         tar_path.unlink(missing_ok=True)
         marker.touch()
-        logger.info("Android native symbols extracted to %s", cache_dir)
+        logger.info(
+            "Android native symbols extracted to %s (tag=%s, kept=%d/%d, skipped=%d)",
+            cache_dir, tag, kept, kept + skipped, skipped,
+        )
         return str(cache_dir)
     except Exception as exc:
         logger.warning("failed to extract Android native symbols: %s", exc)
@@ -284,17 +330,16 @@ async def get_android_native_symbols_dir(app_version: str) -> Optional[str]:
 
 async def get_dart_symbols_dir(app_version: str) -> Optional[str]:
     """
-    返回 Dart debug symbols 目录路径（flutter_symbols.tar.gz 解压后）。
-    第一次调用从 GitHub release 下载，后续走缓存。
+    返回 Dart debug symbols 目录路径（flutter_symbols.tar.gz 解压后）。按 tag 共享。
     """
-    cache_dir = _github_cache_dir() / app_version / "dart"
-    marker = cache_dir / ".extracted"
-    if marker.exists():
-        return str(cache_dir)
-
     tag = await find_release_tag(app_version)
     if not tag:
         return None
+
+    cache_dir = _tag_cache_dir(tag) / "dart"
+    marker = cache_dir / ".extracted"
+    if marker.exists():
+        return str(cache_dir)
 
     tar_path = cache_dir / _ASSET_DART_SYMBOLS
     result = await _download_asset(tag, _ASSET_DART_SYMBOLS, tar_path)
@@ -306,7 +351,7 @@ async def get_dart_symbols_dir(app_version: str) -> Optional[str]:
             tf.extractall(cache_dir)
         tar_path.unlink(missing_ok=True)
         marker.touch()
-        logger.info("Dart symbols extracted to %s", cache_dir)
+        logger.info("Dart symbols extracted to %s (tag=%s)", cache_dir, tag)
         return str(cache_dir)
     except Exception as exc:
         logger.warning("failed to extract Dart symbols: %s", exc)

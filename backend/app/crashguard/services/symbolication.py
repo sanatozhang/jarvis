@@ -463,14 +463,21 @@ def _find_flutter_engine_hash(uuid_or_build_id: str, platform: str) -> Optional[
     """
     从 UUID / BuildId 推导 Flutter engine commit hash。
 
-    策略（按优先级）：
-    1. 本地 engine_hash_index.json 索引（命中即用）
-    2. 遍历 Flutter releases.json 最近 N 个 stable channel 的 engine hash，
-       下载对应平台 symbols.zip，验 build-id 是否匹配（命中后写回 index 缓存）
+    底层逻辑（2026-05 修订）：Plaud 使用自定义 fork Flutter engine，BuildId 永远不
+    在 stock 公网符号库（storage.googleapis.com/flutter_infra_release）出现。旧版
+    "遍历 40+ stable/beta 下载 symbols.zip 验 BuildId" 的策略对 fork engine 永远 0
+    命中，但每次留下 ~12MB 残骸，14GB 起步。Plan C（GitHub release 的
+    native_symbols.tar.gz）已经覆盖 fork engine 场景，此函数仅保留本地 index 兜底。
+
+    策略：
+    1. 本地 engine_hash_index.json 索引（命中即用 — 历史已命中过的 stock engine
+       或用户手动配置的映射）
+    2. 索引未命中：返回 None，不再触发下载，避免污染磁盘。
+       fork engine 场景走 Plan C；stock engine 场景需用户手动维护 index 或显式开启
+       enable_stock_engine_lookup（默认关闭）。
     """
     key = uuid_or_build_id.lower()
     index_path = _flutter_engine_cache_dir() / "engine_hash_index.json"
-    index: dict = {}
     if index_path.exists():
         try:
             import json as _json
@@ -478,23 +485,42 @@ def _find_flutter_engine_hash(uuid_or_build_id: str, platform: str) -> Optional[
             if key in index:
                 return index[key]
         except Exception:
-            index = {}
+            pass
 
-    # 自动遍历：从 Flutter 官方 releases 路由查 engine hash
-    # max_versions 提高到 40 + 包含 stable / beta channels（Plaud 不一定用 stable，
-    # 灰度包可能在 beta channel）；逐个验证 build-id 匹配
+    # 默认不再触发 stock engine 遍历下载（对 fork engine 用户是纯污染）
+    try:
+        from app.crashguard.config import get_crashguard_settings as _gs
+        if not getattr(_gs(), "enable_stock_engine_lookup", False):
+            logger.debug(
+                "skip stock Flutter engine lookup for %s on %s "
+                "(set crashguard.enable_stock_engine_lookup=true to re-enable)",
+                key, platform,
+            )
+            return None
+    except Exception:
+        # config 读不到时按 fork engine 默认（关闭）
+        return None
+
+    # 显式开启时才走遍历下载（保留给上游 Flutter 项目用，非 fork engine 场景）
     try:
         hashes = _fetch_recent_flutter_engine_hashes(max_versions=40)
     except Exception as exc:
         logger.debug("fetch_recent_flutter_engine_hashes failed: %s", exc)
         return None
 
+    index = {}
+    if index_path.exists():
+        try:
+            import json as _json
+            index = _json.loads(index_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            index = {}
+
     for engine_hash in hashes:
         if not engine_hash:
             continue
         verified = _verify_engine_hash_against_build_id(engine_hash, key, platform)
         if verified:
-            # 命中，写回索引缓存
             index[key] = engine_hash
             try:
                 import json as _json
