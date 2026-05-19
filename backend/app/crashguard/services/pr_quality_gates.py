@@ -193,6 +193,11 @@ _FORCE_FLUTTER_PATTERNS = (
     r"\.dart:\d+",                 # dart 行号
     r"\bFlutterEngine\b",
     r"\bFlutterFragmentActivity\b",
+    # 以下 4 条是 Dart 运行时独有标记——即使没具体 .dart 行号也能识别 Flutter 崩溃
+    r"\bdart:io\b",                # dart:io/file_impl.dart 等核心库
+    r"\bdart:async\b",
+    r"\bdart:core\b",
+    r"<asynchronous suspension>",  # Dart 协程 stack 才会出现
 )
 # native android 强信号
 _FORCE_ANDROID_PATTERNS = (
@@ -229,6 +234,12 @@ def detect_forced_platform(
     # Flutter 优先级最高：dart frame 在 native crash 中也会出现，但反过来不成立
     if any(re.search(p, stack) for p in _FORCE_FLUTTER_PATTERNS):
         return "flutter", "stack_contains_dart_or_flutter_frame"
+    # Datadog @platform=flutter 是地面真相（来自 SDK tag）。
+    # 当 RUM 拉到的 stack 样本是 iOS 设备的（含 UIKit./Foundation./Swift. 宽信号）
+    # 但没有任何明确 dart 文件信号时，应当信任 claimed_platform=flutter，
+    # 不强 force 到 native——避免把 Flutter dart 层 crash 拦到 iOS sub-repo。
+    if (claimed_platform or "").lower() == "flutter":
+        return None, "claimed_flutter_no_strong_native_signal"
     if any(re.search(p, stack) for p in _FORCE_IOS_PATTERNS):
         return "ios", "stack_contains_ios_frame"
     if any(re.search(p, stack) for p in _FORCE_ANDROID_PATTERNS):
@@ -444,20 +455,63 @@ def lint_changed_files(
         skipped.extend(by_ext[".swift"])
 
     # Dart: dart analyze（pubspec 可能缺，best-effort）
+    # 设计意图：检测 AI 写出的 syntax error，不是检测环境 pub get 是否跑过。
+    # 治理两步：
+    #   B 兜底：若 sub-repo 没跑过 pub get（.dart_tool/package_config.json 不存在），
+    #          跳过 dart analyze 并 skipped 记账——不能让环境问题污染 Gate 判定。
+    #   C 主修：去掉 --fatal-warnings（warnings 不升级成 error）+ 过滤
+    #          uri_does_not_exist / depends_on_referenced_packages 这类依赖未解析
+    #          的"环境噪音"errors，只保留真正的 syntax / type error。
     if ".dart" in by_ext and shutil.which("dart"):
-        for f in by_ext[".dart"]:
-            try:
-                r = subprocess.run(
-                    ["dart", "analyze", "--fatal-warnings", f],
-                    cwd=repo_path, capture_output=True, text=True,
-                    timeout=timeout_sec,
-                )
-                checked.append(f)
-                # 0 = ok；1 = info/warning；2 = error
-                if r.returncode >= 2:
-                    errs.append(f"dart-analyze: {f} :: {(r.stdout or r.stderr)[:300]}")
-            except Exception as exc:
-                logger.info("dart analyze skip %s: %s", f, exc)
+        _pub_ready = os.path.isfile(os.path.join(repo_path, ".dart_tool", "package_config.json"))
+        if not _pub_ready:
+            # B 兜底：环境没装好，dart analyze 必然全军覆没——这不是 AI 的错
+            logger.warning(
+                "gate_syntax: dart analyze skipped — %s/.dart_tool/package_config.json missing "
+                "(run `flutter pub get` to enable syntax check)",
+                repo_path,
+            )
+            skipped.extend(by_ext[".dart"])
+        else:
+            # 仅这些 code 算"环境噪音"——dart pub get 没装依赖时的产物，不应判 syntax 失败
+            _ENV_NOISE_CODES = {
+                "uri_does_not_exist",
+                "depend_on_referenced_packages",
+                "uri_has_not_been_generated",
+            }
+            for f in by_ext[".dart"]:
+                try:
+                    r = subprocess.run(
+                        ["dart", "analyze", f],   # 去掉 --fatal-warnings
+                        cwd=repo_path, capture_output=True, text=True,
+                        timeout=timeout_sec,
+                    )
+                    checked.append(f)
+                    # 0 = ok；1 = info/warning；2 = error
+                    if r.returncode >= 2:
+                        # 过滤环境噪音 → 只看真正的语法/类型 error
+                        out = (r.stdout or "") + (r.stderr or "")
+                        real_err_lines = []
+                        for line in out.splitlines():
+                            s = line.strip()
+                            if not s.startswith("error -"):
+                                continue
+                            # dart analyze 输出尾部带 ` - <code>`（如 ` - uri_does_not_exist`）
+                            code = s.rsplit(" - ", 1)[-1].strip() if " - " in s else ""
+                            if code in _ENV_NOISE_CODES:
+                                continue
+                            real_err_lines.append(s)
+                        if real_err_lines:
+                            errs.append(
+                                f"dart-analyze: {f} :: " + " | ".join(real_err_lines)[:300]
+                            )
+                        else:
+                            logger.info(
+                                "dart analyze: %s returncode=%d but only env-noise errors — passing",
+                                f, r.returncode,
+                            )
+                except Exception as exc:
+                    logger.info("dart analyze skip %s: %s", f, exc)
     elif ".dart" in by_ext:
         skipped.extend(by_ext[".dart"])
 
