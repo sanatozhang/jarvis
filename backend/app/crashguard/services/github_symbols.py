@@ -9,6 +9,7 @@ Datadog 版本格式: {semver}-{build}（如 3.18.0-708）
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tarfile
@@ -17,6 +18,23 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("crashguard.github_symbols")
+
+# 同一 (tag, asset) 的并发下载锁：661MB 文件被多 task 并发 stream 写同一 dest
+# 会互相 truncate 导致全失败（实战教训 — 102 服务器部署后 N 个 issue 同时触发
+# 符号化，所有 download_asset 都返回 4MB 残骸）。按 (tag, asset_name) 复用同一把锁，
+# 后到的 task 等前面那个跑完 → 看到完整文件直接复用。
+_DOWNLOAD_LOCKS: "dict[tuple[str, str], asyncio.Lock]" = {}
+_DOWNLOAD_LOCK_GUARD = asyncio.Lock()
+
+
+async def _get_download_lock(tag: str, asset_name: str) -> asyncio.Lock:
+    async with _DOWNLOAD_LOCK_GUARD:
+        key = (tag, asset_name)
+        lock = _DOWNLOAD_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _DOWNLOAD_LOCKS[key] = lock
+        return lock
 
 _REPO = "Plaud-AI/Plaud-App"
 _GITHUB_API = "https://api.github.com"
@@ -156,64 +174,89 @@ async def find_release_tag(app_version: str, allow_fallback: bool = True) -> Opt
 
 
 async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Path]:
-    """下载单个 release asset 到 dest。已存在且大小匹配则直接返回；不完整则重下。"""
-    token = _github_token()
-    headers: dict = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    """下载单个 release asset 到 dest。已存在且大小匹配则直接返回；不完整则重下。
 
-    try:
-        import httpx
-        from urllib.parse import quote
-        encoded_tag = quote(tag, safe="")  # `+` 必须编码为 %2B，否则 GitHub API 404
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{_GITHUB_API}/repos/{_REPO}/releases/tags/{encoded_tag}",
-                headers=headers,
-            )
-            resp.raise_for_status()
-            assets = resp.json().get("assets", [])
+    并发安全：同一 (tag, asset_name) 加锁——多 task 同时触发符号化时不再互相
+    truncate 同一个 dest 文件（实战根因）。锁内先复检 dest 是否已被前一个 task
+    下完，避免重复下载。
+    """
+    lock = await _get_download_lock(tag, asset_name)
+    async with lock:
+        token = _github_token()
+        headers: dict = {"Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
-        asset = next((a for a in assets if a["name"] == asset_name), None)
-        if not asset:
-            logger.warning("asset %s not found in release %s", asset_name, tag)
-            return None
-
-        expected_size = int(asset.get("size") or 0)
-        if dest.exists():
-            actual_size = dest.stat().st_size
-            if expected_size and actual_size == expected_size:
-                return dest
-            logger.warning(
-                "cache %s size mismatch (have %d, expect %d) — re-downloading",
-                dest, actual_size, expected_size,
-            )
-            dest.unlink(missing_ok=True)
-
-        size_mb = expected_size // 1024 // 1024
-        logger.info("downloading %s from %s (%dMB) ...", asset_name, tag, size_mb)
-
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        # 私有 repo 必须用 API URL `releases/assets/{id}` + Accept: octet-stream，
-        # browser_download_url 对私有 repo 直接 404（GitHub 鉴权策略）
-        dl_headers = {**headers, "Accept": "application/octet-stream"}
-        asset_api_url = f"{_GITHUB_API}/repos/{_REPO}/releases/assets/{asset['id']}"
-
-        async with httpx.AsyncClient(timeout=1800, follow_redirects=True) as client:
-            async with client.stream("GET", asset_api_url, headers=dl_headers) as resp:
+        try:
+            import httpx
+            from urllib.parse import quote
+            encoded_tag = quote(tag, safe="")  # `+` 必须编码为 %2B，否则 GitHub API 404
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    f"{_GITHUB_API}/repos/{_REPO}/releases/tags/{encoded_tag}",
+                    headers=headers,
+                )
                 resp.raise_for_status()
-                with open(dest, "wb") as f:
-                    async for chunk in resp.aiter_bytes(1024 * 1024):
-                        f.write(chunk)
+                assets = resp.json().get("assets", [])
 
-        logger.info("downloaded %s → %s", asset_name, dest)
-        return dest
+            asset = next((a for a in assets if a["name"] == asset_name), None)
+            if not asset:
+                logger.warning("asset %s not found in release %s", asset_name, tag)
+                return None
 
-    except Exception as exc:
-        logger.warning("download_asset %s failed: %s", asset_name, exc)
-        if dest.exists():
-            dest.unlink(missing_ok=True)
-        return None
+            expected_size = int(asset.get("size") or 0)
+            # 锁内复检：前一个等锁的 task 已经下完整 → 直接复用，不重下
+            if dest.exists():
+                actual_size = dest.stat().st_size
+                if expected_size and actual_size == expected_size:
+                    return dest
+                logger.warning(
+                    "cache %s size mismatch (have %d, expect %d) — re-downloading",
+                    dest, actual_size, expected_size,
+                )
+                dest.unlink(missing_ok=True)
+
+            size_mb = expected_size // 1024 // 1024
+            logger.info("downloading %s from %s (%dMB) ...", asset_name, tag, size_mb)
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            # 私有 repo 必须用 API URL `releases/assets/{id}` + Accept: octet-stream，
+            # browser_download_url 对私有 repo 直接 404（GitHub 鉴权策略）
+            dl_headers = {**headers, "Accept": "application/octet-stream"}
+            asset_api_url = f"{_GITHUB_API}/repos/{_REPO}/releases/assets/{asset['id']}"
+
+            # 先写 .part，全量写完再 rename → 即使中途崩溃，dest 也不会留下半截垃圾
+            tmp = dest.with_suffix(dest.suffix + ".part")
+            tmp.unlink(missing_ok=True)
+            async with httpx.AsyncClient(timeout=1800, follow_redirects=True) as client:
+                async with client.stream("GET", asset_api_url, headers=dl_headers) as resp:
+                    resp.raise_for_status()
+                    with open(tmp, "wb") as f:
+                        async for chunk in resp.aiter_bytes(1024 * 1024):
+                            f.write(chunk)
+            # 大小校验后再 atomic rename
+            if expected_size and tmp.stat().st_size != expected_size:
+                logger.warning(
+                    "download_asset %s size mismatch after stream (got %d expect %d)",
+                    asset_name, tmp.stat().st_size, expected_size,
+                )
+                tmp.unlink(missing_ok=True)
+                return None
+            tmp.replace(dest)
+
+            logger.info("downloaded %s → %s", asset_name, dest)
+            return dest
+
+        except Exception as exc:
+            # repr(exc) 比 str(exc) 多带类型名，便于排查空消息异常
+            logger.warning("download_asset %s failed: %r", asset_name, exc)
+            # 清掉残骸防下次复用脏数据；.part 也清掉
+            if dest.exists():
+                dest.unlink(missing_ok=True)
+            part = dest.with_suffix(dest.suffix + ".part")
+            if part.exists():
+                part.unlink(missing_ok=True)
+            return None
 
 
 def _tag_cache_dir(tag: str) -> Path:
