@@ -453,7 +453,7 @@ const EN: Record<string, string> = {
   "通过飞书消息通知当前值班工程师": "Notify on-call engineer via Feishu message",
 
   // Username setup
-  "欢迎使用 Appllo": "Welcome to Appllo",
+  "欢迎使用 Apollo": "Welcome to Apollo",
   "请设置您的用户名，用于标记工单操作": "Set your username to track your actions",
   "输入您的名字": "Enter your name",
   "开始使用": "Get Started",

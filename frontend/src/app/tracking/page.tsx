@@ -1081,7 +1081,7 @@ export default function TrackingPage() {
                             const base = "https://nicebuild.feishu.cn/share/base/form/shrcnGuYEnRrbbVw4Y6evkyUDCo";
                             const params = new URLSearchParams();
                             const appUrl = `${window.location.origin}/tracking?detail=${detailItem.record_id}`;
-                            const desc = `Appllo 工单: ${appUrl}\n\n${detailItem.description || ""}`;
+                            const desc = `Apollo 工单: ${appUrl}\n\n${detailItem.description || ""}`;
                             params.set("prefill_问题描述", desc);
                             if (detailItem.zendesk) params.set("prefill_Zendesk 工单链接", detailItem.zendesk);
                             if (detailItem.feishu_link) params.set("prefill_飞书工单链接", detailItem.feishu_link);

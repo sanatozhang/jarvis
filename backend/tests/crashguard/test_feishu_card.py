@@ -150,7 +150,10 @@ def test_build_daily_card_tldr_top_block():
     assert "必看" in rendered
     assert "FlutterMethodCall NPE" in rendered
     assert "3,421 events" in rendered
-    assert "其他 **14**" in rendered
+    # 原"其他 **N** 个 issue 量级在基线范围内，无需立刻动"提示已迁移至
+    # docs/crashguard/metrics-glossary.md，早晚报不再渲染此行。
+    assert "无需立刻动" not in rendered
+    assert "其他 **14**" not in rendered
     # 关注点段不折叠（关键字"关注"命中 EXPANDED_KEYWORDS）
     assert any(
         e.get("tag") == "div" and "今日关注点" in e.get("text", {}).get("content", "")

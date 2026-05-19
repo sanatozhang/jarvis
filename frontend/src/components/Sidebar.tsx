@@ -103,7 +103,7 @@ export default function Sidebar() {
             className="text-sm font-semibold tracking-tight"
             style={{ color: "#111827" }}
           >
-            Appllo
+            Apollo
           </span>
           <span
             className="ml-1.5 rounded text-[9px] font-medium px-1 py-0.5"

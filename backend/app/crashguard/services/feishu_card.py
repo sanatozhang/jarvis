@@ -157,13 +157,11 @@ def _build_tldr_elements(
         elements.append(_div(line2))
 
     # 文案三态：
-    #   ① 有单 issue 异常（anomaly_total > 0）→ "其他 N 个 issue 量级在基线范围内，无需立刻动"
-    #   ② 无单 issue 异常但平台级 fatal 红/黄（severity != green）
+    #   ① 无单 issue 异常但平台级 fatal 红/黄（severity != green）
     #      → "单 issue 无突增，平台级 fatal 波动看下方分平台明细"（避免与 TL;DR 红头矛盾）
-    #   ③ 无单 issue 异常且平台 green → "全平台 fatal 平稳"
-    if anomaly_total > 0 and other_count > 0:
-        line3 = f"> 其他 **{other_count}** 个 issue 量级在基线范围内，无需立刻动。"
-    elif anomaly_total == 0 and severity in ("red", "yellow"):
+    #   ② 无单 issue 异常且平台 green → "全平台 fatal 平稳"
+    # 注：原"其他 N 项无需立刻动"提示已下线——口径相关文字统一去 docs/crashguard/metrics-glossary.md 查
+    if anomaly_total == 0 and severity in ("red", "yellow"):
         line3 = (
             "> 单 issue 未突破 ±10% 突增阈值，但平台级 fatal 已波动 —— "
             "看下方 **分平台明细** 找根因。"
@@ -399,11 +397,7 @@ def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any
 
     out: List[Dict[str, Any]] = []
 
-    # 口径行（窄行说明）
-    out.append(_div(
-        "> 口径：已结束会话（inactive）Crash-free 率 = (会话数 − 崩溃会话) / 会话数。"
-        "崩溃含 native crash + ANR + App Hang。ANR/Hang 单独列出供参考。"
-    ))
+    # 口径说明已迁移至 docs/crashguard/metrics-glossary.md（早晚报不再赘述）
 
     # 双列：iOS 左 / Android 右
     ios_md = _build_crash_free_column_md(

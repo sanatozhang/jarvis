@@ -1757,7 +1757,7 @@ export default function HomePage() {
                             const params = new URLSearchParams();
                             const issue = detailData!.issue;
                             const appUrl = `${window.location.origin}/tracking?detail=${detailId}`;
-                            const desc = `Appllo 工单: ${appUrl}\n\n${issue.description || ""}`;
+                            const desc = `Apollo 工单: ${appUrl}\n\n${issue.description || ""}`;
                             params.set("prefill_问题描述", desc);
                             if (issue.zendesk) params.set("prefill_Zendesk 工单链接", issue.zendesk);
                             if (issue.feishu_link) params.set("prefill_飞书工单链接", issue.feishu_link);
@@ -1803,7 +1803,7 @@ export default function HomePage() {
                   <circle cx="10.5" cy="10.5" r="1.2" fill="#0A0B0E" />
                 </svg>
               </div>
-              <h3 className="text-base font-semibold" style={{ color: S.text1 }}>{t("欢迎使用 Appllo")}</h3>
+              <h3 className="text-base font-semibold" style={{ color: S.text1 }}>{t("欢迎使用 Apollo")}</h3>
               <p className="mt-1 text-sm" style={{ color: S.text2 }}>{t("请设置您的用户名，用于标记工单操作")}</p>
             </div>
             <input

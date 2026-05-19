@@ -489,6 +489,18 @@ async def compose_report(
     base_fatal_total = 0
     dual_window_payload: Dict[str, Any] = {}
 
+    # id → platform / issue 反查表：dual_window 段和「突增主因」段共用，提到外层一次构造。
+    # 抓手：让头条 +X% 与「✨ 关注点」拉通同源，避免"头条爆+正文哑"。
+    id_to_plat: Dict[str, str] = {}
+    id_to_issue: Dict[str, CrashIssue] = {}
+    for snap, issue in today_rows:
+        p = (issue.platform or "").upper()
+        if p == "FLUTTER":
+            tp = _resolve_real_os("FLUTTER", getattr(issue, "top_os", "") or "")
+            p = (tp or "OTHER").upper()
+        id_to_plat[snap.datadog_issue_id] = p if p in ("ANDROID", "IOS") else "OTHER"
+        id_to_issue[snap.datadog_issue_id] = issue
+
     # 双窗口对照：让用户一眼看 sessions + fatal events 是否真增长
     # 早报 24h（vs 上周同 weekday 24h）、速报 10h（vs 上周同 10h）都展示
     if (
@@ -507,14 +519,7 @@ async def compose_report(
             sign = "+" if pct >= 0 else ""
             return f"{sign}{pct:.0f}%"
 
-        # 平台 fatal 分桶需要从 realtime dict 反查 issue.platform
-        id_to_plat: Dict[str, str] = {}
-        for snap, issue in today_rows:
-            p = (issue.platform or "").upper()
-            if p == "FLUTTER":
-                tp = _resolve_real_os("FLUTTER", getattr(issue, "top_os", "") or "")
-                p = (tp or "OTHER").upper()
-            id_to_plat[snap.datadog_issue_id] = p if p in ("ANDROID", "IOS") else "OTHER"
+        # 平台 fatal 分桶（id_to_plat 已在外层构造）
         for iid, ev in (realtime_today_events or {}).items():
             today_fatal_by_plat[id_to_plat.get(iid, "OTHER")] += int(ev)
         for iid, ev in (realtime_baseline_events or {}).items():
@@ -753,11 +758,7 @@ async def compose_report(
         cf_lines.append("")
         cf_lines.append("## 📊 Crash-free 详表（全量 + 主要版本）")
         cf_lines.append("")
-        cf_lines.append(
-            "> 口径：Crash-free 率 = (会话总数 − 崩溃会话) / 会话总数。"
-            "崩溃会话含 native crash + ANR + App Hang。"
-        )
-        cf_lines.append("")
+        # 口径说明已迁移至 docs/crashguard/metrics-glossary.md（早晚报不再赘述）
 
         # A 段表
         cf_lines.append("### A) 全部版本（按平台）")
@@ -976,7 +977,10 @@ async def compose_report(
         if fatal_rows_pre:
             for snap, issue in fatal_rows_pre:
                 ev = int(snap.events_count or 0)
-                yt = baseline_events.get(snap.datadog_issue_id)
+                # baseline 同样拉通到 realtime 字典（与下方 surges 判定 + 头条 +X% 同源）
+                yt_rt = realtime_baseline_events.get(snap.datadog_issue_id) if realtime_baseline_events else None
+                yt_db = baseline_events.get(snap.datadog_issue_id)
+                yt = yt_rt if yt_rt is not None else yt_db
                 d = _delta_pct(ev, yt)
                 is_new = bool(snap.is_new_in_version)
                 small = (yt is None or yt < _baseline_min_for_pct())
@@ -1029,7 +1033,12 @@ async def compose_report(
             surges: List[Tuple[CrashSnapshot, CrashIssue, Optional[float]]] = []
             for snap, issue in f_rows:
                 events_today = int(snap.events_count or 0)
-                yt = baseline_events.get(snap.datadog_issue_id)
+                # baseline 拉通：优先用 Datadog 实时双窗口（与头条 fatal +X% 同源），
+                # DB snap 仅 fallback。底层逻辑：DB snap 是 24h cron 快照，可能漏 issue 或时间错位；
+                # realtime_baseline_events 是上周同 weekday 同 N 小时实时窗口，与头条算法同一份字典。
+                yt_realtime = realtime_baseline_events.get(snap.datadog_issue_id) if realtime_baseline_events else None
+                yt_db = baseline_events.get(snap.datadog_issue_id)
+                yt = yt_realtime if yt_realtime is not None else yt_db
                 delta = _delta_pct(events_today, yt)
                 is_new = bool(snap.is_new_in_version)
                 # 小基数过滤：baseline < N 时 % 噪声过大（500 ev → 1000 ev 看着 +100%
@@ -1071,7 +1080,10 @@ async def compose_report(
             drops: List[Tuple[CrashSnapshot, CrashIssue, float]] = []
             for snap, issue in f_rows:
                 events_today = int(snap.events_count or 0)
-                yt = baseline_events.get(snap.datadog_issue_id)
+                # baseline 拉通：realtime 双窗口优先（与头条同源），DB snap fallback
+                _yt_rt = realtime_baseline_events.get(snap.datadog_issue_id) if realtime_baseline_events else None
+                _yt_db = baseline_events.get(snap.datadog_issue_id)
+                yt = _yt_rt if _yt_rt is not None else _yt_db
                 delta = _delta_pct(events_today, yt)
                 yt_int = int(yt or 0)
                 yt_satisfies = yt_int >= attention_min_events
@@ -1131,7 +1143,9 @@ async def compose_report(
             # 🔥 Top N
             for i, (snap, issue) in enumerate(top5, 1):
                 events_today = int(snap.events_count or 0)
-                yt = baseline_events.get(snap.datadog_issue_id)
+                _yt_rt = realtime_baseline_events.get(snap.datadog_issue_id) if realtime_baseline_events else None
+                _yt_db = baseline_events.get(snap.datadog_issue_id)
+                yt = _yt_rt if _yt_rt is not None else _yt_db
                 d = _delta_pct(events_today, yt)
                 _push(snap, issue, d, "🔥", rank=i)
             # 📉 下降（少量收尾，最多 3 行）
@@ -1219,9 +1233,69 @@ async def compose_report(
     attn_lines: List[str] = ["## ✨ 今日关注点"]
     has_fatal_anomaly = bool(fatal_news or fatal_surges or fatal_drops)
 
-    if not has_fatal_anomaly:
+    # ── 📌 突增主因 Top 3 ─────────────────────────────────────
+    # 抓手：当头条 dual_window fatal_delta_pct ≥ +30% 时，列出贡献 events 绝对增量最大的 Top 3 issue。
+    # 颗粒度：与头条 +X% **同源同口径**（realtime_today_events / realtime_baseline_events），
+    #         绕过 ≥100 events / baseline ≥50 / hourly dedup 三重过滤——头条说大事，正文必须给出"涨在哪"。
+    # 徽章：12h 内 hourly 已点过的 issue 标 🔔，避免运维误以为"还没人管"。
+    surge_driver_lines: List[str] = []
+    if dual_window_payload and realtime_today_events:
+        plat_icon = {"IOS": "🍎 iOS", "ANDROID": "📱 Android"}
+        notable_plats: List[Tuple[str, float]] = []
+        for plat_key in ("IOS", "ANDROID"):
+            plat_info = dual_window_payload.get("platforms", {}).get(plat_key, {})
+            pct = plat_info.get("fatal_delta_pct")
+            if pct is not None and pct >= 30.0:
+                notable_plats.append((plat_key, pct))
+        if notable_plats:
+            surge_driver_lines.append("")
+            surge_driver_lines.append(
+                "### 📌 突增主因 Top 3（按事件绝对增量 · 与头条 fatal +% 同源 · 无阈值/无去重）"
+            )
+            for plat_key, pct in notable_plats:
+                # 按平台聚拢 driver 候选
+                drivers: List[Tuple[str, int, int, int, Optional[float]]] = []
+                for iid, t_ev_raw in realtime_today_events.items():
+                    if id_to_plat.get(iid) != plat_key:
+                        continue
+                    t_ev = int(t_ev_raw or 0)
+                    b_ev = int(realtime_baseline_events.get(iid, 0) or 0)
+                    abs_delta = t_ev - b_ev
+                    if abs_delta <= 0:
+                        continue  # 只看上涨主因
+                    item_pct = ((t_ev - b_ev) / b_ev * 100.0) if b_ev > 0 else None
+                    drivers.append((iid, t_ev, b_ev, abs_delta, item_pct))
+                drivers.sort(key=lambda x: -x[3])
+                top3 = drivers[:3]
+                if not top3:
+                    continue
+                surge_driver_lines.append("")
+                surge_driver_lines.append(
+                    f"**{plat_icon.get(plat_key, plat_key)} fatal +{pct:.0f}%** — 主因："
+                )
+                for iid, t_ev, b_ev, abs_delta, item_pct in top3:
+                    issue = id_to_issue.get(iid)
+                    title = ((issue.title if issue else "") or iid[:8])[:60]
+                    url = _frontend_issue_url(iid)
+                    pct_str = f"+{item_pct:.0f}%" if item_pct is not None else "🆕新基线"
+                    badges = []
+                    if iid in hourly_alerted_ids:
+                        badges.append("🔔 hourly 已报")
+                    badge_str = f" · {' · '.join(badges)}" if badges else ""
+                    surge_driver_lines.append(
+                        f"- **+{abs_delta:,} events** ({t_ev:,} vs 上周 {b_ev:,} · {pct_str}){badge_str} · [{title}]({url})"
+                    )
+
+    if surge_driver_lines:
+        attn_lines.extend(surge_driver_lines)
+        attn_lines.append("")
+
+    if not has_fatal_anomaly and not surge_driver_lines:
         attn_lines.append("")
         attn_lines.append("> 🌿 **数据平稳，安全无虞** — 无新增崩溃，无 ±10% 以上波动。")
+    elif not has_fatal_anomaly:
+        # 有突增主因但单 issue 都被 dedup/阈值过滤了——把"平稳"提示语去掉
+        pass
     else:
         if fatal_news:
             attn_lines.append("")

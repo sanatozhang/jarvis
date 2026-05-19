@@ -20,7 +20,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Appllo — Ticket Analysis",
+  title: "Apollo — Ticket Analysis",
   description: "Plaud AI Ticket Analysis Platform",
 };
 
