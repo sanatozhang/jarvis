@@ -85,6 +85,22 @@ async def pick_top_n(
         .where(CrashSnapshot.snapshot_date == today)
     )).all()
 
+    # QA 内测包阈值（版本第三段 >= 阈值时跳过）
+    try:
+        from app.crashguard.config import get_crashguard_settings as _cgs
+        _qa_threshold = _cgs().qa_version_patch_threshold
+    except Exception:
+        _qa_threshold = 100
+
+    def _is_qa_ver(ver: str) -> bool:
+        if _qa_threshold <= 0:
+            return False
+        try:
+            patch = ver.split("-")[0].split(".")[2]
+            return int(patch) >= _qa_threshold
+        except (IndexError, ValueError):
+            return False
+
     enriched: List[Dict[str, Any]] = []
     allowed_kinds = set(kinds) if kinds else None
     fatality_filter = (fatality or "").strip().lower()
@@ -94,6 +110,10 @@ async def pick_top_n(
             continue
         kind = (getattr(issue, "kind", None) or "crash").lower()
         if allowed_kinds is not None and kind not in allowed_kinds:
+            continue
+        # QA 内测包过滤：版本第三段 >= qa_version_patch_threshold
+        issue_ver = getattr(issue, "last_seen_version", "") or ""
+        if _is_qa_ver(issue_ver):
             continue
         # C 路线：fatality 过滤（fatal / non_fatal / 空=不过滤；unknown 兜底归 fatal）
         issue_fatality = (getattr(issue, "fatality", "") or "unknown").lower()

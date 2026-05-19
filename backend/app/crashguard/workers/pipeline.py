@@ -24,6 +24,25 @@ from app.db.database import get_session
 logger = logging.getLogger("crashguard.pipeline")
 
 
+def _is_qa_version(version: str, patch_threshold: int) -> bool:
+    """版本第三段（patch）>= patch_threshold 时视为 QA 内测包。
+
+    例：3.18.101-716 → patch=101 >= 100 → True（QA）
+        3.18.1-715   → patch=1 < 100 → False（真实用户）
+    patch_threshold=0 时禁用过滤（返回 False）。
+    """
+    if patch_threshold <= 0:
+        return False
+    try:
+        semver = version.split("-")[0]   # "3.18.101"
+        parts = semver.split(".")
+        if len(parts) >= 3:
+            return int(parts[2]) >= patch_threshold
+    except (ValueError, IndexError):
+        pass
+    return False
+
+
 async def run_data_phase(
     today: date,
     latest_release: str,
@@ -94,9 +113,17 @@ async def run_data_phase(
     snapshots_written = 0
 
     async with get_session() as session:
+        qa_skipped = 0
         for raw in raw_issues:
             norm = normalize_issue(raw)
             if not norm["datadog_issue_id"]:
+                continue
+
+            # QA 内测包过滤：版本第三段 >= qa_version_patch_threshold 时跳过
+            version_for_check = norm.get("last_seen_version") or norm.get("first_seen_version") or ""
+            if _is_qa_version(version_for_check, s.qa_version_patch_threshold):
+                qa_skipped += 1
+                logger.debug("skip QA build issue %s ver=%s", norm["datadog_issue_id"][:12], version_for_check)
                 continue
 
             # Step 2: fingerprint
@@ -155,8 +182,8 @@ async def run_data_phase(
         top = await pick_top_n(session, today=today, n=s.max_top_n)
 
     logger.info(
-        "pipeline data phase done: issues=%d snapshots=%d top_n=%d",
-        issues_processed, snapshots_written, len(top),
+        "pipeline data phase done: issues=%d snapshots=%d top_n=%d qa_skipped=%d",
+        issues_processed, snapshots_written, len(top), qa_skipped,
     )
 
     # 后台预热 RUM 分布（fire-and-forget，不阻塞主流程）
@@ -174,6 +201,7 @@ async def run_data_phase(
         "snapshots_written": snapshots_written,
         "top_n_count": len(top),
         "top_n": top,
+        "qa_skipped": qa_skipped,
     }
 
 

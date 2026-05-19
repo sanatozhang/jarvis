@@ -384,6 +384,12 @@ class CrashguardSettings(BaseSettings):
     # GitHub release 缓存最多保留多少个版本目录（超出按 mtime 淘汰）
     github_cache_keep_versions: int = 10
 
+    # === 版本过滤 ===
+    # 版本号第三段（patch）>= 此阈值时视为 QA 内测包，跳过 Top N 分析和 PR 生成
+    # 例：3.18.101-716 的 patch=101 >= 100 → 内测包；3.18.1-715 的 patch=1 < 100 → 真实用户包
+    # 设为 0 表示禁用过滤（保留所有版本）
+    qa_version_patch_threshold: int = 100
+
     model_config = {
         "env_prefix": "CRASHGUARD_",
         "env_file": str(PROJECT_ROOT / ".env"),
