@@ -1116,62 +1116,93 @@ class DatadogClient:
         from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
         from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
 
-        body = RUMAggregateRequest(
-            filter=RUMQueryFilter(
-                query="@type:session",
-                _from=f"now-{max(1, int(window_hours))}h",
-                to="now",
-            ),
-            compute=[RUMCompute(
-                aggregation=RUMAggregationFunction.CARDINALITY,
-                metric="@session.id",
-                type=RUMComputeType.TOTAL,
-            )],
-            group_by=[
-                RUMGroupBy(facet="@os.name", limit=30),
-                RUMGroupBy(facet="version", limit=50),
-            ],
-        )
+        def _build_body(query: str) -> RUMAggregateRequest:
+            return RUMAggregateRequest(
+                filter=RUMQueryFilter(
+                    query=query,
+                    _from=f"now-{max(1, int(window_hours))}h",
+                    to="now",
+                ),
+                compute=[RUMCompute(
+                    aggregation=RUMAggregationFunction.CARDINALITY,
+                    metric="@session.id",
+                    type=RUMComputeType.TOTAL,
+                )],
+                group_by=[
+                    RUMGroupBy(facet="@os.name", limit=30),
+                    RUMGroupBy(facet="version", limit=50),
+                ],
+            )
+
+        def _collect(resp: Any) -> Dict[str, Dict[str, int]]:
+            agg: Dict[str, Dict[str, int]] = {"android": {}, "ios": {}}
+            for b in (getattr(getattr(resp, "data", None), "buckets", None) or []):
+                by = getattr(b, "by", {}) or {}
+                os_name = (by.get("@os.name") or "").strip().lower()
+                version = (by.get("version") or "").strip()
+                if not version:
+                    continue
+                comp = getattr(b, "computes", {}) or {}
+                try:
+                    cnt = int(next(iter(comp.values())))
+                except (StopIteration, TypeError, ValueError):
+                    cnt = 0
+                if cnt <= 0:
+                    continue
+                if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                    key = "ios"
+                elif os_name.startswith("android"):
+                    key = "android"
+                else:
+                    continue
+                agg[key][version] = agg[key].get(version, 0) + cnt
+            return agg
+
         conf = self._build_configuration()
         with ApiClient(conf) as api_client:
             rum = RUMApi(api_client)
+            # 第 1 次：所有 session（含活跃 + 已结束），用于 sessions 总数 + pct 母数
             try:
-                resp = rum.aggregate_rum_events(body=body)
+                resp_total = rum.aggregate_rum_events(body=_build_body("@type:session"))
             except ApiException as exc:
                 if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
                     self._record_rate_limit_event()
                 raise
+            sessions_agg = _collect(resp_total)
 
-        agg: Dict[str, Dict[str, int]] = {"android": {}, "ios": {}}
-        for b in (getattr(getattr(resp, "data", None), "buckets", None) or []):
-            by = getattr(b, "by", {}) or {}
-            os_name = (by.get("@os.name") or "").strip().lower()
-            version = (by.get("version") or "").strip()
-            if not version:
-                continue
-            comp = getattr(b, "computes", {}) or {}
+            # 第 2 次：只查崩溃 session（与 count_distinct_crash_sessions_* 同口径）
+            # 失败不影响 sessions 主路径，crashes 字段直接缺省，前端兼容
+            crashes_agg: Dict[str, Dict[str, int]] = {"android": {}, "ios": {}}
             try:
-                sessions = int(next(iter(comp.values())))
-            except (StopIteration, TypeError, ValueError):
-                sessions = 0
-            if sessions <= 0:
-                continue
-            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
-                key = "ios"
-            elif os_name.startswith("android"):
-                key = "android"
-            else:
-                continue
-            agg[key][version] = agg[key].get(version, 0) + sessions
+                resp_crash = rum.aggregate_rum_events(
+                    body=_build_body("@type:session @session.crash.count:>0")
+                )
+                crashes_agg = _collect(resp_crash)
+            except ApiException as exc:
+                if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
+                logger.warning(
+                    "version_distribution: crashed-by-version query failed (sessions still ok): %s", exc
+                )
+            except Exception as exc:
+                logger.warning(
+                    "version_distribution: crashed-by-version query failed (sessions still ok): %s", exc
+                )
 
         out: Dict[str, List[Dict[str, Any]]] = {}
-        for platform, versions in agg.items():
+        for platform, versions in sessions_agg.items():
             if not versions:
                 continue
             total = sum(versions.values())
             sorted_vers = sorted(versions.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+            platform_crashes = crashes_agg.get(platform, {})
             out[platform] = [
-                {"version": v, "sessions": s, "pct": round(s / total * 100, 1)}
+                {
+                    "version": v,
+                    "sessions": s,
+                    "crashes": int(platform_crashes.get(v, 0)),
+                    "pct": round(s / total * 100, 1),
+                }
                 for v, s in sorted_vers
             ]
         return out

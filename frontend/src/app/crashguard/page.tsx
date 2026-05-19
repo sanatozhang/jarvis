@@ -714,7 +714,18 @@ function CrashguardPageInner() {
         await loadTop();
       })
       .catch((e) => {
-        setToast({ msg: `自动拉取失败：${e?.message || e}`, type: "error" });
+        // bootstrap 是后台自动同步，非用户主动操作——abort/超时/网络抖动不该弹错误 toast
+        // 命中即静默（数据没拉到也无所谓，下次进页面会重试；AI 分析仍在后台跑）
+        // 各浏览器对 abort 的报错形态：
+        //   Chrome: DOMException name=AbortError msg="signal is aborted without reason"
+        //   Safari/Firefox: AbortError 但 msg 不同
+        //   网络抖：TypeError msg="Failed to fetch"
+        const name = e?.name || "";
+        const msg = e?.message || String(e);
+        if (name === "AbortError" || /abort/i.test(msg) || msg === "Failed to fetch") {
+          return;
+        }
+        setToast({ msg: `自动拉取失败：${msg}`, type: "error" });
       })
       .finally(() => {
         clearInterval(timer);
@@ -2908,6 +2919,52 @@ const OS_PIE_PALETTE = [
   "#A855F7", "#D946EF", "#EC4899",
 ];
 
+// 解析 "3.18.0-708" → [3,18,0]；失败返回 null
+// QA filter 口径与 backend pipeline._is_qa_version 对齐（patch >= 100 视为内测包）
+function _parseProdSemver(version: string): [number, number, number] | null {
+  try {
+    const stem = (version || "").split("-")[0];
+    const parts = stem.split(".");
+    if (parts.length < 3) return null;
+    const major = parseInt(parts[0], 10);
+    const minor = parseInt(parts[1], 10);
+    const patch = parseInt(parts[2], 10);
+    if (Number.isNaN(major) || Number.isNaN(minor) || Number.isNaN(patch)) return null;
+    return [major, minor, patch];
+  } catch {
+    return null;
+  }
+}
+
+// 从版本分布里挑「线上最新版本」：
+//   - patch < 100（线上版本；patch >= 100 是 QA 内测包，与后端 pipeline._is_qa_version 同口径）
+//   - sessions > 100（统计显著性门槛，避免冷启动 / 灰度数据扰动）
+//   - 满足上述过滤后取 semver 最大者
+// 全部不满足返回 undefined（前端兼容降级，不显示 latest 行）
+function _pickLatestRelease(
+  versions: CrashVersionSlice[],
+  minSessions = 100,
+  qaPatchThreshold = 100,
+): CrashVersionSlice | undefined {
+  const qualified = versions
+    .map((v) => ({ slice: v, sv: _parseProdSemver(v.version) }))
+    .filter(
+      (x) =>
+        x.sv !== null &&
+        x.sv[2] < qaPatchThreshold &&
+        (x.slice.sessions ?? 0) > minSessions,
+    );
+  if (qualified.length === 0) return undefined;
+  qualified.sort((a, b) => {
+    const [aM, am, ap] = a.sv as [number, number, number];
+    const [bM, bm, bp] = b.sv as [number, number, number];
+    if (aM !== bM) return bM - aM;
+    if (am !== bm) return bm - am;
+    return bp - ap;
+  });
+  return qualified[0].slice;
+}
+
 // 平台总览卡（方案 D：iOS / Android 各一张）
 function PlatformOverviewCard({
   label,
@@ -2932,20 +2989,93 @@ function PlatformOverviewCard({
   const cfPct = summary?.crash_free_pct;
   const cfColor =
     cfPct == null ? D.text3 : cfPct >= 99.5 ? D.ok : cfPct >= 98 ? D.warn : D.danger;
+  // 主版本对应的 slice（用于补充 sessions/crashes 颗粒度）
+  // mainVersionPct 是 versions[0].pct 派生（见调用点），mainSlice 同源
+  const mainSlice = versions[0];
+  const mainSessions = mainSlice?.sessions;
+  const mainCrashes = mainSlice?.crashes;
+  // 线上最新版本（filter 后取最大 semver；可能与 mainVersion 相同也可能不同）
+  const latestSlice = _pickLatestRelease(versions);
+  const latestSameAsMain = !!(latestSlice && mainVersion && latestSlice.version === mainVersion);
+  // mainVersionPct 是百分比，告诉用户「86.1% 是占 sessions 的比例」需要绝对数兜底
+  // tooltip 把含义和样本都说清楚
+  const mainTitle = [
+    mainVersion || "",
+    mainVersionPct != null ? `${mainVersionPct.toFixed(1)}% sessions` : "",
+    mainSessions != null ? `${mainSessions.toLocaleString()} sessions` : "",
+    mainCrashes != null ? `${mainCrashes.toLocaleString()} crashed sessions` : "",
+  ].filter(Boolean).join(" · ");
+  const latestTitle = latestSlice
+    ? [
+        latestSlice.version,
+        `${latestSlice.sessions.toLocaleString()} sessions`,
+        latestSlice.crashes != null ? `${latestSlice.crashes.toLocaleString()} crashed sessions` : "",
+        `patch < 100 & sessions > 100`,
+      ].filter(Boolean).join(" · ")
+    : "";
   return (
     <div className="rounded-lg p-4" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
-      {/* Header: platform + main version */}
+      {/* Header: platform + main version + 绝对数兜底（让 86.1% 不再误导） */}
       <div className="flex items-baseline justify-between mb-3 gap-2 flex-wrap">
-        <div className="flex items-baseline gap-2 min-w-0">
+        <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
           <span className="text-base font-bold" style={{ color: accent }}>{label}</span>
-          <span className="text-xs truncate" style={{ color: D.text2 }} title={mainVersion || ""}>
+          <span className="text-xs truncate" style={{ color: D.text2 }} title={mainTitle}>
             {t("主版本")} <strong style={{ color: D.text1 }}>{mainVersion || "—"}</strong>
             {mainVersionPct != null && (
               <span style={{ color: D.text3 }}> ({mainVersionPct.toFixed(1)}%)</span>
             )}
           </span>
+          {(mainSessions != null || mainCrashes != null) && (
+            <span className="text-[11px] tabular-nums" style={{ color: D.text3 }}>
+              {mainSessions != null && (
+                <>
+                  <span style={{ color: D.text2 }}>{compactNumber(mainSessions)}</span>
+                  {" sessions"}
+                </>
+              )}
+              {mainSessions != null && mainCrashes != null && (
+                <span style={{ color: D.text3 }}> · </span>
+              )}
+              {mainCrashes != null && (
+                <>
+                  <span style={{ color: D.danger }}>{compactNumber(mainCrashes)}</span>
+                  {" crashes"}
+                </>
+              )}
+            </span>
+          )}
+          {latestSameAsMain && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded"
+              style={{ background: D.surfaceAlt, color: D.text3, border: `1px solid ${D.border}` }}
+              title={t("主版本即线上最新版本（patch<100 & sessions>100）")}
+            >
+              = {t("最新版本")}
+            </span>
+          )}
         </div>
       </div>
+
+      {/* 「线上最新版本」独立行：仅当与主版本不同（避免冗余） */}
+      {latestSlice && !latestSameAsMain && (
+        <div className="flex items-baseline gap-2 mb-3 -mt-1 flex-wrap">
+          <span className="text-xs truncate" style={{ color: D.text2 }} title={latestTitle}>
+            {t("最新版本")} <strong style={{ color: D.text1 }}>{latestSlice.version}</strong>
+            <span style={{ color: D.text3 }}> ({latestSlice.pct.toFixed(1)}%)</span>
+          </span>
+          <span className="text-[11px] tabular-nums" style={{ color: D.text3 }}>
+            <span style={{ color: D.text2 }}>{compactNumber(latestSlice.sessions)}</span>
+            {" sessions"}
+            {latestSlice.crashes != null && (
+              <>
+                <span style={{ color: D.text3 }}> · </span>
+                <span style={{ color: D.danger }}>{compactNumber(latestSlice.crashes)}</span>
+                {" crashes"}
+              </>
+            )}
+          </span>
+        </div>
+      )}
 
       {/* Crash-free 概要：CF% / total / crashed sessions（突出 CF rate） */}
       <div

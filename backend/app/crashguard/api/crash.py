@@ -421,7 +421,9 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
             continue
         sorted_vers = sorted(ver_map.items(), key=lambda kv: kv[1], reverse=True)[:10]
         fallback_data[plat] = [
-            {"version": v, "sessions": round(s), "pct": round(s / total * 100, 1)}
+            # fallback 路径无法从 crash_issues 反推真实 crashed sessions 数 → crashes=None
+            # 前端按 `crashes != null` 条件渲染，避免显示 0 误导
+            {"version": v, "sessions": round(s), "crashes": None, "pct": round(s / total * 100, 1)}
             for v, s in sorted_vers
         ]
     return {"data": fallback_data, "source": "crash_issues_fallback", "window_hours": window_hours}

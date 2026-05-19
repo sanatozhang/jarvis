@@ -107,6 +107,7 @@ const EN: Record<string, string> = {
   "暂不修": "Won't fix",
   "在 Datadog 中打开": "Open in Datadog",
   "最新版本": "Latest release",
+  "主版本即线上最新版本（patch<100 & sessions>100）": "Top version is also the latest production release (patch<100 & sessions>100)",
   "受影响会话": "impacted sessions",
   "总事件": "total events",
   "Crash-free 会话": "Crash-free sessions",

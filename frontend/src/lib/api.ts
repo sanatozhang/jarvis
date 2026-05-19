@@ -1645,6 +1645,9 @@ export const fetchCrashLatestRelease = () =>
 export interface CrashVersionSlice {
   version: string;
   sessions: number;
+  // 该版本的 crashed sessions 数（@session.crash.count:>0）
+  // Datadog 主路径直查；crash_issues_fallback 路径反推不出 → null
+  crashes?: number | null;
   pct: number;
 }
 
@@ -1744,6 +1747,9 @@ export const triggerCrashPipeline = (latest_release: string, recent_versions: st
   });
 
 // 完整闭环：拉数 → Top10 选取 → 串行 auto-analyze（含 auto-PR 钩子）
+// timeoutMs 显式提到 60s：warmup 同步阶段要拉 Datadog 双路 + upsert 7 张表，
+// 默认 15s 在 Datadog 抖动 / 冷启动时会被 AbortController 强行 abort，
+// 抛 "signal is aborted without reason"，污染用户视线（AI 分析其实仍在后台跑）
 export const triggerCrashWarmup = () =>
   request<{
     issues_processed: number;
@@ -1757,7 +1763,7 @@ export const triggerCrashWarmup = () =>
       failed: { analysis_id: string; error: string }[];
     };
   }>(
-    "/crash/warmup", { method: "POST" }
+    "/crash/warmup", { method: "POST", timeoutMs: 60_000 }
   );
 
 // ── Phase 1 深度诊断 ───────────────────────────────────────────
