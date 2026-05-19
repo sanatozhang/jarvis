@@ -26,37 +26,10 @@ RUN if [ "$RUN_TESTS" = "1" ]; then \
       echo "Skipping tests (default; set --build-arg RUN_TESTS=1 to enable)"; \
     fi
 
-# ---- llvm-tools stage: 单独 stage 抽出 llvm-symbolizer（按用户方案 1）----
-# 抓手：
-#   - llvm 包 + 一堆 lib 共 238 MB，直接 apt 装到 production 层污染镜像
-#   - 32 KB/s 从 deb.debian.org 拉，是 build 慢的根因 → 这层先换阿里云源
-#   - 多阶段提取后 production 只 COPY 单 binary + 其 lib dir，~80 MB 一次到位
-# 这层独立 cache，未来无关改动不触发它 → 后续 build 几乎不会再重做这层
-FROM debian:trixie-slim AS llvm-tools
-RUN set -eux \
-    && sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
-         /etc/apt/sources.list.d/debian.sources \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends llvm-19 \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /opt/llvm-symbolizer/bin /opt/llvm-symbolizer/lib \
-    && cp /usr/bin/llvm-symbolizer-19 /opt/llvm-symbolizer/bin/llvm-symbolizer \
-    && cp -r /usr/lib/llvm-19/lib/. /opt/llvm-symbolizer/lib/ \
-    # 验证 binary 在隔离 lib 下能跑起来（缺 .so 立刻爆，build 失败而非 runtime 失败）
-    && LD_LIBRARY_PATH=/opt/llvm-symbolizer/lib /opt/llvm-symbolizer/bin/llvm-symbolizer --version
-
 # ---- Production stage ----
 FROM python:3.12-slim AS production
 
 WORKDIR /app
-
-# 把 production stage 的 apt 源也换阿里云镜像——本质修复 32 KB/s 慢源问题。
-# trixie 用新格式 sources.list.d/debian.sources，老 sources.list 兜底（two-format guard）
-RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
-      /etc/apt/sources.list.d/debian.sources 2>/dev/null \
-    || sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
-         /etc/apt/sources.list 2>/dev/null \
-    || true
 
 # Layer 1：稳定系统依赖（重量级，含 git/perl/gnutls/krb5 等 ~120 MB），尽量不动。
 # openssh-client: crashguard pr_drafter 走 git@github.com:... ssh 协议，slim 镜像默认不带
@@ -70,18 +43,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Layer 2：agent 工具包（轻量，频繁迭代）。
 # 把这层放在稳定层之后、彼此独立——下次加 agent 工具不再触发 Layer 1 重拉。
 # ripgrep: claude_api 的 grep 工具用 rg 替代 shell grep（更快 + 结构化输出）
-# ⚠️ llvm 已经从这层拿掉，改走 llvm-tools stage COPY 单 binary（见下方）
+# llvm: 提供 llvm-symbolizer，可在 Linux 上读取 Mach-O DWARF，作为 atos 的 Linux 替代品
+#   用于 iOS dSYM 符号化（atos 是 macOS-only，容器内用 llvm-symbolizer 兜底）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ripgrep \
-    && rm -rf /var/lib/apt/lists/*
-
-# 从 llvm-tools stage 拷 llvm-symbolizer + 其专用 lib dir。
-# 把 lib dir 加入 ld 全局搜索路径，让 symbolication.py 直接 spawn /usr/bin/llvm-symbolizer 不挂依赖
-COPY --from=llvm-tools /opt/llvm-symbolizer /opt/llvm-symbolizer
-RUN ln -sf /opt/llvm-symbolizer/bin/llvm-symbolizer /usr/bin/llvm-symbolizer \
-    && echo '/opt/llvm-symbolizer/lib' > /etc/ld.so.conf.d/llvm-symbolizer.conf \
-    && ldconfig \
-    && /usr/bin/llvm-symbolizer --version
+    ripgrep llvm \
+    && rm -rf /var/lib/apt/lists/* \
+    && find /usr/bin -name 'llvm-symbolizer-*' | sort -V | tail -1 \
+       | xargs -I{} ln -sf {} /usr/bin/llvm-symbolizer 2>/dev/null || true
 
 # Install Node.js 20 (needed for Codex CLI)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
