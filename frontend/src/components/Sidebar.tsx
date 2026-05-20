@@ -175,6 +175,47 @@ export default function Sidebar() {
         className="px-2.5 py-3 space-y-px"
         style={{ borderTop: "1px solid rgba(0,0,0,0.06)" }}
       >
+        {/* Current user + logout */}
+        {me && (
+          <div className="mb-2 px-3 pb-2" style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+            <div className="text-sm font-medium truncate" style={{ color: "#111827" }}>
+              {me.username}
+            </div>
+            <div className="text-xs truncate" style={{ color: "#6B7280" }}>
+              {me.email || me.feishu_email}
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+                } catch {}
+                window.location.href = "/login";
+              }}
+              className="mt-2 flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-medium transition-colors"
+              style={{ color: "#6B7280" }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.color = "#111827";
+                (e.currentTarget as HTMLElement).style.background = "rgba(0,0,0,0.03)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.color = "#6B7280";
+                (e.currentTarget as HTMLElement).style.background = "transparent";
+              }}
+            >
+              <svg
+                className="h-4 w-4 flex-shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
+              </svg>
+              <span>{t("登出")}</span>
+            </button>
+          </div>
+        )}
+
         {/* System status */}
         <a
           href="/settings"
@@ -246,37 +287,6 @@ export default function Sidebar() {
         </button>
       </div>
 
-      {me && (
-        <div
-          className="px-4 py-3 text-xs"
-          style={{ borderTop: "1px solid rgba(0,0,0,0.06)" }}
-        >
-          <div className="font-medium truncate" style={{ color: "#111827" }}>
-            {me.username}
-          </div>
-          <div className="truncate" style={{ color: "#6B7280" }}>
-            {me.email || me.feishu_email}
-          </div>
-          <button
-            onClick={async () => {
-              try {
-                await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-              } catch {}
-              window.location.href = "/login";
-            }}
-            className="mt-2 underline"
-            style={{ color: "#6B7280" }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLElement).style.color = "#111827";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLElement).style.color = "#6B7280";
-            }}
-          >
-            {t("登出")}
-          </button>
-        </div>
-      )}
     </aside>
   );
 }
