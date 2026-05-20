@@ -64,6 +64,7 @@ async def client(db_engine, db_session):
             "app.api.users",
             "app.api.analytics",
             "app.api.local",
+            "app.api.auth",
         )
         local_patches = []
         import sys
@@ -116,6 +117,15 @@ def _make_test_settings():
     s.storage = StorageSettings(workspace_dir=os.path.join(tmp, "workspaces"), data_dir=os.path.join(tmp, "data"))
     os.makedirs(s.storage.workspace_dir, exist_ok=True)
     os.makedirs(s.storage.data_dir, exist_ok=True)
+    from app.config import SSOSettings
+    s.sso = SSOSettings()
+    s.sso.enabled = False                 # default OFF, individual tests opt-in via monkeypatch
+    s.sso.jwt_secret = "x" * 64
+    s.sso.google_client_id = "test-client-id"
+    s.sso.google_client_secret = "test-client-secret"
+    s.sso.admin_emails_raw = ""
+    s.sso.allowed_domains_raw = "plaud.ai"
+    s.sso.exempt_paths_raw = "/api/health,/api/linear/webhook,/api/v1/,/api/auth/"
     return s
 
 
