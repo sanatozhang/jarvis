@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { DM_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import PageTracker from "@/components/PageTracker";
@@ -6,6 +7,7 @@ import LangProvider from "@/components/LangProvider";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider } from "@/components/AuthProvider";
 import { AuthGate } from "@/components/AuthGate";
+import { FeishuBindPrompt } from "@/components/FeishuBindPrompt";
 
 const dmSans = DM_Sans({
   subsets: ["latin"],
@@ -43,6 +45,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   {children}
                 </main>
               </div>
+              <Suspense fallback={null}>
+                <FeishuBindPrompt />
+              </Suspense>
             </AuthGate>
           </AuthProvider>
         </LangProvider>

@@ -38,3 +38,27 @@ export function readLocalStorageUser(): AuthUser | null {
     feishu_email: window.localStorage.getItem("appllo_feishu_email") || "",
   };
 }
+
+const BIND_PROMPTED_KEY = "appllo_feishu_bind_prompted_date";
+const BIND_FEISHU_EMAIL_KEY = "appllo_feishu_email";
+
+export function shouldShowBindPrompt(user: AuthUser | null, ssoActive: boolean): boolean {
+  if (typeof window === "undefined") return false;
+  if (ssoActive) return false;             // SSO mode already has email via cookie
+  if (!user || !user.username) return false;
+  if (user.feishu_email) return false;     // already bound
+  const today = new Date().toISOString().slice(0, 10);  // YYYY-MM-DD
+  const last = window.localStorage.getItem(BIND_PROMPTED_KEY);
+  return last !== today;
+}
+
+export function markBindPromptedToday(): void {
+  if (typeof window === "undefined") return;
+  const today = new Date().toISOString().slice(0, 10);
+  window.localStorage.setItem(BIND_PROMPTED_KEY, today);
+}
+
+export function persistBoundEmail(email: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(BIND_FEISHU_EMAIL_KEY, email);
+}
