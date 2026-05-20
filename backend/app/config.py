@@ -148,6 +148,11 @@ class AgentSettings(BaseSettings):
     api_traffic_ratio: float = 0.0  # 0.0=100% CLI, 0.2=20% API, 1.0=100% API
     timeout: int = 600
     max_turns: int = 25
+    # 方案 C：prompt chars 超过此阈值 → 强制走 claude_code (CLI 1M context)。
+    # 默认 500K bytes ≈ 140K tokens；预留 ~60K 给 system prompt + tool 中间产物 + 8K output。
+    # API claude-sonnet-4-6 context 仅 200K tokens；超大日志工单走 API 装不下 → 直走 CLI 1M 兜底。
+    # 0 = 关闭此路由（不推荐；除非 L1.5 condensation 已稳定能保证所有 prompt < 200K）。
+    cli_route_above_chars: int = 500_000
     providers: Dict[str, AgentProviderConfig] = Field(default_factory=dict)
     routing: Dict[str, str] = Field(default_factory=dict)
 
@@ -235,7 +240,7 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
 
     # Agent
     ag = cfg.get("agent", {})
-    for k in ("default", "call_mode", "timeout", "max_turns"):
+    for k in ("default", "call_mode", "timeout", "max_turns", "api_traffic_ratio", "cli_route_above_chars"):
         if k in ag:
             setattr(settings.agent, k, ag[k])
 

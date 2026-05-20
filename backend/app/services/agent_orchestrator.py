@@ -53,13 +53,22 @@ class AgentOrchestrator:
     def __init__(self):
         self._settings = get_settings()
 
-    def select_agent(self, rule_type: str, override: Optional[str] = None) -> BaseAgent:
+    def select_agent(
+        self,
+        rule_type: str,
+        override: Optional[str] = None,
+        prompt_chars: Optional[int] = None,
+    ) -> BaseAgent:
         """
         Select the agent to use based on:
         1. Explicit override (e.g. from API request)
-        2. call_mode toggle: "api" → claude_api, "cli" → routing/default Claude resolves to claude_code
-        3. Routing config (rule_type → agent)
-        4. Default agent
+        2. **Large-prompt route (方案 C 抓手)**: prompt_chars 超过 cli_route_above_chars
+           阈值（默认 500K bytes ≈ 140K tokens）时强制走 claude_code (CLI 1M)。
+           API claude-sonnet-4-6 context 仅 200K tokens；超大日志工单（1.2% 长尾）
+           走 API 会装不下 → 直走 CLI 1M 兜底。
+        3. call_mode toggle: "api" → claude_api, "cli" → routing/default Claude resolves to claude_code
+        4. Routing config (rule_type → agent)
+        5. Default agent
         """
         agent_cfg = self._settings.agent
 
@@ -79,6 +88,21 @@ class AgentOrchestrator:
                     agent_name = "claude_api"
         elif not override and agent_name == "claude_api" and agent_cfg.call_mode == "cli" and agent_cfg.api_traffic_ratio == 0.0:
             agent_name = "claude_code"
+
+        # ── 方案 C 路由（最后一闸）：大 prompt 强制走 CLI 1M ─────────────────
+        # 顶层设计抓手：放在 prob split **之后**，确保即使 prob 把工单分到 API，
+        # 大 prompt 仍能被拉回 CLI 1M——避免 API 200K context 装不下。
+        # override 优先级最高（手动指定 agent 时尊重，不强制）。
+        if not override and prompt_chars is not None:
+            threshold = int(getattr(agent_cfg, "cli_route_above_chars", 500_000) or 500_000)
+            if threshold > 0 and prompt_chars > threshold and agent_name != "claude_code":
+                cc_provider = agent_cfg.providers.get("claude_code")
+                if cc_provider and cc_provider.enabled:
+                    logger.info(
+                        "Large-prompt route: chars=%d > threshold=%d → forcing claude_code (was %s)",
+                        prompt_chars, threshold, agent_name,
+                    )
+                    agent_name = "claude_code"
 
         # Get provider config
         provider = agent_cfg.providers.get(agent_name)
@@ -174,7 +198,9 @@ class AgentOrchestrator:
         4. If token quota exhausted → auto-switch to fallback agent
         5. If both exhausted → tell user to contact sanato
         """
-        agent = self.select_agent(rule_type, override=agent_override)
+        # 方案 C 顶层设计：先 build prompt → 拿到 prompt_chars → 再 select_agent。
+        # 这样能让 select_agent 根据 prompt 大小决定走 CLI 1M（超大）还是 API 200K（常规）。
+        # 原顺序是先 select 再 build，无法做 size-aware routing。
 
         # Retrieve similar golden samples for few-shot injection
         few_shot_examples = []
@@ -235,6 +261,10 @@ class AgentOrchestrator:
             prompt_meta.get("hard_trimmed"),
             ",".join(sorted(prompt_meta.get("context_files", {}).keys())),
         )
+
+        # 现在 prompt 已 build，可以根据大小选 agent
+        prompt_chars = int(prompt_meta.get("final_prompt_chars") or len(prompt))
+        agent = self.select_agent(rule_type, override=agent_override, prompt_chars=prompt_chars)
 
         result = await agent.analyze(
             workspace=workspace,
