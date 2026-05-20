@@ -262,19 +262,26 @@ def _platform_repo_path(platform: str, sub_hint: str = "") -> Optional[str]:
       flutter+cn    → CODE_REPO_PATH/plaud-flutter-cn（sub_hint="cn"）
 
     优先级：
-      1. crashguard.repo_paths.<platform> 显式配置（绝对路径，flutter 直配优先于 hint）
-      2. CODE_REPO_PATH 下的标准 sub-repo 子目录
-      3. None（拒绝创建 PR）
+      1. flutter + 非空 sub_hint（global/cn）→ 跳过 yaml direct override，强制走 wrapper
+         logic（治本：102 实测 yaml direct 钉在 common，旧版直接 return 把 hint 废了，
+         sub-repo 路由形同虚设——本闸口必须先开，blob 探测才有意义）
+      2. crashguard.repo_paths.<platform> 显式配置（绝对路径，default flutter 默认仓）
+      3. CODE_REPO_PATH 下的标准 sub-repo 子目录
+      4. None（拒绝创建 PR）
     """
     s = get_crashguard_settings()
     p = (platform or "").strip().lower()
-    direct = {
-        "flutter": s.repo_path_flutter,
-        "android": s.repo_path_android,
-        "ios": s.repo_path_ios,
-    }.get(p, "")
-    if direct:
-        return os.path.expanduser(direct)
+    hint_norm = (sub_hint or "").strip().lower()
+    # ★ 治本闸口：flutter 显式 hint（global/cn）不走 direct override
+    skip_direct = (p == "flutter" and hint_norm in ("global", "cn"))
+    if not skip_direct:
+        direct = {
+            "flutter": s.repo_path_flutter,
+            "android": s.repo_path_android,
+            "ios": s.repo_path_ios,
+        }.get(p, "")
+        if direct:
+            return os.path.expanduser(direct)
 
     from app.config import get_code_repo_for_platform
     wrapper = get_code_repo_for_platform("app") or ""

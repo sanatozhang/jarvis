@@ -395,6 +395,42 @@ def test_platform_repo_path_flutter_routes_by_hint(monkeypatch, tmp_path):
     assert cn and cn.endswith("plaud-flutter-cn")
 
 
+def test_platform_repo_path_flutter_hint_bypasses_yaml_direct(monkeypatch, tmp_path):
+    """治本闸口：yaml direct override 钉在 common 时，sub_hint=global/cn 必须切到对应仓。
+
+    102 实测根因：crashguard.repo_paths.flutter = "/.../plaud-flutter-common"，
+    旧版 _platform_repo_path 命中 direct 立即 return，sub_hint 完全失效——
+    导致 _detect_flutter_subrepo_by_blob 把三仓都查在 common 自己身上。
+    """
+    from app.crashguard.services import pr_drafter
+    wrapper = tmp_path / "plaud_ai"
+    wrapper.mkdir()
+    common_dir = wrapper / "plaud-flutter-common"
+    global_dir = wrapper / "plaud-flutter-global"
+    cn_dir = wrapper / "plaud-flutter-cn"
+    for d in (common_dir, global_dir, cn_dir):
+        d.mkdir()
+        (d / ".git").write_text("gitdir: fake")
+
+    # 模拟 102 配置：yaml direct 钉死在 common
+    monkeypatch.setattr(
+        pr_drafter, "get_crashguard_settings",
+        lambda: type("S", (), {
+            "repo_path_flutter": str(common_dir),  # ★ 102 实配
+            "repo_path_android": "", "repo_path_ios": "",
+        })(),
+    )
+    import app.config as cfg
+    monkeypatch.setattr(cfg, "get_code_repo_for_platform", lambda _: str(wrapper))
+
+    # 无 hint → 走 direct → common
+    assert pr_drafter._platform_repo_path("flutter") == str(common_dir)
+    assert pr_drafter._platform_repo_path("flutter", "") == str(common_dir)
+    # 有 hint → 跳过 direct → 切到对应 sub-repo
+    assert pr_drafter._platform_repo_path("flutter", "global") == str(global_dir)
+    assert pr_drafter._platform_repo_path("flutter", "cn") == str(cn_dir)
+
+
 # ─────────── 治本 v2：blob 探测自动 fallback ───────────
 
 def test_extract_diff_target_paths_basic():
