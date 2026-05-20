@@ -62,9 +62,13 @@ async def _collect_attention_ids(today: date) -> List[str]:
     """从今日 snapshot 选关注集——优先级合并并截断到 analyze_top_n（默认 20）。
 
     优先级（保留顺序，去重）：
-      1. Top fatal（按 impact_score 降序）
-      2. 新增崩溃 is_new_in_version（新版引入的，无论严重）
-      3. Top non_fatal
+      1. 新增崩溃 is_new_in_version（新版引入的，无论严重，强制 P0 入选）
+      2. fatal + non_fatal 合并按 events DESC 全局排序（公平竞争名额）
+
+    旧策略问题：fatal 串行优先填满 20 名额，导致 IOS AppHang 等低流量 fatal
+    （ev=2~30）抢走所有名额，FLUTTER non_fatal 18k events 永远进不来。
+    现策略：fatal 与 non_fatal 在 events 维度上公平竞争，真正的 Top events 进池。
+
     最终硬截断到 settings.analyze_top_n（默认 20），保证体验链路可控。
     """
     from app.crashguard.config import get_crashguard_settings
@@ -98,16 +102,7 @@ async def _collect_attention_ids(today: date) -> List[str]:
     _ORDER_BY = "events"
 
     async with get_session() as session:
-        top_fatal = await pick_top_n(
-            session, today=today, n=cap, kinds=(), fatality="fatal", dedup_days=0,
-            include_platforms=fixable_platforms, order_by=_ORDER_BY,
-        )
-        for item in top_fatal:
-            iid = item.get("datadog_issue_id") or ""
-            if _add(iid):
-                return ordered
-
-        # 新增崩溃：直接限定平台 + 按 events DESC 取，与 pick_top_n 一致语义
+        # ① P0 新增崩溃强制入选（业务对齐：新版引入的 crash 不能漏）
         new_rows = (await session.execute(
             select(CrashSnapshot.datadog_issue_id)
             .join(_CrashIssue, _CrashIssue.datadog_issue_id == CrashSnapshot.datadog_issue_id)
@@ -123,11 +118,12 @@ async def _collect_attention_ids(today: date) -> List[str]:
             if _add(iid or ""):
                 return ordered
 
-        top_nonfatal = await pick_top_n(
-            session, today=today, n=cap, kinds=(), fatality="non_fatal", dedup_days=0,
+        # ② fatal + non_fatal 合并按 events DESC 全局排序 —— fatality="" 不过滤
+        top_all = await pick_top_n(
+            session, today=today, n=cap, kinds=(), fatality="", dedup_days=0,
             include_platforms=fixable_platforms, order_by=_ORDER_BY,
         )
-        for item in top_nonfatal:
+        for item in top_all:
             iid = item.get("datadog_issue_id") or ""
             if _add(iid):
                 return ordered

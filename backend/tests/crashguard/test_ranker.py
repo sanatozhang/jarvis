@@ -219,6 +219,48 @@ async def test_pick_top_n_include_platforms_filter(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pick_top_n_fatality_unset_merges_both(tmp_path, monkeypatch):
+    """fatality='' 不过滤 — fatal+non_fatal 合并按 order_by 公平竞争名额
+
+    对齐 attention 池策略：高 events non_fatal 不应被低 events fatal 抢位"""
+    from datetime import date
+    from app.db.database import get_session, init_db
+    from app.crashguard import models  # noqa
+    from app.crashguard.models import CrashSnapshot, CrashIssue
+    from app.crashguard.services.ranker import pick_top_n
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'rank6.db'}")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    await init_db()
+
+    today = date.today()
+
+    async with get_session() as s:
+        # fatal 低流量（模拟 IOS AppHang 极低流量）
+        for iid, ev in [("f_lo1", 5), ("f_lo2", 3)]:
+            s.add(CrashIssue(datadog_issue_id=iid, platform="ios",
+                             title=iid, fatality="fatal"))
+            s.add(CrashSnapshot(datadog_issue_id=iid, snapshot_date=today,
+                                events_count=ev))
+        # non_fatal 高流量（模拟 FLUTTER 18k events crash）
+        s.add(CrashIssue(datadog_issue_id="nf_hi", platform="flutter",
+                         title="nf_hi", fatality="non_fatal"))
+        s.add(CrashSnapshot(datadog_issue_id="nf_hi", snapshot_date=today,
+                            events_count=18456))
+        await s.commit()
+
+    async with get_session() as s:
+        top = await pick_top_n(
+            s, today=today, n=3, kinds=(), fatality="",  # 合并模式
+            include_platforms=("flutter", "android", "ios"), order_by="events",
+        )
+        ids = [t["datadog_issue_id"] for t in top]
+        # nf_hi events 最大 → 排第 1（events 公平竞争胜出，不被 fatal 抢位）
+        assert ids[0] == "nf_hi", f"high-events non_fatal should win, got {ids}"
+
+
+@pytest.mark.asyncio
 async def test_pick_top_n_order_by_events(tmp_path, monkeypatch):
     """order_by='events' 应绕过 score=0 的 user data hole，按 events DESC 排"""
     from datetime import date
