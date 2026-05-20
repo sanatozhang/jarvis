@@ -61,14 +61,15 @@ async def feishu_login(request: Request, next: str = "/"):
     )
 
 
-async def _exchange_code_for_user_info(code: str) -> dict:
+async def _exchange_code_for_user_info(code: str, redirect_uri: str = "") -> dict:
     """Exchange auth code → user_info dict.
 
-    Pulled out for test mocking. Two-step:
-      1. POST token endpoint with code → access_token
-      2. GET user_info with Bearer access_token → {email, enterprise_email, name, ...}
+    `redirect_uri` MUST match the one used in the authorize step (OAuth spec).
+    Defaults to settings.feishu_redirect_uri for the regular login flow; bind
+    flow passes the bind-callback URL to satisfy Feishu's strict equality check.
     """
     settings = get_settings().sso
+    effective_redirect = redirect_uri or settings.feishu_redirect_uri
     async with httpx.AsyncClient(timeout=10) as ac:
         token_resp = await ac.post(
             FEISHU_TOKEN_URL,
@@ -77,7 +78,7 @@ async def _exchange_code_for_user_info(code: str) -> dict:
                 "code": code,
                 "client_id": settings.feishu_app_id,
                 "client_secret": settings.feishu_app_secret,
-                "redirect_uri": settings.feishu_redirect_uri,
+                "redirect_uri": effective_redirect,
             },
         )
         token_resp.raise_for_status()
@@ -230,8 +231,11 @@ async def feishu_bind_callback(request: Request, code: Optional[str] = None,
     if not target_username:
         return RedirectResponse(f"{next_url}?feishu_bind=error&reason=missing_username", status_code=302)
 
+    bind_redirect_uri = settings.feishu_redirect_uri.replace(
+        "/api/auth/feishu/callback", "/api/auth/feishu/bind-callback"
+    )
     try:
-        user_info = await _exchange_code_for_user_info(code)
+        user_info = await _exchange_code_for_user_info(code, redirect_uri=bind_redirect_uri)
     except Exception as e:
         logger.error("bind_oauth_network_error err=%s", e)
         return RedirectResponse(f"{next_url}?feishu_bind=error&reason=oauth_failed", status_code=302)
