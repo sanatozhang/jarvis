@@ -10,20 +10,25 @@ from app.main import _validate_sso_startup
 def _ok_sso():
     s = SSOSettings()
     s.enabled = True
-    s.google_client_id = "id"
-    s.google_client_secret = "secret"
+    s.feishu_app_id = "cli_test"
+    s.feishu_app_secret = "secret"
     s.jwt_secret = "x" * 32
-    s.google_redirect_uri = "https://apollo.nicebuild.click/api/auth/google/callback"
     return s
 
 
 def test_passes_with_complete_config():
-    _validate_sso_startup(_ok_sso())  # no raise
+    _validate_sso_startup(_ok_sso())
 
 
-def test_fails_on_missing_client_id():
-    s = _ok_sso(); s.google_client_id = ""
-    with pytest.raises(RuntimeError, match="GOOGLE_CLIENT_ID"):
+def test_fails_on_missing_app_id():
+    s = _ok_sso(); s.feishu_app_id = ""
+    with pytest.raises(RuntimeError, match="SSO_FEISHU_APP_ID"):
+        _validate_sso_startup(s)
+
+
+def test_fails_on_missing_app_secret():
+    s = _ok_sso(); s.feishu_app_secret = ""
+    with pytest.raises(RuntimeError, match="SSO_FEISHU_APP_SECRET"):
         _validate_sso_startup(s)
 
 
@@ -33,12 +38,6 @@ def test_fails_on_short_jwt_secret():
         _validate_sso_startup(s)
 
 
-def test_fails_on_non_https_redirect():
-    s = _ok_sso(); s.google_redirect_uri = "http://apollo.local/cb"
-    with pytest.raises(RuntimeError, match="https"):
-        _validate_sso_startup(s)
-
-
 def test_disabled_skips_all_checks():
-    s = SSOSettings()  # all empty, enabled=False
-    _validate_sso_startup(s)  # no raise
+    s = SSOSettings()
+    _validate_sso_startup(s)

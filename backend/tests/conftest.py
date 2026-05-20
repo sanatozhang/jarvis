@@ -121,8 +121,8 @@ def _make_test_settings():
     s.sso = SSOSettings()
     s.sso.enabled = False                 # default OFF, individual tests opt-in via monkeypatch
     s.sso.jwt_secret = "x" * 64
-    s.sso.google_client_id = "test-client-id"
-    s.sso.google_client_secret = "test-client-secret"
+    s.sso.feishu_app_id = "cli_test"
+    s.sso.feishu_app_secret = "test-app-secret"
     s.sso.admin_emails_raw = ""
     s.sso.allowed_domains_raw = "plaud.ai"
     s.sso.exempt_paths_raw = "/api/health,/api/linear/webhook,/api/v1/,/api/auth/"

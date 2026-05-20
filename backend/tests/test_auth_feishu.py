@@ -1,9 +1,9 @@
-"""Google OAuth helpers - state HMAC + username derivation."""
+"""Feishu OAuth helpers - state HMAC + username derivation."""
 from __future__ import annotations
 
 import pytest
 
-from app.services.auth_google import (
+from app.services.auth_feishu import (
     derive_username_from_email,
     sign_state,
     verify_state,
@@ -50,6 +50,5 @@ def test_state_rejects_wrong_secret():
 
 
 def test_state_ignores_external_next_url():
-    """next_url that points off-site is sanitized to '/'."""
     state = sign_state(secret=SECRET, next_url="https://evil.com/x")
     assert verify_state(secret=SECRET, state=state) == "/"
