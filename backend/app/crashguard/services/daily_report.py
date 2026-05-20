@@ -1234,7 +1234,8 @@ async def compose_report(
     has_fatal_anomaly = bool(fatal_news or fatal_surges or fatal_drops)
 
     # ── 📌 突增主因 Top 3 ─────────────────────────────────────
-    # 抓手：当头条 dual_window fatal_delta_pct ≥ +30% 时，列出贡献 events 绝对增量最大的 Top 3 issue。
+    # 抓手：当头条 dual_window fatal_delta_pct ≥ +10%（与 _status_from_pct yellow 阈值对齐）时，
+    #       列出贡献 events 绝对增量最大的 Top 3 issue——闭环头条 🟡/🔴 与正文"涨在哪"。
     # 颗粒度：与头条 +X% **同源同口径**（realtime_today_events / realtime_baseline_events），
     #         绕过 ≥100 events / baseline ≥50 / hourly dedup 三重过滤——头条说大事，正文必须给出"涨在哪"。
     # 徽章：12h 内 hourly 已点过的 issue 标 🔔，避免运维误以为"还没人管"。
@@ -1245,7 +1246,7 @@ async def compose_report(
         for plat_key in ("IOS", "ANDROID"):
             plat_info = dual_window_payload.get("platforms", {}).get(plat_key, {})
             pct = plat_info.get("fatal_delta_pct")
-            if pct is not None and pct >= 30.0:
+            if pct is not None and pct >= 10.0:
                 notable_plats.append((plat_key, pct))
         if notable_plats:
             surge_driver_lines.append("")
