@@ -4,8 +4,11 @@ from __future__ import annotations
 from app.config import SSOSettings
 
 
-def test_sso_disabled_by_default():
-    s = SSOSettings()
+def test_sso_disabled_by_default(monkeypatch):
+    # Isolate from project .env which may set ENABLE_SSO=true in dev
+    for key in ("ENABLE_SSO", "ENABLE_GMAIL_SSO", "SSO_COOKIE_DAYS"):
+        monkeypatch.delenv(key, raising=False)
+    s = SSOSettings(_env_file=None)
     assert s.enabled is False
     assert s.cookie_days == 365
 
