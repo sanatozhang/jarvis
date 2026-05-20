@@ -8,9 +8,11 @@ import {
   markBindPromptedToday,
   persistBoundEmail,
 } from "@/lib/auth";
+import { useT } from "@/lib/i18n";
 
-const BIND_SUCCESS_MSG = "✓ 飞书邮箱绑定成功";
-const BIND_ERROR_MSG: Record<string, string> = {
+// 用中文 key 作为 i18n 字典索引；运行时由 useT() 翻译。
+// 默认 fallback 文案直接返回中文 key（与项目其他 t() 调用保持一致）。
+const BIND_ERROR_KEYS: Record<string, string> = {
   invalid_state: "登录会话已过期，请重试",
   oauth_failed: "飞书登录失败，请重试",
   domain_not_allowed: "请使用 @plaud.ai 邮箱",
@@ -23,6 +25,7 @@ export function FeishuBindPrompt() {
   const { state, ssoActive } = useAuth();
   const user = useCurrentUser();
   const sp = useSearchParams();
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [flashKind, setFlashKind] = useState<"ok" | "error">("ok");
@@ -34,7 +37,7 @@ export function FeishuBindPrompt() {
     if (bindResult === "ok") {
       const email = sp.get("email") || "";
       if (email) persistBoundEmail(email);
-      setFlash(BIND_SUCCESS_MSG);
+      setFlash(t("✓ 飞书邮箱绑定成功"));
       setFlashKind("ok");
       // remove query without reload
       const url = new URL(window.location.href);
@@ -43,15 +46,16 @@ export function FeishuBindPrompt() {
       window.history.replaceState({}, "", url.toString());
     } else if (bindResult === "error") {
       const reason = sp.get("reason") || "";
-      setFlash(BIND_ERROR_MSG[reason] || "飞书绑定失败");
+      const key = BIND_ERROR_KEYS[reason] || "飞书绑定失败";
+      setFlash(t(key));
       setFlashKind("error");
       const url = new URL(window.location.href);
       url.searchParams.delete("feishu_bind");
       url.searchParams.delete("reason");
       window.history.replaceState({}, "", url.toString());
     }
-    const t = setTimeout(() => setFlash(null), 5000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setFlash(null), 5000);
+    return () => clearTimeout(timer);
   }, [sp]);
 
   // Decide whether to show the prompt
@@ -96,11 +100,11 @@ export function FeishuBindPrompt() {
             className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
             style={{ color: "#111827" }}
           >
-            <h2 className="text-lg font-semibold mb-2">绑定飞书邮箱</h2>
+            <h2 className="text-lg font-semibold mb-2">{t("绑定飞书邮箱")}</h2>
             <p className="text-sm text-j-fg/70 mb-5">
-              为了接收飞书通知，请用飞书账号一键绑定您的邮箱（@plaud.ai）。
+              {t("为了接收飞书通知，请用飞书账号一键绑定您的邮箱（@plaud.ai）。")}
               <br />
-              <span className="text-xs text-j-fg/50">当前账号：{user.username}</span>
+              <span className="text-xs text-j-fg/50">{t("当前账号：")}{user.username}</span>
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -108,14 +112,14 @@ export function FeishuBindPrompt() {
                 className="rounded-lg px-3 py-1.5 text-sm hover:bg-black/5"
                 style={{ color: "#6B7280" }}
               >
-                稍后
+                {t("稍后")}
               </button>
               <button
                 onClick={handleBind}
                 className="rounded-lg px-3 py-1.5 text-sm font-medium"
                 style={{ background: "#B8922E", color: "white" }}
               >
-                去飞书绑定
+                {t("去飞书绑定")}
               </button>
             </div>
           </div>
