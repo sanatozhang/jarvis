@@ -82,6 +82,49 @@ class LinearSettings(BaseSettings):
     }
 
 
+class SSOSettings(BaseSettings):
+    """Feishu OAuth SSO settings."""
+
+    enabled: bool = Field(default=False, alias="ENABLE_SSO")
+    feishu_app_id: str = Field(default="", alias="SSO_FEISHU_APP_ID")
+    feishu_app_secret: str = Field(default="", alias="SSO_FEISHU_APP_SECRET")
+    feishu_redirect_uri: str = Field(
+        default="https://apollo.nicebuild.click/api/auth/feishu/callback",
+        alias="SSO_FEISHU_REDIRECT_URI",
+    )
+    jwt_secret: str = Field(default="", alias="SSO_JWT_SECRET")
+    cookie_name: str = Field(default="jarvis_session", alias="SSO_COOKIE_NAME")
+    cookie_days: int = Field(default=365, alias="SSO_COOKIE_DAYS")
+    cookie_secure: bool = Field(default=True, alias="SSO_COOKIE_SECURE")
+    cookie_domain: str = Field(default="", alias="SSO_COOKIE_DOMAIN")
+
+    allowed_domains_raw: str = Field(default="plaud.ai", alias="SSO_ALLOWED_DOMAINS")
+    admin_emails_raw: str = Field(default="", alias="ADMIN_EMAILS")
+    exempt_paths_raw: str = Field(
+        default="/api/health,/api/linear/webhook,/api/v1/,/api/auth/",
+        alias="SSO_EXEMPT_PATHS",
+    )
+
+    model_config = {
+        "env_file": str(PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+        "populate_by_name": True,
+    }
+
+    @property
+    def allowed_domains(self) -> List[str]:
+        return [d.strip() for d in self.allowed_domains_raw.split(",") if d.strip()]
+
+    @property
+    def admin_emails(self) -> List[str]:
+        return [e.strip().lower() for e in self.admin_emails_raw.split(",") if e.strip()]
+
+    @property
+    def exempt_paths(self) -> List[str]:
+        return [p.strip() for p in self.exempt_paths_raw.split(",") if p.strip()]
+
+
 class AgentProviderConfig(BaseSettings):
     enabled: bool = False
     model: str = ""
@@ -161,6 +204,7 @@ class Settings(BaseSettings):
     # --- Sub-configs (populated from yaml + env) ---
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
     linear: LinearSettings = Field(default_factory=LinearSettings)
+    sso: SSOSettings = Field(default_factory=SSOSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     context_condensation: ContextCondensationSettings = Field(default_factory=ContextCondensationSettings)
     concurrency: ConcurrencySettings = Field(default_factory=ConcurrencySettings)

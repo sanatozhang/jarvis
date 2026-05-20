@@ -20,10 +20,27 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import get_settings
+from app.config import get_settings, SSOSettings
 from app.db.database import init_db, close_db
 
 logger = logging.getLogger("appllo")
+
+
+def _validate_sso_startup(sso: "SSOSettings") -> None:
+    """Fail-fast: refuse to start if SSO is enabled but config is broken."""
+    if not sso.enabled:
+        return
+    if not sso.feishu_app_id:
+        raise RuntimeError("ENABLE_SSO=true requires SSO_FEISHU_APP_ID")
+    if not sso.feishu_app_secret:
+        raise RuntimeError("ENABLE_SSO=true requires SSO_FEISHU_APP_SECRET")
+    if not sso.jwt_secret or len(sso.jwt_secret) < 32:
+        raise RuntimeError("ENABLE_SSO=true requires SSO_JWT_SECRET (>= 32 chars)")
+    # NOTE: removed https-only check for redirect_uri because Feishu accepts
+    # http://localhost during dev; cookie_secure flag separately gates HTTPS
+    # cookie behavior in production.
+    if not sso.admin_emails:
+        logger.warning("ADMIN_EMAILS empty — no admin will be created via SSO")
 
 # Max time (seconds) a task can stay in analyzing/downloading/etc before considered zombie
 _ZOMBIE_TIMEOUT_SEC = 30 * 60  # 30 minutes
@@ -76,6 +93,8 @@ async def lifespan(app: FastAPI):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     logger.info("Starting Appllo...")
+
+    _validate_sso_startup(settings.sso)
 
     # Import crashguard models to register with SQLAlchemy Base
     from app.crashguard import models as _crashguard_models  # noqa: F401
@@ -195,6 +214,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.middleware.auth import AuthMiddleware
+
+# Use live settings lookup so test overrides (conftest mutating
+# get_settings().sso.enabled) take effect without rebuilding the middleware.
+app.add_middleware(
+    AuthMiddleware,
+    settings_getter=lambda: get_settings().sso,
+)
+
 # ---------------------------------------------------------------------------
 # Register API routers
 # ---------------------------------------------------------------------------
@@ -207,6 +235,7 @@ from app.api.health import router as health_router
 from app.api.local import router as local_router
 from app.api.feedback import router as feedback_router
 from app.api.users import router as users_router
+from app.api.auth import router as auth_router
 from app.api.oncall import router as oncall_router
 from app.api.v1_analyze import router as v1_analyze_router
 from app.api.env_settings import router as env_settings_router
@@ -225,6 +254,7 @@ app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
 app.include_router(health_router, prefix="/api/health", tags=["Health"])
 app.include_router(local_router, prefix="/api/local", tags=["Local"])
 app.include_router(feedback_router, prefix="/api/feedback", tags=["Feedback"])
+app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 app.include_router(users_router, prefix="/api/users", tags=["Users"])
 app.include_router(oncall_router, prefix="/api/oncall", tags=["Oncall"])
 app.include_router(v1_analyze_router, prefix="/api/v1", tags=["V1 Public API"])

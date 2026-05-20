@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>Bind Prompt 测试环境准备</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; padding: 40px; max-width: 600px; margin: 0 auto; }
+    pre { background: #f4f4f4; padding: 12px; border-radius: 6px; }
+    .ok { color: #16A34A; }
+    .err { color: #DC2626; }
+    button { margin-top: 16px; padding: 8px 16px; background: #B8922E; color: white; border: 0; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>飞书绑定弹窗测试环境</h1>
+  <pre id="log">准备中…</pre>
+  <button id="go" disabled>测试就绪，点击跳到首页查看弹窗</button>
+
+  <script>
+    const log = document.getElementById("log");
+    const btn = document.getElementById("go");
+    let lines = [];
+    function add(text, cls) {
+      lines.push((cls ? `<span class="${cls}">` : "") + text + (cls ? "</span>" : ""));
+      log.innerHTML = lines.join("\n");
+    }
+
+    (async () => {
+      try {
+        add("[1/5] 调 /api/auth/logout 清 httpOnly cookie…");
+        const r = await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+        add(`      ↳ HTTP ${r.status}  ${r.status === 204 ? "✓" : "(意外状态码，但 cookie 应该已清)"}`, "ok");
+
+        add("\n[2/5] 验证 /api/auth/me 返回 401（确认 cookie 真的清了）…");
+        const me = await fetch("/api/auth/me", { credentials: "include" });
+        if (me.status === 401) {
+          add(`      ↳ HTTP 401 ✓ cookie 已清，可以走 localStorage fallback`, "ok");
+        } else {
+          add(`      ↳ HTTP ${me.status} ❌ cookie 没清干净！弹窗不会显示。`, "err");
+          return;
+        }
+
+        add("\n[3/5] 设置 localStorage 模拟老用户…");
+        localStorage.setItem("appllo_username", "sanato.zhang");
+        localStorage.setItem("appllo_role", "admin");
+        localStorage.removeItem("appllo_feishu_email");
+        localStorage.removeItem("appllo_feishu_bind_prompted_date");
+        add(`      ↳ appllo_username = "sanato.zhang"`);
+        add(`      ↳ appllo_role = "admin"`);
+        add(`      ↳ appllo_feishu_email = (removed)`);
+        add(`      ↳ appllo_feishu_bind_prompted_date = (removed)`, "ok");
+
+        add("\n[4/5] 当前 localStorage 状态:");
+        add(`      ${JSON.stringify({
+          username: localStorage.getItem("appllo_username"),
+          role: localStorage.getItem("appllo_role"),
+          feishu_email: localStorage.getItem("appllo_feishu_email"),
+          prompted: localStorage.getItem("appllo_feishu_bind_prompted_date"),
+        }, null, 2)}`);
+
+        add("\n[5/5] 环境就绪 ✅", "ok");
+        add("\n点击下方按钮跳转 / 查看弹窗。", "ok");
+        btn.disabled = false;
+        btn.onclick = () => location.href = "/";
+      } catch (e) {
+        add(`\n❌ 失败: ${e.message}`, "err");
+      }
+    })();
+  </script>
+</body>
+</html>

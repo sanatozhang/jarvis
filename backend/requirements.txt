@@ -34,3 +34,6 @@ import-linter>=2.0
 
 # Crashguard — Datadog SDK
 datadog-api-client>=2.30.0
+
+# SSO / Auth
+PyJWT>=2.8.0
