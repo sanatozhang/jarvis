@@ -330,6 +330,15 @@ async def _finish_task(
 
     logger.info("API analysis %s finished: %s (failure=%s)", task_id, result.problem_type, is_failure)
 
+    try:
+        from app.services.notify_orchestrator import notify_issue_creator_on_complete
+        await notify_issue_creator_on_complete(
+            issue_id=record_id, task_id=task_id,
+            status="failed" if is_failure else "done",
+        )
+    except Exception as ne:
+        logger.warning("notify_creator_v1_failed task=%s err=%s", task_id, ne)
+
     # Webhook callback
     if webhook_url:
         try:

@@ -232,6 +232,8 @@ export default function HomePage() {
 
   const [username, setUsername] = useState<string | null>(null);
   const [usernameInput, setUsernameInput] = useState("");
+  const [emailInput, setEmailInput] = useState("");
+  const [setupError, setSetupError] = useState("");
   const [showUsernameEdit, setShowUsernameEdit] = useState(false);
   const [showUsernameSetup, setShowUsernameSetup] = useState(false);
 
@@ -251,17 +253,30 @@ export default function HomePage() {
     if (a) { setUrlParam("assignee", a); localStorage.setItem("appllo_assignee", a); }
   }, []);
 
-  const saveUsername = async (name: string) => {
-    const v = name.trim();
+  const saveUsername = async (name: string, email?: string) => {
+    const v = name.trim().toLowerCase();
     if (!v) return;
-    setUsername(v); setUsernameInput(v);
-    localStorage.setItem("appllo_username", v);
-    setShowUsernameSetup(false); setShowUsernameEdit(false);
+    const e = (email || "").trim().toLowerCase();
+    // 新用户首次注册必须提供 @plaud.ai 邮箱；老用户（已有 localStorage）可以无 email 续用
+    const isFirstSetup = showUsernameSetup;
+    if (isFirstSetup) {
+      if (!e) { setSetupError(t("请输入邮箱")); return; }
+      if (!/^[a-zA-Z0-9._%+-]+@plaud\.ai$/.test(e)) {
+        setSetupError(t("邮箱必须以 @plaud.ai 结尾")); return;
+      }
+    }
     try {
-      const user = await loginUser(v);
+      const user = await loginUser(v, e || undefined);
+      setUsername(v); setUsernameInput(v);
+      localStorage.setItem("appllo_username", v);
       localStorage.setItem("appllo_role", user.role);
       if (user.feishu_email) localStorage.setItem("appllo_feishu_email", user.feishu_email);
-    } catch {}
+      setSetupError("");
+      setShowUsernameSetup(false); setShowUsernameEdit(false);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      setSetupError(msg.includes("plaud.ai") ? t("邮箱必须以 @plaud.ai 结尾") : msg);
+    }
   };
 
   const applyAssignee = () => {
@@ -1804,20 +1819,40 @@ export default function HomePage() {
                 </svg>
               </div>
               <h3 className="text-base font-semibold" style={{ color: S.text1 }}>{t("欢迎使用 Apollo")}</h3>
-              <p className="mt-1 text-sm" style={{ color: S.text2 }}>{t("请设置您的用户名，用于标记工单操作")}</p>
+              <p className="mt-1 text-sm" style={{ color: S.text2 }}>{t("请使用 @plaud.ai 邮箱注册")}</p>
             </div>
             <input
               autoFocus
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && usernameInput.trim()) saveUsername(usernameInput); }}
-              placeholder={t("输入您的名字")}
-              className="mb-4 w-full rounded-lg px-4 py-2.5 text-center text-sm outline-none font-sans"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && usernameInput.trim() && emailInput.trim()) {
+                  saveUsername(usernameInput, emailInput);
+                }
+              }}
+              placeholder={t("用户名")}
+              className="mb-3 w-full rounded-lg px-4 py-2.5 text-center text-sm outline-none font-sans"
               style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }}
             />
+            <input
+              type="email"
+              value={emailInput}
+              onChange={(e) => setEmailInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && usernameInput.trim() && emailInput.trim()) {
+                  saveUsername(usernameInput, emailInput);
+                }
+              }}
+              placeholder={t("邮箱（@plaud.ai）")}
+              className="mb-2 w-full rounded-lg px-4 py-2.5 text-center text-sm outline-none font-sans"
+              style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }}
+            />
+            {setupError && (
+              <p className="mb-3 text-center text-xs" style={{ color: "#DC2626" }}>{setupError}</p>
+            )}
             <button
-              onClick={() => saveUsername(usernameInput)}
-              disabled={!usernameInput.trim()}
+              onClick={() => saveUsername(usernameInput, emailInput)}
+              disabled={!usernameInput.trim() || !emailInput.trim()}
               className="w-full rounded-lg py-2.5 text-sm font-semibold transition-colors disabled:opacity-30"
               style={{ background: S.accent, color: "#0A0B0E" }}>
               {t("开始使用")}

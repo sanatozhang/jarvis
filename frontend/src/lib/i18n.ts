@@ -456,7 +456,11 @@ const EN: Record<string, string> = {
   // Username setup
   "欢迎使用 Apollo": "Welcome to Apollo",
   "请设置您的用户名，用于标记工单操作": "Set your username to track your actions",
+  "请使用 @plaud.ai 邮箱注册": "Please register with a @plaud.ai email",
   "输入您的名字": "Enter your name",
+  "邮箱（@plaud.ai）": "Email (@plaud.ai)",
+  "请输入邮箱": "Please enter your email",
+  "邮箱必须以 @plaud.ai 结尾": "Email must end with @plaud.ai",
   "开始使用": "Get Started",
 
   // Misc

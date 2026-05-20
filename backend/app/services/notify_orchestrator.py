@@ -66,3 +66,42 @@ async def notify_users_by_username(
             result.failed.append((username, str(e)))
             logger.error("feishu_send_failed username=%s err=%s", username, e)
     return result
+
+
+async def notify_issue_creator_on_complete(
+    *,
+    issue_id: str,
+    task_id: str,
+    status: str,
+) -> Optional[NotifyResult]:
+    """Notify the issue creator (in English) when analysis finishes (done OR failed).
+
+    No-op when the issue has no `created_by` (Linear webhook flow etc.) or the
+    creator has no feishu_email on file.
+    """
+    issue = await db.get_issue(issue_id)
+    if not issue:
+        logger.info("notify_creator_skipped issue=%s reason=issue_not_found", issue_id)
+        return None
+    creator = (issue.get("created_by") or "").strip()
+    if not creator:
+        logger.info("notify_creator_skipped issue=%s reason=no_creator", issue_id)
+        return None
+
+    from app.config import get_settings
+    settings = get_settings()
+    base_url = (getattr(settings, "frontend_base_url", "") or "").rstrip("/")
+    detail_url = f"{base_url}/?detail={issue_id}" if base_url else f"/?detail={issue_id}"
+
+    desc = (issue.get("description") or "").strip()
+    desc_short = desc[:300] + ("…" if len(desc) > 300 else "")
+    verb = "completed successfully" if status == "done" else "failed"
+
+    text = (
+        f"✓ Your ticket analysis has {verb}.\n\n"
+        f"Ticket ID: {issue_id}\n"
+        f"Description: {desc_short or '(no description)'}\n"
+        f"URL: {detail_url}\n\n"
+        f"Please review with the ticket description and URL above."
+    )
+    return await notify_users_by_username(usernames=[creator], text=text)
