@@ -50,7 +50,7 @@ export function FeishuBindPrompt() {
       url.searchParams.delete("reason");
       window.history.replaceState({}, "", url.toString());
     }
-    const t = setTimeout(() => setFlash(null), 4000);
+    const t = setTimeout(() => setFlash(null), 5000);
     return () => clearTimeout(t);
   }, [sp]);
 
@@ -78,10 +78,13 @@ export function FeishuBindPrompt() {
     <>
       {flash && (
         <div
-          className="fixed bottom-4 right-4 z-50 rounded-lg px-4 py-2 text-sm shadow-md"
+          className="fixed left-1/2 top-1/2 z-50 rounded-xl px-8 py-5 text-lg font-medium shadow-2xl"
           style={{
+            transform: "translate(-50%, -50%)",
             background: flashKind === "ok" ? "#16A34A" : "#DC2626",
             color: "white",
+            minWidth: "280px",
+            textAlign: "center",
           }}
         >
           {flash}
