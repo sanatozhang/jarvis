@@ -1,9 +1,6 @@
 """SSO settings parsing & defaults."""
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
-
 from app.config import SSOSettings
 
 
