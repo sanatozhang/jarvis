@@ -65,6 +65,7 @@ async def client(db_engine, db_session):
             "app.api.analytics",
             "app.api.local",
             "app.api.auth",
+            "app.main",
         )
         local_patches = []
         import sys

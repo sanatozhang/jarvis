@@ -216,13 +216,11 @@ app.add_middleware(
 
 from app.middleware.auth import AuthMiddleware
 
-_sso = get_settings().sso
+# Use live settings lookup so test overrides (conftest mutating
+# get_settings().sso.enabled) take effect without rebuilding the middleware.
 app.add_middleware(
     AuthMiddleware,
-    enabled=_sso.enabled,
-    cookie_name=_sso.cookie_name,
-    jwt_secret=_sso.jwt_secret,
-    exempt_paths=_sso.exempt_paths,
+    settings_getter=lambda: get_settings().sso,
 )
 
 # ---------------------------------------------------------------------------
