@@ -352,12 +352,18 @@ async def run_pipeline_and_auto_analyze(reason: str = "warmup") -> dict:
 
 
 async def warmup_on_startup() -> None:
-    """启动后延后 N 秒跑一次 pipeline + auto-analyze。fire-and-forget。"""
+    """启动后延后 N 秒跑一次 pipeline + auto-analyze。fire-and-forget。
+
+    底层逻辑：warmup 跑的 run_pipeline_and_auto_analyze 与 pipeline cron 完全等价，
+    所以成功后**镜像写一条 pipeline 心跳**——避免重启正好错过整点 cron 时
+    pipeline last_success 永远停在旧时间、触发 stale 告警的死结。
+    """
     try:
         await asyncio.sleep(_WARMUP_DELAY_SEC)
     except asyncio.CancelledError:
         return
     from app.crashguard.services.job_heartbeat import record_heartbeat
+    res = None
     try:
         async with record_heartbeat("warmup") as hb:
             res = await run_pipeline_and_auto_analyze(reason="warmup")
@@ -366,6 +372,14 @@ async def warmup_on_startup() -> None:
         raise
     except Exception:
         logger.exception("warmup pipeline failed (non-fatal)")
+        return
+
+    # warmup 成功 → 镜像写 pipeline 心跳（语义：warmup 等价于一次 pipeline tick）
+    try:
+        async with record_heartbeat("pipeline") as hb2:
+            hb2.set_summary({**(res or {}), "via": "warmup_startup"})
+    except Exception:
+        logger.exception("pipeline heartbeat mirror failed (non-fatal)")
 
 
 async def run_deep_analysis_auto_tick() -> dict:
