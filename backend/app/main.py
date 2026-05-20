@@ -30,16 +30,15 @@ def _validate_sso_startup(sso: "SSOSettings") -> None:
     """Fail-fast: refuse to start if SSO is enabled but config is broken."""
     if not sso.enabled:
         return
-    if not sso.google_client_id:
-        raise RuntimeError("ENABLE_GMAIL_SSO=true requires GOOGLE_CLIENT_ID")
-    if not sso.google_client_secret:
-        raise RuntimeError("ENABLE_GMAIL_SSO=true requires GOOGLE_CLIENT_SECRET")
+    if not sso.feishu_app_id:
+        raise RuntimeError("ENABLE_SSO=true requires SSO_FEISHU_APP_ID")
+    if not sso.feishu_app_secret:
+        raise RuntimeError("ENABLE_SSO=true requires SSO_FEISHU_APP_SECRET")
     if not sso.jwt_secret or len(sso.jwt_secret) < 32:
-        raise RuntimeError("ENABLE_GMAIL_SSO=true requires SSO_JWT_SECRET (>= 32 chars)")
-    if not sso.google_redirect_uri.startswith("https://"):
-        raise RuntimeError(
-            "GOOGLE_REDIRECT_URI must use https:// (got %r)" % sso.google_redirect_uri
-        )
+        raise RuntimeError("ENABLE_SSO=true requires SSO_JWT_SECRET (>= 32 chars)")
+    # NOTE: removed https-only check for redirect_uri because Feishu accepts
+    # http://localhost during dev; cookie_secure flag separately gates HTTPS
+    # cookie behavior in production.
     if not sso.admin_emails:
         logger.warning("ADMIN_EMAILS empty — no admin will be created via SSO")
 

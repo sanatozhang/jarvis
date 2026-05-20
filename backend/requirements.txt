@@ -36,5 +36,4 @@ import-linter>=2.0
 datadog-api-client>=2.30.0
 
 # SSO / Auth
-google-auth-oauthlib>=1.2.0
 PyJWT>=2.8.0

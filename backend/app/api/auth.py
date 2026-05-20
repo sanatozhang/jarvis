@@ -1,10 +1,15 @@
-"""/api/auth/* — Google SSO login flow + session inspection.
+"""/api/auth/* — Feishu SSO login flow + session inspection.
 
 Endpoints:
-    GET  /google/login     302 → Google authorize
-    GET  /google/callback  302 → frontend (with Set-Cookie)
+    GET  /feishu/login     302 → Feishu authorize URL
+    GET  /feishu/callback  302 → frontend (with Set-Cookie)
     GET  /me               200 → current user JSON
     POST /logout           204 → clear cookie
+
+Feishu OAuth V2 (form-encoded, OAuth-standard):
+    Authorize: https://accounts.feishu.cn/open-apis/authen/v1/authorize
+    Token:     https://open.feishu.cn/open-apis/authen/v2/oauth/token
+    UserInfo:  https://open.feishu.cn/open-apis/authen/v1/user_info
 """
 
 from __future__ import annotations
@@ -16,80 +21,89 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
-from google.oauth2 import id_token as google_id_token
-from google.auth.transport import requests as google_requests
 
 from app.config import get_settings
 from app.db import database as db
-from app.services.auth_google import (
+from app.services.auth_feishu import (
     StateError,
     derive_username_from_email,
     sign_state,
     verify_state,
 )
-from app.services.auth_jwt import sign_token
+from app.services.auth_jwt import sign_token, verify_token, JWTError
 
 
 logger = logging.getLogger("jarvis.api.auth")
 router = APIRouter()
 
 
-GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+FEISHU_AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 
 
 def _login_error_redirect(error_code: str) -> RedirectResponse:
     return RedirectResponse(f"/login?error={error_code}", status_code=302)
 
 
-@router.get("/google/login")
-async def google_login(request: Request, next: str = "/"):
+@router.get("/feishu/login")
+async def feishu_login(request: Request, next: str = "/"):
     settings = get_settings().sso
     state = sign_state(secret=settings.jwt_secret, next_url=next)
     params = {
-        "client_id": settings.google_client_id,
-        "redirect_uri": settings.google_redirect_uri,
-        "response_type": "code",
-        "scope": "openid email profile",
+        "app_id": settings.feishu_app_id,
+        "redirect_uri": settings.feishu_redirect_uri,
         "state": state,
-        "prompt": "select_account",
-        "access_type": "online",
     }
     return RedirectResponse(
-        f"{GOOGLE_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}",
+        f"{FEISHU_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}",
         status_code=302,
     )
 
 
-async def _exchange_code_for_id_token(code: str) -> dict:
-    """Exchange auth code → verified ID token claims dict.
+async def _exchange_code_for_user_info(code: str) -> dict:
+    """Exchange auth code → user_info dict.
 
-    Pulled out for test mocking. Returns a dict like {email, email_verified, sub, ...}.
+    Pulled out for test mocking. Two-step:
+      1. POST token endpoint with code → access_token
+      2. GET user_info with Bearer access_token → {email, enterprise_email, name, ...}
     """
     settings = get_settings().sso
     async with httpx.AsyncClient(timeout=10) as ac:
         token_resp = await ac.post(
-            GOOGLE_TOKEN_URL,
+            FEISHU_TOKEN_URL,
             data={
-                "code": code,
-                "client_id": settings.google_client_id,
-                "client_secret": settings.google_client_secret,
-                "redirect_uri": settings.google_redirect_uri,
                 "grant_type": "authorization_code",
+                "code": code,
+                "client_id": settings.feishu_app_id,
+                "client_secret": settings.feishu_app_secret,
+                "redirect_uri": settings.feishu_redirect_uri,
             },
         )
-    token_resp.raise_for_status()
-    id_token_str = token_resp.json()["id_token"]
-    claims = google_id_token.verify_oauth2_token(
-        id_token_str,
-        google_requests.Request(),
-        settings.google_client_id,
-    )
-    return claims
+        token_resp.raise_for_status()
+        token_body = token_resp.json()
+        # Feishu returns either OAuth-standard {access_token, ...} or {code, data: {...}}
+        if "access_token" in token_body:
+            access_token = token_body["access_token"]
+        elif token_body.get("code") == 0 and isinstance(token_body.get("data"), dict):
+            access_token = token_body["data"]["access_token"]
+        else:
+            raise RuntimeError(f"feishu token error: {token_body}")
+
+        info_resp = await ac.get(
+            FEISHU_USER_INFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        info_resp.raise_for_status()
+        info_body = info_resp.json()
+        # Feishu wraps: {code: 0, msg: "ok", data: {email, enterprise_email, name, open_id, ...}}
+        if info_body.get("code") != 0 or not isinstance(info_body.get("data"), dict):
+            raise RuntimeError(f"feishu user_info error: {info_body}")
+        return info_body["data"]
 
 
-@router.get("/google/callback")
-async def google_callback(request: Request, code: Optional[str] = None,
+@router.get("/feishu/callback")
+async def feishu_callback(request: Request, code: Optional[str] = None,
                           state: Optional[str] = None):
     settings = get_settings().sso
 
@@ -102,13 +116,15 @@ async def google_callback(request: Request, code: Optional[str] = None,
         return _login_error_redirect("invalid_state")
 
     try:
-        claims = await _exchange_code_for_id_token(code)
+        user_info = await _exchange_code_for_user_info(code)
     except Exception as e:
         logger.error("sso_oauth_network_error err=%s", e)
         return _login_error_redirect("oauth_failed")
 
-    email = (claims.get("email") or "").lower()
-    if not email or not claims.get("email_verified"):
+    # Prefer enterprise_email (work email), fallback to email.
+    email = (user_info.get("enterprise_email") or user_info.get("email") or "").lower().strip()
+    if not email:
+        logger.warning("sso_no_email user_info_keys=%s", list(user_info.keys()))
         return _login_error_redirect("oauth_failed")
 
     domain = email.rsplit("@", 1)[-1]
@@ -159,21 +175,19 @@ async def google_callback(request: Request, code: Optional[str] = None,
 
 @router.get("/me")
 async def auth_me(request: Request):
+    settings = get_settings().sso
     user_state = getattr(request.state, "user", None)
     if not user_state:
-        # Fallback: parse cookie directly if middleware didn't (e.g. SSO disabled)
-        settings = get_settings().sso
         token = request.cookies.get(settings.cookie_name)
         if token:
             try:
-                from app.services.auth_jwt import verify_token
                 payload = verify_token(token, secret=settings.jwt_secret)
                 user_state = {
                     "username": payload["username"],
                     "email": payload["email"],
                     "role": payload["role"],
                 }
-            except Exception:
+            except JWTError:
                 pass
     if not user_state:
         return JSONResponse({"detail": "unauthenticated"}, status_code=401)

@@ -83,14 +83,14 @@ class LinearSettings(BaseSettings):
 
 
 class SSOSettings(BaseSettings):
-    """Google OAuth SSO settings. All env vars use SSO_ / GOOGLE_ / ADMIN_ prefix."""
+    """Feishu OAuth SSO settings."""
 
-    enabled: bool = Field(default=False, alias="ENABLE_GMAIL_SSO")
-    google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")
-    google_client_secret: str = Field(default="", alias="GOOGLE_CLIENT_SECRET")
-    google_redirect_uri: str = Field(
-        default="https://apollo.nicebuild.click/api/auth/google/callback",
-        alias="GOOGLE_REDIRECT_URI",
+    enabled: bool = Field(default=False, alias="ENABLE_SSO")
+    feishu_app_id: str = Field(default="", alias="SSO_FEISHU_APP_ID")
+    feishu_app_secret: str = Field(default="", alias="SSO_FEISHU_APP_SECRET")
+    feishu_redirect_uri: str = Field(
+        default="https://apollo.nicebuild.click/api/auth/feishu/callback",
+        alias="SSO_FEISHU_REDIRECT_URI",
     )
     jwt_secret: str = Field(default="", alias="SSO_JWT_SECRET")
     cookie_name: str = Field(default="jarvis_session", alias="SSO_COOKIE_NAME")

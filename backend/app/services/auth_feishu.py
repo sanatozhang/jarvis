@@ -1,12 +1,11 @@
-"""Google OAuth flow helpers.
+"""Feishu OAuth flow helpers.
 
 Two responsibilities:
-1. derive_username_from_email — normalize Google email → username PK.
+1. derive_username_from_email — normalize Feishu enterprise_email → username PK.
 2. sign_state / verify_state — CSRF protection + next_url carrier.
 
-The actual OAuth HTTP flow (authorize URL, token exchange, id_token verify)
-runs through google-auth-oauthlib in the API route; this module stays
-pure-Python testable.
+The actual OAuth HTTP flow (authorize URL, token exchange, user_info fetch)
+runs through httpx in the API route; this module stays pure-Python testable.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ def derive_username_from_email(email: str) -> str:
 
 
 def _sanitize_next(next_url: str) -> str:
-    """Only allow relative paths starting with '/'; reject scheme-bearing URLs."""
     if not next_url or not next_url.startswith("/") or next_url.startswith("//"):
         return "/"
     return next_url
