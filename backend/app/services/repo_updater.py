@@ -15,31 +15,89 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
-from app.config import get_all_code_repos
+from app.config import get_all_code_repos, get_settings
+from app.services.mt_runner import workspace_lock
 
 logger = logging.getLogger("jarvis.repo_updater")
 
 
+def _is_mt_workspace(path: Path) -> bool:
+    """A directory with ≥1 immediate child sub-dir containing .git looks like a mt workspace."""
+    if (path / ".git").exists():
+        return False
+    try:
+        for child in path.iterdir():
+            if child.is_dir() and (child / ".git").exists():
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _run_with_mt(name: str, path: Path, mt_bin: str) -> bool:
+    """mt fan-out: reset/clean → fetch → checkout main → pull, across all sub-repos."""
+    for cmd in (
+        [mt_bin, "reset", "--hard"],
+        [mt_bin, "clean", "-fd"],
+        [mt_bin, "fetch", "--all", "--prune"],
+        [mt_bin, "checkout", "main"],
+        [mt_bin, "pull", "origin", "main"],
+    ):
+        try:
+            r = subprocess.run(cmd, cwd=str(path), capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            logger.warning("[repo:%s] %s timed out", name, " ".join(cmd))
+            return False
+        if r.returncode != 0:
+            logger.warning(
+                "[repo:%s] mt cmd failed (%s): %s",
+                name, " ".join(cmd), (r.stderr or r.stdout).strip()[:300],
+            )
+            return False
+    logger.info("[repo:%s] mt fan-out update succeeded at %s", name, path)
+    return True
+
+
 def _update_repo(name: str, repo_path: str) -> bool:
-    """Git fetch + checkout main + pull for a single repository."""
+    """Update a repo. mt workspaces (multi-sub-repo dirs) fan-out via `mt`;
+    plain single-git repos use vanilla git commands.
+
+    For the app workspace, this shares the same `$workspace/.jarvis.lock`
+    that the release API uses — so the 2-6 AM update can't collide with an
+    in-flight release branch creation or build trigger.
+    """
     path = Path(repo_path)
     if not path.exists():
         logger.warning("[repo:%s] Path does not exist: %s", name, repo_path)
         return False
 
+    settings = get_settings()
+    mt_bin = settings.jenkins.mt_bin or "mt"
+
+    # mt workspace branch
+    if _is_mt_workspace(path):
+        try:
+            with workspace_lock(path, timeout_sec=120):
+                return _run_with_mt(name, path, mt_bin)
+        except TimeoutError:
+            logger.warning("[repo:%s] workspace busy — skipping this tick", name)
+            return False
+        except Exception as e:
+            logger.error("[repo:%s] mt update failed: %s", name, e)
+            return False
+
+    # Plain single-git repo branch
     git_dir = path / ".git"
     if not git_dir.exists():
-        logger.warning("[repo:%s] Not a git repository: %s", name, repo_path)
+        logger.warning("[repo:%s] Not a git repository and not an mt workspace: %s", name, repo_path)
         return False
 
     try:
-        # Fetch latest
         subprocess.run(
             ["git", "fetch", "origin"],
             cwd=str(path), capture_output=True, text=True, timeout=120,
         )
 
-        # Checkout main (try main, then master)
         result = subprocess.run(
             ["git", "checkout", "main"],
             cwd=str(path), capture_output=True, text=True, timeout=30,
@@ -53,7 +111,6 @@ def _update_repo(name: str, repo_path: str) -> bool:
                 logger.warning("[repo:%s] Failed to checkout main/master: %s", name, result.stderr.strip())
                 return False
 
-        # Pull
         result = subprocess.run(
             ["git", "pull", "origin"],
             cwd=str(path), capture_output=True, text=True, timeout=120,

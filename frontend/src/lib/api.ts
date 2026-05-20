@@ -1841,3 +1841,96 @@ export const updateSymbolSettings = (patch: Partial<SymbolSettings>) =>
     "/crash/settings/symbols",
     { method: "PATCH", body: JSON.stringify(patch) },
   );
+
+// ============================================================
+// Release 自动化
+// ============================================================
+export interface ReleaseRepoCommit {
+  name: string;
+  commit_sha: string;
+}
+
+export interface ReleaseBranch {
+  id: number;
+  branch: string;
+  version: string;
+  date_tag: string;
+  repos: ReleaseRepoCommit[];
+  created_by: string;
+  created_at: string;
+  status: string;
+}
+
+export interface ReleaseBuild {
+  id: number;
+  branch: string;
+  target: "cn" | "global";
+  android_multi_channel: boolean;
+  params: Record<string, string>;
+  jenkins_server: string;
+  jenkins_job: string;
+  jenkins_queue_id: number | null;
+  jenkins_build_number: number | null;
+  jenkins_build_url: string;
+  status:
+    | "pending"
+    | "queued"
+    | "running"
+    | "success"
+    | "failure"
+    | "aborted"
+    | "error";
+  started_at: string | null;
+  finished_at: string | null;
+  error_message: string;
+  artifact_android_url: string;
+  artifact_ios_url: string;
+  triggered_by: string;
+  triggered_at: string;
+}
+
+export const createReleaseBranch = (branch: string) =>
+  request<ReleaseBranch>("/release/branches", {
+    method: "POST",
+    body: JSON.stringify({ branch }),
+  });
+
+export const listReleaseBranches = (limit = 50, offset = 0) =>
+  request<{ items: ReleaseBranch[]; total: number }>(
+    `/release/branches?limit=${limit}&offset=${offset}`,
+  );
+
+export interface TriggerBuildOptions {
+  is_online_package?: boolean;             // default true
+  upload_to_github_release?: boolean;      // default true
+  skip_asc_upload?: boolean;               // global only, default false
+  android_multi_channel_pack?: boolean;    // cn only, default true
+  description?: string;
+}
+
+export const triggerReleaseBuild = (
+  branch: string,
+  target: "cn" | "global",
+  options: TriggerBuildOptions = {},
+) =>
+  request<ReleaseBuild>("/release/builds", {
+    method: "POST",
+    body: JSON.stringify({ branch, target, ...options }),
+  });
+
+export const listReleaseBuilds = (
+  filters?: { branch?: string; target?: string; status?: string },
+  limit = 50,
+  offset = 0,
+) => {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  if (filters?.branch) params.set("branch", filters.branch);
+  if (filters?.target) params.set("target", filters.target);
+  if (filters?.status) params.set("status", filters.status);
+  return request<{ items: ReleaseBuild[] }>(`/release/builds?${params.toString()}`);
+};
+
+export const releaseArtifactUrl = (buildId: number, platform: "android" | "ios") =>
+  `${BASE}/release/builds/${buildId}/artifacts/${platform}`;

@@ -99,10 +99,33 @@ storage:
   data_dir: "./data"               # 数据库等持久化数据
 
 # 源码仓库路径（通过 .env 配置，这里仅做说明）
-# CODE_REPO_APP=/path/to/plaud_ai          # APP (Flutter) 源码
+# CODE_REPO_APP=/path/to/plaud_ai          # APP (Flutter) 源码（mt 多仓父目录，下含 common/global/cn）
 # CODE_REPO_WEB=/path/to/plaud_web         # Web 前端源码
 # CODE_REPO_DESKTOP=/path/to/plaud_desktop # Desktop (Electron) 源码
 # CODE_REPO_PATH=/path/to/plaud_ai         # 旧字段，兼容，等同于 CODE_REPO_APP
+
+# ===========================
+# Release 自动化 (Jenkins)
+# ===========================
+# 触发 Plaud APP release 分支构建。3 台 Jenkins 各自独立账号体系——每台单独配 user
+# 和 token；token 通过 .env 注入，配置里只写 token_env（env 变量名）。
+# 如何拿 token：登录每台 Jenkins UI → 用户名 → Configure → API Token → Add new Token。
+jenkins:
+  enabled: true                           # 已配齐 token
+  servers:
+    - url: http://10.0.52.101:8080
+      user: sanato
+      token_env: JENKINS_TOKEN_101
+    - url: http://10.0.52.102:8080
+      user: sanato
+      token_env: JENKINS_TOKEN_102
+  job_cn: plaud-app-publish-cn
+  job_global: plaud-app-publish-global
+  poll_interval_seconds: 30
+  build_timeout_seconds: 3600             # 1h 兜底，超时置 error
+  mt_bin: mt                              # mt 工具二进制路径（容器内已装可改成 /usr/local/bin/mt）
+  notify_emails:                          # 飞书通知额外抄送（除触发人外）
+    - sanato.zhang@plaud.ai
 
 # ===========================
 # Crashguard 模块配置
