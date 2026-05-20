@@ -2669,6 +2669,11 @@ async def trigger_job_now(job_name: str) -> Dict[str, Any]:
             elif job_name == "job_health_alert":
                 from app.crashguard.services.job_health_alerter import run_job_health_check
                 res = await run_job_health_check()
+            elif job_name == "top_crash_auto_pr":
+                # 拉通 KNOWN_JOBS 注册（line 2255）+ scheduler tick（scheduler.py:159）
+                # 与手动 run-now 按钮 —— 之前漏在此 elif 链 → 400 unknown job
+                from app.crashguard.services.top_crash_auto_pr import run_top_crash_auto_pr_tick
+                res = await run_top_crash_auto_pr_tick()
             else:
                 raise HTTPException(status_code=400, detail=f"unknown job: {job_name}")
 
