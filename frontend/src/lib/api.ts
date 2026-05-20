@@ -88,10 +88,17 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
       const res = await fetch(`${BASE}${path}`, {
         ...init,
         headers,
+        credentials: init?.credentials ?? "include",
         signal: init?.signal ?? ac.signal,
       });
       if (res.ok) {
         return await res.json();
+      }
+      // 401 → SSO 未登录/过期：跳 /login（除非已在 /login 页）
+      if (res.status === 401 && typeof window !== "undefined" && window.location.pathname !== "/login") {
+        const next = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/login?next=${next}`;
+        throw new ApiError(401, path, "unauthenticated");
       }
       // 非 2xx
       const text = await res.text();

@@ -4,6 +4,7 @@ import { useContext, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useT, useLang, LangToggleContext } from "@/lib/i18n";
 import { fetchCrashEnabled } from "@/lib/api";
+import { useCurrentUser } from "@/components/AuthProvider";
 
 const NAV_ITEMS = [
   {
@@ -61,6 +62,7 @@ export default function Sidebar() {
   const lang = useLang();
   const toggleLang = useContext(LangToggleContext);
   const pathname = usePathname();
+  const me = useCurrentUser();
 
   // Crashguard feature flag — hide entry when CRASHGUARD_ENABLED=false
   const [crashguardEnabled, setCrashguardEnabled] = useState<boolean | null>(null);
@@ -243,6 +245,38 @@ export default function Sidebar() {
           </span>
         </button>
       </div>
+
+      {me && (
+        <div
+          className="px-4 py-3 text-xs"
+          style={{ borderTop: "1px solid rgba(0,0,0,0.06)" }}
+        >
+          <div className="font-medium truncate" style={{ color: "#111827" }}>
+            {me.username}
+          </div>
+          <div className="truncate" style={{ color: "#6B7280" }}>
+            {me.email || me.feishu_email}
+          </div>
+          <button
+            onClick={async () => {
+              try {
+                await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+              } catch {}
+              window.location.href = "/login";
+            }}
+            className="mt-2 underline"
+            style={{ color: "#6B7280" }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.color = "#111827";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.color = "#6B7280";
+            }}
+          >
+            {t("登出")}
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
