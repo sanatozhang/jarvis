@@ -1129,7 +1129,7 @@ async def _build_enrichment_block(issue_id: str) -> str:
         client = DatadogClient(
             api_key=s.datadog_api_key,
             app_key=s.datadog_app_key,
-            site=s.datadog_site,
+            site=s.datadog_site, service_filter=s.datadog_service_filter,
         )
         detail = await client.get_issue_detail(issue_id)
     except Exception as exc:

@@ -73,7 +73,7 @@ async def run_data_phase(
     client = DatadogClient(
         api_key=s.datadog_api_key,
         app_key=s.datadog_app_key,
-        site=s.datadog_site,
+        site=s.datadog_site, service_filter=s.datadog_service_filter,
     )
 
     # C 路线：双路拉取——fatal 与 non_fatal 分别用独立 query，各自 Top 100 互不挤压。

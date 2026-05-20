@@ -47,7 +47,7 @@ def _make_datadog_client():
     if not s.datadog_api_key:
         return None
     from app.crashguard.services.datadog_client import DatadogClient
-    return DatadogClient(api_key=s.datadog_api_key, app_key=s.datadog_app_key, site=s.datadog_site)
+    return DatadogClient(api_key=s.datadog_api_key, app_key=s.datadog_app_key, site=s.datadog_site, service_filter=s.datadog_service_filter)
 
 
 async def _fetch_crash_free(start: datetime, end: datetime) -> Dict[str, Dict[str, Any]]:

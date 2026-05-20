@@ -87,7 +87,7 @@ async def _fetch_hourly_events(
     client = DatadogClient(
         api_key=s.datadog_api_key,
         app_key=s.datadog_app_key,
-        site=s.datadog_site,
+        site=s.datadog_site, service_filter=s.datadog_service_filter,
     )
     start_ms = int(window_start.timestamp() * 1000)
     end_ms = int(window_end.timestamp() * 1000)
@@ -111,7 +111,7 @@ async def _fetch_24h_events(now: datetime) -> List[Dict[str, Any]]:
             return []
         from app.crashguard.services.datadog_client import DatadogClient
         client = DatadogClient(
-            api_key=s.datadog_api_key, app_key=s.datadog_app_key, site=s.datadog_site,
+            api_key=s.datadog_api_key, app_key=s.datadog_app_key, site=s.datadog_site, service_filter=s.datadog_service_filter,
         )
         window_end = now
         window_start = now - timedelta(hours=24)
@@ -281,7 +281,7 @@ async def run_hourly_alert_tick(
             _ddclient = DatadogClient(
                 api_key=s.datadog_api_key,
                 app_key=s.datadog_app_key,
-                site=s.datadog_site,
+                site=s.datadog_site, service_filter=s.datadog_service_filter,
             )
             top_versions = await DatadogCache.get_or_fetch(
                 "top_user_version:24",

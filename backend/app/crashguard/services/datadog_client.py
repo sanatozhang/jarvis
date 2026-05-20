@@ -45,16 +45,42 @@ class DatadogClient:
         app_key: str,
         site: str = "datadoghq.com",
         timeout: float = 30.0,
+        service_filter: str = "service:plaud-flutter",
     ):
         self.api_key = api_key
         self.app_key = app_key
         self.site = site
         self.timeout = timeout
+        # 顶层设计：只看 app 侧数据。
+        # 历史 bug 现场：早晚报「最新版本」选到 3.32.4 这种 web 端版本号；iOS 桶混入 ~5.7%
+        # plaud-web Safari sessions（Android ~1.5%）。所有 RUM / Issue Search query 入口
+        # 统一前置 service:plaud-flutter（默认）保证 app-only 颗粒度。
+        # 如未来 native iOS/Android (plaud-ios / plaud-android) 投放，扩成
+        # "(service:plaud-flutter OR service:plaud-ios OR service:plaud-android)" 即可。
+        # 空串 = 不注入（兜底逃生口；仅 debug 用）。
+        self.service_filter = (service_filter or "").strip()
         self._rate_limit_events: Deque[float] = deque(maxlen=10)
         self._circuit_open_until: float = 0.0
         self._circuit_threshold: int = 5
         self._circuit_window_sec: int = 600     # 10 分钟
         self._circuit_open_sec: int = 1800      # 30 分钟
+
+    def _inject_service(self, query: str) -> str:
+        """所有 RUM / Issue Search query 注入 service filter（app-only 抓手）。
+
+        - 若 self.service_filter 为空 → 直接返回原 query（debug 逃生口）
+        - 若 query 已显式包含 'service:'（外部已自带过滤）→ 不重复注入
+        - 否则前置 self.service_filter（用空格连接）
+        - query=='*' 直接替换为纯 service filter（避免 '* service:xxx' 引发歧义）
+        """
+        if not self.service_filter:
+            return query
+        q = (query or "").strip()
+        if "service:" in q:
+            return q  # 调用方已明确 service，尊重之
+        if not q or q == "*":
+            return self.service_filter
+        return f"{self.service_filter} {q}"
 
     def _build_configuration(self):
         from datadog_api_client import Configuration
@@ -176,10 +202,12 @@ class DatadogClient:
         )
 
         track_enum = self._resolve_track(track, IssuesSearchRequestDataAttributesTrack)
+        # 注入 service filter：app-only 抓手，过滤 plaud-web / plaud-desktop 污染源
+        injected_query = self._inject_service(query or "*")
         return IssuesSearchRequest(
             data=IssuesSearchRequestData(
                 attributes=IssuesSearchRequestDataAttributes(
-                    query=query or "*",
+                    query=injected_query,
                     _from=start_ms,
                     to=end_ms,
                     track=track_enum,
@@ -496,7 +524,7 @@ class DatadogClient:
 
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query="@type:session",
+                query=self._inject_service("@type:session"),
                 _from=str(start_ms),
                 to=str(end_ms),
             ),
@@ -575,7 +603,7 @@ class DatadogClient:
 
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query=q,
+                query=self._inject_service(q),
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -665,7 +693,7 @@ class DatadogClient:
 
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query=q,
+                query=self._inject_service(q),
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -825,7 +853,7 @@ class DatadogClient:
                 query = f'{base_query} version:"{ver_safe}"'
                 body = RUMAggregateRequest(
                     filter=RUMQueryFilter(
-                        query=query,
+                        query=self._inject_service(query),
                         _from=f"now-{max(1, int(window_hours))}h",
                         to="now",
                     ),
@@ -904,7 +932,7 @@ class DatadogClient:
         # 一次查询，按 (@os.name, @error.category) 二维分组
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query="@type:error",
+                query=self._inject_service("@type:error"),
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -928,7 +956,7 @@ class DatadogClient:
         # 同时再查一次 is_crash:true（不在 category 里）
         body_crash = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query="@type:error @error.is_crash:true",
+                query=self._inject_service("@type:error @error.is_crash:true"),
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -1024,7 +1052,7 @@ class DatadogClient:
 
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query="@type:session",
+                query=self._inject_service("@type:session"),
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -1119,7 +1147,7 @@ class DatadogClient:
         def _build_body(query: str) -> RUMAggregateRequest:
             return RUMAggregateRequest(
                 filter=RUMQueryFilter(
-                    query=query,
+                    query=self._inject_service(query),
                     _from=f"now-{max(1, int(window_hours))}h",
                     to="now",
                 ),
@@ -1243,7 +1271,7 @@ class DatadogClient:
 
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query="@type:session",
+                query=self._inject_service("@type:session"),
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -1337,7 +1365,7 @@ class DatadogClient:
 
         body = RUMAggregateRequest(
             filter=RUMQueryFilter(
-                query="@type:session",
+                query=self._inject_service("@type:session"),
                 _from=f"now-{max(1, int(window_hours))}h",
                 to="now",
             ),
@@ -1442,7 +1470,7 @@ class DatadogClient:
                 def _agg(base_q: str) -> int:
                     body = RUMAggregateRequest(
                         filter=RUMQueryFilter(
-                            query=f'{base_q} version:"{ver_safe}"',
+                            query=self._inject_service(f'{base_q} version:"{ver_safe}"'),
                             _from=str(int(start_ms)),
                             to=str(int(end_ms)),
                         ),
@@ -1536,7 +1564,7 @@ class DatadogClient:
         def _agg(query: str) -> Dict[str, int]:
             body = RUMAggregateRequest(
                 filter=RUMQueryFilter(
-                    query=query,
+                    query=self._inject_service(query),
                     _from=str(int(start_ms)),
                     to=str(int(end_ms)),
                 ),
@@ -1603,7 +1631,7 @@ class DatadogClient:
 
         body = RUMSearchEventsRequest(
             filter=RUMQueryFilter(
-                query=f"@issue.id:{issue_id}",
+                query=self._inject_service(f"@issue.id:{issue_id}"),
                 _from=f"now-{max(1, int(lookback_days))}d",
                 to="now",
             ),

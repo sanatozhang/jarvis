@@ -280,7 +280,7 @@ async def compose_report(
             client = DatadogClient(
                 api_key=s_cfg.datadog_api_key,
                 app_key=s_cfg.datadog_app_key,
-                site=s_cfg.datadog_site,
+                site=s_cfg.datadog_site, service_filter=s_cfg.datadog_service_filter,
             )
             # 使用 inactive-only 口径（已结束会话），对齐 Firebase / Datadog 官方 Crash-free Sessions 定义
             raw_total = await client.count_inactive_sessions_by_platform(window_hours=data_window_hours)

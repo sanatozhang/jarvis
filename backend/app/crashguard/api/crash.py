@@ -324,7 +324,7 @@ async def get_latest_release() -> Dict[str, Any]:
             client = DatadogClient(
                 api_key=s.datadog_api_key,
                 app_key=s.datadog_app_key,
-                site=s.datadog_site,
+                site=s.datadog_site, service_filter=s.datadog_service_filter,
             )
             top_user = await client.top_user_version_by_platform(window_hours=24)
             for p in ("android", "ios"):
@@ -375,7 +375,7 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
             client = DatadogClient(
                 api_key=s.datadog_api_key,
                 app_key=s.datadog_app_key,
-                site=s.datadog_site,
+                site=s.datadog_site, service_filter=s.datadog_service_filter,
             )
             data = await client.version_distribution_by_platform(window_hours=window_hours)
             if not data:
@@ -448,7 +448,7 @@ async def get_platform_summary(window_hours: int = Query(24, ge=1, le=720)) -> D
         client = DatadogClient(
             api_key=s.datadog_api_key,
             app_key=s.datadog_app_key,
-            site=s.datadog_site,
+            site=s.datadog_site, service_filter=s.datadog_service_filter,
         )
         end_ms = int(_time.time() * 1000)
         start_ms = end_ms - int(window_hours) * 3600 * 1000
@@ -487,7 +487,7 @@ async def get_os_version_distribution(window_hours: int = Query(24, ge=1, le=720
         client = DatadogClient(
             api_key=s.datadog_api_key,
             app_key=s.datadog_app_key,
-            site=s.datadog_site,
+            site=s.datadog_site, service_filter=s.datadog_service_filter,
         )
         data = await client.os_version_distribution_by_platform(window_hours=window_hours)
         if not data:
@@ -522,7 +522,7 @@ async def get_device_distribution(window_hours: int = Query(24, ge=1, le=720)) -
         client = DatadogClient(
             api_key=s.datadog_api_key,
             app_key=s.datadog_app_key,
-            site=s.datadog_site,
+            site=s.datadog_site, service_filter=s.datadog_service_filter,
         )
         data = await client.device_distribution_by_platform(window_hours=window_hours)
         return {"data": data, "source": "datadog_rum", "window_hours": window_hours}

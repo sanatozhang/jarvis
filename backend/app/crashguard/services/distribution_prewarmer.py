@@ -96,7 +96,7 @@ async def prewarm_today_distributions(
     client = DatadogClient(
         api_key=s.datadog_api_key,
         app_key=s.datadog_app_key,
-        site=s.datadog_site,
+        site=s.datadog_site, service_filter=s.datadog_service_filter,
     )
 
     from datetime import datetime as _dt
