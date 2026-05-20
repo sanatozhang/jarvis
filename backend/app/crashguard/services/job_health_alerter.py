@@ -29,6 +29,11 @@ _last_alerted_at: Dict[str, datetime] = {}
 # 进程级"自动重试过"标记：job_name → 上次尝试自愈的 UTC 时间
 # 抓手：发现 failing/stale 先尝试自动重跑一次，下 tick 仍失败才告警
 _last_retried_at: Dict[str, datetime] = {}
+# 连续自愈失败计数：job_name → 自愈触发后仍未产生 success 心跳的连续次数
+# 抓手：用户语义"连续失败 3 次才告警"——单次 stale 自愈一次，3 次重试都没成功才推飞书
+_consecutive_retry_failures: Dict[str, int] = {}
+# 自愈成功告警阈值（连续 N 次自愈后仍无 success 心跳才升级为告警）
+RETRY_FAILURE_THRESHOLD = 3
 
 
 async def _try_auto_retry_job(job_name: str) -> tuple[bool, str]:
@@ -36,7 +41,11 @@ async def _try_auto_retry_job(job_name: str) -> tuple[bool, str]:
 
     返回 (是否成功触发, summary)；触发本身报错则 summary 含 exception。
     不抛异常——本函数失败不阻断告警链路。
+
+    长任务（pipeline）用 fire-and-forget asyncio.create_task，不阻塞 alerter loop；
+    自愈结果由下次 health check 通过"是否产生新 success 心跳"事后判定。
     """
+    import asyncio
     try:
         if job_name == "pr_sync":
             from app.crashguard.services.pr_sync import sync_all_open_prs
@@ -51,7 +60,6 @@ async def _try_auto_retry_job(job_name: str) -> tuple[bool, str]:
             r = await run_hourly_alert_tick()
             return True, f"hourly_alert: alerted={r.get('alerted')}"
         if job_name == "analyze_tick":
-            # scheduler 内的私有函数；reuse 通过模块路径
             from app.crashguard.workers.scheduler import _run_analyze_tick
             r = await _run_analyze_tick(max_per_tick=1)
             return True, f"analyze_tick: picked={r.get('picked',0)} done={r.get('completed',0)}"
@@ -59,7 +67,22 @@ async def _try_auto_retry_job(job_name: str) -> tuple[bool, str]:
             from app.crashguard.scripts_runtime import run_backfill_all
             r = await run_backfill_all(days_hourly=1, days_daily=1)
             return True, f"baseline_backfill: ok={r.get('ok')}"
-        # morning_daily / evening_daily / pipeline 不主动重发（避免重复推卡片 / 长跑）
+        if job_name == "pipeline":
+            # 长任务：fire-and-forget；同时主动写 pipeline 心跳
+            from app.crashguard.workers.warmup import run_pipeline_and_auto_analyze
+            from app.crashguard.services.job_heartbeat import record_heartbeat
+
+            async def _bg_pipeline():
+                try:
+                    async with record_heartbeat("pipeline") as hb:
+                        res = await run_pipeline_and_auto_analyze(reason="auto_retry")
+                        hb.set_summary({**(res or {}), "via": "auto_retry"})
+                except Exception:
+                    logger.exception("auto_retry pipeline crashed")
+
+            asyncio.create_task(_bg_pipeline())
+            return True, "pipeline: scheduled in background"
+        # morning_daily / evening_daily 不主动重发（避免重复推卡片）
         return False, f"no_retry_runner_for:{job_name}"
     except Exception as exc:
         logger.exception("auto-retry %s crashed", job_name)
@@ -200,22 +223,57 @@ async def run_job_health_check() -> Dict[str, Any]:
                 health = "ok"
 
             if health == "ok":
+                # 健康恢复：清自愈失败计数 + 清 retry 时间戳
+                if jn in _consecutive_retry_failures:
+                    logger.info("job %s recovered, clear retry_failures=%d",
+                                jn, _consecutive_retry_failures[jn])
+                _consecutive_retry_failures.pop(jn, None)
+                _last_retried_at.pop(jn, None)
                 continue
 
-            # 自愈：先尝试重跑一次（节流：retry_throttle 内不重复触发）
+            # 评估上次自愈是否成功：自从 last_retried_at 之后是否产生新的 success 心跳？
             last_retry = _last_retried_at.get(jn)
-            can_retry = last_retry is None or (now_utc - last_retry) >= retry_throttle
-            if can_retry:
+            if last_retry is not None:
+                new_success = (await session.execute(
+                    select(CrashJobHeartbeat)
+                    .where(
+                        CrashJobHeartbeat.job_name == jn,
+                        CrashJobHeartbeat.status == "success",
+                        CrashJobHeartbeat.fired_at > last_retry,
+                    )
+                    .order_by(desc(CrashJobHeartbeat.fired_at))
+                    .limit(1)
+                )).scalars().first()
+                if new_success:
+                    # 自愈成功，但当前 health 仍 != ok 说明又坏了——开新一轮
+                    _consecutive_retry_failures.pop(jn, None)
+                    _last_retried_at.pop(jn, None)
+                    last_retry = None
+                elif (now_utc - last_retry) >= retry_throttle:
+                    # 距上次重试过了节流窗口仍无 success → 计一次失败
+                    _consecutive_retry_failures[jn] = _consecutive_retry_failures.get(jn, 0) + 1
+                    logger.info("job %s retry deemed failed, count=%d",
+                                jn, _consecutive_retry_failures[jn])
+                    _last_retried_at.pop(jn, None)
+                    last_retry = None
+                # else: 节流窗口内，等待结果，本 tick 跳过
+                else:
+                    continue
+
+            fail_count = _consecutive_retry_failures.get(jn, 0)
+
+            # 计数 < 阈值 → 触发自愈重跑（不告警）
+            if fail_count < RETRY_FAILURE_THRESHOLD:
                 ok_retry, retry_summary = await _try_auto_retry_job(jn)
                 _last_retried_at[jn] = now_utc
-                auto_retried.append(f"{jn}:{retry_summary}")
+                auto_retried.append(f"{jn}:{retry_summary}(fail_count={fail_count})")
                 logger.info(
-                    "job_health_alert auto-retried %s: ok=%s summary=%s",
-                    jn, ok_retry, retry_summary,
+                    "job_health_alert auto-retried %s: ok=%s fail_count=%d summary=%s",
+                    jn, ok_retry, fail_count, retry_summary,
                 )
-                # 重试已触发——本 tick 不告警，等下 tick 看结果（仍失败才发）
                 continue
 
+            # 计数 ≥ 阈值 → 升级为告警
             # 节流：距上次告警 < cooldown 跳过
             last_alert_at = _last_alerted_at.get(jn)
             if last_alert_at is not None and (now_utc - last_alert_at) < cooldown:
@@ -225,6 +283,7 @@ async def run_job_health_check() -> Dict[str, Any]:
                 "job_name": jn,
                 "health": health,
                 "consecutive_failures": consecutive_failures,
+                "retry_failures": fail_count,
                 "last_status": last_row.status if last_row else None,
                 "last_fired_at": last_row.fired_at.isoformat() if last_row and last_row.fired_at else None,
                 "last_success_at": (

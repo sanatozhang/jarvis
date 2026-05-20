@@ -23,14 +23,13 @@ function LoginContent() {
     <div className="flex items-center justify-center min-h-screen bg-j-base text-j-fg">
       <div className="w-full max-w-sm rounded-2xl border border-j-fg/10 p-8 text-center shadow-sm">
         <h1 className="text-2xl font-semibold mb-1">Apollo</h1>
-        <p className="text-sm text-j-fg/60 mb-6">Jarvis Ticket Platform</p>
+        <p className="text-sm text-j-fg/60 mb-6">Apollo Ticket Platform</p>
 
         <a
           href={loginHref}
           className="inline-flex w-full items-center justify-center gap-2 rounded-lg
                      border border-j-fg/15 px-4 py-2 text-sm hover:bg-j-fg/5"
         >
-          <span className="font-medium">飞</span>
           <span>{t("用飞书登录")}</span>
         </a>
 
