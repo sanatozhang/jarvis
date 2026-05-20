@@ -26,7 +26,12 @@ logger = logging.getLogger("crashguard.pr_sync")
 # 终态：不再轮询的状态
 _TERMINAL_STATUSES = {"merged", "closed", "ci_failed_closed"}
 # 同步时只查这些 GitHub state 字段（statusCheckRollup 用于 Gate#12 CI 反馈）
-_GH_FIELDS = "state,isDraft,mergedAt,closedAt,statusCheckRollup,headRefName,createdAt,files"
+# - reviews / comments：人审反馈链路（reviewer 提整改意见时触发飞书通知）
+# - reviewDecision：APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED 总决定
+_GH_FIELDS = (
+    "state,isDraft,mergedAt,closedAt,statusCheckRollup,headRefName,createdAt,files,"
+    "reviews,comments,reviewDecision"
+)
 
 # 污染文件名 / glob — 出现在 PR diff 里即视为 stale-base 或 build artifact 泄漏
 _POLLUTION_PATHS = ("pubspec.yaml", "pubspec.lock", "Podfile.lock")
@@ -161,6 +166,129 @@ def _detect_pollution(gh_payload: Dict[str, Any]) -> List[str]:
                     hits.append(path)
                     break
     return hits
+
+
+def _parse_iso_to_utc_naive(value: Any) -> Optional[datetime]:
+    """专用于 reviews/comments 时间戳比对：返回 naive UTC（而非 local）。
+
+    既有 `_parse_iso_dt` 用 `.astimezone(tz=None)` 会转成系统本地时区的 naive；
+    DB 里 `last_synced_at = datetime.utcnow()` 是 naive UTC，两者直接 `<=` 比较
+    会差一个时区偏移（容器内 TZ=Asia/Shanghai → 8h 偏差），导致漏检。
+
+    本 helper 强制走 UTC，保证 review 时间戳与 last_synced_at 同口径。
+    """
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        from datetime import timezone
+        s = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def _detect_new_review_activity(
+    gh_payload: Dict[str, Any],
+    since: Optional[datetime],
+) -> List[Dict[str, Any]]:
+    """检查 reviews + comments 中 since 之后的新条目。
+
+    底层逻辑：reviewer 在 draft PR 上提整改意见时，crashguard 之前完全无感
+    （pr_sync 只看 state/isDraft）；现在拉到 reviews/comments 列表后，对比
+    last_synced_at 时间戳过滤出"上次同步后的新增"，再调飞书通知 + 写 audit。
+
+    返回按时间升序的列表，每项 {type, author, body, state, at}：
+      - type: "review" | "comment"
+      - state: review 的 APPROVED/CHANGES_REQUESTED/COMMENTED（comment 为 ""）
+      - body: 评论正文（截断 300 字）
+      - at: ISO datetime
+    """
+    new_items: List[Dict[str, Any]] = []
+    for r in (gh_payload.get("reviews") or []):
+        if not isinstance(r, dict):
+            continue
+        ts = _parse_iso_to_utc_naive(r.get("submittedAt") or r.get("createdAt"))
+        if ts is None:
+            continue
+        if since is not None and ts <= since:
+            continue
+        author = ((r.get("author") or {}).get("login") if isinstance(r.get("author"), dict)
+                  else str(r.get("author") or "")) or "?"
+        new_items.append({
+            "type": "review",
+            "author": author,
+            "state": (r.get("state") or "").upper(),
+            "body": (r.get("body") or "")[:300],
+            "at": ts,
+        })
+    for c in (gh_payload.get("comments") or []):
+        if not isinstance(c, dict):
+            continue
+        ts = _parse_iso_to_utc_naive(c.get("createdAt") or c.get("submittedAt"))
+        if ts is None:
+            continue
+        if since is not None and ts <= since:
+            continue
+        author = ((c.get("author") or {}).get("login") if isinstance(c.get("author"), dict)
+                  else str(c.get("author") or "")) or "?"
+        new_items.append({
+            "type": "comment",
+            "author": author,
+            "state": "",
+            "body": (c.get("body") or "")[:300],
+            "at": ts,
+        })
+    new_items.sort(key=lambda x: x["at"])
+    return new_items
+
+
+async def _notify_review_activity(
+    pr_row: CrashPullRequest,
+    activities: List[Dict[str, Any]],
+    review_decision: str,
+) -> None:
+    """对新增的 review / comment 调飞书通知。失败静默——非关键链路。
+
+    设计取舍：只把 reviewer 的反馈聚合成一条点对点消息，不为每条 comment 发一封；
+    crashguard 自身机器人评论（gate#12/#14 close_msg）通过 author 名过滤。
+    """
+    if not activities:
+        return
+    try:
+        from app.crashguard.config import get_crashguard_settings
+        s = get_crashguard_settings()
+        target_email = (getattr(s, "feishu_alert_email", "")
+                        or getattr(s, "feishu_target_email", ""))
+        if not target_email:
+            return
+        # 过滤掉 crashguard 自机器人评论（避免 gate close_msg 自触发循环）
+        BOT_PREFIXES = ("🧹 Auto-close by Crashguard", "🚫 Auto-close by Crashguard")
+        human_items = [
+            a for a in activities
+            if not any((a.get("body") or "").startswith(p) for p in BOT_PREFIXES)
+        ]
+        if not human_items:
+            return
+        lines = [
+            f"🔔 Crashguard PR review 新动态：{pr_row.pr_url}",
+            f"   分支：{pr_row.branch_name or '?'}  状态：{pr_row.pr_status or '?'}",
+        ]
+        if review_decision:
+            lines.append(f"   reviewDecision: {review_decision}")
+        for a in human_items[:5]:
+            prefix = f"[{a['type']}/{a['state']}]" if a['state'] else f"[{a['type']}]"
+            body = (a['body'] or "").replace("\n", " ").strip()
+            lines.append(f"  · {prefix} {a['author']}: {body[:200]}")
+        if len(human_items) > 5:
+            lines.append(f"  · …还有 {len(human_items) - 5} 条")
+        text = "\n".join(lines)
+        from app.services.feishu_cli import send_message
+        await send_message(email=target_email, text=text)
+    except Exception:
+        logger.exception("crashguard pr_sync review-notify failed (non-fatal)")
 
 
 def _derive_status(gh_payload: Dict[str, Any]) -> Optional[str]:
@@ -309,6 +437,16 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
             except Exception:
                 logger.exception("gate#12 ci feedback crashed (non-fatal)")
 
+        # 人审反馈检测：reviews / comments 有 last_synced_at 之后的新条目时调飞书通知
+        # 注意：在 last_synced_at 被覆盖之前用旧值做对比窗口
+        prev_synced = row.last_synced_at
+        review_decision = (payload.get("reviewDecision") or "").upper()
+        new_activity = _detect_new_review_activity(payload, prev_synced)
+        review_notified = 0
+        if new_activity:
+            await _notify_review_activity(row, new_activity, review_decision)
+            review_notified = len(new_activity)
+
         row.pr_status = new_status
         merged_at = _parse_iso_dt(payload.get("mergedAt"))
         if merged_at:
@@ -333,6 +471,8 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
         "changed": changed,
         "ci_action": ci_action,
         "pollution_action": pollution_action,
+        "review_notified": review_notified,
+        "review_decision": review_decision,
     }
 
 

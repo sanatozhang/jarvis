@@ -225,3 +225,65 @@ async def test_sync_all_open_prs_skips_terminal(patched_session):
 
     assert res["checked"] == 2
     assert res["changed"] == 2
+
+
+# ─────────── reviews + comments detection (commit X) ───────────
+
+def test_gh_fields_includes_reviews_and_comments():
+    """_GH_FIELDS 必须包含人审反馈所需字段，否则下游解析拿不到数据"""
+    from app.crashguard.services.pr_sync import _GH_FIELDS
+    for required in ("reviews", "comments", "reviewDecision"):
+        assert required in _GH_FIELDS, f"{required} missing from _GH_FIELDS"
+
+
+def test_detect_new_review_activity_returns_post_since_only():
+    """只返回 since 之后的新增 reviews / comments，旧的过滤掉"""
+    from datetime import datetime
+    from app.crashguard.services.pr_sync import _detect_new_review_activity
+    since = datetime(2026, 5, 20, 6, 0, 0)
+    payload = {
+        "reviews": [
+            {"author": {"login": "alice"}, "state": "COMMENTED",
+             "body": "old comment", "submittedAt": "2026-05-20T05:00:00Z"},
+            {"author": {"login": "bob"}, "state": "CHANGES_REQUESTED",
+             "body": "fix me", "submittedAt": "2026-05-20T07:00:00Z"},
+        ],
+        "comments": [
+            {"author": {"login": "charlie"}, "body": "lgtm",
+             "createdAt": "2026-05-20T08:00:00Z"},
+        ],
+    }
+    items = _detect_new_review_activity(payload, since)
+    authors = [i["author"] for i in items]
+    assert "alice" not in authors  # 早于 since
+    assert authors == ["bob", "charlie"]
+    assert items[0]["type"] == "review"
+    assert items[0]["state"] == "CHANGES_REQUESTED"
+    assert items[1]["type"] == "comment"
+
+
+def test_detect_new_review_activity_no_since_includes_all():
+    """since=None → 返回全部（首次 sync 场景）"""
+    from app.crashguard.services.pr_sync import _detect_new_review_activity
+    payload = {
+        "reviews": [{"author": {"login": "x"}, "state": "APPROVED",
+                     "body": "ok", "submittedAt": "2026-05-20T05:00:00Z"}],
+        "comments": [],
+    }
+    items = _detect_new_review_activity(payload, None)
+    assert len(items) == 1
+
+
+def test_detect_new_review_activity_robust_against_malformed():
+    """字段缺失 / 类型错乱时不崩"""
+    from datetime import datetime
+    from app.crashguard.services.pr_sync import _detect_new_review_activity
+    payload = {
+        "reviews": [None, {}, {"submittedAt": "garbage"}],
+        "comments": [{"author": "string-not-dict", "createdAt": "2026-05-20T10:00:00Z",
+                      "body": "x"}],
+    }
+    # author 是字符串而非 dict 也应被接收
+    items = _detect_new_review_activity(payload, datetime(2026, 5, 20, 9, 0, 0))
+    assert len(items) == 1
+    assert items[0]["author"] == "string-not-dict"
