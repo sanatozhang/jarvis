@@ -797,6 +797,56 @@ async def _create_one_draft_pr(
         "crashguard draft PR created: %s (repo=%s analysis=%d kind=%s)",
         pr_url, repo_logical, analysis_id, change_kind,
     )
+
+    # ─── Post-PR QA Agent (fire-and-forget) ───
+    # 评估刚创建的 PR 质量；fails open，永不阻塞 PR 主链路。
+    # 输入：本次 PR diff（gh pr diff 兜底用 ana.fix_diff）+ issue context
+    if pr_url and pr_number:
+        try:
+            import asyncio as _qa_asyncio
+            from urllib.parse import urlparse as _qa_urlparse
+            from app.crashguard.services.pr_qa_agent import run_post_pr_quality_check
+
+            # 从 pr_url 抽 owner/repo
+            parsed_url = _qa_urlparse(pr_url)
+            parts = [p for p in parsed_url.path.split("/") if p]
+            qa_repo_slug = f"{parts[0]}/{parts[1]}" if len(parts) >= 2 else ""
+
+            if qa_repo_slug:
+                # 复用 ana_row / issue 字段（ana_row 已在上方 fetch）
+                _qa_root_cause = ""
+                _qa_fix_sugg = ""
+                _qa_fix_diff = ""
+                _qa_issue_stack = ""
+                if ana_row is not None:
+                    _qa_root_cause = ana_row.root_cause or ""
+                    _qa_fix_sugg = ana_row.fix_suggestion or ""
+                    _qa_fix_diff = ana_row.fix_diff or ""
+                    # 拉 issue stack（不阻塞 PR 主流程，单独 session 读）
+                    try:
+                        async with get_session() as _qa_sess:
+                            _qa_issue = (await _qa_sess.execute(
+                                select(CrashIssue).where(
+                                    CrashIssue.datadog_issue_id == ana_row.datadog_issue_id
+                                )
+                            )).scalar_one_or_none()
+                            if _qa_issue:
+                                _qa_issue_stack = _qa_issue.representative_stack or ""
+                    except Exception:
+                        pass
+                _qa_asyncio.create_task(run_post_pr_quality_check(
+                    pr_url=pr_url,
+                    repo_slug=qa_repo_slug,
+                    pr_number=pr_number,
+                    root_cause=_qa_root_cause,
+                    fix_suggestion=_qa_fix_sugg,
+                    issue_stack=_qa_issue_stack,
+                    analysis_id=analysis_id,
+                    fallback_diff=_qa_fix_diff,
+                ))
+        except Exception:
+            logger.exception("post-PR QA trigger failed (non-fatal)")
+
     return {
         "ok": True, "pr_url": pr_url, "pr_number": pr_number, "branch_name": branch,
         "repo": repo_logical, "triggered_by": triggered_by, "patch_applied": True,
