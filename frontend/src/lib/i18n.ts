@@ -41,6 +41,7 @@ const EN: Record<string, string> = {
 
   // Crashguard
   "崩溃看板": "Crash Dashboard",
+  "发布管理": "Release",
   "快照日期": "Snapshot date",
   "Datadog 未配置": "Datadog not configured",
   "正在从 Datadog 拉取最新崩溃数据并触发 AI 分析...": "Fetching crash data from Datadog and starting AI analysis...",

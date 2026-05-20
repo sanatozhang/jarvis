@@ -186,6 +186,34 @@ class ConcurrencySettings(BaseSettings):
     task_timeout: int = 600
 
 
+class JenkinsServerConfig(BaseSettings):
+    """One Jenkins endpoint. Each has its own independent account."""
+    url: str = ""                # "http://10.0.52.101:8080"
+    user: str = ""               # e.g. "jarvis-bot"
+    token_env: str = ""          # name of env var that holds the API token
+    api_token: str = ""          # resolved at load time from os.environ[token_env]
+
+
+class JenkinsSettings(BaseSettings):
+    """Jenkins release-build automation."""
+
+    enabled: bool = False
+    servers: List[JenkinsServerConfig] = Field(default_factory=list)
+    job_cn: str = "plaud-app-publish-cn"
+    job_global: str = "plaud-app-publish-global"
+    poll_interval_seconds: int = 30
+    build_timeout_seconds: int = 3600
+    mt_bin: str = "mt"                                 # override if installed under custom path
+    notify_emails: List[str] = Field(default_factory=list)  # 飞书额外抄送（除创建者外）
+
+    model_config = {
+        "env_prefix": "JENKINS_",
+        "env_file": str(PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+
 class StorageSettings(BaseSettings):
     workspace_dir: str = "./workspaces"
     data_dir: str = "./data"
@@ -214,6 +242,7 @@ class Settings(BaseSettings):
     context_condensation: ContextCondensationSettings = Field(default_factory=ContextCondensationSettings)
     concurrency: ConcurrencySettings = Field(default_factory=ConcurrencySettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    jenkins: JenkinsSettings = Field(default_factory=JenkinsSettings)
 
     model_config = {
         "env_file": str(PROJECT_ROOT / ".env"),
@@ -306,6 +335,31 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
     for k, v in sc.items():
         if hasattr(settings.storage, k):
             setattr(settings.storage, k, v)
+
+    # Jenkins (release automation). Server list is rendered into
+    # JenkinsServerConfig objects; per-server API tokens are pulled from
+    # env vars whose names are spelled in `token_env`.
+    jk = cfg.get("jenkins", {})
+    for k, v in jk.items():
+        if k == "servers":
+            servers: List[JenkinsServerConfig] = []
+            for srv in v or []:
+                if isinstance(srv, str):
+                    # Legacy bare-URL form — kept so we don't break old configs.
+                    servers.append(JenkinsServerConfig(url=srv))
+                    continue
+                cfg_obj = JenkinsServerConfig(
+                    url=srv.get("url", ""),
+                    user=srv.get("user", ""),
+                    token_env=srv.get("token_env", ""),
+                )
+                if cfg_obj.token_env:
+                    cfg_obj.api_token = os.getenv(cfg_obj.token_env, "")
+                servers.append(cfg_obj)
+            settings.jenkins.servers = servers
+            continue
+        if hasattr(settings.jenkins, k) and not os.getenv(f"JENKINS_{k.upper()}"):
+            setattr(settings.jenkins, k, v)
 
     # frontend_base_url: yaml 优先，其次 env APPLLO_BASE_URL，再次 CRASHGUARD_FRONTEND_BASE_URL
     if not settings.frontend_base_url:

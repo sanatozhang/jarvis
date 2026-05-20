@@ -228,6 +228,51 @@ class WishRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Release(Base):
+    """One row per `release/X.Y.Z_MMDD` branch creation."""
+    __tablename__ = "releases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    branch = Column(String(128), unique=True, nullable=False, index=True)
+    version = Column(String(32), nullable=False, default="")   # "3.2.0"
+    date_tag = Column(String(8), nullable=False, default="")   # "1222"
+    repos_json = Column(Text, default="[]")                    # [{"name":"common","commit_sha":"..."}]
+    created_by = Column(String(128), default="", index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    status = Column(String(16), default="created")             # created / deleted
+
+
+class ReleaseBuild(Base):
+    """One row per Jenkins build trigger against a release branch."""
+    __tablename__ = "release_builds"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    branch = Column(String(128), nullable=False, index=True)
+    target = Column(String(16), nullable=False, index=True)      # "cn" / "global"
+    android_multi_channel = Column(Boolean, default=False)
+    params_json = Column(Text, default="{}")                     # the exact form-data sent to Jenkins
+
+    # Jenkins
+    jenkins_server = Column(String(128), default="")
+    jenkins_job = Column(String(128), default="")
+    jenkins_queue_id = Column(Integer, nullable=True)
+    jenkins_build_number = Column(Integer, nullable=True)
+    jenkins_build_url = Column(String(512), default="")
+
+    # state machine: pending / queued / running / success / failure / aborted / error
+    status = Column(String(16), default="pending", index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, default="")
+
+    # artifacts (filled by poller on success)
+    artifact_android_url = Column(String(1024), default="")
+    artifact_ios_url = Column(String(1024), default="")
+
+    triggered_by = Column(String(128), default="", index=True)
+    triggered_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 # ---------------------------------------------------------------------------
 # Engine / Session
 # ---------------------------------------------------------------------------

@@ -160,6 +160,10 @@ async def lifespan(app: FastAPI):
     from app.services.repo_updater import repo_update_loop
     repo_update_task = asyncio.create_task(repo_update_loop())
 
+    # Release build status poller (Jenkins) — only spins if jenkins.enabled
+    from app.workers.release_poller import release_poller_loop
+    release_poller_task = asyncio.create_task(release_poller_loop())
+
     # Crashguard 早晚报调度（每 60 秒 tick；命中 morning/evening cron 即推飞书）
     from app.crashguard.workers.scheduler import report_scheduler_loop
     crashguard_scheduler_task = asyncio.create_task(report_scheduler_loop())
@@ -192,6 +196,7 @@ async def lifespan(app: FastAPI):
         crashguard_warmup_task.cancel()
     crashguard_pipeline_task.cancel()
     crashguard_scheduler_task.cancel()
+    release_poller_task.cancel()
     repo_update_task.cancel()
     zombie_task.cancel()
     await close_db()
@@ -245,6 +250,7 @@ from app.api.golden_samples import router as golden_samples_router
 from app.api.eval import router as eval_router
 from app.api.tools import router as tools_router
 from app.api.wishes import router as wishes_router
+from app.api.release import router as release_router
 
 app.include_router(issues_router, prefix="/api/issues", tags=["Issues"])
 app.include_router(tasks_router, prefix="/api/tasks", tags=["Tasks"])
@@ -265,6 +271,7 @@ app.include_router(golden_samples_router, prefix="/api/golden-samples", tags=["G
 app.include_router(eval_router, prefix="/api/eval", tags=["Eval"])
 app.include_router(tools_router, prefix="/api/tools", tags=["Tools"])
 app.include_router(wishes_router, prefix="/api/wishes", tags=["Wishes"])
+app.include_router(release_router, prefix="/api/release", tags=["Release"])
 
 # Crashguard API（独立子模块，prefix 在 router 内部声明 /api/crash）
 from app.crashguard.api import crash as _crash_api  # noqa: E402
