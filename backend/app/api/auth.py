@@ -161,6 +161,21 @@ async def google_callback(request: Request, code: Optional[str] = None,
 async def auth_me(request: Request):
     user_state = getattr(request.state, "user", None)
     if not user_state:
+        # Fallback: parse cookie directly if middleware didn't (e.g. SSO disabled)
+        settings = get_settings().sso
+        token = request.cookies.get(settings.cookie_name)
+        if token:
+            try:
+                from app.services.auth_jwt import verify_token
+                payload = verify_token(token, secret=settings.jwt_secret)
+                user_state = {
+                    "username": payload["username"],
+                    "email": payload["email"],
+                    "role": payload["role"],
+                }
+            except Exception:
+                pass
+    if not user_state:
         return JSONResponse({"detail": "unauthenticated"}, status_code=401)
     record = await db.get_user(user_state["username"])
     return {
