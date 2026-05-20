@@ -332,3 +332,64 @@ def test_pre_enter_heal_resets_stale_crashguard_branch(tmp_path):
     assert not (tmp_path / "prompt.md").exists()
     branches = _sp.run(["git", "branch"], cwd=str(tmp_path), capture_output=True, text=True).stdout
     assert "crashguard/flutter/stale-zombie" not in branches
+
+
+# ─────────────────── multi-repo flutter routing (commit a0ac9f0+) ───────────────────
+
+def test_detect_flutter_subrepo_hint_global():
+    """root_cause 或 fix_suggestion 提到 plaud-flutter-global → 路由到 global sub-repo"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_hint
+    assert _detect_flutter_subrepo_hint(
+        "根因在 code/plaud-flutter-global/lib/shared/puth_helper/push_helper.dart"
+    ) == "global"
+    assert _detect_flutter_subrepo_hint("PLAUD-FLUTTER-GLOBAL/lib/...") == "global"
+
+
+def test_detect_flutter_subrepo_hint_cn():
+    """plaud-flutter-cn / plaud-flutter-china 提示 → 路由到 cn sub-repo"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_hint
+    assert _detect_flutter_subrepo_hint("plaud-flutter-cn/lib/x.dart") == "cn"
+    assert _detect_flutter_subrepo_hint("plaud-flutter-china/...") == "cn"
+
+
+def test_detect_flutter_subrepo_hint_service_label():
+    """service / bundle id 提示也算 hint"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_hint
+    assert _detect_flutter_subrepo_hint("service: com.plaud.global") == "global"
+    assert _detect_flutter_subrepo_hint("ai.plaud.cn application") == "cn"
+
+
+def test_detect_flutter_subrepo_hint_default_empty():
+    """没明显提示 → 返回空字符串（默认 common）"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_hint
+    assert _detect_flutter_subrepo_hint("") == ""
+    assert _detect_flutter_subrepo_hint("FileSystemException") == ""
+
+
+def test_platform_repo_path_flutter_routes_by_hint(monkeypatch, tmp_path):
+    """_platform_repo_path 根据 sub_hint 切换 sub-repo"""
+    from app.crashguard.services import pr_drafter
+    # 准备三个伪 sub-repo 目录（每个含 .git 文件）
+    wrapper = tmp_path / "plaud_ai"
+    wrapper.mkdir()
+    for sub in ("plaud-flutter-common", "plaud-flutter-global", "plaud-flutter-cn"):
+        d = wrapper / sub
+        d.mkdir()
+        (d / ".git").write_text("gitdir: fake")
+
+    # 绕过 yaml direct override + mock wrapper resolver
+    monkeypatch.setattr(
+        pr_drafter, "get_crashguard_settings",
+        lambda: type("S", (), {"repo_path_flutter": "", "repo_path_android": "",
+                                "repo_path_ios": ""})(),
+    )
+    import app.config as cfg
+    monkeypatch.setattr(cfg, "get_code_repo_for_platform", lambda _: str(wrapper))
+
+    common = pr_drafter._platform_repo_path("flutter")
+    global_ = pr_drafter._platform_repo_path("flutter", "global")
+    cn = pr_drafter._platform_repo_path("flutter", "cn")
+
+    assert common and common.endswith("plaud-flutter-common")
+    assert global_ and global_.endswith("plaud-flutter-global")
+    assert cn and cn.endswith("plaud-flutter-cn")

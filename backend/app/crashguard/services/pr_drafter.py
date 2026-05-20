@@ -52,6 +52,43 @@ _FORBIDDEN_GIT_FLAGS = {"--merge", "--rebase", "--squash"}
 _FORBIDDEN_GH_SUBCOMMANDS = {"merge", "ready"}
 
 
+def _detect_flutter_subrepo_hint(text: str) -> str:
+    """从 fix_text / stack / root_cause 探测 Flutter sub-repo 提示。
+
+    返回 "global" / "cn" / ""（默认 common）。
+
+    Plaud Flutter 三仓 monorepo 拓扑：
+      - plaud-flutter-common: 共享代码 lib（含 interface / 通用 util）
+      - plaud-flutter-global: 海外版 app（独立实现 puth_helper/push_helper.dart 等）
+      - plaud-flutter-cn:     国内版 app（独立实现）
+
+    底层逻辑：crashguard 默认把所有 flutter issue 路由到 plaud-flutter-common，
+    但 common 里很多文件是空 stub（git 空 SHA e69de29b...），实际代码在 global / cn。
+    AI 通常会在 root_cause / fix_suggestion 里写明仓库前缀（如
+    "code/plaud-flutter-global/lib/..."），这里抽取出来作为路由 hint。
+    """
+    if not text:
+        return ""
+    t = text.lower()
+    # 1. 字面仓库名提示（root_cause 常带 `plaud-flutter-global/lib/...` 前缀）
+    if "plaud-flutter-global" in t or "plaud_flutter_global" in t:
+        return "global"
+    if (
+        "plaud-flutter-cn" in t or "plaud-flutter-china" in t
+        or "plaud_flutter_cn" in t or "plaud_flutter_china" in t
+    ):
+        return "cn"
+    # 2. service 标签 / bundle id 提示（issue.service 或 stack 可能带）
+    if "com.plaud.global" in t or "ai.plaud.global" in t:
+        return "global"
+    if (
+        "com.plaud.cn" in t or "com.plaud.china" in t
+        or "ai.plaud.cn" in t or "ai.plaud.china" in t
+    ):
+        return "cn"
+    return ""
+
+
 def _resolve_candidate_repos(
     platform: str, fix_text: str, issue_stack: str = "",
 ) -> list[tuple[str, str]]:
@@ -61,20 +98,28 @@ def _resolve_candidate_repos(
     比如 Android ANR 的修复同时在 plaud-flutter-common（dart 层暂停动画）和
     plaud-android（原生 Activity 配置）。这里通过文本特征探测涉及的所有仓库。
 
+    Flutter 路由抓手：当文本提示 plaud-flutter-global / plaud-flutter-cn 时
+    切换到对应 sub-repo，避免 fix_diff 被 apply 到 common 里的空 stub（已知坑：
+    lib/shared/puth_helper/push_helper.dart 在 common 是 git 空文件 e69de29b...，
+    但在 global / cn 是真实实现）。
+
     返回 [(logical_name, abs_path), ...]，已去重，platform 默认仓库始终在第一位。
     """
     out: list[tuple[str, str]] = []
     seen: set = set()
     text = ((fix_text or "") + " " + (issue_stack or "")).lower()
+    flutter_hint = _detect_flutter_subrepo_hint(text)
 
-    def add(name: str) -> None:
-        path = _platform_repo_path(name)
+    def add(name: str, sub_hint: str = "") -> None:
+        path = _platform_repo_path(name, sub_hint)
         if path and path not in seen and Path(path).exists():
             out.append((name, path))
             seen.add(path)
 
     p = (platform or "").strip().lower()
-    if p in ("android", "ios", "flutter"):
+    if p == "flutter":
+        add("flutter", flutter_hint)
+    elif p in ("android", "ios"):
         add(p)
 
     has_dart = (".dart" in text) or ("pubspec" in text) or ("flutter" in text)
@@ -87,7 +132,7 @@ def _resolve_candidate_repos(
         or "podfile" in text or ".plist" in text
     )
     if has_dart and p != "flutter":
-        add("flutter")
+        add("flutter", flutter_hint)
     if has_kotlin_java and p != "android":
         add("android")
     if has_swift_objc and p != "ios":
@@ -95,16 +140,18 @@ def _resolve_candidate_repos(
     return out
 
 
-def _platform_repo_path(platform: str) -> Optional[str]:
+def _platform_repo_path(platform: str, sub_hint: str = "") -> Optional[str]:
     """根据 platform 返回真实 sub-repo 绝对路径（不是 monorepo wrapper）。
 
     Plaud2 是 git submodule 壳，不接 PR。每个端有独立 sub-repo：
-      android  → CODE_REPO_PATH/plaud-android
-      ios      → CODE_REPO_PATH/plaud-ios
-      flutter  → CODE_REPO_PATH/plaud-flutter-common（默认；可通过 yaml override）
+      android       → CODE_REPO_PATH/plaud-android
+      ios           → CODE_REPO_PATH/plaud-ios
+      flutter       → CODE_REPO_PATH/plaud-flutter-common（默认；可通过 yaml override）
+      flutter+global→ CODE_REPO_PATH/plaud-flutter-global（sub_hint="global"）
+      flutter+cn    → CODE_REPO_PATH/plaud-flutter-cn（sub_hint="cn"）
 
     优先级：
-      1. crashguard.repo_paths.<platform> 显式配置（绝对路径）
+      1. crashguard.repo_paths.<platform> 显式配置（绝对路径，flutter 直配优先于 hint）
       2. CODE_REPO_PATH 下的标准 sub-repo 子目录
       3. None（拒绝创建 PR）
     """
@@ -124,11 +171,16 @@ def _platform_repo_path(platform: str) -> Optional[str]:
         return None
     wrapper = os.path.expanduser(wrapper)
 
-    sub_default = {
-        "android": "plaud-android",
-        "ios": "plaud-ios",
-        "flutter": "plaud-flutter-common",
-    }.get(p)
+    if p == "flutter":
+        sub_default = {
+            "global": "plaud-flutter-global",
+            "cn":     "plaud-flutter-cn",
+        }.get((sub_hint or "").strip().lower(), "plaud-flutter-common")
+    else:
+        sub_default = {
+            "android": "plaud-android",
+            "ios":     "plaud-ios",
+        }.get(p)
     if not sub_default:
         return None
     candidate = os.path.join(wrapper, sub_default)
