@@ -85,46 +85,51 @@ async def _collect_attention_ids(today: date) -> List[str]:
         return len(ordered) >= cap
 
     # 只分析能自动修复的平台（BROWSER/JS 错误无对应 mobile repo，分析后无法生成 PR，
-    # 浪费 AI token 并挤占 Top N 名额）
+    # 浪费 AI token 并挤占 Top N 名额）—— 由 pick_top_n 在源头按 include_platforms 过滤，
+    # 避免"先拿 Top 20 再后置过滤"导致 BROWSER 挤占名额、FLUTTER 高流量 issue 进不了池。
     from app.crashguard.models import CrashIssue as _CrashIssue
     s_cfg = get_crashguard_settings()
-    _FIXABLE = frozenset(
+    fixable_platforms = tuple(
         p.lower() for p in
         getattr(s_cfg, "auto_pr_fixable_platforms", ["android", "ios", "flutter"])
     )
+    # 排序键：events DESC —— Plaud RUM users_affected 字段全 0（见 models.py:71），
+    # 默认 score 排序会让所有 issue score=0，回退到不确定的 DB 顺序。改用 events 直接见效。
+    _ORDER_BY = "events"
 
     async with get_session() as session:
-        # 可修复平台 issue id 集合（用于过滤 snapshot 选出的 id）
-        fixable_issue_ids: set[str] = set(r[0] for r in (await session.execute(
-            select(_CrashIssue.datadog_issue_id).where(
-                _CrashIssue.platform.in_([p.upper() for p in _FIXABLE] + list(_FIXABLE))
-            )
-        )).all())
-
         top_fatal = await pick_top_n(
             session, today=today, n=cap, kinds=(), fatality="fatal", dedup_days=0,
+            include_platforms=fixable_platforms, order_by=_ORDER_BY,
         )
         for item in top_fatal:
             iid = item.get("datadog_issue_id") or ""
-            if iid in fixable_issue_ids and _add(iid):
+            if _add(iid):
                 return ordered
 
+        # 新增崩溃：直接限定平台 + 按 events DESC 取，与 pick_top_n 一致语义
         new_rows = (await session.execute(
-            select(CrashSnapshot.datadog_issue_id).where(
+            select(CrashSnapshot.datadog_issue_id)
+            .join(_CrashIssue, _CrashIssue.datadog_issue_id == CrashSnapshot.datadog_issue_id)
+            .where(
                 CrashSnapshot.snapshot_date == today,
                 CrashSnapshot.is_new_in_version == True,  # noqa: E712
+                _CrashIssue.platform.in_(list(fixable_platforms)
+                                          + [p.upper() for p in fixable_platforms]),
             )
+            .order_by(CrashSnapshot.events_count.desc())
         )).scalars().all()
         for iid in new_rows:
-            if (iid or "") in fixable_issue_ids and _add(iid or ""):
+            if _add(iid or ""):
                 return ordered
 
         top_nonfatal = await pick_top_n(
             session, today=today, n=cap, kinds=(), fatality="non_fatal", dedup_days=0,
+            include_platforms=fixable_platforms, order_by=_ORDER_BY,
         )
         for item in top_nonfatal:
             iid = item.get("datadog_issue_id") or ""
-            if iid in fixable_issue_ids and _add(iid):
+            if _add(iid):
                 return ordered
 
     return ordered

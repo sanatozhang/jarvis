@@ -174,3 +174,77 @@ async def test_pick_top_n_skips_recently_reported(tmp_path, monkeypatch):
     assert "i_dup" not in ids          # 7 天内重复 → 跳过
     assert "i_dup_surge" in ids         # surge 例外
     assert "i_fresh" in ids
+
+
+@pytest.mark.asyncio
+async def test_pick_top_n_include_platforms_filter(tmp_path, monkeypatch):
+    """include_platforms 在源头过滤 — BROWSER 不应挤占名额，FLUTTER 全入"""
+    from datetime import date
+    from app.db.database import get_session, init_db
+    from app.crashguard import models  # noqa
+    from app.crashguard.models import CrashSnapshot, CrashIssue
+    from app.crashguard.services.ranker import pick_top_n
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'rank4.db'}")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    await init_db()
+
+    today = date.today()
+
+    async with get_session() as s:
+        # BROWSER score 极高（模拟现网）
+        for i in range(3):
+            s.add(CrashIssue(datadog_issue_id=f"b{i}", platform="BROWSER", title=f"b{i}"))
+            s.add(CrashSnapshot(
+                datadog_issue_id=f"b{i}", snapshot_date=today,
+                events_count=10000, crash_free_impact_score=999.0,
+            ))
+        # FLUTTER score 低，但属于可修复平台
+        s.add(CrashIssue(datadog_issue_id="f1", platform="FLUTTER", title="f1"))
+        s.add(CrashSnapshot(
+            datadog_issue_id="f1", snapshot_date=today,
+            events_count=100, crash_free_impact_score=5.0,
+        ))
+        await s.commit()
+
+    async with get_session() as s:
+        # n=2 + include=("flutter",) → 即便 BROWSER score 高也应只返回 FLUTTER
+        top = await pick_top_n(
+            s, today=today, n=2,
+            include_platforms=("flutter", "android", "ios"),
+        )
+        ids = [t["datadog_issue_id"] for t in top]
+        assert ids == ["f1"], f"expected only flutter, got {ids}"
+
+
+@pytest.mark.asyncio
+async def test_pick_top_n_order_by_events(tmp_path, monkeypatch):
+    """order_by='events' 应绕过 score=0 的 user data hole，按 events DESC 排"""
+    from datetime import date
+    from app.db.database import get_session, init_db
+    from app.crashguard import models  # noqa
+    from app.crashguard.models import CrashSnapshot, CrashIssue
+    from app.crashguard.services.ranker import pick_top_n
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'rank5.db'}")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    await init_db()
+
+    today = date.today()
+
+    async with get_session() as s:
+        # 模拟 Plaud RUM data hole — users 全 0，score 全 0
+        for iid, events in [("a", 100), ("b", 5000), ("c", 50)]:
+            s.add(CrashIssue(datadog_issue_id=iid, platform="flutter", title=iid))
+            s.add(CrashSnapshot(
+                datadog_issue_id=iid, snapshot_date=today,
+                events_count=events, users_affected=0, crash_free_impact_score=0.0,
+            ))
+        await s.commit()
+
+    async with get_session() as s:
+        top = await pick_top_n(s, today=today, n=10, order_by="events")
+        ids = [t["datadog_issue_id"] for t in top]
+        assert ids == ["b", "a", "c"], f"expected events DESC, got {ids}"

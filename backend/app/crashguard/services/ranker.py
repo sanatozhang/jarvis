@@ -39,19 +39,30 @@ async def pick_top_n(
     kinds: tuple = ("crash", "anr"),
     fatality: str = "",
     skip_dedup: bool = False,
+    include_platforms: tuple = (),
+    exclude_platforms: tuple = (),
+    order_by: str = "score",
 ) -> List[Dict[str, Any]]:
     """
     返回 Top N issue（dict 形式）。
 
     优先级:
     - P0: is_new_in_version OR is_regression → 强制入选
-    - P1: 剩余席位按 crash_free_impact_score DESC 填满
+    - P1: 剩余席位按 order_by 排序填满
     - 同 issue 在 dedup_days 内已推送过 → 跳过（is_surge 例外）
 
     skip_dedup=True 时关闭"7 天内已推过则跳过"逻辑——首页分页要看今日全集，
     不能因为早晚报推送过就消失（日报调用路径继续传 False 保留原语义）。
 
     n=0 或 n<0 视作不截断：返回全部候选（含 P0+P1）按 tier+score 完整排序后的列表。
+
+    include_platforms: 平台白名单（大小写不敏感）。非空时仅保留命中的 issue。
+        典型用法：AI 分析池只要 ("android","ios","flutter") —— BROWSER/NODE 无 mobile repo
+        无法生成 PR，过滤掉避免挤占名额。
+    exclude_platforms: 平台黑名单。命中即剔除。include 与 exclude 同时传时，先 include 后 exclude。
+    order_by: 排序键。
+        - "score" (默认)：crash_free_impact_score DESC（users_affected × log10(events+1)）
+        - "events"：events_count DESC（绕过 Plaud RUM user 字段 data hole — 见 models.py:71）
 
     返回字段: datadog_issue_id, title, platform, events_count, users_affected,
              crash_free_impact_score, is_new_in_version, is_regression, is_surge,
@@ -104,12 +115,20 @@ async def pick_top_n(
     enriched: List[Dict[str, Any]] = []
     allowed_kinds = set(kinds) if kinds else None
     fatality_filter = (fatality or "").strip().lower()
+    include_set = {p.lower() for p in (include_platforms or ()) if p}
+    exclude_set = {p.lower() for p in (exclude_platforms or ()) if p}
     for snap, issue in rows:
         # 2. 7 天内已推 + 非 surge → 跳过
         if snap.datadog_issue_id in recently_reported and not snap.is_surge:
             continue
         kind = (getattr(issue, "kind", None) or "crash").lower()
         if allowed_kinds is not None and kind not in allowed_kinds:
+            continue
+        # 平台白/黑名单过滤（源头过滤，避免 BROWSER 等不可修复平台挤占 Top N 名额）
+        issue_platform = (issue.platform or "").lower()
+        if include_set and issue_platform not in include_set:
+            continue
+        if exclude_set and issue_platform in exclude_set:
             continue
         # QA 内测包过滤：版本第三段 >= qa_version_patch_threshold
         issue_ver = getattr(issue, "last_seen_version", "") or ""
@@ -148,8 +167,14 @@ async def pick_top_n(
     p0 = [e for e in enriched if e["is_new_in_version"] or e["is_regression"]]
     p1 = [e for e in enriched if not (e["is_new_in_version"] or e["is_regression"])]
 
-    p0.sort(key=lambda e: e["crash_free_impact_score"], reverse=True)
-    p1.sort(key=lambda e: e["crash_free_impact_score"], reverse=True)
+    # 排序键：score（默认，user 优先）或 events（绕过 RUM user data hole）
+    # 同分回退 events 二级排序，避免 score=0 时数据库返回顺序不确定
+    if (order_by or "score").lower() == "events":
+        sort_key = lambda e: (e["events_count"], e["crash_free_impact_score"])
+    else:
+        sort_key = lambda e: (e["crash_free_impact_score"], e["events_count"])
+    p0.sort(key=sort_key, reverse=True)
+    p1.sort(key=sort_key, reverse=True)
 
     selected: List[Dict[str, Any]] = []
     if n is None or n <= 0:
