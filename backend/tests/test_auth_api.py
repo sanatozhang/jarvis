@@ -146,3 +146,108 @@ async def test_logout_clears_cookie(client, monkeypatch):
     set_cookie = r.headers.get("set-cookie", "")
     assert "jarvis_session=" in set_cookie
     assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+
+
+@pytest.mark.asyncio
+async def test_bind_login_redirects_with_state(client, monkeypatch):
+    """bind-login signs state with bind_username and redirects to Feishu."""
+    # SSO off (compat mode); jwt_secret still needs to be set
+    from app.config import get_settings
+    get_settings().sso.enabled = False
+    r = await client.get("/api/auth/feishu/bind-login?username=sanato&next=/issues",
+                         follow_redirects=False)
+    assert r.status_code == 302
+    assert "accounts.feishu.cn" in r.headers["location"]
+    assert "bind-callback" in r.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_bind_login_rejects_missing_username(client):
+    r = await client.get("/api/auth/feishu/bind-login?username=&next=/",
+                         follow_redirects=False)
+    assert r.status_code == 302
+    assert "missing_username" in r.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_bind_callback_writes_email_to_existing_user(client):
+    from app.db import database as db_mod
+    await db_mod.upsert_user("legacy_user", feishu_email="", role="user")
+
+    from app.services.auth_feishu import sign_state
+    from app.config import get_settings
+    state = sign_state(
+        secret=get_settings().sso.jwt_secret,
+        next_url="/",
+        bind_username="legacy_user",
+    )
+
+    fake_info = {"enterprise_email": "legacy_user@plaud.ai", "name": "Legacy"}
+    with patch("app.api.auth._exchange_code_for_user_info", return_value=fake_info):
+        r = await client.get(
+            f"/api/auth/feishu/bind-callback?code=x&state={state}",
+            follow_redirects=False,
+        )
+    assert r.status_code == 302
+    assert "feishu_bind=ok" in r.headers["location"]
+
+    user = await db_mod.get_user("legacy_user")
+    assert user["feishu_email"] == "legacy_user@plaud.ai"
+    assert user["role"] == "user"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_bind_callback_no_cookie_set(client):
+    """Bind callback must NOT set the auth session cookie."""
+    from app.db import database as db_mod
+    await db_mod.upsert_user("u", feishu_email="", role="user")
+
+    from app.services.auth_feishu import sign_state
+    from app.config import get_settings
+    state = sign_state(secret=get_settings().sso.jwt_secret, next_url="/",
+                       bind_username="u")
+
+    fake_info = {"enterprise_email": "u@plaud.ai"}
+    with patch("app.api.auth._exchange_code_for_user_info", return_value=fake_info):
+        r = await client.get(
+            f"/api/auth/feishu/bind-callback?code=x&state={state}",
+            follow_redirects=False,
+        )
+    assert "jarvis_session" not in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
+async def test_bind_callback_rejects_non_plaud_domain(client):
+    from app.db import database as db_mod
+    await db_mod.upsert_user("u", feishu_email="", role="user")
+
+    from app.services.auth_feishu import sign_state
+    from app.config import get_settings
+    state = sign_state(secret=get_settings().sso.jwt_secret, next_url="/",
+                       bind_username="u")
+
+    fake_info = {"enterprise_email": "evil@gmail.com"}
+    with patch("app.api.auth._exchange_code_for_user_info", return_value=fake_info):
+        r = await client.get(
+            f"/api/auth/feishu/bind-callback?code=x&state={state}",
+            follow_redirects=False,
+        )
+    assert "domain_not_allowed" in r.headers["location"]
+    user = await db_mod.get_user("u")
+    assert user["feishu_email"] == ""  # not bound
+
+
+@pytest.mark.asyncio
+async def test_bind_callback_user_not_found(client):
+    from app.services.auth_feishu import sign_state
+    from app.config import get_settings
+    state = sign_state(secret=get_settings().sso.jwt_secret, next_url="/",
+                       bind_username="ghost")
+
+    fake_info = {"enterprise_email": "ghost@plaud.ai"}
+    with patch("app.api.auth._exchange_code_for_user_info", return_value=fake_info):
+        r = await client.get(
+            f"/api/auth/feishu/bind-callback?code=x&state={state}",
+            follow_redirects=False,
+        )
+    assert "user_not_found" in r.headers["location"]

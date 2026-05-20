@@ -111,7 +111,8 @@ async def feishu_callback(request: Request, code: Optional[str] = None,
         return _login_error_redirect("invalid_state")
 
     try:
-        next_url = verify_state(secret=settings.jwt_secret, state=state)
+        state_payload = verify_state(secret=settings.jwt_secret, state=state)
+        next_url = state_payload["next"]
     except StateError:
         return _login_error_redirect("invalid_state")
 
@@ -171,6 +172,86 @@ async def feishu_callback(request: Request, code: Optional[str] = None,
         path="/",
     )
     return resp
+
+
+@router.get("/feishu/bind-login")
+async def feishu_bind_login(request: Request, username: str, next: str = "/"):
+    """Start Feishu OAuth for the purpose of binding an email to an existing username.
+
+    Used in compat mode (ENABLE_SSO=false): user already has a localStorage
+    username; this endpoint signs a state carrying that username, then sends
+    them through Feishu OAuth. The bind-callback writes the returned email
+    onto the existing user row instead of creating a new one.
+    """
+    settings = get_settings().sso
+    if not username:
+        return RedirectResponse("/?feishu_bind=error&reason=missing_username", status_code=302)
+    state = sign_state(
+        secret=settings.jwt_secret,
+        next_url=next,
+        bind_username=username,
+    )
+    params = {
+        "app_id": settings.feishu_app_id,
+        "redirect_uri": settings.feishu_redirect_uri.replace(
+            "/api/auth/feishu/callback", "/api/auth/feishu/bind-callback"
+        ),
+        "state": state,
+    }
+    return RedirectResponse(
+        f"{FEISHU_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}",
+        status_code=302,
+    )
+
+
+@router.get("/feishu/bind-callback")
+async def feishu_bind_callback(request: Request, code: Optional[str] = None,
+                                state: Optional[str] = None):
+    """Receive Feishu OAuth callback for bind flow; write email to existing user.
+
+    Differs from /feishu/callback in:
+      - Does NOT create or upsert by derived username.
+      - Updates feishu_email on the user named in `state.bind_username`.
+      - Does NOT set the auth cookie (legacy login still uses localStorage).
+      - Returns 302 to next_url with success/error flag in query.
+    """
+    settings = get_settings().sso
+
+    if not code or not state:
+        return RedirectResponse("/?feishu_bind=error&reason=invalid_state", status_code=302)
+
+    try:
+        payload = verify_state(secret=settings.jwt_secret, state=state)
+    except StateError:
+        return RedirectResponse("/?feishu_bind=error&reason=invalid_state", status_code=302)
+
+    target_username = payload.get("bind_username", "")
+    next_url = payload.get("next", "/")
+    if not target_username:
+        return RedirectResponse(f"{next_url}?feishu_bind=error&reason=missing_username", status_code=302)
+
+    try:
+        user_info = await _exchange_code_for_user_info(code)
+    except Exception as e:
+        logger.error("bind_oauth_network_error err=%s", e)
+        return RedirectResponse(f"{next_url}?feishu_bind=error&reason=oauth_failed", status_code=302)
+
+    email = (user_info.get("enterprise_email") or user_info.get("email") or "").lower().strip()
+    if not email:
+        return RedirectResponse(f"{next_url}?feishu_bind=error&reason=no_email", status_code=302)
+
+    domain = email.rsplit("@", 1)[-1]
+    if domain not in settings.allowed_domains:
+        logger.warning("bind_login_rejected_domain email=%s", email)
+        return RedirectResponse(f"{next_url}?feishu_bind=error&reason=domain_not_allowed", status_code=302)
+
+    result = await db.update_user_feishu_email(target_username, email)
+    if not result:
+        logger.warning("bind_target_user_not_found username=%s", target_username)
+        return RedirectResponse(f"{next_url}?feishu_bind=error&reason=user_not_found", status_code=302)
+
+    logger.info("bind_success username=%s email=%s", target_username, email)
+    return RedirectResponse(f"{next_url}?feishu_bind=ok&email={urllib.parse.quote(email)}", status_code=302)
 
 
 @router.get("/me")

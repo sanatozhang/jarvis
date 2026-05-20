@@ -32,8 +32,8 @@ def test_derive_username_sanitizes_chars():
 
 def test_state_signing_roundtrip():
     state = sign_state(secret=SECRET, next_url="/issues/123")
-    next_url = verify_state(secret=SECRET, state=state)
-    assert next_url == "/issues/123"
+    payload = verify_state(secret=SECRET, state=state)
+    assert payload["next"] == "/issues/123"
 
 
 def test_state_rejects_tampered():
@@ -51,4 +51,11 @@ def test_state_rejects_wrong_secret():
 
 def test_state_ignores_external_next_url():
     state = sign_state(secret=SECRET, next_url="https://evil.com/x")
-    assert verify_state(secret=SECRET, state=state) == "/"
+    assert verify_state(secret=SECRET, state=state)["next"] == "/"
+
+
+def test_state_carries_extra_payload():
+    state = sign_state(secret=SECRET, next_url="/", target_username="sanato")
+    payload = verify_state(secret=SECRET, state=state)
+    assert payload["next"] == "/"
+    assert payload["target_username"] == "sanato"

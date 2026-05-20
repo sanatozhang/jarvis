@@ -1089,6 +1089,25 @@ async def upsert_user(
         }
 
 
+async def update_user_feishu_email(username: str, feishu_email: str) -> Optional[Dict[str, Any]]:
+    """Update only the feishu_email field for an existing user. Returns None if user not found.
+
+    Used by the bind-callback flow where we want to attach an email to a legacy
+    username without disturbing role or creating a new row.
+    """
+    async with get_session() as session:
+        record = await session.get(UserRecord, username)
+        if not record:
+            return None
+        record.feishu_email = feishu_email
+        await session.commit()
+        return {
+            "username": record.username,
+            "role": record.role,
+            "feishu_email": record.feishu_email,
+        }
+
+
 async def get_user(username: str) -> Optional[Dict[str, Any]]:
     async with get_session() as session:
         from sqlalchemy import select

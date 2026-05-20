@@ -34,8 +34,11 @@ def _sanitize_next(next_url: str) -> str:
     return next_url
 
 
-def sign_state(*, secret: str, next_url: str) -> str:
+def sign_state(*, secret: str, next_url: str = "/", **extra: str) -> str:
     payload = {"next": _sanitize_next(next_url)}
+    for k, v in extra.items():
+        if v is not None:
+            payload[k] = str(v)
     body = base64.urlsafe_b64encode(
         json.dumps(payload, separators=(",", ":")).encode("utf-8")
     ).rstrip(b"=").decode("ascii")
@@ -43,7 +46,7 @@ def sign_state(*, secret: str, next_url: str) -> str:
     return f"{body}.{sig}"
 
 
-def verify_state(*, secret: str, state: str) -> str:
+def verify_state(*, secret: str, state: str) -> dict:
     if not state or "." not in state:
         raise StateError("state missing or malformed")
     body, sig = state.rsplit(".", 1)
@@ -55,4 +58,5 @@ def verify_state(*, secret: str, state: str) -> str:
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
     except (ValueError, json.JSONDecodeError) as e:
         raise StateError("state body undecodable") from e
-    return _sanitize_next(payload.get("next", "/"))
+    payload["next"] = _sanitize_next(payload.get("next", "/"))
+    return payload
