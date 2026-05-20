@@ -83,6 +83,14 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized.")
 
+    # Apply DB-persisted agent runtime overrides (call_mode, api_traffic_ratio 等)
+    # 治本：UI 切换 call_mode 后跨重启生效，不再被 yaml 默认值偷偷覆盖。
+    try:
+        from app.api.settings import apply_agent_overrides_from_db
+        await apply_agent_overrides_from_db()
+    except Exception as e:
+        logger.warning("apply_agent_overrides_from_db failed (non-fatal): %s", e)
+
     # Crashguard DB 解耦自检 — 违规则阻止启动
     try:
         from scripts.check_crash_decoupling import assert_crash_tables_decoupled

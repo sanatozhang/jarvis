@@ -18,6 +18,15 @@ from app.models.schemas import AgentConfigUpdate
 logger = logging.getLogger("jarvis.api.settings")
 router = APIRouter()
 
+# ---------------------------------------------------------------------------
+# Agent runtime overrides — DB-persisted（治本：UI 切换 call_mode 后跨重启生效）
+# ---------------------------------------------------------------------------
+# 抓手：把 PUT /agent 的字段写入 oncall_config 表，启动时 apply_agent_overrides_from_db
+# 把 DB 值 merge 回内存 Settings。覆盖优先级：env > DB override > yaml > defaults。
+# 不直接改 yaml：yaml 是模板（含注释），改 yaml 会破坏可读性；DB override 更轻量、可审计。
+AGENT_OVERRIDE_KEY = "agent_runtime_overrides"
+
+
 # Default fixed members for escalation groups
 DEFAULT_ESCALATION_MEMBERS = [
     "sanato.zhang@plaud.ai",
@@ -58,34 +67,102 @@ async def get_agent_config():
 
 @router.put("/agent")
 async def update_agent_config(req: AgentConfigUpdate):
-    """Update agent configuration (runtime only, not persisted to yaml)."""
+    """Update agent configuration — runtime memory + DB-persisted override.
+
+    底层逻辑：写两份。内存里改 settings 让本次请求即时生效；DB 里写一份
+    override，下次启动 apply_agent_overrides_from_db 会再 merge 回来——
+    跨重启不再退回 yaml 默认（治本 bug：fb_f57ddda7d0 现象的根因）。
+    """
     settings = get_settings()
+
+    # Load existing override（避免覆盖未提交字段）
+    raw = await db.get_oncall_config(AGENT_OVERRIDE_KEY, "")
+    override = json.loads(raw) if raw else {}
 
     if req.default_agent is not None:
         settings.agent.default = req.default_agent
+        override["default"] = req.default_agent
     if req.call_mode is not None:
         mode = req.call_mode.strip().lower()
         if mode not in ("api", "cli"):
             raise HTTPException(status_code=400, detail="call_mode must be 'api' or 'cli'")
         settings.agent.call_mode = mode
+        override["call_mode"] = mode
     if req.api_traffic_ratio is not None:
         ratio = float(req.api_traffic_ratio)
         if not (0.0 <= ratio <= 1.0):
             raise HTTPException(status_code=400, detail="api_traffic_ratio must be between 0.0 and 1.0")
         settings.agent.api_traffic_ratio = ratio
+        override["api_traffic_ratio"] = ratio
     if req.timeout is not None:
         settings.agent.timeout = req.timeout
+        override["timeout"] = req.timeout
     if req.max_turns is not None:
         settings.agent.max_turns = req.max_turns
+        override["max_turns"] = req.max_turns
     if req.routing is not None:
         settings.agent.routing.update(req.routing)
+        # routing 是字典，存合并后的全量
+        override["routing"] = dict(settings.agent.routing)
+
+    # 持久化到 DB（与 condensation 模块用同一张 oncall_config 表）
+    await db.set_oncall_config(AGENT_OVERRIDE_KEY, json.dumps(override, ensure_ascii=False))
+    logger.info(
+        "Agent config updated + persisted: keys=%s (call_mode=%s, default=%s)",
+        list(override.keys()), settings.agent.call_mode, settings.agent.default,
+    )
 
     return {
         "status": "updated",
         "agent": settings.agent.default,
         "call_mode": settings.agent.call_mode,
         "api_traffic_ratio": settings.agent.api_traffic_ratio,
+        "persisted_keys": list(override.keys()),
     }
+
+
+async def apply_agent_overrides_from_db() -> dict:
+    """Startup hook: load agent_runtime_overrides from DB and merge into in-memory settings.
+
+    Called from main.py lifespan after init_db(). Idempotent.
+    优先级：env (config.py 已处理) > DB override (本函数) > yaml > defaults。
+    返回 applied dict 供日志/审计；空 dict 表示 DB 无 override。
+    """
+    try:
+        raw = await db.get_oncall_config(AGENT_OVERRIDE_KEY, "")
+        if not raw:
+            return {}
+        override = json.loads(raw)
+    except Exception as e:
+        logger.warning("Failed to load agent override from DB (non-fatal): %s", e)
+        return {}
+
+    settings = get_settings()
+    applied = {}
+    # env 优先：若用户已设 AGENT_DEFAULT / AGENT_CALL_MODE，则 DB override 不再覆盖
+    import os as _os
+    if "default" in override and not _os.getenv("AGENT_DEFAULT"):
+        settings.agent.default = override["default"]
+        applied["default"] = override["default"]
+    if "call_mode" in override and not _os.getenv("AGENT_CALL_MODE"):
+        settings.agent.call_mode = override["call_mode"]
+        applied["call_mode"] = override["call_mode"]
+    if "api_traffic_ratio" in override:
+        settings.agent.api_traffic_ratio = float(override["api_traffic_ratio"])
+        applied["api_traffic_ratio"] = override["api_traffic_ratio"]
+    if "timeout" in override:
+        settings.agent.timeout = int(override["timeout"])
+        applied["timeout"] = override["timeout"]
+    if "max_turns" in override:
+        settings.agent.max_turns = int(override["max_turns"])
+        applied["max_turns"] = override["max_turns"]
+    if "routing" in override and isinstance(override["routing"], dict):
+        settings.agent.routing.update(override["routing"])
+        applied["routing"] = override["routing"]
+
+    if applied:
+        logger.info("Agent overrides applied from DB: %s", applied)
+    return applied
 
 
 @router.get("/concurrency")

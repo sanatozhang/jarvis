@@ -421,6 +421,10 @@ output/       ← 请将 result.json 写入此目录
     def parse_result(workspace: Path, raw_output: str = "") -> AnalysisResult:
         """Parse the agent's result from output/result.json or raw output."""
         data = {}
+        # \u6293\u624b #1\uff1a\u8ddf\u8e2a repair \u662f\u5426\u89e6\u53d1\u2014\u2014repair \u540e\u5b57\u6bb5\u503c\u672b\u5c3e\u5e38\u88ab\u780d\uff08\u5982 user_reply
+        # \u5728 "\u5173\u4e8e\u60a8\u63d0\u5230\u7684" \u5904\u786c\u5207\uff0cfb_f57ddda7d0 \u5b9e\u6218\u6848\u4f8b\uff09\u3002\u4e0b\u6e38\u7528\u6b64 flag \u51b3\u5b9a
+        # \u662f\u5426\u6807 system_failure \u8ba9 worker \u89e6\u53d1\u98de\u4e66 soft-fail \u544a\u8b66\u3002
+        repair_used = False
 
         # Strategy 1: read output/result.json (expected path)
         result_file = workspace / "output" / "result.json"
@@ -437,6 +441,7 @@ output/       ← 请将 result.json 写入此目录
                 try:
                     truncated = content[: e.pos].rstrip().rstrip(",") + "}"
                     data = json.loads(truncated)
+                    repair_used = True
                     logger.info(
                         "Repaired truncated result.json (recovered %d of %d bytes, keys: %s)",
                         e.pos, len(content), list(data.keys()),
@@ -523,6 +528,74 @@ output/       ← 请将 result.json 写入此目录
         if not _raw_type_zh or _raw_type_zh == "未知":
             _raw_type_zh = _raw_type_en
 
+        # ── 治本 Fix #2：英文字段翻译复制检测（fb_f57ddda7d0 实战）──
+        # 现象：agent 在 *_en 字段直接复制中文，前端 lang=en 时显示中文，
+        # 形成"UI 标签英文 + 内容中文"的视觉割裂。
+        # 抓手：检测英文字段含 >30% 中文字符 → 视为未翻译 → 清空让前端 fallback
+        # 到中文版（避免双语混杂错觉）。同时 logger.warning 暴露，便于后续 prompt 治理。
+        def _looks_chinese(s: str) -> bool:
+            if not s or len(s) < 10:
+                return False
+            zh = sum(1 for ch in s if "一" <= ch <= "鿿")
+            return zh / max(len(s), 1) > 0.3
+
+        translation_failures: List[str] = []
+        if _looks_chinese(_raw_rc_en):
+            # root_cause_en 是中文（agent 未翻译或 cross-fallback 已 zh→en）
+            # 内容已是中文，前端 lang=en 显示中文，至少不空——但标记告警便于治理 prompt。
+            translation_failures.append("root_cause_en")
+        if _looks_chinese(_raw_reply_en):
+            translation_failures.append("user_reply_en")
+        if _looks_chinese(_raw_type_en):
+            translation_failures.append("problem_type_en")
+
+        # ── 治本 Fix #1：截断检测 ──
+        # 触发条件之一：result.json 走过 repair 路径（agent 被 max_turns/timeout 切断）
+        # 触发条件之二：核心字段非空且末尾不是结束标点（自然不会停在 "关于您提到的" 这种半句）
+        def _looks_truncated(s: str) -> bool:
+            if not s or len(s) < 30:
+                return False
+            tail = s.rstrip()[-1:]
+            # 中英结束标点 + 闭合符号都视为完整收尾
+            return tail not in "。！？.!?…」』）)]\"'》>"
+
+        truncated_fields: List[str] = []
+        for fname, fval in (
+            ("root_cause", _raw_rc_zh),
+            ("user_reply", _raw_reply_zh),
+            ("root_cause_en", _raw_rc_en),
+            ("user_reply_en", _raw_reply_en),
+        ):
+            if _looks_truncated(fval):
+                truncated_fields.append(fname)
+
+        # 任一字段截断 OR repair 触发 → 标 system_failure 让 worker 推 soft-fail 告警
+        _system_failure = bool(data.get("system_failure", False))
+        _confidence_reason = data.get("confidence_reason", "")
+        if repair_used or truncated_fields:
+            _system_failure = True
+            _truncation_note = (
+                f"输出截断检测：repair_used={repair_used}, fields={truncated_fields or '[]'}"
+            )
+            _confidence_reason = (
+                f"{_confidence_reason}; {_truncation_note}".strip("; ")
+                if _confidence_reason else _truncation_note
+            )
+            logger.warning(
+                "Truncation detected for analysis: repair=%s fields=%s — flagged system_failure",
+                repair_used, truncated_fields,
+            )
+
+        if translation_failures:
+            _confidence_reason = (
+                f"{_confidence_reason}; 翻译缺失: {translation_failures}".strip("; ")
+                if _confidence_reason else f"翻译缺失: {translation_failures}"
+            )
+            logger.warning(
+                "Translation fallback triggered for fields: %s (agent did not produce English)",
+                translation_failures,
+            )
+
         return AnalysisResult(
             task_id="",
             issue_id="",
@@ -533,14 +606,14 @@ output/       ← 请将 result.json 写入此目录
             root_cause=_clean_system_lines(_raw_rc_zh),
             root_cause_en=_clean_system_lines(_raw_rc_en),
             confidence=_safe_confidence(data.get("confidence", "low")),
-            confidence_reason=data.get("confidence_reason", ""),
+            confidence_reason=_confidence_reason,
             key_evidence=_safe_key_evidence(data.get("key_evidence", [])),
             user_reply=_raw_reply_zh,
             user_reply_en=_raw_reply_en,
             # 缺省 False：AI 不显式申请就不打工程师标签；漏字段不等于要人工介入。
             needs_engineer=data.get("needs_engineer", False),
             # T1 字段拆分：系统/数据问题独立打标，不再混到 needs_engineer
-            system_failure=data.get("system_failure", False),
+            system_failure=_system_failure,
             needs_user_retry=data.get("needs_user_retry", False),
             fix_suggestion=data.get("fix_suggestion", ""),
             raw_output=raw_output[:10000],
