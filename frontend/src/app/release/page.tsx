@@ -170,7 +170,7 @@ export default function ReleasePage() {
   return (
     <div className="min-h-screen p-6" style={{ background: S.surface, color: S.text1 }}>
       {toast && (
-        <Toast message={toast.msg} type={toast.type} onClose={() => setToast(null)} />
+        <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />
       )}
 
       <div className="mx-auto max-w-6xl space-y-6">
