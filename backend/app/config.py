@@ -269,7 +269,7 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
         if hasattr(settings.context_condensation, k) and not os.getenv(f"CONDENSER_{k.upper()}"):
             setattr(settings.context_condensation, k, v)
 
-    # L1.5 api_key: 先从 ANTHROPIC_API_KEY 拿直连 key（优先于 Vertex proxy）
+    # L1.5 api_key: 没显式设 → 从 ANTHROPIC_API_KEY 取（公司环境通常是 vertex proxy key）。
     if (
         settings.context_condensation.provider == "anthropic"
         and not settings.context_condensation.api_key
@@ -278,13 +278,16 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
         if anthropic_key:
             settings.context_condensation.api_key = anthropic_key
 
-    # L1.5 Vertex proxy 继承：仅当没有直连 api_key 时才走 Vertex。
-    # 若已有 ANTHROPIC_API_KEY，走标准 Anthropic API，Vertex 代理不支持 Haiku → 400。
+    # L1.5 Vertex proxy 继承：与 claude_api 走同一条 vertex 代理（顶层设计统一）。
+    # 治本（2026-05-20 实测）：Vertex 代理已支持 claude-haiku-4-5（rawPredict 200 OK）。
+    # 旧逻辑"有直连 api_key 就走 anthropic.com"会导致 vertex key + 直连 URL → 401 必败，
+    # 因为公司环境的 ANTHROPIC_API_KEY 几乎都是 vertex 代理 key（sk-Mobile_...），不是
+    # Anthropic 直连真 key。删除 `not api_key` 拦截 → 默认走 vertex 拉通整个 LLM 栈。
+    # 用户显式设 CONDENSER_API_BASE_URL（含 env 或 yaml）才会覆盖此默认。
     if (
         settings.context_condensation.provider == "anthropic"
         and not settings.context_condensation.api_base_url
         and not os.getenv("CONDENSER_API_BASE_URL")
-        and not settings.context_condensation.api_key  # 有直连 key → 不走 Vertex
     ):
         claude_api_provider = settings.agent.providers.get("claude_api")
         if claude_api_provider and claude_api_provider.base_url:
