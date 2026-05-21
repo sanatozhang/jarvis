@@ -467,6 +467,21 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
             "crashguard pr_sync: pr=%d %s → %s (repo=%s #%d)",
             pr_id, old_status, new_status, repo_slug, pr_number,
         )
+
+    # === Stage D: PR review responder（AI 自动读 PR comment + 回复 + 修复）===
+    # 默认 enabled=False；开启后每次 pr_sync tick 跑一遍 collect → dispatch。
+    # 任何异常 catch 不阻塞 sync 主流程。
+    responder_result: Optional[Dict[str, Any]] = None
+    if new_status in ("draft", "open"):
+        try:
+            responder_result = await _try_run_review_responder(
+                pr_id, repo_slug, pr_number,
+            )
+        except Exception:
+            logger.exception(
+                "pr_review_responder stage-D crashed (non-fatal, pr=%d)", pr_id,
+            )
+
     return {
         "ok": True,
         "pr_id": pr_id,
@@ -477,6 +492,120 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
         "pollution_action": pollution_action,
         "review_notified": review_notified,
         "review_decision": review_decision,
+        "responder": responder_result,
+    }
+
+
+async def _try_run_review_responder(
+    pr_id: int, repo_slug: str, pr_number: int,
+) -> Dict[str, Any]:
+    """Stage D 接线层：当 pr_review_response_enabled=True 时
+    拉 reviews → 过滤 actionable → checkout PR 分支 → dispatch agent。
+
+    任何子步骤失败都返回 dict 不抛异常，由上层 catch。
+    """
+    from app.crashguard.config import get_crashguard_settings
+    s = get_crashguard_settings()
+    if not getattr(s, "pr_review_response_enabled", False):
+        return {"ok": True, "enabled": False, "skipped": "disabled"}
+
+    from app.crashguard.services.pr_review_responder import (
+        fetch_pr_reviews,
+        collect_actionable_reviews,
+        dispatch_review_response,
+    )
+    from app.crashguard.services.pr_reviewer import _resolve_repo_path_for_pr
+
+    # 1. 拉 reviews
+    ok, reviews, err = fetch_pr_reviews(repo_slug, pr_number)
+    if not ok:
+        logger.info("pr_review_responder fetch_pr_reviews failed: %s", err)
+        return {"ok": False, "stage": "fetch_pr_reviews", "error": err}
+
+    # 2. 加载 PR 行 + collect actionable
+    async with get_session() as session:
+        pr_row = await session.get(CrashPullRequest, pr_id)
+        if pr_row is None:
+            return {"ok": False, "stage": "load_pr", "error": "pr_not_found"}
+        actionable_list, counters = await collect_actionable_reviews(
+            pr_row, reviews, session,
+        )
+    if not actionable_list:
+        return {"ok": True, "enabled": True, "counters": counters, "dispatched": 0}
+
+    # 3. 准备 repo_path（复用 pr_reviewer 的子仓 hint 解析）
+    repo_path = _resolve_repo_path_for_pr(pr_row, s)
+    if not repo_path:
+        return {
+            "ok": False, "stage": "resolve_repo_path",
+            "error": "repo_path_missing", "counters": counters,
+        }
+
+    # 4. git fetch + checkout PR 分支（副作用！失败即停）
+    branch = pr_row.branch_name or ""
+    if not branch:
+        return {
+            "ok": False, "stage": "checkout",
+            "error": "branch_name_missing", "counters": counters,
+        }
+    try:
+        r_f = subprocess.run(
+            ["git", "fetch", "origin", branch],
+            cwd=repo_path, capture_output=True, text=True, timeout=60,
+        )
+        if r_f.returncode != 0:
+            return {
+                "ok": False, "stage": "git_fetch",
+                "error": (r_f.stderr or "")[:200], "counters": counters,
+            }
+        r_c = subprocess.run(
+            ["git", "checkout", branch],
+            cwd=repo_path, capture_output=True, text=True, timeout=30,
+        )
+        if r_c.returncode != 0:
+            return {
+                "ok": False, "stage": "git_checkout",
+                "error": (r_c.stderr or "")[:200], "counters": counters,
+            }
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        return {
+            "ok": False, "stage": "git_subprocess",
+            "error": str(e)[:200], "counters": counters,
+        }
+
+    # 5. dispatch — 每个 actionable 跑一遍 agent
+    dispatched = 0
+    verdicts: List[str] = []
+    async with get_session() as session:
+        # 重新加载 PR row（绑定到 session）
+        pr_row2 = await session.get(CrashPullRequest, pr_id)
+        # 取得 issue_title / datadog_issue_id 给 prompt
+        from app.crashguard.models import CrashIssue
+        ci_row = (await session.execute(
+            select(CrashIssue).where(
+                CrashIssue.datadog_issue_id == pr_row2.datadog_issue_id
+            )
+        )).scalar_one_or_none()
+        issue_title = (ci_row.title if ci_row else "") or ""
+        for actionable in actionable_list:
+            try:
+                r = await dispatch_review_response(
+                    actionable, session, repo_path,
+                    issue_title=issue_title,
+                    datadog_issue_id=pr_row2.datadog_issue_id or "",
+                )
+                if r.get("ok"):
+                    dispatched += 1
+                verdicts.append(r.get("verdict") or "?")
+            except Exception as e:
+                logger.exception(
+                    "pr_review_responder dispatch failed pr=%d review=%s: %s",
+                    pr_id, actionable.review.review_id, e,
+                )
+
+    return {
+        "ok": True, "enabled": True,
+        "counters": counters, "dispatched": dispatched, "verdicts": verdicts,
     }
 
 
