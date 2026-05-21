@@ -82,3 +82,109 @@ def parse_blame_author_email(porcelain: str) -> str:
             raw = line[len("author-mail "):].strip()
             return raw.strip("<>").strip()
     return ""
+
+
+# ============================================================
+# 主流程 — 远端拉 diff + blame 聚合
+# ============================================================
+def fetch_pr_diff_via_gh(pr_url: str, timeout: int = 30) -> str:
+    """gh pr diff <url> 远端拉 unified diff，失败返回空串。"""
+    if not pr_url:
+        return ""
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "diff", pr_url],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning("gh pr diff exception url=%s: %s", pr_url, e)
+        return ""
+    if r.returncode != 0:
+        logger.warning("gh pr diff failed: rc=%d url=%s err=%s",
+                       r.returncode, pr_url, (r.stderr or "")[:200])
+        return ""
+    return r.stdout or ""
+
+
+def _filter_authors(
+    counter: Counter,
+    blocked: List[str],
+    top_n: int,
+    min_lines_pct: float,
+) -> List[Tuple[str, int]]:
+    """过滤 blocked author + 占比阈值；按行数降序返回前 top_n。"""
+    blocked_set = {b.lower().strip() for b in blocked}
+    filtered = Counter({
+        e: n for e, n in counter.items() if e.lower().strip() not in blocked_set
+    })
+    total = sum(filtered.values())
+    if total == 0:
+        return []
+    sorted_authors = sorted(filtered.items(), key=lambda kv: (-kv[1], kv[0]))
+    out: List[Tuple[str, int]] = []
+    for email, n in sorted_authors:
+        if n / total < min_lines_pct:
+            continue
+        out.append((email, n))
+        if len(out) >= top_n:
+            break
+    return out
+
+
+def resolve_reviewers_by_blame(
+    pr_url: str,
+    repo_path: str,
+    settings,
+) -> ReviewerResolution:
+    """
+    主入口：gh pr diff 拉远端 → 解析改动文件/行 → git blame → 过滤排序。
+
+    repo_path: 本地 clone 的目标仓库路径（含 HEAD blame 所需 commit）
+    settings:  crashguard Settings（含 pr_reviewer_* 字段）
+    """
+    if not pr_url:
+        return ReviewerResolution(reason="pr_url_missing")
+
+    diff_text = fetch_pr_diff_via_gh(pr_url)
+    if not diff_text:
+        return ReviewerResolution(reason="diff_empty")
+
+    targets = parse_diff_target_lines(diff_text)
+    if not targets:
+        return ReviewerResolution(reason="blame_empty")
+
+    if not repo_path or not Path(repo_path).exists():
+        logger.warning("repo_path missing for blame: %s", repo_path)
+        return ReviewerResolution(reason="repo_missing")
+
+    counter: Counter = Counter()
+    for fpath, lines in targets.items():
+        for ln in lines:
+            try:
+                r = subprocess.run(
+                    ["git", "blame", "-L", f"{ln},{ln}", "--porcelain", "HEAD", "--", fpath],
+                    cwd=repo_path, capture_output=True, text=True, timeout=10,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+                logger.debug("blame timeout/err %s:%d: %s", fpath, ln, e)
+                continue
+            if r.returncode != 0:
+                continue
+            email = parse_blame_author_email(r.stdout)
+            if email:
+                counter[email] += 1
+
+    filtered = _filter_authors(
+        counter,
+        list(settings.pr_reviewer_blocked_authors or []),
+        int(settings.pr_reviewer_top_n or 2),
+        float(settings.pr_reviewer_min_lines_pct or 0.20),
+    )
+    if not filtered:
+        return ReviewerResolution(reason="bot_only")
+
+    return ReviewerResolution(
+        emails=[e for e, _ in filtered],
+        line_counts={e: n for e, n in filtered},
+        reason="ok",
+    )
