@@ -88,7 +88,8 @@
 - 三层 kill switch：`enabled` / `pr_enabled` / `feishu_enabled`
 - 多实例兜底：`scheduler_enabled`（只有该机器跑 cron）
 - 默认 cron：
-  - 早报 `0 7 * * *` / 晚报 `0 17 * * *`
+  - 早报 `0 8 * * *`（2026-05-21：7→8，赶上工程师到岗）
+  - 速报（晚报）`0 17 * * *` — **默认关闭**（`evening_enabled: false`，2026-05-21 下线，信号交给 hourly_alert + core_metric）
   - 周期 pipeline `0 */4 * * *`
   - PR 状态同步 `*/15 * * * *`
   - AI 分析 tick `*/5 * * * *`（每 tick 1 个 issue，防 timeout）
@@ -125,8 +126,8 @@ python -m scripts.check_crash_decoupling # DB 外键自检
 | 3 | `hourly_alert` 小时级告警 (SHoW-3h) | `5 */3 * * *` | 过去 3h fatal events vs 上周同 3h 块 | `growth_threshold_pct=10`%/`min_baseline_events=20`/`min_sessions=60`/`max_items=10` | `hourly_alert_enabled` |
 | 4 | `pr_sync` PR 状态同步 | `*/30 * * * *` | DB 内 draft/open PR 拉 GitHub 现态 | 无阈值 | `enabled` |
 | 5 | `pipeline` 数据 pipeline | `0 */4 * * *` | 全量拉 Datadog → snapshot + issue upsert + auto-analyze + auto-PR | `datadog_window_hours=24`/`pr_dedup_days=30`/`feasibility_pr_threshold=0.7` | `enabled` |
-| 6 | `morning_daily` 日报 | `0 7 * * *` | 昨日 24h 总览，SHoW-24h 基线 | `daily_surge_threshold=+10%`/`daily_drop_threshold=-10%`/`daily_attention_min_events=100` | `feishu_enabled` |
-| 7 | `evening_daily` 速报 | `0 17 * * *` | 日内 10h 增量，SHoW-Nh 基线 | 同上 + `evening_window_hours=10`，DB fallback baseline 强制清空 | `feishu_enabled` |
+| 6 | `morning_daily` 日报 | `0 8 * * *` | 昨日 24h 总览，SHoW-24h 基线；顶部一句话 headline | `daily_surge_threshold=+10%`/`daily_drop_threshold=-10%`/`daily_attention_min_events=100` | `feishu_enabled` + `morning_enabled` |
+| 7 | `evening_daily` 速报 | `0 17 * * *` | （**默认下线**）日内 10h 增量，SHoW-Nh 基线 | 同上 + `evening_window_hours=10`，DB fallback baseline 强制清空 | `feishu_enabled` + `evening_enabled` |
 | ✱ | `warmup` 启动一次性 | 无（启动后延后 N 秒） | 重启后补一遍 pipeline + auto-analyze | `warmup_on_startup=true` | `enabled` |
 
 ### 可观测性闭环（治本，不靠人盯）

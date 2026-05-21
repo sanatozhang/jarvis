@@ -150,10 +150,15 @@ crashguard:
     # 通常通过 env CRASHGUARD_FEISHU_ALERT_EMAIL 配置（避免把个人邮箱写进代码库）。
     alert_email: ""
     admin_open_ids: []                                      # 一键 PR approve 白名单
-    morning_cron: "0 7 * * *"
+    morning_cron: "0 8 * * *"        # 2026-05-21：07:00→08:00（赶上工程师到岗）
     evening_cron: "0 17 * * *"
-    # 早晚报差异化窗口（A+B 方案）：
-    #   morning_cron 07:00 → 昨日 24h 总览（用 datadog.window_hours，默认 24）
+    # 2026-05-21：速报（evening_daily）已下线——与早报内容冗余且打扰，
+    # 日内增量信号由 hourly_alert（每 3h SHoW-3h 对比）+ core_metric（10min crash-free 波动）覆盖。
+    # 想恢复：把 evening_enabled 设为 true。
+    morning_enabled: true
+    evening_enabled: false
+    # 早晚报差异化窗口（A+B 方案，evening 段保留以备恢复）：
+    #   morning_cron 08:00 → 昨日 24h 总览（用 datadog.window_hours，默认 24）
     #   evening_cron 17:00 → 日内增量（用 evening_window_hours，默认 10h = 07~17）
     # 基线均为 SHoW（上周同 weekday 同窗口段），晚报需依赖 Datadog 实时拉数据
     # （CrashSnapshot 日级颗粒度不支持 10h 段；实时失败则退化为无基线，宁缺勿误报）

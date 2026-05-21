@@ -1473,8 +1473,101 @@ async def compose_report(
         "fatal_baseline_total": base_fatal_total,
     }
 
+    # ── 顶部 Headline：一句话总结今日数据状态 ──────────────────────
+    # 用户诉求（2026-05-21）：早报最顶部一眼能看出"今天有没有事 / 要不要跟进"。
+    # 抓手：把 severity + 平台 fatal Δ + 新增/突增计数压成单行自然语，
+    # 工程师 1 秒判断是否点进卡片细看。文案三态：
+    #   🔴 紧急 / 🟡 关注 / ✅ 平稳（基线缺失走 ⚪）
+    headline = _compose_headline(
+        severity=tldr_severity,
+        tldr_platforms=tldr_platforms,
+        new_count=len(fatal_news),
+        surge_count=len(fatal_surges),
+        drop_count=len(fatal_drops),
+        today_fatal_total=today_fatal_total,
+        base_fatal_total=base_fatal_total,
+    )
+    payload["headline"] = headline
+    # markdown 顶部插一行 headline（在标题 lines[0] 之后；Σ 摘要在 insert_at=2 已经插入，
+    # 此处再插一行不影响 attn_lines 顺序，因为我们插在 lines[1] 位置之前）
+    if headline:
+        lines.insert(1, f"> **{headline}**")
+        lines.insert(2, "")
+
     text = "\n".join(lines).rstrip() + "\n"
     return text, payload
+
+
+def _compose_headline(
+    *,
+    severity: str,
+    tldr_platforms: List[Dict[str, Any]],
+    new_count: int,
+    surge_count: int,
+    drop_count: int,
+    today_fatal_total: int,
+    base_fatal_total: int,
+) -> str:
+    """生成一句话头条总结。
+
+    优先级：
+    - red：列出红/黄平台 fatal +X%，提示工程师立即跟进
+    - yellow：列出最高 +X% 的平台，建议跟进
+    - green + 改善 → "fatal 同比下降，改善"
+    - green + 持平 → "数据平稳，安全无虞"
+    - unknown：基线缺失提示
+
+    抓手：自然语言 + 单行，工程师扫一眼就能判断"今天要不要点进卡片"。
+    """
+    def _fmt_delta(t: int, b: int) -> Optional[float]:
+        if b == 0:
+            return None
+        return (t - b) / b * 100.0
+
+    plat_chips: List[str] = []
+    for p in tldr_platforms or []:
+        label = p.get("platform_label") or "?"
+        status = p.get("status") or "unknown"
+        delta = p.get("delta_pct")
+        if status not in ("red", "yellow", "green_improve"):
+            continue
+        if delta is None:
+            continue
+        sign = "+" if delta >= 0 else ""
+        plat_chips.append(f"{label} fatal {sign}{delta:.0f}%")
+
+    anomaly_tail_parts: List[str] = []
+    if new_count > 0:
+        anomaly_tail_parts.append(f"🆕 {new_count} 新增")
+    if surge_count > 0:
+        anomaly_tail_parts.append(f"📈 {surge_count} 突增")
+    anomaly_tail = "（" + " / ".join(anomaly_tail_parts) + "）" if anomaly_tail_parts else ""
+
+    if severity == "red":
+        lead = "🔴 **紧急** —— " + ("；".join(plat_chips) if plat_chips else "出现新增 fatal issue")
+        return f"{lead}{anomaly_tail}，请工程师立刻跟进"
+    if severity == "yellow":
+        lead = "🟡 **关注** —— " + ("；".join(plat_chips) if plat_chips else "fatal 上涨")
+        return f"{lead}{anomaly_tail}，建议工程师跟进"
+    if severity == "green":
+        # 改善优先（有平台 green_improve），否则平稳
+        improves = [c for c in plat_chips if "-" in c]
+        if improves:
+            tail = f"，{drop_count} 项 fatal 下降" if drop_count > 0 else ""
+            return f"✅ **平稳** —— {'；'.join(improves)}，整体改善{tail}"
+        return "✅ **平稳** —— 全平台 fatal 同期持平，无新增 / 突增 issue，安全无虞"
+    # unknown：基线为 0 或缺失
+    delta_pct = _fmt_delta(today_fatal_total, base_fatal_total)
+    if delta_pct is None:
+        return (
+            f"⚪ **基线缺失** —— 今日 {today_fatal_total:,} fatal events，"
+            f"上周同段无数据，请人工对照"
+        )
+    sign = "+" if delta_pct >= 0 else ""
+    return (
+        f"⚪ **数据待核** —— 今日 {today_fatal_total:,} fatal events "
+        f"（{sign}{delta_pct:.0f}% vs 上周）"
+    )
 
 
 async def _retrospect_yesterday(target_date: date) -> Optional[str]:

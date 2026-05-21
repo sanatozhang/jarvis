@@ -148,8 +148,15 @@ class CrashguardSettings(BaseSettings):
     datadog_query_nonfatal: str = "@type:error -@error.is_crash:true -@error.category:ANR -@error.category:\"App Hang\""
 
     # Schedule
-    morning_cron: str = "0 7 * * *"
+    # 早报默认 08:00 触发（2026-05-21 调整：7 点太早，工程师还没到岗；
+    # 8 点正好赶上上班开机看群消息，跟进闭环时效更好）。
+    morning_cron: str = "0 8 * * *"
     evening_cron: str = "0 17 * * *"
+    # 早晚报独立 enabled 开关（2026-05-21 用户决策：速报 = 晚报已下线，
+    # 日内增量信号由 hourly_alert 覆盖，evening_daily 与早报内容冗余且打扰）。
+    # 想恢复速报：env CRASHGUARD_EVENING_ENABLED=true 或 config.yaml feishu.evening_enabled: true
+    morning_enabled: bool = True
+    evening_enabled: bool = False
     # 晚报数据窗口（小时）。早报固定用 datadog_window_hours=24h，晚报用此值。
     # 默认 10h = 早报到晚报之间的工作日内增量；基线 = SHoW 上周同 weekday 同 10h 段。
     # 设计意图：早报=昨日 24h 总览，晚报=日内增量信号，两份卡片**不再冗余**。
@@ -564,6 +571,10 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["morning_cron"] = f["morning_cron"]
         if "evening_cron" in f:
             flat["evening_cron"] = f["evening_cron"]
+        if "morning_enabled" in f:
+            flat["morning_enabled"] = bool(f["morning_enabled"])
+        if "evening_enabled" in f:
+            flat["evening_enabled"] = bool(f["evening_enabled"])
         if "evening_window_hours" in f:
             flat["evening_window_hours"] = int(f["evening_window_hours"])
     if "repo_paths" in cfg:

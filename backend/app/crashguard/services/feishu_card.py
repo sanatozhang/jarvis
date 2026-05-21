@@ -505,6 +505,13 @@ def build_daily_card(
 
     elements: List[Dict[str, Any]] = []
 
+    # ── Headline 一句话总结（最顶置，2026-05-21 加）──
+    # 用户诉求：扫一眼就知道今天有没有事、要不要立刻跟进。
+    # 比 _tldr_headline 更高层——直接给结论，不堆 chip。
+    headline = payload.get("headline")
+    if headline:
+        elements.append(_div(f"## {headline}"))
+
     # ── TL;DR 顶置区（不折叠）──
     elements.extend(_build_tldr_elements(tldr, frontend_base_url, fallback_summary_md))
     # 口径 banner 紧跟 TL;DR（小字体，引用样式）
