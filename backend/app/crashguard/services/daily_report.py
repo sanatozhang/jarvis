@@ -1162,22 +1162,6 @@ async def compose_report(
                     -int(r["snap"].events_count or 0),
                 ),
             )
-            # 治本闭环：给本批 ordered 涉及的 iid 查最新 PR url——
-            # 早晚报飞书消息直出 GitHub PR 链接，闭合"用户从飞书看 Top crash → 看不到 PR"的认知缺口。
-            # 颗粒度：每 platform×fatality bucket 一次小 query，6-12 次/报，性能可控。
-            pr_by_iid: Dict[str, str] = {}
-            if ordered:
-                from app.crashguard.models import CrashPullRequest as _CPR
-                _iids = [r["snap"].datadog_issue_id for r in ordered]
-                _pr_rows = (await session.execute(
-                    select(_CPR)
-                    .where(_CPR.datadog_issue_id.in_(_iids))
-                    .order_by(_CPR.created_at.desc())
-                )).scalars().all()
-                for _pr in _pr_rows:
-                    # 取最新 PR（已 order_by desc），同 iid 不覆盖
-                    if _pr.datadog_issue_id not in pr_by_iid and _pr.pr_url:
-                        pr_by_iid[_pr.datadog_issue_id] = _pr.pr_url
             for r in ordered:
                 snap = r["snap"]
                 issue = r["issue"]
@@ -1194,10 +1178,8 @@ async def compose_report(
                 if r["kind"] == "🔥" and r.get("rank"):
                     kind_label = f"🔥{r['rank']}"
                 tags_str = f" · {', '.join(r['tags'])}" if r["tags"] else ""
-                _pr_url = pr_by_iid.get(snap.datadog_issue_id)
-                pr_link = f" · 🔧 [**PR**]({_pr_url})" if _pr_url else ""
                 lines.append(
-                    f"- {kind_label} **{ev:,}** events ({d_str}){tags_str} · [{title_short}]({url}){pr_link}"
+                    f"- {kind_label} **{ev:,}** events ({d_str}){tags_str} · [{title_short}]({url})"
                 )
             if not ordered:
                 lines.append("- _无_")
