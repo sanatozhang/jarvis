@@ -551,3 +551,128 @@ async def test_resolve_and_notify_pr_not_found(patched_session):
     from app.crashguard.services import pr_reviewer
     result = await pr_reviewer.resolve_and_notify(999999)
     assert result["reason"] == "pr_not_found"
+
+
+# ---------- Task 7: daily_reminder_sweep ----------
+
+@pytest.mark.asyncio
+async def test_daily_sweep_skips_already_reminded_today(patched_session):
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    today = datetime.utcnow()
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=10, datadog_issue_id="ddd",
+            repo="plaud-flutter-global",
+            pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/100",
+            pr_number=100, pr_status="draft",
+            last_reminder_at=today,
+        )
+        s.add(pr)
+        await s.commit()
+
+    with patch.object(pr_reviewer, "resolve_and_notify") as m_notify, \
+         patch.object(pr_reviewer, "check_review_status_from_gh", return_value=False):
+        result = await pr_reviewer.daily_reminder_sweep()
+    m_notify.assert_not_called()
+    assert result["skipped_same_day"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_daily_sweep_marks_newly_reviewed(patched_session):
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=11, datadog_issue_id="eee",
+            repo="plaud-flutter-global",
+            pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/101",
+            pr_number=101, pr_status="open",
+            last_reminder_at=datetime.utcnow() - timedelta(days=2),
+        )
+        s.add(pr)
+        await s.commit()
+        pid = pr.id
+
+    with patch.object(pr_reviewer, "check_review_status_from_gh", return_value=True), \
+         patch.object(pr_reviewer, "resolve_and_notify") as m_notify:
+        result = await pr_reviewer.daily_reminder_sweep()
+
+    m_notify.assert_not_called()
+    assert result["newly_reviewed"] >= 1
+
+    async with get_session() as s:
+        pr2 = await s.get(CrashPullRequest, pid)
+        assert pr2.reviewed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_daily_sweep_renotifies_stale(patched_session):
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=12, datadog_issue_id="fff",
+            repo="plaud-flutter-global",
+            pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/102",
+            pr_number=102, pr_status="open",
+            last_reminder_at=datetime.utcnow() - timedelta(days=2),
+        )
+        s.add(pr)
+        await s.commit()
+
+    async def fake_notify(pid):
+        return {"sent_count": 1, "fallback": False, "reason": "ok"}
+
+    with patch.object(pr_reviewer, "check_review_status_from_gh", return_value=False), \
+         patch.object(pr_reviewer, "resolve_and_notify", side_effect=fake_notify) as m_notify:
+        result = await pr_reviewer.daily_reminder_sweep()
+
+    m_notify.assert_called()
+    assert result["notified"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_daily_sweep_skips_reviewed_prs(patched_session):
+    """已 reviewed 的不应进入扫描结果"""
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=13, datadog_issue_id="ggg",
+            repo="plaud-flutter-global",
+            pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/103",
+            pr_number=103, pr_status="open",
+            reviewed_at=datetime.utcnow(),
+        )
+        s.add(pr)
+        await s.commit()
+
+    with patch.object(pr_reviewer, "check_review_status_from_gh") as m_check, \
+         patch.object(pr_reviewer, "resolve_and_notify") as m_notify:
+        result = await pr_reviewer.daily_reminder_sweep()
+
+    m_check.assert_not_called()
+    m_notify.assert_not_called()
+    assert result["processed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_daily_sweep_disabled_returns_zero(patched_session):
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.config import get_crashguard_settings
+    s = get_crashguard_settings()
+    s.pr_reviewer_enabled = False
+    try:
+        result = await pr_reviewer.daily_reminder_sweep()
+        assert result["processed"] == 0
+    finally:
+        s.pr_reviewer_enabled = True

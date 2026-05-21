@@ -482,3 +482,76 @@ async def resolve_and_notify(pr_id: int) -> Dict:
         "fallback": bool(fallback_reason),
         "reason": fallback_reason or resolution.reason,
     }
+
+
+# ============================================================
+# 每日提醒 cron 入口
+# ============================================================
+async def daily_reminder_sweep() -> Dict:
+    """
+    扫描所有未 reviewed 的 PR：
+      - 已 reviewed/merged/closed → 写 reviewed_at，跳过
+      - 当天已提醒过 → 跳过
+      - 其余 → 重跑 resolve_and_notify
+    """
+    from app.crashguard.config import get_crashguard_settings
+    from app.db.database import get_session
+    from app.crashguard.models import CrashPullRequest
+    from sqlalchemy import select
+
+    s = get_crashguard_settings()
+    if not s.pr_reviewer_enabled:
+        return {
+            "processed": 0, "skipped_same_day": 0,
+            "newly_reviewed": 0, "notified": 0,
+        }
+
+    today = datetime.utcnow().date()
+    processed = skipped_same_day = newly_reviewed = notified = 0
+    pr_ids_to_notify: List[int] = []
+
+    async with get_session() as session:
+        stmt = select(CrashPullRequest).where(
+            CrashPullRequest.reviewed_at.is_(None),
+            CrashPullRequest.pr_status.in_(("draft", "open")),
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+        for pr in rows:
+            processed += 1
+
+            # 同日去重
+            if pr.last_reminder_at and pr.last_reminder_at.date() == today:
+                skipped_same_day += 1
+                continue
+
+            # 拉 GH 现态：已 review → 标记跳过
+            if check_review_status_from_gh(pr.pr_url):
+                pr.reviewed_at = datetime.utcnow()
+                newly_reviewed += 1
+                continue
+
+            pr_ids_to_notify.append(pr.id)
+
+        await session.commit()
+
+    # session 外 await resolve_and_notify（其内部自己开 session，避免嵌套）
+    for pid in pr_ids_to_notify:
+        try:
+            r = await resolve_and_notify(pid)
+            if r.get("sent_count", 0) > 0 or r.get("fallback"):
+                notified += 1
+        except Exception as e:
+            logger.exception("daily_sweep notify failed pr=%d: %s", pid, e)
+
+    logger.info(
+        "pr_reviewer daily_sweep: processed=%d skipped_same_day=%d "
+        "newly_reviewed=%d notified=%d",
+        processed, skipped_same_day, newly_reviewed, notified,
+    )
+    return {
+        "processed": processed,
+        "skipped_same_day": skipped_same_day,
+        "newly_reviewed": newly_reviewed,
+        "notified": notified,
+    }
