@@ -204,6 +204,10 @@ class JenkinsSettings(BaseSettings):
     poll_interval_seconds: int = 30
     build_timeout_seconds: int = 3600
     mt_bin: str = "mt"                                 # override if installed under custom path
+    common_subdir: str = "plaud-flutter-common"        # sub-repo holding pubspec.yaml
+    # 不参与 release 分支的子仓（mt 工具自身 / 脚本仓等）—— `mt checkout -b` /
+    # `mt push` / 审计快照都跳过这些。
+    exclude_subrepos: List[str] = Field(default_factory=lambda: ["mt", "plaud-app-scripts"])
     notify_emails: List[str] = Field(default_factory=list)  # 飞书额外抄送（除创建者外）
 
     model_config = {

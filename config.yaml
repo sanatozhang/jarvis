@@ -124,6 +124,10 @@ jenkins:
   poll_interval_seconds: 30
   build_timeout_seconds: 3600             # 1h 兜底，超时置 error
   mt_bin: mt                              # mt 工具二进制路径（容器内已装可改成 /usr/local/bin/mt）
+  common_subdir: plaud-flutter-common     # 持有 pubspec.yaml 的子仓目录名（创建分支时用于 bump 版本）
+  exclude_subrepos:                       # 不参与 release 分支的工具/脚本仓
+    - mt
+    - plaud-app-scripts
   notify_emails:                          # 飞书通知额外抄送（除触发人外）
     - sanato.zhang@plaud.ai
 

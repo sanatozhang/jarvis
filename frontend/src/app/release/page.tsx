@@ -5,6 +5,7 @@ import { Toast } from "@/components/Toast";
 import {
   createReleaseBranch,
   listReleaseBranches,
+  listReleaseSourceBranches,
   triggerReleaseBuild,
   listReleaseBuilds,
   releaseArtifactUrl,
@@ -67,7 +68,10 @@ function defaultBranchTemplate() {
 
 export default function ReleasePage() {
   // ─── create-branch state ──────────────────────────────────────────────
-  const [branchInput, setBranchInput] = useState("");
+  const [branchInput, setBranchInput] = useState("release/");
+  const [sourceBranch, setSourceBranch] = useState("main");
+  const [sourceOptions, setSourceOptions] = useState<string[]>(["main"]);
+  const [loadingSources, setLoadingSources] = useState(false);
   const [creating, setCreating] = useState(false);
   const [recentBranch, setRecentBranch] = useState<ReleaseBranch | null>(null);
 
@@ -89,6 +93,12 @@ export default function ReleasePage() {
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
   const branchValid = useMemo(() => BRANCH_RE.test(branchInput), [branchInput]);
+  // Source must match a real branch from the server-fetched list — never
+  // trust free-form input. Empty list while loading shows a benign warning.
+  const sourceValid = useMemo(
+    () => sourceOptions.includes(sourceBranch),
+    [sourceOptions, sourceBranch],
+  );
 
   // ─── data loaders ─────────────────────────────────────────────────────
   const loadBranches = async () => {
@@ -115,11 +125,34 @@ export default function ReleasePage() {
     }
   };
 
+  const loadSourceBranches = async () => {
+    setLoadingSources(true);
+    try {
+      const r = await listReleaseSourceBranches();
+      // Always keep `main` first even if backend is briefly empty.
+      const list = r.branches && r.branches.length > 0 ? r.branches : ["main"];
+      setSourceOptions(list);
+      // If current selection isn't in the new list, reset to main.
+      if (!list.includes(sourceBranch)) {
+        setSourceBranch("main");
+      }
+    } catch (e: any) {
+      console.error(e);
+      // Keep the dropdown usable with `main` fallback so the default flow
+      // still works when the workspace is briefly busy.
+      setSourceOptions(["main"]);
+    } finally {
+      setLoadingSources(false);
+    }
+  };
+
   useEffect(() => {
     loadBranches();
     loadBuilds();
+    loadSourceBranches();
     const t = setInterval(loadBuilds, 10_000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ─── handlers ─────────────────────────────────────────────────────────
@@ -128,13 +161,22 @@ export default function ReleasePage() {
       setToast({ msg: "分支名格式不正确，应为 release/X.Y.Z_MMDD", type: "error" });
       return;
     }
+    if (!sourceValid) {
+      setToast({
+        msg: `source 分支 "${sourceBranch}" 不在候选项中，必须从下拉列表中选择真实存在的分支`,
+        type: "error",
+      });
+      return;
+    }
     setCreating(true);
     try {
-      const b = await createReleaseBranch(branchInput);
+      const b = await createReleaseBranch(branchInput, sourceBranch);
       setRecentBranch(b);
-      setToast({ msg: `分支已创建：${b.branch}`, type: "success" });
-      setBranchInput("");
+      setToast({ msg: `分支已创建：${b.branch}（来源：${sourceBranch}）`, type: "success" });
+      setBranchInput("release/");
+      setSourceBranch("main");
       await loadBranches();
+      await loadSourceBranches();
       setBuildBranch(b.branch);
     } catch (e: any) {
       setToast({ msg: e?.message || "创建失败", type: "error" });
@@ -194,10 +236,10 @@ export default function ReleasePage() {
           <p className="mt-1 text-xs" style={{ color: S.text2 }}>
             从 main 切出，多仓（common / global / cn）同步创建并 push。
           </p>
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex-1">
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-12 sm:items-end">
+            <div className="sm:col-span-5">
               <label className="block text-xs" style={{ color: S.text2 }}>
-                分支名（格式 release/X.Y.Z_MMDD）
+                新分支名（格式 release/X.Y.Z_MMDD）
               </label>
               <input
                 type="text"
@@ -216,14 +258,47 @@ export default function ReleasePage() {
                 </div>
               )}
             </div>
-            <button
-              onClick={handleCreateBranch}
-              disabled={creating || !branchValid}
-              className="rounded px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ background: S.accent }}
-            >
-              {creating ? "创建中…" : "创建分支"}
-            </button>
+            <div className="sm:col-span-5">
+              <label className="block text-xs" style={{ color: S.text2 }}>
+                来源分支（默认 main；hotfix 可选 release/*）
+                <span className="ml-1" style={{ color: S.text3 }}>
+                  {loadingSources ? "（加载中…）" : `（${sourceOptions.length} 个候选）`}
+                </span>
+              </label>
+              <input
+                type="text"
+                value={sourceBranch}
+                onChange={(e) => setSourceBranch(e.target.value.trim())}
+                list="release-source-options"
+                placeholder="main"
+                className="mt-1 w-full rounded px-3 py-2 text-sm"
+                style={{
+                  ...inputStyle,
+                  borderColor: sourceBranch && !sourceValid ? "#DC2626" : S.border,
+                }}
+                autoComplete="off"
+              />
+              <datalist id="release-source-options">
+                {sourceOptions.map((b) => (
+                  <option key={b} value={b} />
+                ))}
+              </datalist>
+              {sourceBranch && !sourceValid && (
+                <div className="mt-1 text-xs" style={{ color: "#DC2626" }}>
+                  必须从候选项中选择真实存在的分支
+                </div>
+              )}
+            </div>
+            <div className="sm:col-span-2">
+              <button
+                onClick={handleCreateBranch}
+                disabled={creating || !branchValid || !sourceValid}
+                className="w-full rounded px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ background: S.accent }}
+              >
+                {creating ? "创建中…" : "创建分支"}
+              </button>
+            </div>
           </div>
 
           {recentBranch && (

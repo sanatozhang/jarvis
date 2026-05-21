@@ -1889,16 +1889,22 @@ export interface ReleaseBuild {
   triggered_at: string;
 }
 
-export const createReleaseBranch = (branch: string) =>
+export const createReleaseBranch = (branch: string, source_branch: string = "main") =>
   request<ReleaseBranch>("/release/branches", {
     method: "POST",
-    body: JSON.stringify({ branch }),
+    body: JSON.stringify({ branch, source_branch }),
   });
 
 export const listReleaseBranches = (limit = 50, offset = 0) =>
   request<{ items: ReleaseBranch[]; total: number }>(
     `/release/branches?limit=${limit}&offset=${offset}`,
   );
+
+// Source branches available for cutting a new release from.
+// Filtered + intersected server-side: only `main` + real `release/*` branches
+// present on every product sub-repo's remote.
+export const listReleaseSourceBranches = () =>
+  request<{ branches: string[] }>("/release/source-branches");
 
 export interface TriggerBuildOptions {
   is_online_package?: boolean;             // default true

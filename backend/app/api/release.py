@@ -38,6 +38,7 @@ from app.db import database as db
 from app.db.database import Release, ReleaseBuild
 from app.services.jenkins_client import JenkinsError, build_client_from_settings
 from app.services.mt_runner import MtRunner, MtRunnerError, run_in_lock
+from app.services.pubspec_bumper import PubspecBumpError, bump_to
 
 logger = logging.getLogger("jarvis.api.release")
 router = APIRouter()
@@ -50,6 +51,11 @@ BRANCH_RE = re.compile(r"^release/(\d+)\.(\d+)\.(\d+)_(\d{4})$")
 # ---------------------------------------------------------------------------
 class CreateBranchRequest(BaseModel):
     branch: str
+    # Source branch to cut from. Default = "main".
+    # Hotfix flow: pass an existing `release/X.Y.Z_MMDD` to branch off of it.
+    # Server validates against the remote branch list — user input is NOT
+    # trusted (must match a real branch present on every product sub-repo).
+    source_branch: str = "main"
 
 
 class TriggerBuildRequest(BaseModel):
@@ -159,7 +165,13 @@ def _parse_branch(branch: str) -> Optional[Dict[str, str]]:
     }
 
 
-async def _notify_feishu_branch_created(branch: str, creator: str, commits: Dict[str, str]) -> None:
+async def _notify_feishu_branch_created(
+    branch: str,
+    creator: str,
+    commits: Dict[str, str],
+    version_after: str = "",
+    source_branch: str = "main",
+) -> None:
     """Best-effort 飞书 notification. Failure is logged but never blocks the API."""
     settings = get_settings()
     recipients: List[str] = []
@@ -172,8 +184,12 @@ async def _notify_feishu_branch_created(branch: str, creator: str, commits: Dict
         return
 
     commit_lines = "\n".join(f"  {name}: {sha[:8]}" for name, sha in commits.items())
+    version_line = f"版本：{version_after}\n" if version_after else ""
+    source_line = f"来源分支：{source_branch}\n"
     text = (
         f"[Release] 新分支已创建：{branch}\n"
+        f"{source_line}"
+        f"{version_line}"
         f"创建人：{creator}\n"
         f"子仓 HEAD：\n{commit_lines}"
     )
@@ -193,12 +209,67 @@ async def _notify_feishu_branch_created(branch: str, creator: str, commits: Dict
 # ---------------------------------------------------------------------------
 # Branch endpoints
 # ---------------------------------------------------------------------------
+def _is_allowed_source(name: str) -> bool:
+    """Source-branch allow-list: only `main` or an existing `release/*` branch.
+
+    Keeps the hotfix flow open (cut a new release from an in-flight one) while
+    refusing to branch off arbitrary feature branches.
+    """
+    return name == "main" or name.startswith("release/")
+
+
+@router.get("/source-branches")
+async def list_source_branches():
+    """Return the list of remote branches that can serve as a `source_branch`
+    for a new release. Filtered to `main` + `release/*` and intersected across
+    all product sub-repos (so `mt checkout <source>` can succeed).
+
+    Frontend uses this to populate a datalist; backend re-validates the chosen
+    value at create time — never trust user input alone.
+    """
+    workspace = _require_workspace()
+    settings = get_settings()
+    mt = MtRunner(
+        workspace,
+        mt_bin=settings.jenkins.mt_bin,
+        exclude_subrepos=settings.jenkins.exclude_subrepos,
+    )
+
+    def _do_list() -> List[str]:
+        # Refresh remote refs so the dropdown reflects branches added since
+        # the workspace was last touched. Cheap enough.
+        mt.reset_workspace()
+        return [b for b in mt.list_remote_branches() if _is_allowed_source(b)]
+
+    try:
+        branches = await run_in_lock(workspace, _do_list)
+    except TimeoutError:
+        raise HTTPException(503, "Workspace busy; please retry in a moment")
+    except MtRunnerError as e:
+        logger.error("list_source_branches mt failed: %s", e)
+        raise HTTPException(500, f"mt failed: {e}")
+
+    # `main` always first, then release/* sorted descending (newest first).
+    main = [b for b in branches if b == "main"]
+    releases = sorted([b for b in branches if b != "main"], reverse=True)
+    return {"branches": main + releases}
+
+
 @router.post("/branches")
 async def create_branch(req: CreateBranchRequest, request: Request):
     """Create a release branch in all sub-repos via mt, push, then restore workspace to main."""
     parsed = _parse_branch(req.branch)
     if not parsed:
         raise HTTPException(400, "Branch must match `release/X.Y.Z_MMDD` (e.g. release/3.2.0_1222)")
+
+    source_branch = (req.source_branch or "main").strip()
+    if not _is_allowed_source(source_branch):
+        raise HTTPException(
+            400,
+            f"source_branch must be `main` or a `release/*` branch (got: {source_branch})",
+        )
+    if source_branch == req.branch:
+        raise HTTPException(400, "source_branch and target branch must differ")
 
     workspace = _require_workspace()
 
@@ -211,44 +282,107 @@ async def create_branch(req: CreateBranchRequest, request: Request):
             raise HTTPException(409, f"Branch already created: {req.branch}")
 
     settings = get_settings()
-    mt = MtRunner(workspace, mt_bin=settings.jenkins.mt_bin)
+    mt = MtRunner(
+        workspace,
+        mt_bin=settings.jenkins.mt_bin,
+        exclude_subrepos=settings.jenkins.exclude_subrepos,
+    )
+    common_subdir = settings.jenkins.common_subdir
+    new_semver = parsed["version"]  # e.g. "3.18.0"
 
-    def _do_create() -> Dict[str, str]:
-        # 1) Sync to upstream main.
+    def _do_create() -> Dict[str, Any]:
+        # 1) Sync to upstream source branch.
         mt.reset_workspace()
-        mt.checkout_main_and_pull()
-        # 2) Create + push the release branch.
+        # Guard: source_branch must really exist on every product sub-repo.
+        # Without this check, `mt checkout` would fail partway through and
+        # leave half the workspace on the new ref. Intersection across
+        # sub-repos is the authoritative answer (server can't trust client).
+        remotes = mt.list_remote_branches()
+        if source_branch not in remotes:
+            raise MtRunnerError(
+                f"source_branch '{source_branch}' not found on remote in all product sub-repos"
+            )
+        mt.checkout_source_and_pull(source_branch)
+        # 2) Create the release branch in every sub-repo.
         try:
             mt.checkout_new_branch(req.branch)
         except MtRunnerError:
             mt.delete_local_branch(req.branch)
             raise
+
+        # 3) Bump pubspec.yaml in the common sub-repo:
+        #    - replace semver with the branch's X.Y.Z
+        #    - increment +N build counter by 1
+        #    Then commit + (we'll push everything in the next step).
+        bump_info: Dict[str, str] = {}
+        try:
+            common = mt.get_subrepo_path(common_subdir)
+            if common is None:
+                raise MtRunnerError(
+                    f"sub-repo '{common_subdir}' not found in workspace"
+                )
+            pubspec = common / "pubspec.yaml"
+            version_before, version_after = bump_to(pubspec, new_semver)
+            bump_info["version_before"] = version_before
+            bump_info["version_after"] = version_after
+            mt.git(common, ["add", "pubspec.yaml"], timeout=15)
+            mt.git(
+                common,
+                [
+                    "-c", "user.name=jarvis-bot",
+                    "-c", "user.email=jarvis-bot@plaud.ai",
+                    "commit", "-m",
+                    f"chore(release): bump version to {version_after} for {req.branch}",
+                ],
+                timeout=30,
+            )
+        except (PubspecBumpError, MtRunnerError):
+            # roll back local branches in all sub-repos
+            mt.delete_local_branch(req.branch)
+            raise
+
+        # 4) Push every sub-repo's release branch (common now has the bump commit).
         try:
             mt.push_branch(req.branch, set_upstream=True)
         except MtRunnerError:
             mt.delete_local_branch(req.branch)
             raise
-        # 3) Capture HEAD of every sub-repo for the audit row.
+
+        # 5) Capture HEAD of every sub-repo for the audit row.
         commits = mt.get_commits()
-        # 4) Restore workspace to main so subsequent reads (crashguard / agent
+
+        # 6) Restore workspace to main so subsequent reads (crashguard / agent
         #    orchestrator / repo_updater) see the canonical state.
         try:
             mt.checkout_existing_branch("main")
         except MtRunnerError as e:
-            # Don't fail the request — branch is already pushed. Just log loudly.
             logger.warning("post-create restore to main failed: %s", e)
-        return commits
+
+        return {"commits": commits, **bump_info}
 
     try:
-        commits = await run_in_lock(workspace, _do_create)
+        result = await run_in_lock(workspace, _do_create)
     except TimeoutError:
         raise HTTPException(503, "Workspace busy; please retry in a moment")
+    except PubspecBumpError as e:
+        logger.error("create_branch pubspec bump failed: %s", e)
+        raise HTTPException(500, f"pubspec bump failed: {e}")
     except MtRunnerError as e:
         logger.error("create_branch failed: %s", e)
         raise HTTPException(500, f"mt failed: {e}")
 
+    commits = result["commits"]
     creator = _user_email(request)
     repos_payload = [{"name": k, "commit_sha": v} for k, v in commits.items()]
+    repos_payload.append({
+        "name": "__version_bump__",
+        "version_before": result.get("version_before", ""),
+        "version_after": result.get("version_after", ""),
+    })
+    repos_payload.append({
+        "name": "__source__",
+        "source_branch": source_branch,
+    })
     record = Release(
         branch=req.branch,
         version=parsed["version"],
@@ -264,7 +398,11 @@ async def create_branch(req: CreateBranchRequest, request: Request):
         await s.refresh(record)
 
     # Fire-and-forget Feishu (non-blocking — we still return success even if 飞书 is down).
-    asyncio.create_task(_notify_feishu_branch_created(req.branch, creator, commits))
+    asyncio.create_task(_notify_feishu_branch_created(
+        req.branch, creator, commits,
+        version_after=result.get("version_after", ""),
+        source_branch=source_branch,
+    ))
     return _release_to_dict(record)
 
 
