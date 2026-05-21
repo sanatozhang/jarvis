@@ -79,22 +79,29 @@ async def notify_issue_creator_on_complete(
     No-op when the issue has no `created_by` (Linear webhook flow etc.) or the
     creator has no feishu_email on file.
     """
-    issue = await db.get_issue(issue_id)
-    if not issue:
-        logger.info("notify_creator_skipped issue=%s reason=issue_not_found", issue_id)
-        return None
-    creator = (issue.get("created_by") or "").strip()
-    if not creator:
+    # db.database has no get_issue(); query IssueRecord directly. 用户名做 lower()
+    # 归一化——历史工单 created_by 可能存的是 "Yixiu"，users 表主键是小写 "yixiu"，
+    # session.get(UserRecord, ...) 是大小写敏感的主键查询。
+    from app.db.database import IssueRecord
+    async with db.get_session() as session:
+        record = await session.get(IssueRecord, issue_id)
+        if not record:
+            logger.info("notify_creator_skipped issue=%s reason=issue_not_found", issue_id)
+            return None
+        creator_raw = (record.created_by or "").strip()
+        description = (record.description or "").strip()
+
+    if not creator_raw:
         logger.info("notify_creator_skipped issue=%s reason=no_creator", issue_id)
         return None
+    creator = creator_raw.lower()
 
     from app.config import get_settings
     settings = get_settings()
     base_url = (getattr(settings, "frontend_base_url", "") or "").rstrip("/")
     detail_url = f"{base_url}/?detail={issue_id}" if base_url else f"/?detail={issue_id}"
 
-    desc = (issue.get("description") or "").strip()
-    desc_short = desc[:300] + ("…" if len(desc) > 300 else "")
+    desc_short = description[:300] + ("…" if len(description) > 300 else "")
     verb = "completed successfully" if status == "done" else "failed"
 
     text = (
@@ -104,4 +111,10 @@ async def notify_issue_creator_on_complete(
         f"URL: {detail_url}\n\n"
         f"Please review with the ticket description and URL above."
     )
-    return await notify_users_by_username(usernames=[creator], text=text)
+    result = await notify_users_by_username(usernames=[creator], text=text)
+    logger.info(
+        "notify_creator_done issue=%s task=%s creator=%s status=%s sent=%d skipped=%d failed=%d",
+        issue_id, task_id, creator, status,
+        len(result.sent), len(result.skipped), len(result.failed),
+    )
+    return result
