@@ -383,3 +383,33 @@ async def _send_fallback(
                     fallback_email, pr_url, reason)
     except Exception as e:
         logger.error("fallback send failed pr=%s: %s", pr_url, e)
+
+
+# ============================================================
+# GitHub review 状态检测
+# ============================================================
+def check_review_status_from_gh(pr_url: str, timeout: int = 20) -> bool:
+    """True 表示该 PR 已 review / merged / closed，应停止提醒。"""
+    if not pr_url:
+        return False
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "view", pr_url,
+             "--json", "state,mergedAt,closedAt,reviews"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning("check_review_status exception url=%s: %s", pr_url, e)
+        return False
+    if r.returncode != 0:
+        return False
+    try:
+        data = json.loads(r.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    if data.get("state") in ("MERGED", "CLOSED"):
+        return True
+    if data.get("mergedAt") or data.get("closedAt"):
+        return True
+    reviews = data.get("reviews") or []
+    return len(reviews) > 0

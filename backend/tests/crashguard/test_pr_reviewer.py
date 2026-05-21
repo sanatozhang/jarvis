@@ -367,3 +367,44 @@ async def test_notify_reviewers_non_ok_reason_falls_back():
     assert sent == []
     assert fb == "blame_empty"
     assert ("sanato.zhang@plaud.ai", "orange") in sent_log  # fallback card 用 orange
+
+
+# ---------- Task 5: check_review_status_from_gh ----------
+
+def test_check_review_status_merged_returns_true():
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    out = '{"state":"MERGED","mergedAt":"2026-05-21T10:00:00Z","closedAt":null,"reviews":[]}'
+    with patch("subprocess.run", return_value=_fake_run(stdout=out)):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is True
+
+
+def test_check_review_status_closed_returns_true():
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    out = '{"state":"CLOSED","mergedAt":null,"closedAt":"2026-05-21T10:00:00Z","reviews":[]}'
+    with patch("subprocess.run", return_value=_fake_run(stdout=out)):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is True
+
+
+def test_check_review_status_has_review_returns_true():
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    out = '{"state":"OPEN","mergedAt":null,"closedAt":null,"reviews":[{"state":"COMMENTED"}]}'
+    with patch("subprocess.run", return_value=_fake_run(stdout=out)):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is True
+
+
+def test_check_review_status_no_review_returns_false():
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    out = '{"state":"OPEN","mergedAt":null,"closedAt":null,"reviews":[]}'
+    with patch("subprocess.run", return_value=_fake_run(stdout=out)):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is False
+
+
+def test_check_review_status_gh_failure_returns_false():
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    with patch("subprocess.run", return_value=_fake_run(returncode=1, stdout="")):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is False
+
+
+def test_check_review_status_empty_url_returns_false():
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    assert check_review_status_from_gh("") is False
