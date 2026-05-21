@@ -713,6 +713,30 @@ async def _commit_and_push_review_fix(
     rc4, _, err4 = _run_git(
         ["git", "push"], repo_path, timeout=60,
     )
+    # non-fast-forward 兜底：远端已演进 → pull --rebase → 重试 push 一次
+    if rc4 != 0 and "non-fast-forward" in (err4 or "").lower():
+        # 解析当前分支名
+        rc_b, branch_name, _ = _run_git(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_path, timeout=10,
+        )
+        branch = (branch_name or "").strip()
+        if branch and branch != "HEAD":
+            rc_r, _, err_r = _run_git(
+                ["git", "pull", "--rebase", "origin", branch],
+                repo_path, timeout=90,
+            )
+            if rc_r != 0:
+                # rebase 冲突 → abort 保留干净 worktree，放弃本次
+                _run_git(["git", "rebase", "--abort"], repo_path, timeout=15)
+                return "", f"git push then rebase failed: {err_r}"
+            # 重读 HEAD sha（rebase 后 sha 会变）
+            rc_h, sha2, _ = _run_git(
+                ["git", "rev-parse", "HEAD"], repo_path, timeout=10,
+            )
+            if rc_h == 0:
+                sha = sha2
+            # 重试 push
+            rc4, _, err4 = _run_git(["git", "push"], repo_path, timeout=60)
     if rc4 != 0:
         return "", f"git push: {err4}"
     return sha.strip(), ""

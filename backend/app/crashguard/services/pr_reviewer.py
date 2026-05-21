@@ -307,6 +307,7 @@ async def notify_reviewers(
     pr,  # CrashPullRequest ORM 实例 OR MagicMock（含 pr_url/pr_number/repo/datadog_issue_id）
     resolution: ReviewerResolution,
     settings,
+    skip_fallback: bool = False,
 ) -> Tuple[List[str], str]:
     """
     依据 resolution 决定发给谁。返回 (sent_emails, fallback_reason_or_empty)。
@@ -314,6 +315,9 @@ async def notify_reviewers(
     - resolution.reason == "ok" + 至少一个 email 发送成功 → 不 fallback
     - resolution.reason == "ok" + 全部失败 → fallback (reason="all_unresolved")
     - resolution.reason != "ok" → fallback (reason=原 reason)
+
+    skip_fallback=True 时（daily sweep 模式）所有 fallback 路径都不发，
+    返回 ([], reason)——只对明确 assignee 的 PR 才打扰人。
 
     飞书 send_interactive_card(email=...) 用 email 直发：飞书 API 会自动把
     email 解析为 open_id（前提：用户飞书绑定了该 email），无需我们维护映射。
@@ -324,6 +328,10 @@ async def notify_reviewers(
     crash_url = _build_crash_url(getattr(pr, "datadog_issue_id", "") or "")
     crash_title = f"issue {getattr(pr, 'datadog_issue_id', '') or 'unknown'}"
     fallback_email = (settings.pr_reviewer_fallback_email or "").strip()
+
+    # skip_fallback 模式：无明确 assignee 直接返回，不打扰兜底人
+    if skip_fallback and resolution.reason != "ok":
+        return [], resolution.reason
 
     if resolution.reason == "ok":
         total = sum(resolution.line_counts.values())
@@ -354,6 +362,10 @@ async def notify_reviewers(
 
         if sent:
             return sent, ""
+
+        # skip_fallback 模式：全失败也不打扰兜底
+        if skip_fallback:
+            return [], "all_unresolved"
 
         # 全部发送失败 → fallback
         await _send_fallback(
@@ -520,10 +532,13 @@ def _resolve_repo_path_for_pr(pr, settings) -> str:
     return ""
 
 
-async def resolve_and_notify(pr_id: int) -> Dict:
+async def resolve_and_notify(pr_id: int, skip_fallback: bool = False) -> Dict:
     """
     单次入口：对一条 PR 做 blame → 通知 → 写回 DB。
     返回 {"sent_count": N, "fallback": bool, "reason": str}
+
+    skip_fallback=True 时（daily sweep 模式）跳过所有 fallback 路径，
+    不打扰兜底人；只对明确 assignee 才发卡。
     """
     from app.crashguard.config import get_crashguard_settings
     from app.db.database import get_session
@@ -546,7 +561,9 @@ async def resolve_and_notify(pr_id: int) -> Dict:
         resolution = resolve_reviewers_by_blame(pr.pr_url, repo_path, s)
 
         # 2. notify
-        sent, fallback_reason = await notify_reviewers(pr, resolution, s)
+        sent, fallback_reason = await notify_reviewers(
+            pr, resolution, s, skip_fallback=skip_fallback,
+        )
 
         # 3. 写回 DB
         now = datetime.utcnow()
@@ -591,6 +608,7 @@ async def daily_reminder_sweep() -> Dict:
     processed = skipped_same_day = newly_reviewed = notified = 0
     pr_ids_to_notify: List[int] = []
 
+    skipped_no_assignee = 0
     async with get_session() as session:
         stmt = select(CrashPullRequest).where(
             CrashPullRequest.reviewed_at.is_(None),
@@ -606,6 +624,20 @@ async def daily_reminder_sweep() -> Dict:
                 skipped_same_day += 1
                 continue
 
+            # 必须有明确 assignee（首次 blame 命中 plaud.ai 邮箱并通知成功过）
+            # reviewer_emails 字段为 "[]" / None / 空数组 都跳过，不打扰兜底人
+            emails_raw = (pr.reviewer_emails or "").strip()
+            if not emails_raw or emails_raw == "[]":
+                skipped_no_assignee += 1
+                continue
+            try:
+                emails_parsed = json.loads(emails_raw)
+            except (json.JSONDecodeError, TypeError):
+                emails_parsed = []
+            if not emails_parsed:
+                skipped_no_assignee += 1
+                continue
+
             # 拉 GH 现态：已 review → 标记跳过
             if check_review_status_from_gh(pr.pr_url):
                 pr.reviewed_at = datetime.utcnow()
@@ -617,9 +649,10 @@ async def daily_reminder_sweep() -> Dict:
         await session.commit()
 
     # session 外 await resolve_and_notify（其内部自己开 session，避免嵌套）
+    # daily sweep 必须 skip_fallback：只对明确 assignee 的 PR 才发，不打扰 sanato
     for pid in pr_ids_to_notify:
         try:
-            r = await resolve_and_notify(pid)
+            r = await resolve_and_notify(pid, skip_fallback=True)
             if r.get("sent_count", 0) > 0 or r.get("fallback"):
                 notified += 1
         except Exception as e:
@@ -627,12 +660,13 @@ async def daily_reminder_sweep() -> Dict:
 
     logger.info(
         "pr_reviewer daily_sweep: processed=%d skipped_same_day=%d "
-        "newly_reviewed=%d notified=%d",
-        processed, skipped_same_day, newly_reviewed, notified,
+        "skipped_no_assignee=%d newly_reviewed=%d notified=%d",
+        processed, skipped_same_day, skipped_no_assignee, newly_reviewed, notified,
     )
     return {
         "processed": processed,
         "skipped_same_day": skipped_same_day,
+        "skipped_no_assignee": skipped_no_assignee,
         "newly_reviewed": newly_reviewed,
         "notified": notified,
     }

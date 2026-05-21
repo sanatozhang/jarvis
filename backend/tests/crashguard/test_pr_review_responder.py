@@ -328,6 +328,105 @@ def test_read_review_response_missing_file():
         assert "missing" in err
 
 
+# ---------- Task: _commit_and_push_review_fix rebase 兜底 ----------
+
+@pytest.mark.asyncio
+async def test_commit_and_push_rebase_fallback_succeeds(monkeypatch):
+    """push 失败遇 non-fast-forward → 自动 pull --rebase → 重试 push 成功。"""
+    from app.crashguard.services import pr_review_responder as prr
+
+    call_log = []
+
+    def fake_run_git(args, repo_path, timeout=60):
+        call_log.append(tuple(args))
+        if args[:2] == ["git", "add"]:
+            return 0, "", ""
+        if args[:2] == ["git", "commit"]:
+            return 0, "", ""
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return 0, "sha_after_commit", ""
+        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return 0, "feature/x", ""
+        if args[:2] == ["git", "push"]:
+            # 第 1 次 push 失败 non-fast-forward；第 2 次成功
+            n = sum(1 for c in call_log if c[:2] == ("git", "push"))
+            if n == 1:
+                return 1, "", "To origin: ! [rejected] non-fast-forward"
+            return 0, "", ""
+        if args[:3] == ["git", "pull", "--rebase"]:
+            return 0, "rebased ok", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(prr, "_run_git", fake_run_git)
+
+    rv = ReviewItem(review_id="PRR_1", author="copilot-pull-request-reviewer",
+                    state="COMMENTED", submitted_at=datetime.utcnow(),
+                    body="y" * 100)
+    actionable = ActionableReview(
+        pr_id=1, pr_url="https://github.com/x/y/pull/9",
+        repo_slug="x/y", pr_number=9, review=rv, iter_count=1,
+    )
+    data = {
+        "verdict": "addressed", "confidence": "high",
+        "changed_files": ["a.dart"], "reviewer_quote": "fix this",
+        "explanation": "ok",
+    }
+    sha, err = await prr._commit_and_push_review_fix("/repo", actionable, data)
+    assert err == ""
+    # rebase 后 sha 被重读
+    assert sha == "sha_after_commit"
+    # 确实跑了 pull --rebase
+    assert any(c[:3] == ("git", "pull", "--rebase") for c in call_log)
+    # 共发生 2 次 push
+    assert sum(1 for c in call_log if c[:2] == ("git", "push")) == 2
+
+
+@pytest.mark.asyncio
+async def test_commit_and_push_rebase_conflict_aborts(monkeypatch):
+    """push 失败 → pull --rebase 也失败（冲突）→ rebase --abort → 返回 error。"""
+    from app.crashguard.services import pr_review_responder as prr
+
+    call_log = []
+
+    def fake_run_git(args, repo_path, timeout=60):
+        call_log.append(tuple(args))
+        if args[:2] == ["git", "add"]:
+            return 0, "", ""
+        if args[:2] == ["git", "commit"]:
+            return 0, "", ""
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return 0, "sha_after_commit", ""
+        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return 0, "feature/x", ""
+        if args[:2] == ["git", "push"]:
+            return 1, "", "non-fast-forward"
+        if args[:3] == ["git", "pull", "--rebase"]:
+            return 1, "", "CONFLICT (content): Merge conflict"
+        if args[:2] == ["git", "rebase"]:  # abort
+            return 0, "", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(prr, "_run_git", fake_run_git)
+
+    rv = ReviewItem(review_id="PRR_2", author="copilot-pull-request-reviewer",
+                    state="COMMENTED", submitted_at=datetime.utcnow(),
+                    body="y" * 100)
+    actionable = ActionableReview(
+        pr_id=1, pr_url="https://github.com/x/y/pull/9",
+        repo_slug="x/y", pr_number=9, review=rv, iter_count=1,
+    )
+    data = {
+        "verdict": "addressed", "confidence": "high",
+        "changed_files": ["a.dart"], "reviewer_quote": "fix this",
+        "explanation": "ok",
+    }
+    sha, err = await prr._commit_and_push_review_fix("/repo", actionable, data)
+    assert sha == ""
+    assert "rebase failed" in err
+    # 必须 abort 才安全
+    assert any(c[:2] == ("git", "rebase") and "--abort" in c for c in call_log)
+
+
 def test_format_response_comment_three_verdicts():
     rv = _make_review("PRR_1", "claude", "y" * 100)
     a = ActionableReview(

@@ -397,6 +397,71 @@ async def test_notify_reviewers_non_ok_reason_falls_back():
     assert ("sanato.zhang@plaud.ai", "orange") in sent_log  # fallback card 用 orange
 
 
+@pytest.mark.asyncio
+async def test_notify_reviewers_skip_fallback_non_ok_no_send():
+    """daily sweep 模式：blame 失败时不打扰 sanato。"""
+    from app.crashguard.services.pr_reviewer import (
+        ReviewerResolution, notify_reviewers,
+    )
+    pr = MagicMock()
+    pr.pr_url = "https://github.com/x/y/pull/42"
+    pr.pr_number = 42
+    pr.repo = "plaud-flutter-global"
+    pr.datadog_issue_id = "abc"
+
+    settings = MagicMock()
+    settings.pr_reviewer_fallback_email = "sanato.zhang@plaud.ai"
+
+    res = ReviewerResolution(reason="blame_empty")
+
+    sent_log = []
+
+    async def fake_send(chat_id="", card=None, email=""):
+        sent_log.append((email, card.get("header", {}).get("template")))
+        return True
+
+    with patch("app.services.feishu_cli.send_interactive_card", side_effect=fake_send):
+        sent, fb = await notify_reviewers(pr, res, settings, skip_fallback=True)
+
+    assert sent == []
+    assert fb == "blame_empty"
+    assert sent_log == []  # 关键：没发任何卡，sanato 不被打扰
+
+
+@pytest.mark.asyncio
+async def test_notify_reviewers_skip_fallback_all_fail_no_send():
+    """daily sweep 模式：有 reviewer 但全发失败也不打扰 sanato。"""
+    from app.crashguard.services.pr_reviewer import (
+        ReviewerResolution, notify_reviewers,
+    )
+    pr = MagicMock()
+    pr.pr_url = "https://github.com/x/y/pull/42"
+    pr.pr_number = 42
+    pr.repo = "flutter-common"
+    pr.datadog_issue_id = "xyz"
+
+    settings = MagicMock()
+    settings.pr_reviewer_fallback_email = "sanato.zhang@plaud.ai"
+
+    res = ReviewerResolution(
+        emails=["alice@plaud.ai"], line_counts={"alice@plaud.ai": 3},
+        reason="ok",
+    )
+
+    sent_log = []
+
+    async def fake_send(chat_id="", card=None, email=""):
+        sent_log.append(email)
+        return False  # 模拟发送失败
+
+    with patch("app.services.feishu_cli.send_interactive_card", side_effect=fake_send):
+        sent, fb = await notify_reviewers(pr, res, settings, skip_fallback=True)
+
+    assert sent == []
+    assert fb == "all_unresolved"
+    assert "sanato.zhang@plaud.ai" not in sent_log  # 没 fallback
+
+
 # ---------- Task 5: check_review_status_from_gh ----------
 
 def test_check_review_status_merged_returns_true():
@@ -696,6 +761,7 @@ async def test_daily_sweep_marks_newly_reviewed(patched_session):
             pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/101",
             pr_number=101, pr_status="open",
             last_reminder_at=datetime.utcnow() - timedelta(days=2),
+            reviewer_emails='["alice@plaud.ai"]',  # 有明确 assignee 才进 sweep
         )
         s.add(pr)
         await s.commit()
@@ -726,11 +792,12 @@ async def test_daily_sweep_renotifies_stale(patched_session):
             pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/102",
             pr_number=102, pr_status="open",
             last_reminder_at=datetime.utcnow() - timedelta(days=2),
+            reviewer_emails='["bob@plaud.ai"]',  # 有明确 assignee 才进 sweep
         )
         s.add(pr)
         await s.commit()
 
-    async def fake_notify(pid):
+    async def fake_notify(pid, skip_fallback=False):
         return {"sent_count": 1, "fallback": False, "reason": "ok"}
 
     with patch.object(pr_reviewer, "check_review_status_from_gh", return_value=False), \
@@ -739,6 +806,36 @@ async def test_daily_sweep_renotifies_stale(patched_session):
 
     m_notify.assert_called()
     assert result["notified"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_daily_sweep_skips_pr_without_assignee(patched_session):
+    """reviewer_emails 空（'[]' / null / 未 blame 过）的 PR 跳过，不打扰兜底人。"""
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        # 三种"无 assignee"形态
+        for i, emails in enumerate(("[]", "", None)):
+            pr = CrashPullRequest(
+                analysis_id=20 + i, datadog_issue_id=f"noassign_{i}",
+                repo="plaud-flutter-global",
+                pr_url=f"https://github.com/Plaud-AI/plaud-flutter-global/pull/{200+i}",
+                pr_number=200 + i, pr_status="open",
+                last_reminder_at=datetime.utcnow() - timedelta(days=2),
+                reviewer_emails=emails,
+            )
+            s.add(pr)
+        await s.commit()
+
+    with patch.object(pr_reviewer, "check_review_status_from_gh", return_value=False), \
+         patch.object(pr_reviewer, "resolve_and_notify") as m_notify:
+        result = await pr_reviewer.daily_reminder_sweep()
+
+    m_notify.assert_not_called()
+    assert result["skipped_no_assignee"] >= 3
+    assert result["notified"] == 0
 
 
 @pytest.mark.asyncio

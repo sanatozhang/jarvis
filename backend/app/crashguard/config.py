@@ -217,8 +217,8 @@ class CrashguardSettings(BaseSettings):
             "sanato.zhang@plaud.ai",  # 自己排除：他也是 fallback 接收人
         ]
     )
-    # 每日提醒 cron；默认 09:30
-    pr_reviewer_daily_cron: str = "30 9 * * *"
+    # 每日提醒 cron；默认 09:00 工程师到岗
+    pr_reviewer_daily_cron: str = "0 9 * * *"
     # 找不到 owner 时的兜底接收人 email（飞书直发）
     pr_reviewer_fallback_email: str = "sanato.zhang@plaud.ai"
     # 启动后延迟一次性跑 pipeline + auto-analyze（避免重启等到 07:00 才开始）
@@ -366,20 +366,22 @@ class CrashguardSettings(BaseSettings):
     auto_pr_fixable_platforms: List[str] = Field(default_factory=lambda: ["android", "ios", "flutter"])
 
     # === PR Review 自动响应（Step 3）===
-    # 默认关，启用前先在测试 PR 上验过。开启后 pr_sync tick 内会拉每条 open PR 的
-    # reviews，对未响应的 review 调 LLM 评判：问题真存在 → 修复 commit；不存在 →
-    # 发评论解释。所有 Gate#1-13 闸门复用。
-    pr_review_response_enabled: bool = False
+    # 2026-05-21 灰度通过后翻 True：pr_sync tick 内拉每条 open PR 的 reviews，
+    # 对未响应的 review 调 LLM 评判：问题真存在 → 修复 commit；不存在 → 发评论解释。
+    # Gate#13 + rebase 兜底 + max_iter 3 + cooldown 30min 多层保护。
+    pr_review_response_enabled: bool = True
     # 每条 PR 最多自动响应 N 轮（防 fix-break-refix 循环）
     pr_review_response_max_iterations: int = 3
     # 同 PR 距上次 dispatch ≤ N min 跳过（cooldown 节流）
     pr_review_response_cooldown_minutes: int = 30
     # 允许响应的 reviewer 白名单——其它 author（特别是 owner 本人 / unknown bot）跳过
     # 默认覆盖 Copilot / Codex / Claude；人工评审走人工 PR 流程，agent 不抢
+    # 注意：不放 "claude"——GitHub 上的 claude bot 大量发"组织 Code Review 配额超额"
+    # 模板消息（body=317 字符但内容是计费警告），不是真 review；放进来会被
+    # collect_actionable_reviews 的 break 抢占，跳过 copilot/codex 真实建议。
     pr_review_response_allowed_authors: list[str] = [
         "copilot-pull-request-reviewer",
         "chatgpt-codex-connector",
-        "claude",
     ]
     # review body 字符数下限——太短的 review（如 "LGTM" "+1"）信噪比低，直接跳过
     pr_review_response_min_body_chars: int = 50
