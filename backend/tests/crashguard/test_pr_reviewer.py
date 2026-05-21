@@ -1,4 +1,5 @@
 """PR Reviewer 单元测试 — Task 2-7"""
+import json
 from collections import Counter
 from unittest.mock import MagicMock, patch
 
@@ -222,3 +223,147 @@ def test_resolve_reviewers_by_blame_happy_path(tmp_path):
     assert r.reason == "ok"
     assert r.emails == ["alice@plaud.ai"]
     assert r.line_counts == {"alice@plaud.ai": 3}
+
+
+# ---------- Task 4: 飞书卡片 + 通知 ----------
+
+def test_build_reviewer_card_contains_pr_link_and_lines():
+    from app.crashguard.services.pr_reviewer import build_reviewer_card
+    card = build_reviewer_card(
+        pr_url="https://github.com/x/y/pull/42",
+        pr_title="[crashguard][DRAFT] Fix LateInit",
+        crash_title="LateInitializationError",
+        crash_url="https://app.datadoghq.com/error-tracking/issue/abc",
+        line_count=15,
+        total_lines=20,
+    )
+    payload = json.dumps(card, ensure_ascii=False)
+    assert "https://github.com/x/y/pull/42" in payload
+    assert "15" in payload      # line_count
+    assert "75" in payload      # 15/20 = 75%
+    assert "请你 review" in payload
+
+
+def test_build_fallback_card_contains_reason_and_unresolved():
+    from app.crashguard.services.pr_reviewer import build_fallback_card
+    card = build_fallback_card(
+        pr_url="https://github.com/x/y/pull/42",
+        pr_title="[crashguard][DRAFT] Fix LateInit",
+        reason="all_unresolved",
+        unresolved_emails=["alice@plaud.ai", "bob@plaud.ai"],
+    )
+    payload = json.dumps(card, ensure_ascii=False)
+    assert "需手动指派" in payload
+    assert "alice@plaud.ai" in payload
+    assert "bob@plaud.ai" in payload
+
+
+def test_build_fallback_card_translates_reason():
+    from app.crashguard.services.pr_reviewer import build_fallback_card
+    card = build_fallback_card(
+        pr_url="https://github.com/x/y/pull/42",
+        pr_title="[crashguard][DRAFT] X",
+        reason="bot_only",
+    )
+    payload = json.dumps(card, ensure_ascii=False)
+    assert "全部为 bot author" in payload
+
+
+@pytest.mark.asyncio
+async def test_notify_reviewers_ok_sends_to_each_email():
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.services.pr_reviewer import (
+        ReviewerResolution, notify_reviewers,
+    )
+    pr = MagicMock()
+    pr.pr_url = "https://github.com/x/y/pull/42"
+    pr.pr_number = 42
+    pr.repo = "plaud-flutter-global"
+    pr.datadog_issue_id = "abc"
+
+    settings = MagicMock()
+    settings.pr_reviewer_fallback_email = "sanato.zhang@plaud.ai"
+
+    res = ReviewerResolution(
+        emails=["alice@plaud.ai", "bob@plaud.ai"],
+        line_counts={"alice@plaud.ai": 5, "bob@plaud.ai": 3},
+        reason="ok",
+    )
+
+    sent_log = []
+
+    async def fake_send(chat_id="", card=None, email=""):
+        sent_log.append(email)
+        return True
+
+    with patch("app.services.feishu_cli.send_interactive_card", side_effect=fake_send):
+        sent, fb = await notify_reviewers(pr, res, settings)
+
+    assert set(sent) == {"alice@plaud.ai", "bob@plaud.ai"}
+    assert fb == ""
+    assert set(sent_log) == {"alice@plaud.ai", "bob@plaud.ai"}
+
+
+@pytest.mark.asyncio
+async def test_notify_reviewers_send_fails_fallbacks_to_sanato():
+    from app.crashguard.services.pr_reviewer import (
+        ReviewerResolution, notify_reviewers,
+    )
+    pr = MagicMock()
+    pr.pr_url = "https://github.com/x/y/pull/42"
+    pr.pr_number = 42
+    pr.repo = "plaud-flutter-global"
+    pr.datadog_issue_id = "abc"
+
+    settings = MagicMock()
+    settings.pr_reviewer_fallback_email = "sanato.zhang@plaud.ai"
+
+    res = ReviewerResolution(
+        emails=["alice@plaud.ai"],
+        line_counts={"alice@plaud.ai": 5},
+        reason="ok",
+    )
+
+    sent_log = []
+
+    async def fake_send(chat_id="", card=None, email=""):
+        sent_log.append(email)
+        # alice 发送失败，sanato 成功
+        return email != "alice@plaud.ai"
+
+    with patch("app.services.feishu_cli.send_interactive_card", side_effect=fake_send):
+        sent, fb = await notify_reviewers(pr, res, settings)
+
+    assert sent == []  # alice 失败
+    assert fb == "all_unresolved"
+    assert "sanato.zhang@plaud.ai" in sent_log
+
+
+@pytest.mark.asyncio
+async def test_notify_reviewers_non_ok_reason_falls_back():
+    from app.crashguard.services.pr_reviewer import (
+        ReviewerResolution, notify_reviewers,
+    )
+    pr = MagicMock()
+    pr.pr_url = "https://github.com/x/y/pull/42"
+    pr.pr_number = 42
+    pr.repo = "plaud-flutter-global"
+    pr.datadog_issue_id = "abc"
+
+    settings = MagicMock()
+    settings.pr_reviewer_fallback_email = "sanato.zhang@plaud.ai"
+
+    res = ReviewerResolution(reason="blame_empty")
+
+    sent_log = []
+
+    async def fake_send(chat_id="", card=None, email=""):
+        sent_log.append((email, card.get("header", {}).get("template")))
+        return True
+
+    with patch("app.services.feishu_cli.send_interactive_card", side_effect=fake_send):
+        sent, fb = await notify_reviewers(pr, res, settings)
+
+    assert sent == []
+    assert fb == "blame_empty"
+    assert ("sanato.zhang@plaud.ai", "orange") in sent_log  # fallback card 用 orange

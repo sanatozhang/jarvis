@@ -188,3 +188,198 @@ def resolve_reviewers_by_blame(
         line_counts={e: n for e, n in filtered},
         reason="ok",
     )
+
+
+# ============================================================
+# 飞书卡片 builder + 通知
+# ============================================================
+_FALLBACK_REASON_ZH = {
+    "pr_url_missing": "PR URL 缺失",
+    "diff_empty": "无法获取 diff",
+    "blame_empty": "diff 解析后无可 blame 行",
+    "repo_missing": "本地仓库路径缺失",
+    "bot_only": "blame 结果全部为 bot author",
+    "all_unresolved": "找到 author 但飞书账号无法解析",
+}
+
+
+def build_reviewer_card(
+    pr_url: str,
+    pr_title: str,
+    crash_title: str,
+    crash_url: str,
+    line_count: int,
+    total_lines: int,
+) -> dict:
+    """飞书 interactive card：请你 review crashguard 自动 PR。"""
+    pct = int(line_count * 100 / max(total_lines, 1))
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🔍 请你 review crashguard 自动 PR"},
+            "template": "blue",
+        },
+        "elements": [
+            {"tag": "div", "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**PR**: {pr_title}\n"
+                    f"**触发崩溃**: {crash_title}\n"
+                    f"**你被选中的原因**: 你贡献了被修改代码的 {line_count} 行"
+                    f"（占总改动 {pct}%）"
+                ),
+            }},
+            {"tag": "action", "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "打开 PR"},
+                    "url": pr_url,
+                    "type": "primary",
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "查看崩溃详情"},
+                    "url": crash_url,
+                    "type": "default",
+                },
+            ]},
+        ],
+    }
+
+
+def build_fallback_card(
+    pr_url: str,
+    pr_title: str,
+    reason: str,
+    unresolved_emails: Optional[List[str]] = None,
+) -> dict:
+    """兜底卡片：发给 sanato，告知需手动指派。"""
+    reason_zh = _FALLBACK_REASON_ZH.get(reason, reason)
+    extra = ""
+    if unresolved_emails:
+        extra = "\n**未解析 author**: " + ", ".join(unresolved_emails)
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text",
+                      "content": "⚠️ Crashguard PR 需手动指派 reviewer"},
+            "template": "orange",
+        },
+        "elements": [
+            {"tag": "div", "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**PR**: {pr_title}\n"
+                    f"**兜底原因**: {reason_zh}"
+                    f"{extra}"
+                ),
+            }},
+            {"tag": "action", "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "打开 PR 手动指派"},
+                "url": pr_url,
+                "type": "primary",
+            }]},
+        ],
+    }
+
+
+def _build_crash_url(datadog_issue_id: str) -> str:
+    if not datadog_issue_id:
+        return ""
+    return f"https://app.datadoghq.com/error-tracking/issue/{datadog_issue_id}"
+
+
+def _pr_display_title(pr) -> str:
+    return f"[crashguard][DRAFT] {pr.repo or 'unknown'} #{pr.pr_number or '?'}"
+
+
+async def notify_reviewers(
+    pr,  # CrashPullRequest ORM 实例 OR MagicMock（含 pr_url/pr_number/repo/datadog_issue_id）
+    resolution: ReviewerResolution,
+    settings,
+) -> Tuple[List[str], str]:
+    """
+    依据 resolution 决定发给谁。返回 (sent_emails, fallback_reason_or_empty)。
+
+    - resolution.reason == "ok" + 至少一个 email 发送成功 → 不 fallback
+    - resolution.reason == "ok" + 全部失败 → fallback (reason="all_unresolved")
+    - resolution.reason != "ok" → fallback (reason=原 reason)
+
+    飞书 send_interactive_card(email=...) 用 email 直发：飞书 API 会自动把
+    email 解析为 open_id（前提：用户飞书绑定了该 email），无需我们维护映射。
+    """
+    from app.services import feishu_cli  # 隔离合约白名单
+
+    pr_title = _pr_display_title(pr)
+    crash_url = _build_crash_url(getattr(pr, "datadog_issue_id", "") or "")
+    crash_title = f"issue {getattr(pr, 'datadog_issue_id', '') or 'unknown'}"
+    fallback_email = (settings.pr_reviewer_fallback_email or "").strip()
+
+    if resolution.reason == "ok":
+        total = sum(resolution.line_counts.values())
+        sent: List[str] = []
+        for email in resolution.emails:
+            n = resolution.line_counts.get(email, 0)
+            card = build_reviewer_card(
+                pr_url=pr.pr_url,
+                pr_title=pr_title,
+                crash_title=crash_title,
+                crash_url=crash_url,
+                line_count=n,
+                total_lines=total,
+            )
+            try:
+                ok = await feishu_cli.send_interactive_card(email=email, card=card)
+            except Exception as e:
+                logger.warning("send_interactive_card raised pr=%s email=%s: %s",
+                               pr.pr_url, email, e)
+                ok = False
+            if ok:
+                sent.append(email)
+                logger.info("reviewer notified pr=%s email=%s lines=%d",
+                            pr.pr_url, email, n)
+            else:
+                logger.warning("reviewer notify failed pr=%s email=%s",
+                               pr.pr_url, email)
+
+        if sent:
+            return sent, ""
+
+        # 全部发送失败 → fallback
+        await _send_fallback(
+            pr_url=pr.pr_url, pr_title=pr_title,
+            reason="all_unresolved",
+            unresolved_emails=resolution.emails,
+            fallback_email=fallback_email,
+        )
+        return [], "all_unresolved"
+
+    # 非 ok reason → 直接 fallback
+    await _send_fallback(
+        pr_url=pr.pr_url, pr_title=pr_title,
+        reason=resolution.reason,
+        unresolved_emails=None,
+        fallback_email=fallback_email,
+    )
+    return [], resolution.reason
+
+
+async def _send_fallback(
+    pr_url: str,
+    pr_title: str,
+    reason: str,
+    unresolved_emails: Optional[List[str]],
+    fallback_email: str,
+) -> None:
+    from app.services import feishu_cli
+    if not fallback_email:
+        logger.error("pr_reviewer_fallback_email empty — cannot send fallback (pr=%s)", pr_url)
+        return
+    card = build_fallback_card(pr_url, pr_title, reason, unresolved_emails)
+    try:
+        await feishu_cli.send_interactive_card(email=fallback_email, card=card)
+        logger.info("fallback sent to %s for pr=%s reason=%s",
+                    fallback_email, pr_url, reason)
+    except Exception as e:
+        logger.error("fallback send failed pr=%s: %s", pr_url, e)
