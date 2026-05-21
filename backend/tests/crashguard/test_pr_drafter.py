@@ -641,3 +641,96 @@ def test_resolve_candidate_repos_no_fallback_when_common_real(tmp_path, monkeypa
     )
     assert len(cands) == 1
     assert cands[0][1].endswith("plaud-flutter-common")
+
+
+# ─────────── 治本 v3：fix_suggestion basename 探测 ───────────
+
+def test_extract_source_basenames_basic():
+    from app.crashguard.services.pr_drafter import _extract_source_basenames
+    text = "请修改 chatbots.view.dart 和 home.controller.dart，并参考 MainActivity.kt"
+    out = _extract_source_basenames(text)
+    assert "chatbots.view.dart" in out
+    assert "home.controller.dart" in out
+    assert "MainActivity.kt" in out
+
+
+def test_extract_source_basenames_skips_placeholders():
+    """太短的占位（如 x.dart / y.kt）不算"""
+    from app.crashguard.services.pr_drafter import _extract_source_basenames
+    out = _extract_source_basenames("just x.dart and y.kt")
+    assert "x.dart" not in out
+    assert "y.kt" not in out
+
+
+def test_extract_source_basenames_dedup_and_limit():
+    from app.crashguard.services.pr_drafter import _extract_source_basenames
+    text = " ".join(["chatbots.view.dart"] * 5 + ["home.view.dart"] * 5)
+    out = _extract_source_basenames(text, limit=8)
+    assert out == ["chatbots.view.dart", "home.view.dart"]
+
+
+def test_extract_source_basenames_handles_backticks():
+    from app.crashguard.services.pr_drafter import _extract_source_basenames
+    text = "在 `chatbots.view.dart` 中改字段"
+    assert "chatbots.view.dart" in _extract_source_basenames(text)
+
+
+def test_detect_flutter_subrepo_by_basename_routes_global(tmp_path, monkeypatch):
+    """common 没 chatbots.view.dart，global 真有 lib/app/modules/chatbots/chatbots.view.dart
+    → 探测返回 'global'"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_basename
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/other.dart": "x"},  # common 没 chatbots
+        global_files={"lib/app/modules/chatbots/chatbots.view.dart": "class C{}"},
+        cn_files={"lib/cn_other.dart": "y"},
+    )
+    text = "请修改 `chatbots.view.dart` 中的 late 字段"
+    assert _detect_flutter_subrepo_by_basename(text) == "global"
+
+
+def test_detect_flutter_subrepo_by_basename_routes_cn_when_only_cn_has(tmp_path, monkeypatch):
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_basename
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/other.dart": "x"},
+        global_files={"lib/other.dart": "x"},
+        cn_files={"lib/app/modules/wechat/wechat_share.dart": "class W{}"},
+    )
+    assert _detect_flutter_subrepo_by_basename("调用 wechat_share.dart 的接口") == "cn"
+
+
+def test_detect_flutter_subrepo_by_basename_no_switch_when_common_has_all(tmp_path, monkeypatch):
+    """common 全有 → 不切（common 应付得了）"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_basename
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/util/file_util.dart": "x"},
+        global_files={"lib/util/file_util.dart": "x"},
+        cn_files={"lib/util/file_util.dart": "x"},
+    )
+    assert _detect_flutter_subrepo_by_basename("修改 file_util.dart") == ""
+
+
+def test_detect_flutter_subrepo_by_basename_empty_text():
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_basename
+    assert _detect_flutter_subrepo_by_basename("") == ""
+    assert _detect_flutter_subrepo_by_basename("no source file names here") == ""
+
+
+def test_resolve_candidate_repos_uses_basename_when_fix_diff_empty(tmp_path, monkeypatch):
+    """E2E：fix_diff 空 + fix_suggestion 提到 basename → 自动切到对应仓"""
+    from app.crashguard.services.pr_drafter import _resolve_candidate_repos
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/other.dart": "x"},
+        global_files={"lib/app/modules/chatbots/chatbots.view.dart": "class C{}"},
+        cn_files={"lib/cn.dart": "y"},
+    )
+    cands = _resolve_candidate_repos(
+        platform="flutter",
+        fix_text="将 `chatbots.view.dart` 中的 late 改为可空类型",
+        fix_diff="",  # 空 fix_diff → 触发 basename fallback
+    )
+    assert len(cands) == 1
+    assert cands[0][1].endswith("plaud-flutter-global")

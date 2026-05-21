@@ -195,6 +195,84 @@ def _detect_flutter_subrepo_by_blob(fix_diff: str) -> str:
     return ""
 
 
+# 源码 basename 抓取——*.dart / *.kt / *.swift / *.java / *.m / *.mm
+_SOURCE_BASENAME_RE = re.compile(
+    r"`?([A-Za-z_][\w.\-]*\.(?:dart|kt|java|swift|m|mm|h))`?"
+)
+
+
+def _extract_source_basenames(text: str, limit: int = 8) -> list[str]:
+    """从自由文本里抽源码文件 basename（chatbots.view.dart 这种）。
+
+    抓手：AI 在 fix_suggestion / root_cause 经常只写短文件名（没全路径），
+    Gate#1 用 basename rglob 在单 repo 找不到时整路拦截，但实际文件常在
+    sibling sub-repo（global/cn）里。
+    """
+    if not text:
+        return []
+    seen: set = set()
+    out: list[str] = []
+    for m in _SOURCE_BASENAME_RE.finditer(text):
+        b = m.group(1)
+        # 过滤掉 "x.dart" / "z.dart" 这种占位短名（PR description 模板里常见）
+        if len(b) <= 6:
+            continue
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _basename_in_repo(repo_path: str, basename: str) -> bool:
+    """git ls-files 在 repo 里 fuzzy 匹配 basename。比 Path.rglob 快、且尊重 .gitignore。"""
+    if not basename:
+        return False
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "--full-name", "--", f":(glob)**/{basename}"],
+            cwd=repo_path, capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _detect_flutter_subrepo_by_basename(text: str) -> str:
+    """fix_diff 空时的 fallback——从 fix_suggestion/root_cause 抽源码 basename，
+    跨 flutter 三仓 fuzzy 匹配。
+
+    典型用例（ana=96 LateInitError）：
+      - fix_suggestion 写："chatbots.view.dart"
+      - common 找不到此文件
+      - global 真实路径：lib/app/modules/chatbots/chatbots.view.dart ← 命中
+      → 返回 "global"
+
+    规则：
+      - 全部 basename 在 common 都存在 → 不切（common 应付得了）
+      - 否则在 global / cn 里 fuzzy，命中"在 sibling 存在但 common 不存在"的 basename → 切
+    """
+    basenames = _extract_source_basenames(text)
+    if not basenames:
+        return ""
+    common_path = _platform_repo_path("flutter", "")
+    if not common_path or not Path(common_path).exists():
+        return ""
+    # common 全有 → 不切
+    common_hits = {b: _basename_in_repo(common_path, b) for b in basenames}
+    if all(common_hits.values()):
+        return ""
+    for hint in ("global", "cn"):
+        cand_path = _platform_repo_path("flutter", hint)
+        if not cand_path or not Path(cand_path).exists():
+            continue
+        for b in basenames:
+            if not common_hits.get(b) and _basename_in_repo(cand_path, b):
+                return hint
+    return ""
+
+
 def _resolve_candidate_repos(
     platform: str, fix_text: str, issue_stack: str = "", fix_diff: str = "",
 ) -> list[tuple[str, str]]:
@@ -220,6 +298,12 @@ def _resolve_candidate_repos(
     # blob 探测从 fix_diff 反推目标在哪个 sub-repo 里有真代码（非空 stub）。
     if not flutter_hint and (fix_diff or "").strip():
         flutter_hint = _detect_flutter_subrepo_by_blob(fix_diff) or flutter_hint
+    # 治本 v3：fix_diff 为空（implementation agent 路径）时——从 fix_text 抽
+    # 源码 basename 跨三仓 fuzzy 匹配。典型救援场景：ana=96 LateInitError 里 AI 只写
+    # "chatbots.view.dart"，common 没此文件，global 真路径 lib/app/modules/.../*.dart
+    # 命中 → 自动切 global，让 Gate#1 path_verify 不再误拦。
+    if not flutter_hint:
+        flutter_hint = _detect_flutter_subrepo_by_basename(fix_text or "") or flutter_hint
 
     def add(name: str, sub_hint: str = "") -> None:
         path = _platform_repo_path(name, sub_hint)
