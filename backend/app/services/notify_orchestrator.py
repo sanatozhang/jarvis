@@ -90,6 +90,8 @@ async def notify_issue_creator_on_complete(
             return None
         creator_raw = (record.created_by or "").strip()
         description = (record.description or "").strip()
+        category_raw = (record.category or "").strip()
+        platform = (record.platform or "").strip()
 
     if not creator_raw:
         logger.info("notify_creator_skipped issue=%s reason=no_creator", issue_id)
@@ -97,20 +99,37 @@ async def notify_issue_creator_on_complete(
     creator = creator_raw.lower()
 
     from app.config import get_settings
+    from app.services.categories import category_label
+    import re
     settings = get_settings()
     base_url = (getattr(settings, "frontend_base_url", "") or "").rstrip("/")
     detail_url = f"{base_url}/?detail={issue_id}" if base_url else f"/?detail={issue_id}"
 
-    desc_short = description[:300] + ("…" if len(description) > 300 else "")
+    # 飞书消息一律英文。description 里的 `[Platform] [Category(...)]` 前缀已经在
+    # feedback.py 拼好——这里剥掉，避免和单独的 Category 行重复，同时
+    # 中文用户提交的工单不再让英文 reader 看到中文 label。
+    # 注意 \s* 必须放进 group——`[APP] [Category]` 之间有空格，否则第二个 [...] 不连续
+    desc_clean = re.sub(r"^(\[[^\]]*\]\s*)+", "", description).strip() or description
+    desc_short = desc_clean[:300] + ("…" if len(desc_clean) > 300 else "")
     verb = "completed successfully" if status == "done" else "failed"
+    category_en = category_label(category_raw, lang="en", short=False) if category_raw else ""
 
-    text = (
-        f"✓ Your ticket analysis has {verb}.\n\n"
-        f"Ticket ID: {issue_id}\n"
-        f"Description: {desc_short or '(no description)'}\n"
-        f"URL: {detail_url}\n\n"
-        f"Please review with the ticket description and URL above."
-    )
+    lines = [
+        f"✓ Your ticket analysis has {verb}.",
+        "",
+        f"Ticket ID: {issue_id}",
+    ]
+    if platform:
+        lines.append(f"Platform: {platform}")
+    if category_en:
+        lines.append(f"Category: {category_en}")
+    lines.extend([
+        f"Description: {desc_short or '(no description)'}",
+        f"URL: {detail_url}",
+        "",
+        "Please review with the ticket description and URL above.",
+    ])
+    text = "\n".join(lines)
     result = await notify_users_by_username(usernames=[creator], text=text)
     logger.info(
         "notify_creator_done issue=%s task=%s creator=%s status=%s sent=%d skipped=%d failed=%d",

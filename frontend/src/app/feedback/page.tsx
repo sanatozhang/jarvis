@@ -24,6 +24,10 @@ const labelCls = "mb-1.5 block text-sm font-medium";
 
 
 export default function FeedbackPage() {
+  // 提交策略（治"英文用户看到中文 description"）：
+  // - <option value=> = 英文 key（hardware/file_mgmt/...），用于 analytics 聚合稳定标识
+  // - 提交时 form.category 是 key；同时根据当前语言把 label 也发给后端
+  //   后端用 label 拼进 description（英文用户 → 英文 label；中文用户 → 中文 label）
   const CATEGORIES_DATA: { value: string; cn: string; en: string }[] = [
     { value: "hardware", cn: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", en: "Hardware (Bluetooth, firmware, file transfer, audio playback, clipping, sound quality)" },
     { value: "file_home", cn: "文件首页（首页所有功能，列表显示，移动文件夹，批量转写，重命名，合并音频，删除文件，导入音频，时钟问题导致文件名不一致）", en: "File Home (listing, folders, batch transcription, rename, merge, delete, import, clock issues)" },
@@ -118,6 +122,11 @@ export default function FeedbackPage() {
     try {
       const fd = new FormData();
       fd.append("description", form.description); fd.append("category", form.category);
+      // category 是稳定 key（hardware/file_mgmt/...）；category_label 是当前语言的展示文案，
+      // 用来拼进 description——英文用户看到的工单不会再出现中文 category。
+      const catMeta = CATEGORIES_DATA.find((c) => c.value === form.category);
+      const categoryLabel = catMeta ? (currentLang === "en" ? catMeta.en : catMeta.cn) : "";
+      fd.append("category_label", categoryLabel);
       fd.append("device_sn", form.device_sn); fd.append("firmware", form.firmware);
       fd.append("app_version", form.app_version); fd.append("platform", form.platform);
       fd.append("priority", form.priority); fd.append("zendesk", form.zendesk);
@@ -172,7 +181,7 @@ export default function FeedbackPage() {
               className={inputCls} style={inputStyle}>
               <option value="">{t("请选择问题分类")}</option>
               {CATEGORIES_DATA.map((cat) => (
-                <option key={cat.value} value={cat.cn}>{currentLang === "en" ? cat.en : cat.cn}</option>
+                <option key={cat.value} value={cat.value}>{currentLang === "en" ? cat.en : cat.cn}</option>
               ))}
             </select>
           </div>

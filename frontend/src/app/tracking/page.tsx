@@ -8,22 +8,33 @@ import { AgentTraceBlock } from "@/components/AgentTraceBlock";
 import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
 import { fetchTracking, markInaccurate, markComplete, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
+// 每条同时带 key（稳定英文标识，新工单 issues.category 存的就是它）+ 长中文 label
+// （老工单 issues.category 存的就是它）+ 短 label——catShort 双向 fallback 兼容。
 const CATEGORIES_DATA = [
-  { value: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", cn: "硬件交互", en: "Hardware" },
-  { value: "文件首页（首页所有功能，列表显示，移动文件夹，批量转写，重命名，合并音频，删除文件，导入音频，时钟问题导致文件名不一致）", cn: "文件首页", en: "File Home" },
-  { value: "文件管理（转写，总结，文件编辑，分享导出，更多菜单，ASK Plaud，PCS）", cn: "文件管理", en: "File Mgmt" },
-  { value: "用户系统与管理（账号登录注册，Onboarding，个人资料，偏好设置，app push 通知）", cn: "用户系统", en: "User System" },
-  { value: "商业化（会员购买，会员转化）", cn: "商业化", en: "Monetization" },
-  { value: "其他通用模块（Autoflow，模版社区，Plaud WEB、集成、功能许愿池、推荐朋友、隐私与安全、帮助与支持等其他功能）", cn: "其他", en: "Other" },
-  { value: "iZYREC 硬件问题", cn: "iZYREC", en: "iZYREC" },
+  { key: "hardware",    value: "硬件交互（蓝牙连接，固件升级，文件传输，音频播放，音频剪辑、音质不佳等）", cn: "硬件交互", en: "Hardware" },
+  { key: "file_home",   value: "文件首页（首页所有功能，列表显示，移动文件夹，批量转写，重命名，合并音频，删除文件，导入音频，时钟问题导致文件名不一致）", cn: "文件首页", en: "File Home" },
+  { key: "file_mgmt",   value: "文件管理（转写，总结，文件编辑，分享导出，更多菜单，ASK Plaud，PCS）", cn: "文件管理", en: "File Mgmt" },
+  { key: "user_system", value: "用户系统与管理（账号登录注册，Onboarding，个人资料，偏好设置，app push 通知）", cn: "用户系统", en: "User System" },
+  { key: "monetization",value: "商业化（会员购买，会员转化）", cn: "商业化", en: "Monetization" },
+  { key: "other",       value: "其他通用模块（Autoflow，模版社区，Plaud WEB、集成、功能许愿池、推荐朋友、隐私与安全、帮助与支持等其他功能）", cn: "其他", en: "Other" },
+  { key: "izyrec",      value: "iZYREC 硬件问题", cn: "iZYREC", en: "iZYREC" },
 ];
 const CATEGORIES = CATEGORIES_DATA.map((c) => c.value);
 const CATEGORY_SHORT: Record<string, string> = {};
 const CATEGORY_SHORT_EN: Record<string, string> = {};
-CATEGORIES_DATA.forEach((c) => { CATEGORY_SHORT[c.value] = c.cn; CATEGORY_SHORT_EN[c.value] = c.en; });
+CATEGORIES_DATA.forEach((c) => {
+  // 老数据：issues.category = 长中文串
+  CATEGORY_SHORT[c.value] = c.cn;
+  CATEGORY_SHORT_EN[c.value] = c.en;
+  // 新数据：issues.category = 英文 key（如 "hardware"）
+  CATEGORY_SHORT[c.key] = c.cn;
+  CATEGORY_SHORT_EN[c.key] = c.en;
+});
 
+// 注意 \s* 必须放进 group——`[APP] [Category]` 之间有空格，否则第二个 [...]
+// 不连续匹配。原版只剥了 `[APP]`，留下 `[硬件交互（…）]` 在用户面前。
 function stripCategoryPrefix(desc: string): string {
-  return desc.replace(/^(\[[^\]]*\])+\s*/, "").trim() || desc;
+  return desc.replace(/^(\[[^\]]*\]\s*)+/, "").trim() || desc;
 }
 
 function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }) {

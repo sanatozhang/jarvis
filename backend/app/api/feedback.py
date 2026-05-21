@@ -33,7 +33,8 @@ router = APIRouter()
 async def submit_feedback(
     background_tasks: BackgroundTasks,
     description: str = Form(..., description="问题描述"),
-    category: str = Form("", description="问题分类"),
+    category: str = Form("", description="问题分类（稳定 key，如 hardware/file_mgmt）"),
+    category_label: str = Form("", description="问题分类的展示文案（按用户当前语言传入；拼进 description）"),
     device_sn: str = Form("", description="设备 SN"),
     firmware: str = Form("", description="固件版本号"),
     app_version: str = Form("", description="APP 版本"),
@@ -119,11 +120,18 @@ async def submit_feedback(
                 logger.info("Saved uploaded file [%s]: %s (%d bytes)", "image" if is_image else "log", f.filename, len(content))
 
         # Build full description
+        # category 现在是稳定英文 key（如 hardware）——直接拼进 description 会变成 "[hardware]"
+        # 反而难懂。改用前端传过来的 category_label（当前语言的展示文案，如
+        # "Hardware (...)" 或 "硬件交互（...）"），让英文用户的工单 description 里
+        # 出现的就是英文 label，从根上解决"英文用户看到中文 description"。
+        # 历史兼容：旧前端不传 category_label，此时 fallback 用 category（旧版传的就是
+        # 中文长串），行为与原来一致。
         desc_parts = []
         if platform:
             desc_parts.append(f"[{platform}]")
-        if category:
-            desc_parts.append(f"[{category}]")
+        cat_for_desc = category_label or category
+        if cat_for_desc:
+            desc_parts.append(f"[{cat_for_desc}]")
         desc_parts.append(description)
         full_description = " ".join(desc_parts)
 

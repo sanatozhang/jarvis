@@ -36,9 +36,11 @@ import {
 
 // ── URL helpers ──────────────────────────────────────────────
 /** Strip leading [Platform][Chinese category] brackets from issue description.
- *  Used when site language is EN so only the actual (English) text is shown. */
+ *  Used when site language is EN so only the actual (English) text is shown.
+ *  注意 \s* 必须放进 group——`[APP] [Category]` 之间有空格，否则第二个 [...]
+ *  不连续匹配。原版只剥了 `[APP]`，留下 `[硬件交互（…）]` 在用户面前。 */
 function stripCategoryPrefix(desc: string): string {
-  return desc.replace(/^(\[[^\]]*\])+\s*/, "").trim() || desc;
+  return desc.replace(/^(\[[^\]]*\]\s*)+/, "").trim() || desc;
 }
 
 function getUrlParam(key: string): string {
