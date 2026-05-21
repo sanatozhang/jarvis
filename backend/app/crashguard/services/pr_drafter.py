@@ -978,6 +978,7 @@ async def _create_one_draft_pr(
         ana_row = (await session.execute(
             select(CrashAnalysis).where(CrashAnalysis.id == analysis_id)
         )).scalar_one_or_none()
+        new_pr_id: Optional[int] = None
         if ana_row is not None:
             row = CrashPullRequest(
                 analysis_id=analysis_id,
@@ -994,11 +995,22 @@ async def _create_one_draft_pr(
             )
             session.add(row)
             await session.commit()
+            new_pr_id = row.id
 
     logger.info(
         "crashguard draft PR created: %s (repo=%s analysis=%d kind=%s)",
         pr_url, repo_logical, analysis_id, change_kind,
     )
+
+    # ─── PR Reviewer auto-assign (fire-and-forget) ───
+    # blame 定位原作者 → 飞书 IM 私聊 ping reviewer；不阻塞主链路
+    if new_pr_id is not None:
+        try:
+            import asyncio as _rev_asyncio
+            from app.crashguard.services.pr_reviewer import resolve_and_notify as _rev_notify
+            _rev_asyncio.create_task(_rev_notify(new_pr_id))
+        except Exception as _rev_e:
+            logger.warning("pr_reviewer dispatch failed pr=%s: %s", pr_url, _rev_e)
 
     # ─── Post-PR QA Agent (fire-and-forget) ───
     # 评估刚创建的 PR 质量；fails open，永不阻塞 PR 主链路。
