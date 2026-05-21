@@ -34,6 +34,13 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_pull_requests", "merged_at", "DATETIME", "NULL"),
     ("crash_pull_requests", "closed_at", "DATETIME", "NULL"),
     ("crash_pull_requests", "last_synced_at", "DATETIME", "NULL"),
+    # PR reviewer auto-assign (2026-05-21)
+    ("crash_pull_requests", "reviewer_emails", "TEXT", "'[]'"),
+    ("crash_pull_requests", "reviewer_open_ids", "TEXT", "'[]'"),
+    ("crash_pull_requests", "reviewer_assigned_at", "DATETIME", "NULL"),
+    ("crash_pull_requests", "last_reminder_at", "DATETIME", "NULL"),
+    ("crash_pull_requests", "reviewed_at", "DATETIME", "NULL"),
+    ("crash_pull_requests", "reviewer_fallback_reason", "VARCHAR(64)", "''"),
     ("crash_issues", "top_os", "VARCHAR(256)", "''"),
     ("crash_issues", "top_device", "VARCHAR(256)", "''"),
     ("crash_issues", "top_app_version", "VARCHAR(128)", "''"),

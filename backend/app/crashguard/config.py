@@ -198,6 +198,22 @@ class CrashguardSettings(BaseSettings):
     # PR 状态同步 cron（拉 GitHub 现态回填 DB）；默认每 30 分钟
     # 关闭/合并后 30min 内同步到 jarvis，DRAFT → CLOSED 不会残留
     pr_sync_cron: str = "*/30 * * * *"
+    # === PR Reviewer auto-assign (2026-05-21) ===
+    # 总开关；关闭后 fire-and-forget 与 daily sweep 都直接 return
+    pr_reviewer_enabled: bool = True
+    pr_reviewer_top_n: int = 2
+    pr_reviewer_min_lines_pct: float = 0.20  # blame 行数占比阈值
+    pr_reviewer_blocked_authors: List[str] = Field(
+        default_factory=lambda: [
+            "jarvis-bot@plaud.ai",
+            "noreply@github.com",
+            "sanato.zhang@plaud.ai",  # 自己排除：他也是 fallback 接收人
+        ]
+    )
+    # 每日提醒 cron；默认 09:30
+    pr_reviewer_daily_cron: str = "30 9 * * *"
+    # 找不到 owner 时的兜底接收人 email（飞书直发）
+    pr_reviewer_fallback_email: str = "sanato.zhang@plaud.ai"
     # 启动后延迟一次性跑 pipeline + auto-analyze（避免重启等到 07:00 才开始）
     warmup_on_startup: bool = True
     # 周期 pipeline cron（与早晚报解耦）；默认每 4 小时整点
