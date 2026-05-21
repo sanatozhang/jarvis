@@ -112,7 +112,12 @@ def _filter_authors(
     top_n: int,
     min_lines_pct: float,
 ) -> List[Tuple[str, int]]:
-    """过滤 blocked author + 占比阈值；按行数降序返回前 top_n。"""
+    """过滤 blocked author + 软占比阈值；按行数降序返回前 top_n。
+
+    软门控：min_lines_pct 先做一轮"主推荐"筛选；若主推荐 < top_n，
+    则从被门控掉的剩余 non-blocked author 里按行数降序补足 top_n。
+    即"必须挑够 top_n 人"，min_lines_pct 只决定排序优先级而非硬上限。
+    """
     blocked_set = {b.lower().strip() for b in blocked}
     filtered = Counter({
         e: n for e, n in counter.items() if e.lower().strip() not in blocked_set
@@ -121,14 +126,18 @@ def _filter_authors(
     if total == 0:
         return []
     sorted_authors = sorted(filtered.items(), key=lambda kv: (-kv[1], kv[0]))
-    out: List[Tuple[str, int]] = []
-    for email, n in sorted_authors:
-        if n / total < min_lines_pct:
-            continue
-        out.append((email, n))
-        if len(out) >= top_n:
-            break
-    return out
+    primary: List[Tuple[str, int]] = [
+        (e, n) for e, n in sorted_authors if n / total >= min_lines_pct
+    ]
+    if len(primary) < top_n:
+        primary_set = {e for e, _ in primary}
+        for email, n in sorted_authors:
+            if email in primary_set:
+                continue
+            primary.append((email, n))
+            if len(primary) >= top_n:
+                break
+    return primary[:top_n]
 
 
 def resolve_reviewers_by_blame(
@@ -418,17 +427,42 @@ def check_review_status_from_gh(pr_url: str, timeout: int = 20) -> bool:
 # ============================================================
 # Orchestrator — 单次入口
 # ============================================================
+def _extract_flutter_sub_from_url(pr_url: str) -> str:
+    """从 GitHub PR URL 解析 flutter 子仓 hint。
+
+    历史包袱：CrashPullRequest.repo 字段对 flutter 三仓统一存 'flutter'，丢失
+    common/global/cn 信息。但 pr_url 形如 'plaud-flutter-{sub}'，能恢复。
+      plaud-flutter-common → ""（common 即默认主仓，sub_hint 为空即可）
+      plaud-flutter-global → "global"
+      plaud-flutter-cn     → "cn"
+    """
+    if not pr_url:
+        return ""
+    u = pr_url.lower()
+    if "plaud-flutter-global" in u or "plaud_flutter_global" in u:
+        return "global"
+    if "plaud-flutter-cn" in u or "plaud_flutter_cn" in u:
+        return "cn"
+    return ""
+
+
 def _resolve_repo_path_for_pr(pr, settings) -> str:
-    """根据 pr.repo 映射本地仓库路径。"""
+    """根据 pr.repo + pr.pr_url 映射本地仓库路径。
+
+    flutter 子仓 sub_hint 优先从 pr_url 解析（pr.repo 只存 'flutter' 不带 sub）。
+    """
     repo = (pr.repo or "").lower()
     if repo.startswith("plaud-flutter-") or repo == "flutter":
-        # 子仓 hint：common / global / cn（empty = common）
-        sub = ""
-        if repo.startswith("plaud-flutter-"):
-            sub = repo[len("plaud-flutter-"):]
+        # 优先用 pr_url 解析子仓（pr.repo='flutter' 时唯一可靠来源）
+        sub_hint = _extract_flutter_sub_from_url(getattr(pr, "pr_url", "") or "")
+        # pr.repo 自身带 sub 时也尊重（向后兼容未来若改字段）
+        if not sub_hint and repo.startswith("plaud-flutter-"):
+            tail = repo[len("plaud-flutter-"):]
+            if tail in ("global", "cn"):
+                sub_hint = tail
         try:
             from app.crashguard.services.pr_drafter import _platform_repo_path
-            return _platform_repo_path("flutter", "" if sub == "common" else sub)
+            return _platform_repo_path("flutter", sub_hint)
         except Exception as e:
             logger.warning("_platform_repo_path failed: %s", e)
             return getattr(settings, "repo_path_flutter", "") or ""

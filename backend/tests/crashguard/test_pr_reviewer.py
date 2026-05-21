@@ -139,11 +139,21 @@ def test_filter_authors_basic_top2_with_pct():
     assert out == [("alice@plaud.ai", 5), ("bob@plaud.ai", 2)]
 
 
-def test_filter_authors_min_pct_excludes_noise():
+def test_filter_authors_soft_min_pct_backfills_to_top_n():
+    """软门控：占比不足但 top_n 不足时仍补足"""
     from app.crashguard.services.pr_reviewer import _filter_authors
     counter = Counter({"alice@plaud.ai": 50, "bob@plaud.ai": 1})
-    # total=51; bob=2% < 20% → excluded
+    # top_n=2: bob 2% < 20% 落选；但 primary=[alice] 不足 2 人 → 补 bob
     out = _filter_authors(counter, [], top_n=2, min_lines_pct=0.20)
+    assert out == [("alice@plaud.ai", 50), ("bob@plaud.ai", 1)]
+
+
+def test_filter_authors_hard_pct_when_enough_primary():
+    """已凑齐 top_n 时不再回填"""
+    from app.crashguard.services.pr_reviewer import _filter_authors
+    counter = Counter({"alice@plaud.ai": 50, "bob@plaud.ai": 1})
+    # top_n=1: primary=[alice] 已够，不补 bob
+    out = _filter_authors(counter, [], top_n=1, min_lines_pct=0.20)
     assert out == [("alice@plaud.ai", 50)]
 
 
@@ -676,3 +686,82 @@ async def test_daily_sweep_disabled_returns_zero(patched_session):
         assert result["processed"] == 0
     finally:
         s.pr_reviewer_enabled = True
+
+
+# ---------- flutter sub-repo URL 解析（治本 bug 修复） ----------
+
+def test_extract_flutter_sub_from_url_global():
+    from app.crashguard.services.pr_reviewer import _extract_flutter_sub_from_url
+    assert _extract_flutter_sub_from_url(
+        "https://github.com/Plaud-AI/plaud-flutter-global/pull/147"
+    ) == "global"
+
+
+def test_extract_flutter_sub_from_url_cn():
+    from app.crashguard.services.pr_reviewer import _extract_flutter_sub_from_url
+    assert _extract_flutter_sub_from_url(
+        "https://github.com/Plaud-AI/plaud-flutter-cn/pull/50"
+    ) == "cn"
+
+
+def test_extract_flutter_sub_from_url_common_returns_empty():
+    from app.crashguard.services.pr_reviewer import _extract_flutter_sub_from_url
+    assert _extract_flutter_sub_from_url(
+        "https://github.com/Plaud-AI/plaud-flutter-common/pull/1096"
+    ) == ""
+
+
+def test_extract_flutter_sub_from_url_non_flutter_returns_empty():
+    from app.crashguard.services.pr_reviewer import _extract_flutter_sub_from_url
+    assert _extract_flutter_sub_from_url(
+        "https://github.com/Plaud-AI/plaud-ios/pull/200"
+    ) == ""
+    assert _extract_flutter_sub_from_url("") == ""
+
+
+def test_resolve_repo_path_uses_url_for_flutter_global(monkeypatch):
+    """治本验证：pr.repo='flutter' + url 含 plaud-flutter-global → 走 global 仓路径"""
+    from app.crashguard.services import pr_reviewer
+    captured = {}
+
+    def fake_platform_repo_path(platform, sub_hint=""):
+        captured["platform"] = platform
+        captured["sub_hint"] = sub_hint
+        return f"/fake/{platform}-{sub_hint or 'common'}"
+
+    monkeypatch.setattr(
+        "app.crashguard.services.pr_drafter._platform_repo_path",
+        fake_platform_repo_path,
+    )
+
+    pr = MagicMock()
+    pr.repo = "flutter"
+    pr.pr_url = "https://github.com/Plaud-AI/plaud-flutter-global/pull/147"
+    settings = MagicMock()
+
+    result = pr_reviewer._resolve_repo_path_for_pr(pr, settings)
+    assert captured["sub_hint"] == "global"
+    assert result == "/fake/flutter-global"
+
+
+def test_resolve_repo_path_uses_url_for_flutter_common(monkeypatch):
+    from app.crashguard.services import pr_reviewer
+    captured = {}
+
+    def fake_platform_repo_path(platform, sub_hint=""):
+        captured["sub_hint"] = sub_hint
+        return f"/fake/{platform}-{sub_hint or 'common'}"
+
+    monkeypatch.setattr(
+        "app.crashguard.services.pr_drafter._platform_repo_path",
+        fake_platform_repo_path,
+    )
+
+    pr = MagicMock()
+    pr.repo = "flutter"
+    pr.pr_url = "https://github.com/Plaud-AI/plaud-flutter-common/pull/1096"
+    settings = MagicMock()
+
+    result = pr_reviewer._resolve_repo_path_for_pr(pr, settings)
+    assert captured["sub_hint"] == ""
+    assert result == "/fake/flutter-common"
