@@ -27,6 +27,7 @@ logger = logging.getLogger("crashguard.warmup")
 _WARMUP_DELAY_SEC = 5
 _PIPELINE_TICK_SEC = 60
 _pipeline_last_fired: str = ""
+_pr_reviewer_last_fired: str = ""
 
 
 async def _resolve_latest_release(settings) -> tuple[str, List[str]]:
@@ -537,7 +538,7 @@ async def pipeline_scheduler_loop() -> None:
     from app.crashguard.config import get_crashguard_settings
 
     logger.info("crashguard pipeline_scheduler_loop started")
-    global _pipeline_last_fired
+    global _pipeline_last_fired, _pr_reviewer_last_fired
     while True:
         try:
             s = get_crashguard_settings()
@@ -555,6 +556,22 @@ async def pipeline_scheduler_loop() -> None:
                                 hb.set_summary(res)
                         except Exception:
                             logger.exception("pipeline cron tick failed")
+
+                # PR reviewer daily reminder（默认 09:30）
+                rev_cron = getattr(s, "pr_reviewer_daily_cron", "") or ""
+                if getattr(s, "pr_reviewer_enabled", False) and rev_cron:
+                    now2 = datetime.now()
+                    rev_tag = now2.strftime("%Y-%m-%d %H:%M")
+                    if _pr_reviewer_last_fired != rev_tag and _cron_matches(rev_cron, now2):
+                        _pr_reviewer_last_fired = rev_tag
+                        try:
+                            from app.crashguard.services.pr_reviewer import daily_reminder_sweep
+                            from app.crashguard.services.job_heartbeat import record_heartbeat
+                            async with record_heartbeat("pr_reviewer_daily") as hb:
+                                res = await daily_reminder_sweep()
+                                hb.set_summary(res)
+                        except Exception:
+                            logger.exception("pr_reviewer daily sweep failed")
         except asyncio.CancelledError:
             raise
         except Exception:
