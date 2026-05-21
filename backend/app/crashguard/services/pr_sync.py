@@ -24,7 +24,11 @@ logger = logging.getLogger("crashguard.pr_sync")
 
 
 # 终态：不再轮询的状态
-_TERMINAL_STATUSES = {"merged", "closed", "ci_failed_closed"}
+# 真正"不可逆"的终态 = merged / closed（GitHub 已关闭的 PR）。
+# ci_failed_closed **不是**终态——这只是 Gate#12 历史包袱产物，工程师可手动 reopen，
+# 那种情况下 pr_sync 必须继续把 GH 现态同步回来，否则本地永远停在 ci_failed_closed，
+# daily_sweep 永远跳过，工程师收不到 ping。2026-05-21 治本。
+_TERMINAL_STATUSES = {"merged", "closed"}
 # 同步时只查这些 GitHub state 字段（statusCheckRollup 用于 Gate#12 CI 反馈）
 # - reviews / comments：人审反馈链路（reviewer 提整改意见时触发飞书通知）
 # - reviewDecision：APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED 总决定

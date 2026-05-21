@@ -68,6 +68,14 @@ def test_default_gate_ci_feedback_close_on_fail_is_false():
     )
 
 
+def test_terminal_statuses_excludes_ci_failed_closed():
+    """钉住 2026-05-21 决策：ci_failed_closed 不再是终态——人可能 reopen，
+    pr_sync 必须能继续同步 GH 现态回来，否则本地 status 永远漂移。"""
+    from app.crashguard.services.pr_sync import _TERMINAL_STATUSES
+    assert "ci_failed_closed" not in _TERMINAL_STATUSES
+    assert _TERMINAL_STATUSES == {"merged", "closed"}
+
+
 def test_derive_status_closed_not_merged():
     from app.crashguard.services.pr_sync import _derive_status
     assert _derive_status({"state": "CLOSED", "isDraft": False}) == "closed"
