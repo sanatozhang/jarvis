@@ -397,14 +397,58 @@ async def _send_fallback(
 # ============================================================
 # GitHub review 状态检测
 # ============================================================
+# 已知 review-bot login（这些 author 的 review record 不算"真人 review"）
+_REVIEW_BOT_LOGINS = {
+    "claude",                          # claude.ai code review bot
+    "copilot-pull-request-reviewer",   # GitHub Copilot
+    "copilot",
+    "dependabot",
+    "dependabot[bot]",
+    "renovate",
+    "renovate[bot]",
+    "github-actions",
+    "github-actions[bot]",
+    "coderabbitai",
+    "coderabbitai[bot]",
+}
+
+# authorAssociation == "NONE" 通常是 bot 或外部贡献者；review 不算被 review
+_VALID_REVIEW_ASSOCIATIONS = {"MEMBER", "OWNER", "COLLABORATOR", "CONTRIBUTOR"}
+
+
+def _is_human_reviewer(review_obj: dict, pr_author_login: str) -> bool:
+    """判定一条 reviews[i] 是否为"有效真人 review"。
+
+    排除：
+      - bot login（claude / copilot-pull-request-reviewer / dependabot / ...）
+      - PR 作者自己（自己 comment 自己的 PR 不算被 review）
+      - authorAssociation == NONE（外部 / 未关联用户，多为 bot）
+    """
+    author = (review_obj.get("author") or {}).get("login") or ""
+    assoc = (review_obj.get("authorAssociation") or "").upper()
+    if not author:
+        return False
+    if author.lower() in _REVIEW_BOT_LOGINS:
+        return False
+    if pr_author_login and author.lower() == pr_author_login.lower():
+        return False
+    if assoc not in _VALID_REVIEW_ASSOCIATIONS:
+        return False
+    return True
+
+
 def check_review_status_from_gh(pr_url: str, timeout: int = 20) -> bool:
-    """True 表示该 PR 已 review / merged / closed，应停止提醒。"""
+    """True 表示该 PR 已 review / merged / closed，应停止提醒。
+
+    "已 review" 判定：至少 1 条 reviews record 满足 _is_human_reviewer。
+    bot review、PR 作者自我 comment、authorAssociation=NONE 均不算。
+    """
     if not pr_url:
         return False
     try:
         r = subprocess.run(
             ["gh", "pr", "view", pr_url,
-             "--json", "state,mergedAt,closedAt,reviews"],
+             "--json", "state,mergedAt,closedAt,reviews,author"],
             capture_output=True, text=True, timeout=timeout,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
@@ -420,8 +464,11 @@ def check_review_status_from_gh(pr_url: str, timeout: int = 20) -> bool:
         return True
     if data.get("mergedAt") or data.get("closedAt"):
         return True
-    reviews = data.get("reviews") or []
-    return len(reviews) > 0
+    pr_author_login = (data.get("author") or {}).get("login") or ""
+    for rv in (data.get("reviews") or []):
+        if _is_human_reviewer(rv, pr_author_login):
+            return True
+    return False
 
 
 # ============================================================

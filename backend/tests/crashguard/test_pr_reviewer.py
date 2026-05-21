@@ -401,30 +401,123 @@ async def test_notify_reviewers_non_ok_reason_falls_back():
 
 def test_check_review_status_merged_returns_true():
     from app.crashguard.services.pr_reviewer import check_review_status_from_gh
-    out = '{"state":"MERGED","mergedAt":"2026-05-21T10:00:00Z","closedAt":null,"reviews":[]}'
+    out = json.dumps({
+        "state": "MERGED", "mergedAt": "2026-05-21T10:00:00Z",
+        "closedAt": None, "reviews": [], "author": {"login": "alice"},
+    })
     with patch("subprocess.run", return_value=_fake_run(stdout=out)):
         assert check_review_status_from_gh("https://github.com/x/y/pull/1") is True
 
 
 def test_check_review_status_closed_returns_true():
     from app.crashguard.services.pr_reviewer import check_review_status_from_gh
-    out = '{"state":"CLOSED","mergedAt":null,"closedAt":"2026-05-21T10:00:00Z","reviews":[]}'
+    out = json.dumps({
+        "state": "CLOSED", "mergedAt": None,
+        "closedAt": "2026-05-21T10:00:00Z", "reviews": [], "author": {"login": "alice"},
+    })
     with patch("subprocess.run", return_value=_fake_run(stdout=out)):
         assert check_review_status_from_gh("https://github.com/x/y/pull/1") is True
 
 
-def test_check_review_status_has_review_returns_true():
+def test_check_review_status_real_human_review_returns_true():
     from app.crashguard.services.pr_reviewer import check_review_status_from_gh
-    out = '{"state":"OPEN","mergedAt":null,"closedAt":null,"reviews":[{"state":"COMMENTED"}]}'
+    out = json.dumps({
+        "state": "OPEN", "mergedAt": None, "closedAt": None,
+        "author": {"login": "alice"},
+        "reviews": [{
+            "author": {"login": "bob"}, "authorAssociation": "MEMBER",
+            "state": "COMMENTED",
+        }],
+    })
     with patch("subprocess.run", return_value=_fake_run(stdout=out)):
         assert check_review_status_from_gh("https://github.com/x/y/pull/1") is True
 
 
-def test_check_review_status_no_review_returns_false():
+def test_check_review_status_bot_review_only_returns_false():
+    """Claude/Copilot bot review 不算被 review"""
     from app.crashguard.services.pr_reviewer import check_review_status_from_gh
-    out = '{"state":"OPEN","mergedAt":null,"closedAt":null,"reviews":[]}'
+    out = json.dumps({
+        "state": "OPEN", "mergedAt": None, "closedAt": None,
+        "author": {"login": "alice"},
+        "reviews": [
+            {"author": {"login": "claude"}, "authorAssociation": "NONE",
+             "state": "COMMENTED"},
+            {"author": {"login": "copilot-pull-request-reviewer"},
+             "authorAssociation": "NONE", "state": "COMMENTED"},
+        ],
+    })
     with patch("subprocess.run", return_value=_fake_run(stdout=out)):
         assert check_review_status_from_gh("https://github.com/x/y/pull/1") is False
+
+
+def test_check_review_status_pr_author_self_comment_returns_false():
+    """PR 作者自己 comment 自己 PR 不算 review"""
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    out = json.dumps({
+        "state": "OPEN", "mergedAt": None, "closedAt": None,
+        "author": {"login": "sanatozhang"},
+        "reviews": [{
+            "author": {"login": "sanatozhang"}, "authorAssociation": "MEMBER",
+            "state": "COMMENTED",
+        }],
+    })
+    with patch("subprocess.run", return_value=_fake_run(stdout=out)):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is False
+
+
+def test_check_review_status_none_association_returns_false():
+    """authorAssociation=NONE 不算（外部/未关联）"""
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    out = json.dumps({
+        "state": "OPEN", "mergedAt": None, "closedAt": None,
+        "author": {"login": "alice"},
+        "reviews": [{
+            "author": {"login": "external-user"}, "authorAssociation": "NONE",
+            "state": "COMMENTED",
+        }],
+    })
+    with patch("subprocess.run", return_value=_fake_run(stdout=out)):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is False
+
+
+def test_check_review_status_mixed_bot_and_human_returns_true():
+    """有 bot 也有真人时——真人的占主导"""
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    out = json.dumps({
+        "state": "OPEN", "mergedAt": None, "closedAt": None,
+        "author": {"login": "alice"},
+        "reviews": [
+            {"author": {"login": "claude"}, "authorAssociation": "NONE",
+             "state": "COMMENTED"},
+            {"author": {"login": "alice"}, "authorAssociation": "MEMBER",
+             "state": "COMMENTED"},  # PR 作者自己
+            {"author": {"login": "bob"}, "authorAssociation": "MEMBER",
+             "state": "APPROVED"},   # 真人 review
+        ],
+    })
+    with patch("subprocess.run", return_value=_fake_run(stdout=out)):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is True
+
+
+def test_check_review_status_pr_1071_real_payload_returns_false():
+    """覆盖 PR #1071 实际场景：claude bot + copilot + PR 作者自己 ×2 → False"""
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    out = json.dumps({
+        "state": "OPEN", "mergedAt": None, "closedAt": None, "isDraft": False,
+        "author": {"login": "sanatozhang"},
+        "reviews": [
+            {"author": {"login": "claude"}, "authorAssociation": "NONE",
+             "state": "COMMENTED"},
+            {"author": {"login": "copilot-pull-request-reviewer"},
+             "authorAssociation": "NONE", "state": "COMMENTED"},
+            {"author": {"login": "sanatozhang"}, "authorAssociation": "MEMBER",
+             "state": "COMMENTED"},
+            {"author": {"login": "sanatozhang"}, "authorAssociation": "MEMBER",
+             "state": "COMMENTED"},
+        ],
+    })
+    with patch("subprocess.run", return_value=_fake_run(stdout=out)):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1071") is False
 
 
 def test_check_review_status_gh_failure_returns_false():
