@@ -1,9 +1,27 @@
 """PR Reviewer 单元测试 — Task 2-7"""
 import json
 from collections import Counter
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+
+@pytest.fixture
+async def patched_session(db_engine):
+    """复用 conftest db_engine，把全局 _session_factory 指过来。"""
+    import app.db.database as db_mod
+    import app.crashguard.models  # noqa: F401 — 注册 crash_* 表
+
+    async with db_engine.begin() as conn:
+        await conn.run_sync(db_mod.Base.metadata.create_all)
+
+    original = db_mod._session_factory
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    db_mod._session_factory = factory
+    yield factory
+    db_mod._session_factory = original
 
 # ---------- Task 2: diff & blame 解析 ----------
 
@@ -408,3 +426,128 @@ def test_check_review_status_gh_failure_returns_false():
 def test_check_review_status_empty_url_returns_false():
     from app.crashguard.services.pr_reviewer import check_review_status_from_gh
     assert check_review_status_from_gh("") is False
+
+
+# ---------- Task 6: resolve_and_notify orchestrator ----------
+
+@pytest.mark.asyncio
+async def test_resolve_and_notify_writes_assigned_at(patched_session):
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.services.pr_reviewer import ReviewerResolution
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=1, datadog_issue_id="abc",
+            repo="plaud-flutter-global",
+            branch_name="crashguard/auto-fix/abc",
+            pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/999",
+            pr_number=999, pr_status="draft",
+        )
+        s.add(pr)
+        await s.commit()
+        pid = pr.id
+
+    fake_res = ReviewerResolution(
+        emails=["alice@plaud.ai"],
+        line_counts={"alice@plaud.ai": 5},
+        reason="ok",
+    )
+
+    async def fake_send(chat_id="", card=None, email=""):
+        return True
+
+    with patch.object(pr_reviewer, "resolve_reviewers_by_blame",
+                      return_value=fake_res), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               side_effect=fake_send):
+        result = await pr_reviewer.resolve_and_notify(pid)
+
+    assert result["sent_count"] == 1
+    assert result["fallback"] is False
+    assert result["reason"] == "ok"
+
+    async with get_session() as s:
+        pr2 = await s.get(CrashPullRequest, pid)
+        assert pr2.reviewer_assigned_at is not None
+        assert pr2.last_reminder_at is not None
+        assert "alice@plaud.ai" in (pr2.reviewer_emails or "")
+        assert pr2.reviewer_fallback_reason == "ok"
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_notify_fallback_path_writes_reason(patched_session):
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.services.pr_reviewer import ReviewerResolution
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=2, datadog_issue_id="def",
+            repo="plaud-flutter-global",
+            pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/998",
+            pr_number=998, pr_status="draft",
+        )
+        s.add(pr)
+        await s.commit()
+        pid = pr.id
+
+    with patch.object(pr_reviewer, "resolve_reviewers_by_blame",
+                      return_value=ReviewerResolution(reason="blame_empty")), \
+         patch("app.services.feishu_cli.send_interactive_card",
+               return_value=True):
+        result = await pr_reviewer.resolve_and_notify(pid)
+
+    assert result["sent_count"] == 0
+    assert result["fallback"] is True
+    assert result["reason"] == "blame_empty"
+
+    async with get_session() as s:
+        pr2 = await s.get(CrashPullRequest, pid)
+        assert pr2.reviewer_fallback_reason == "blame_empty"
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_notify_skips_already_reviewed(patched_session):
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=3, datadog_issue_id="ghi",
+            repo="plaud-flutter-global",
+            pr_url="https://github.com/Plaud-AI/plaud-flutter-global/pull/997",
+            pr_number=997, pr_status="open",
+            reviewed_at=datetime.utcnow(),
+        )
+        s.add(pr)
+        await s.commit()
+        pid = pr.id
+
+    with patch.object(pr_reviewer, "resolve_reviewers_by_blame") as m_resolve:
+        result = await pr_reviewer.resolve_and_notify(pid)
+    m_resolve.assert_not_called()
+    assert result["reason"] == "already_reviewed"
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_notify_disabled_short_circuits(patched_session):
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.config import get_crashguard_settings
+    s = get_crashguard_settings()
+    s.pr_reviewer_enabled = False
+    try:
+        result = await pr_reviewer.resolve_and_notify(999999)
+        assert result["reason"] == "disabled"
+    finally:
+        s.pr_reviewer_enabled = True
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_notify_pr_not_found(patched_session):
+    from app.crashguard.services import pr_reviewer
+    result = await pr_reviewer.resolve_and_notify(999999)
+    assert result["reason"] == "pr_not_found"

@@ -413,3 +413,72 @@ def check_review_status_from_gh(pr_url: str, timeout: int = 20) -> bool:
         return True
     reviews = data.get("reviews") or []
     return len(reviews) > 0
+
+
+# ============================================================
+# Orchestrator — 单次入口
+# ============================================================
+def _resolve_repo_path_for_pr(pr, settings) -> str:
+    """根据 pr.repo 映射本地仓库路径。"""
+    repo = (pr.repo or "").lower()
+    if repo.startswith("plaud-flutter-") or repo == "flutter":
+        # 子仓 hint：common / global / cn（empty = common）
+        sub = ""
+        if repo.startswith("plaud-flutter-"):
+            sub = repo[len("plaud-flutter-"):]
+        try:
+            from app.crashguard.services.pr_drafter import _platform_repo_path
+            return _platform_repo_path("flutter", "" if sub == "common" else sub)
+        except Exception as e:
+            logger.warning("_platform_repo_path failed: %s", e)
+            return getattr(settings, "repo_path_flutter", "") or ""
+    if repo.startswith("plaud-android") or repo in ("android", "plaud_android"):
+        return getattr(settings, "repo_path_android", "") or ""
+    if repo.startswith("plaud-ios") or repo in ("ios", "plaud_ios"):
+        return getattr(settings, "repo_path_ios", "") or ""
+    return ""
+
+
+async def resolve_and_notify(pr_id: int) -> Dict:
+    """
+    单次入口：对一条 PR 做 blame → 通知 → 写回 DB。
+    返回 {"sent_count": N, "fallback": bool, "reason": str}
+    """
+    from app.crashguard.config import get_crashguard_settings
+    from app.db.database import get_session
+    from app.crashguard.models import CrashPullRequest  # 延迟 import 避免循环
+
+    s = get_crashguard_settings()
+    if not s.pr_reviewer_enabled:
+        return {"sent_count": 0, "fallback": False, "reason": "disabled"}
+
+    async with get_session() as session:
+        pr = await session.get(CrashPullRequest, pr_id)
+        if pr is None:
+            return {"sent_count": 0, "fallback": False, "reason": "pr_not_found"}
+
+        if pr.reviewed_at is not None:
+            return {"sent_count": 0, "fallback": False, "reason": "already_reviewed"}
+
+        # 1. blame
+        repo_path = _resolve_repo_path_for_pr(pr, s)
+        resolution = resolve_reviewers_by_blame(pr.pr_url, repo_path, s)
+
+        # 2. notify
+        sent, fallback_reason = await notify_reviewers(pr, resolution, s)
+
+        # 3. 写回 DB
+        now = datetime.utcnow()
+        pr.reviewer_emails = json.dumps(resolution.emails, ensure_ascii=False)
+        pr.reviewer_open_ids = json.dumps(sent, ensure_ascii=False)
+        pr.reviewer_fallback_reason = fallback_reason or resolution.reason or "ok"
+        pr.last_reminder_at = now
+        if pr.reviewer_assigned_at is None:
+            pr.reviewer_assigned_at = now
+        await session.commit()
+
+    return {
+        "sent_count": len(sent),
+        "fallback": bool(fallback_reason),
+        "reason": fallback_reason or resolution.reason,
+    }
