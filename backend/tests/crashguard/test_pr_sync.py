@@ -59,6 +59,15 @@ def test_derive_status_merged():
     assert _derive_status({"state": "MERGED", "isDraft": False}) == "merged"
 
 
+def test_default_gate_ci_feedback_close_on_fail_is_false():
+    """钉住 2026-05-21 决策：CI 失败默认不再自动 close PR，由人工 review 决定"""
+    from app.crashguard.config import get_crashguard_settings
+    s = get_crashguard_settings()
+    assert s.gate_ci_feedback_close_on_fail is False, (
+        "CI 失败应交人工处理；除非显式打开 close_on_fail=True，否则不该自动关 PR"
+    )
+
+
 def test_derive_status_closed_not_merged():
     from app.crashguard.services.pr_sync import _derive_status
     assert _derive_status({"state": "CLOSED", "isDraft": False}) == "closed"

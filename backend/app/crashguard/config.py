@@ -351,7 +351,11 @@ class CrashguardSettings(BaseSettings):
     pr_manual_approve_mode: bool = False
     # Gate#12：PR 落地后 CI 反馈
     gate_ci_feedback_enabled: bool = True
-    gate_ci_feedback_close_on_fail: bool = True  # CI 失败自动关 PR
+    # CI 失败时是否自动 gh pr close。
+    # 2026-05-21 改默认 False — 用户决策：CI 失败由人工 review 决定怎么改，
+    # 不应该被系统直接丢弃。PR 维持 draft/open，飞书 reviewer 收到 ping 后人工处理。
+    # 设 True 时仍按旧行为自动关 + 写 ci_failed_closed 终态。
+    gate_ci_feedback_close_on_fail: bool = False
     # Gate#14：老 draft 污染自动关闭——draft >N 小时且 diff 含 pubspec / .gen.dart
     # 等污染文件，pr_sync tick 内自动关 PR，等下个 cron 用干净 base 重生。
     # 抓手：#987 stale-base 链遗留的 pubspec bump 类问题，源头治理后兜底清扫。
