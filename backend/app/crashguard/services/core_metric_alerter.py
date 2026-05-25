@@ -21,7 +21,17 @@ from __future__ import annotations
 
 import json as _json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _utc_ms(dt: datetime) -> int:
+    """naive datetime → epoch ms（按 UTC 解释）。
+
+    底层 bug 防护：naive .timestamp() 按本地时区解释会偏 8h，告警实时性丢失。
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
@@ -55,8 +65,8 @@ async def _fetch_crash_free(start: datetime, end: datetime) -> Dict[str, Dict[st
     if not client:
         logger.warning("core_metric_alerter: datadog_api_key not configured")
         return {}
-    start_ms = int(start.timestamp() * 1000)
-    end_ms = int(end.timestamp() * 1000)
+    start_ms = _utc_ms(start)
+    end_ms = _utc_ms(end)
     return await client.crash_free_sessions_by_platform(start_ms=start_ms, end_ms=end_ms)
 
 
@@ -67,8 +77,8 @@ async def _fetch_crash_free_by_version(
     client = _make_datadog_client()
     if not client or not versions_by_plat:
         return {}
-    start_ms = int(start.timestamp() * 1000)
-    end_ms = int(end.timestamp() * 1000)
+    start_ms = _utc_ms(start)
+    end_ms = _utc_ms(end)
     return await client.crash_free_sessions_by_version(
         start_ms=start_ms, end_ms=end_ms, versions_by_plat=versions_by_plat,
     )

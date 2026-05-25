@@ -24,7 +24,18 @@ from __future__ import annotations
 
 import json as _json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _utc_ms(dt: datetime) -> int:
+    """naive datetime → epoch ms（按 UTC 解释）。
+
+    底层 bug 防护：naive .timestamp() 按本地时区解释 → UTC datetime 被当 BJT，
+    实际查询窗口偏 8h，告警实时性丢失（详见 coreguard demo_metric.py 同款修复）。
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
@@ -89,8 +100,8 @@ async def _fetch_hourly_events(
         app_key=s.datadog_app_key,
         site=s.datadog_site, service_filter=s.datadog_service_filter,
     )
-    start_ms = int(window_start.timestamp() * 1000)
-    end_ms = int(window_end.timestamp() * 1000)
+    start_ms = _utc_ms(window_start)
+    end_ms = _utc_ms(window_end)
     return await client.list_issues_for_window(
         start_ms=start_ms,
         end_ms=end_ms,
@@ -116,8 +127,8 @@ async def _fetch_24h_events(now: datetime) -> List[Dict[str, Any]]:
         window_end = now
         window_start = now - timedelta(hours=24)
         return await client.list_issues_for_window(
-            start_ms=int(window_start.timestamp() * 1000),
-            end_ms=int(window_end.timestamp() * 1000),
+            start_ms=_utc_ms(window_start),
+            end_ms=_utc_ms(window_end),
             tracks=s.datadog_tracks,
             query=s.datadog_query_fatal or s.datadog_query or "*",
             use_cache=False,
