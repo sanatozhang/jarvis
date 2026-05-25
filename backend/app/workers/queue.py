@@ -46,6 +46,12 @@ async def analyze_task(ctx: Dict[str, Any], task_id: str, issue_id: str, agent_o
         await db.update_task(task_id, status="done", progress=100, message="Analysis complete")
         logger.info("Task %s completed successfully", task_id)
 
+        try:
+            from app.services.notify_orchestrator import notify_issue_creator_on_complete
+            await notify_issue_creator_on_complete(issue_id=issue_id, task_id=task_id, status="done")
+        except Exception as notify_err:
+            logger.warning("notify_creator_done_failed task=%s err=%s", task_id, notify_err)
+
         # Soft-fail alert: pipeline finished but agent/CLI/quota broke (system_failure flag).
         if getattr(result, "system_failure", False):
             try:
@@ -78,6 +84,11 @@ async def analyze_task(ctx: Dict[str, Any], task_id: str, issue_id: str, agent_o
             )
         except Exception as notify_err:
             logger.warning("Hard-fail Feishu alert failed for task %s: %s", task_id, notify_err)
+        try:
+            from app.services.notify_orchestrator import notify_issue_creator_on_complete
+            await notify_issue_creator_on_complete(issue_id=issue_id, task_id=task_id, status="failed")
+        except Exception as notify_err:
+            logger.warning("notify_creator_failed task=%s err=%s", task_id, notify_err)
         return {"status": "failed", "task_id": task_id, "error": str(e)}
 
 

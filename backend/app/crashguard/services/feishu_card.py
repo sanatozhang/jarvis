@@ -193,34 +193,43 @@ def _fmt_n(n: Any) -> str:
         return str(n)
 
 
-def _build_crash_free_column_md(
-    plat_label: str,
-    all_stats: Dict[str, Any] | None,
-    ver_stats: Dict[str, Any] | None,
-    wow: Dict[str, Any] | None = None,
-    latest_stats: Dict[str, Any] | None = None,
-) -> str:
-    """单平台一栏的 markdown（全版本 + 主要版本 + 最新版本三段）。
-    wow: dual_window platform dict with today_fatal/baseline_fatal/fatal_delta_pct/sess_delta_pct.
-    latest_stats: 最新版本 crash-free stats dict.
+def _emit_block_md(
+    lines: List[str], stats: Dict[str, Any], *, with_breakdown: bool = False
+) -> None:
+    """共用：给一个 stats dict（含 sessions + 可选 user 维度）渲染主+副指标。
+
+    User 维度优先（主指标加粗），session 维度作 FYI 副数字。
     """
-    lines: List[str] = [f"**{plat_label}**", ""]
-    if all_stats:
-        pct = all_stats.get("crash_free_pct")
-        pct_str = (
-            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
+    has_user = int(stats.get("total_users") or 0) > 0
+    if has_user:
+        u_pct = stats.get("crash_free_users_pct")
+        u_pct_str = (
+            f"{_cf_emoji(float(u_pct))} **{float(u_pct):.2f}%**"
+            if u_pct is not None else "—"
         )
-        lines.append("__全版本（大盘，已结束会话）__")
-        lines.append(f"· 会话总数：**{_fmt_n(all_stats.get('total_sessions'))}**")
-        lines.append(f"· Crash-free：{_fmt_n(all_stats.get('crash_free_sessions'))}")
-        lines.append(f"· 崩溃会话：{_fmt_n(all_stats.get('crashed_sessions'))}")
-        lines.append(f"· Crash-free 率：{pct_str}")
-        # ANR / App Hang 明细（来自 breakdown，error 事件数）
-        bd = all_stats.get("breakdown") or {}
+        lines.append(f"· 👤 用户总数：**{_fmt_n(stats.get('total_users'))}**")
+        lines.append(f"· 崩溃用户：{_fmt_n(stats.get('crashed_users'))}")
+        lines.append(f"· **Crash-free 用户率：{u_pct_str}**")
+    s_pct = stats.get("crash_free_pct")
+    s_pct_str = (
+        f"{_cf_emoji(float(s_pct))} **{float(s_pct):.2f}%**"
+        if s_pct is not None else "—"
+    )
+    if has_user:
+        lines.append(f"· _会话 {_fmt_n(stats.get('total_sessions'))}（FYI）_")
+        lines.append(f"· _崩溃会话 {_fmt_n(stats.get('crashed_sessions'))}_")
+        lines.append(f"· _Crash-free 会话率 {s_pct_str}_")
+    else:
+        lines.append(f"· 会话总数：**{_fmt_n(stats.get('total_sessions'))}**")
+        lines.append(f"· Crash-free：{_fmt_n(stats.get('crash_free_sessions'))}")
+        lines.append(f"· 崩溃会话：{_fmt_n(stats.get('crashed_sessions'))}")
+        lines.append(f"· Crash-free 率：{s_pct_str}")
+    if with_breakdown:
+        bd = stats.get("breakdown") or {}
         anr = bd.get("anr") or bd.get("ANR")
         hang = bd.get("app_hang") or bd.get("App Hang")
         native = bd.get("native_crash")
-        breakdown_parts = []
+        breakdown_parts: List[str] = []
         if native:
             breakdown_parts.append(f"native {_fmt_n(native)}")
         if anr:
@@ -229,7 +238,24 @@ def _build_crash_free_column_md(
             breakdown_parts.append(f"Hang {_fmt_n(hang)}")
         if breakdown_parts:
             lines.append(f"· 崩溃明细：{' · '.join(breakdown_parts)}")
-        # WoW 对比（来自双窗口数据，只看 fatal 趋势）
+
+
+def _build_crash_free_column_md(
+    plat_label: str,
+    all_stats: Dict[str, Any] | None,
+    ver_stats: Dict[str, Any] | None,
+    wow: Dict[str, Any] | None = None,
+    latest_stats: Dict[str, Any] | None = None,
+) -> str:
+    """单平台一栏的 markdown（全版本 + 主要版本 + 最新版本三段）。
+
+    2026-05-21：user 维度主指标，sessions 作 FYI 副数字。
+    """
+    lines: List[str] = [f"**{plat_label}**", ""]
+    if all_stats:
+        lines.append("__全版本（大盘）__")
+        _emit_block_md(lines, all_stats, with_breakdown=True)
+        # WoW 对比（双窗口数据，只看 fatal 趋势）
         if wow:
             sess_pct = wow.get("sess_delta_pct")
             fat_pct = wow.get("fatal_delta_pct")
@@ -243,36 +269,22 @@ def _build_crash_free_column_md(
             )
         lines.append("")
     if ver_stats:
-        pct = ver_stats.get("crash_free_pct")
-        pct_str = (
-            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
-        )
         ver = ver_stats.get("version") or "—"
         lines.append(f"__主要版本__ `{ver}`")
         spp = ver_stats.get("share_of_platform_pct")
         sap = ver_stats.get("share_of_all_pct")
         if spp is not None:
             lines.append(f"· 占平台：{spp:.2f}% · 占全部：{sap:.2f}%")
-        lines.append(f"· 会话总数：**{_fmt_n(ver_stats.get('total_sessions'))}**")
-        lines.append(f"· Crash-free：{_fmt_n(ver_stats.get('crash_free_sessions'))}")
-        lines.append(f"· 崩溃：{_fmt_n(ver_stats.get('crashed_sessions'))}")
-        lines.append(f"· Crash-free 率：{pct_str}")
+        _emit_block_md(lines, ver_stats)
         lines.append("")
     if latest_stats:
-        pct = latest_stats.get("crash_free_pct")
-        pct_str = (
-            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
-        )
         ver = latest_stats.get("version") or "—"
         lines.append(f"__🆕 最新版本__ `{ver}`")
         spp = latest_stats.get("share_of_platform_pct")
         sap = latest_stats.get("share_of_all_pct")
         if spp is not None:
             lines.append(f"· 占平台：{spp:.2f}% · 占全部：{sap:.2f}%")
-        lines.append(f"· 会话总数：**{_fmt_n(latest_stats.get('total_sessions'))}**")
-        lines.append(f"· Crash-free：{_fmt_n(latest_stats.get('crash_free_sessions'))}")
-        lines.append(f"· 崩溃：{_fmt_n(latest_stats.get('crashed_sessions'))}")
-        lines.append(f"· Crash-free 率：{pct_str}")
+        _emit_block_md(lines, latest_stats)
     return "\n".join(lines)
 
 
@@ -281,28 +293,36 @@ def _build_summary_md(
     all_summary: Dict[str, Any] | None,
     ver_summary: Dict[str, Any] | None,
 ) -> str:
-    """iOS + Android 汇总——横向一行紧凑."""
+    """iOS + Android 汇总——横向一行紧凑（user 主指标 + sessions FYI）."""
+    def _line(prefix: str, stats: Dict[str, Any]) -> str:
+        s_pct = stats.get("crash_free_pct")
+        s_pct_str = (
+            f"{_cf_emoji(float(s_pct))} **{float(s_pct):.2f}%**" if s_pct is not None else "—"
+        )
+        has_user = int(stats.get("total_users") or 0) > 0
+        if has_user:
+            u_pct = stats.get("crash_free_users_pct")
+            u_pct_str = (
+                f"{_cf_emoji(float(u_pct))} **{float(u_pct):.2f}%**" if u_pct is not None else "—"
+            )
+            return (
+                f"{prefix} · 👤 {_fmt_n(stats.get('total_users'))} 用户 · "
+                f"崩溃 {_fmt_n(stats.get('crashed_users'))} · CF-user {u_pct_str}\n"
+                f"_会话 {_fmt_n(stats.get('total_sessions'))} · "
+                f"崩溃 {_fmt_n(stats.get('crashed_sessions'))} · CF-sess {s_pct_str}（FYI）_"
+            )
+        return (
+            f"{prefix} · 会话 {_fmt_n(stats.get('total_sessions'))} · "
+            f"崩溃 {_fmt_n(stats.get('crashed_sessions'))} · {s_pct_str}"
+        )
+
     parts: List[str] = []
     if all_summary:
-        pct = all_summary.get("crash_free_pct")
-        pct_str = (
-            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
-        )
-        parts.append(
-            f"**全版本汇总** · 会话 {_fmt_n(all_summary.get('total_sessions'))} · "
-            f"崩溃 {_fmt_n(all_summary.get('crashed_sessions'))} · {pct_str}"
-        )
+        parts.append(_line("**全版本汇总**", all_summary))
     if ver_summary:
-        pct = ver_summary.get("crash_free_pct")
-        pct_str = (
-            f"{_cf_emoji(float(pct))} **{float(pct):.2f}%**" if pct is not None else "—"
-        )
         sap = ver_summary.get("share_of_all_pct")
         sap_str = f"（占全部 {sap:.2f}%）" if sap is not None else ""
-        parts.append(
-            f"**主要版本汇总**{sap_str} · 会话 {_fmt_n(ver_summary.get('total_sessions'))} · "
-            f"崩溃 {_fmt_n(ver_summary.get('crashed_sessions'))} · {pct_str}"
-        )
+        parts.append(_line(f"**主要版本汇总**{sap_str}", ver_summary))
     return "\n\n".join(parts) if parts else ""
 
 
@@ -504,6 +524,13 @@ def build_daily_card(
     )
 
     elements: List[Dict[str, Any]] = []
+
+    # ── Headline 一句话总结（最顶置，2026-05-21 加）──
+    # 用户诉求：扫一眼就知道今天有没有事、要不要立刻跟进。
+    # 比 _tldr_headline 更高层——直接给结论，不堆 chip。
+    headline = payload.get("headline")
+    if headline:
+        elements.append(_div(f"## {headline}"))
 
     # ── TL;DR 顶置区（不折叠）──
     elements.extend(_build_tldr_elements(tldr, frontend_base_url, fallback_summary_md))

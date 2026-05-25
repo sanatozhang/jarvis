@@ -316,17 +316,28 @@ function CrashguardPageInner() {
   // 头部统计：优先用后端 aggregates；本地回落保兜底（loading 期间 UI 不抽）
   const totals = useMemo(() => {
     if (aggregates) {
+      const ag = aggregates as {
+        // user 维度（2026-05-21 加，主指标）
+        crash_free_users_pct?: number | null;
+        crash_free_total_users?: number;
+        crash_free_crashed_users?: number;
+        fatal_events?: number;
+        non_fatal_events?: number;
+      } & typeof aggregates;
       return {
         events: aggregates.total_events,
         sessions: aggregates.total_sessions,
         p0: aggregates.p0_count,
         surge: aggregates.surge_count,
-        // 后端 fatal_events / non_fatal_events 已补齐（见 api/crash.py::aggregates）；
-        // 老前端未升级时 fallback 0，避免破渲染
-        fatalEvents: (aggregates as { fatal_events?: number }).fatal_events ?? 0,
-        nonFatalEvents: (aggregates as { non_fatal_events?: number }).non_fatal_events ?? 0,
+        fatalEvents: ag.fatal_events ?? 0,
+        nonFatalEvents: ag.non_fatal_events ?? 0,
         fatalCount: aggregates.fatal_count,
         nonFatalCount: aggregates.non_fatal_count,
+        // User 维度（主）
+        crashFreeUsersPct: ag.crash_free_users_pct ?? null,
+        crashFreeTotalUsers: ag.crash_free_total_users ?? 0,
+        crashFreeCrashedUsers: ag.crash_free_crashed_users ?? 0,
+        // Session 维度（FYI 副指标）
         crashFreeSessionsPct: aggregates.crash_free_sessions_pct ?? null,
         crashFreeTotalSessions: aggregates.crash_free_total_sessions ?? 0,
       };
@@ -342,6 +353,9 @@ function CrashguardPageInner() {
       fatalEvents: fatalItems.reduce((s, i) => s + (i.events_count || 0), 0),
       nonFatalEvents: nonFatalItems.reduce((s, i) => s + (i.events_count || 0), 0),
       fatalCount: fatalItems.length, nonFatalCount: nonFatalItems.length,
+      crashFreeUsersPct: null as number | null,
+      crashFreeTotalUsers: 0,
+      crashFreeCrashedUsers: 0,
       crashFreeSessionsPct: null as number | null,
       crashFreeTotalSessions: 0,
     };
@@ -1005,17 +1019,40 @@ function CrashguardPageInner() {
             const nonFatalEvents = (g as { non_fatal_events?: number } | null)?.non_fatal_events ?? 0;
             const fatalCount = g?.fatal_count ?? 0;
             const nonFatalCount = g?.non_fatal_count ?? 0;
-            const cfPct = g?.crash_free_sessions_pct ?? null;
-            const cfTotalSess = g?.crash_free_total_sessions ?? 0;
+            // User 维度主指标（2026-05-21 切换），session 维度作 hint
+            const gAny = g as {
+              crash_free_users_pct?: number | null;
+              crash_free_total_users?: number;
+              crash_free_sessions_pct?: number | null;
+              crash_free_total_sessions?: number;
+            } | null;
+            const cfUsersPct = gAny?.crash_free_users_pct ?? null;
+            const cfTotalUsers = gAny?.crash_free_total_users ?? 0;
+            const cfSessionsPct = gAny?.crash_free_sessions_pct ?? null;
+            const cfTotalSess = gAny?.crash_free_total_sessions ?? 0;
+            // 主指标优先 user，失败回退 session（首次或 Datadog 拉失败时）
+            const primaryPct = cfUsersPct ?? cfSessionsPct;
+            const primaryLabel = cfUsersPct != null ? t("Crash-free Users") : t("Crash-free Sessions");
+            const primaryHint = cfUsersPct != null
+              ? (
+                  cfTotalUsers > 0
+                    ? `${compactNumber(cfTotalUsers)} ${t("users (suffix)")}` + (
+                        cfSessionsPct != null
+                          ? ` · ${t("sessions (suffix)")} ${cfSessionsPct.toFixed(2)}%`
+                          : ""
+                      )
+                    : t("窗口内无数据")
+                )
+              : (cfTotalSess > 0 ? `${compactNumber(cfTotalSess)} sessions` : t("窗口内无数据"));
             const totalIssueCount = (g?.fatal_count ?? 0) + (g?.non_fatal_count ?? 0);
             const p0 = g?.p0_count ?? 0;
             const surge = g?.surge_count ?? 0;
             return (
               <>
                 <KpiStripCell
-                  label={t("Crash-free Sessions")}
-                  value={cfPct != null ? `${cfPct.toFixed(2)}%` : "—"}
-                  hint={cfTotalSess > 0 ? `${compactNumber(cfTotalSess)} sessions` : t("窗口内无数据")}
+                  label={primaryLabel}
+                  value={primaryPct != null ? `${primaryPct.toFixed(2)}%` : "—"}
+                  hint={primaryHint}
                   accent={D.ok}
                 />
                 <KpiStripCell

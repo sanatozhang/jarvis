@@ -169,6 +169,16 @@ class CrashPullRequest(Base):
     merged_at = Column(DateTime, nullable=True)
     closed_at = Column(DateTime, nullable=True)
     last_synced_at = Column(DateTime, nullable=True)
+    # === reviewer auto-assign (2026-05-21) ===
+    # blame 选出的候选 reviewer email 列表（JSON）
+    reviewer_emails = Column(Text, default="[]")
+    # 飞书发送成功的 email 列表（或 open_id 列表，JSON）
+    reviewer_open_ids = Column(Text, default="[]")
+    reviewer_assigned_at = Column(DateTime, nullable=True)  # 首次成功通知时间
+    last_reminder_at = Column(DateTime, nullable=True)      # 最近一次提醒（每日幂等基准）
+    reviewed_at = Column(DateTime, nullable=True)           # 检测到 GH review/merge/close 即停推
+    # 兜底原因：ok / blame_empty / pr_url_missing / diff_empty / repo_missing / bot_only / all_unresolved
+    reviewer_fallback_reason = Column(String(64), default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

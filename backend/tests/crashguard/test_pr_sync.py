@@ -59,6 +59,107 @@ def test_derive_status_merged():
     assert _derive_status({"state": "MERGED", "isDraft": False}) == "merged"
 
 
+def test_default_gate_ci_feedback_close_on_fail_is_false():
+    """钉住 2026-05-21 决策：CI 失败默认不再自动 close PR，由人工 review 决定"""
+    from app.crashguard.config import get_crashguard_settings
+    s = get_crashguard_settings()
+    assert s.gate_ci_feedback_close_on_fail is False, (
+        "CI 失败应交人工处理；除非显式打开 close_on_fail=True，否则不该自动关 PR"
+    )
+
+
+def test_terminal_statuses_excludes_ci_failed_closed():
+    """钉住 2026-05-21 决策：ci_failed_closed 不再是终态——人可能 reopen，
+    pr_sync 必须能继续同步 GH 现态回来，否则本地 status 永远漂移。"""
+    from app.crashguard.services.pr_sync import _TERMINAL_STATUSES
+    assert "ci_failed_closed" not in _TERMINAL_STATUSES
+    assert _TERMINAL_STATUSES == {"merged", "closed"}
+
+
+# ---------- Stage D 接线测试 ----------
+
+@pytest.mark.asyncio
+async def test_try_run_review_responder_disabled_short_circuits():
+    """默认 pr_review_response_enabled=False → 直接返回 skipped:disabled"""
+    from app.crashguard.services.pr_sync import _try_run_review_responder
+    from app.crashguard.config import get_crashguard_settings
+    s = get_crashguard_settings()
+    s.pr_review_response_enabled = False
+    try:
+        r = await _try_run_review_responder(
+            pr_id=999, repo_slug="x/y", pr_number=1,
+        )
+        assert r["ok"] is True
+        assert r["enabled"] is False
+        assert r["skipped"] == "disabled"
+    finally:
+        s.pr_review_response_enabled = False
+
+
+@pytest.mark.asyncio
+async def test_try_run_review_responder_no_actionable_returns_zero(patched_session):
+    """enabled=True，但 collect 后无 actionable → dispatched=0，不调 dispatch"""
+    from app.crashguard.services import pr_sync
+    from app.crashguard.services.pr_review_responder import ReviewItem
+    from app.crashguard.config import get_crashguard_settings
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as session:
+        pr = CrashPullRequest(
+            analysis_id=1, datadog_issue_id="dummy",
+            repo="flutter", branch_name="crashguard/auto-fix/x",
+            pr_url="https://github.com/x/y/pull/42", pr_number=42,
+            pr_status="open",
+        )
+        session.add(pr)
+        await session.commit()
+        pid = pr.id
+
+    s = get_crashguard_settings()
+    s.pr_review_response_enabled = True
+    try:
+        # fetch_pr_reviews 返回空，collect 自然返回空 actionable
+        with patch(
+            "app.crashguard.services.pr_review_responder.fetch_pr_reviews",
+            return_value=(True, [], ""),
+        ), patch.object(
+            pr_sync, "_try_run_review_responder",
+            wraps=pr_sync._try_run_review_responder,
+        ), patch(
+            "app.crashguard.services.pr_review_responder.dispatch_review_response"
+        ) as m_dispatch:
+            r = await pr_sync._try_run_review_responder(
+                pr_id=pid, repo_slug="x/y", pr_number=42,
+            )
+        m_dispatch.assert_not_called()
+        assert r["ok"] is True
+        assert r.get("dispatched") == 0
+    finally:
+        s.pr_review_response_enabled = False
+
+
+@pytest.mark.asyncio
+async def test_try_run_review_responder_fetch_failed():
+    """fetch_pr_reviews 失败 → 立刻返回 stage=fetch_pr_reviews，不进 collect"""
+    from app.crashguard.services import pr_sync
+    from app.crashguard.config import get_crashguard_settings
+    s = get_crashguard_settings()
+    s.pr_review_response_enabled = True
+    try:
+        with patch(
+            "app.crashguard.services.pr_review_responder.fetch_pr_reviews",
+            return_value=(False, [], "gh err"),
+        ):
+            r = await pr_sync._try_run_review_responder(
+                pr_id=1, repo_slug="x/y", pr_number=42,
+            )
+        assert r["ok"] is False
+        assert r["stage"] == "fetch_pr_reviews"
+    finally:
+        s.pr_review_response_enabled = False
+
+
 def test_derive_status_closed_not_merged():
     from app.crashguard.services.pr_sync import _derive_status
     assert _derive_status({"state": "CLOSED", "isDraft": False}) == "closed"

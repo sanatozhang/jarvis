@@ -553,6 +553,15 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             duration = int((_time.monotonic() - _start_time) * 1000)
             await db.log_event("analysis_done", issue_id=issue_id, username=username, duration_ms=duration, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
 
+        try:
+            from app.services.notify_orchestrator import notify_issue_creator_on_complete
+            await notify_issue_creator_on_complete(
+                issue_id=issue_id, task_id=task_id,
+                status="failed" if is_real_failure else "done",
+            )
+        except Exception as ne:
+            logger.warning("notify_creator_failed task=%s err=%s", task_id, ne)
+
     except Exception as e:
         logger.error("Task %s failed: %s", task_id, e, exc_info=True)
         error_str = str(e)[:500]
@@ -589,3 +598,9 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             )
         except Exception as ne:
             logger.warning("Exception Feishu alert failed for task %s: %s", task_id, ne)
+
+        try:
+            from app.services.notify_orchestrator import notify_issue_creator_on_complete
+            await notify_issue_creator_on_complete(issue_id=issue_id, task_id=task_id, status="failed")
+        except Exception as ne:
+            logger.warning("notify_creator_exception task=%s err=%s", task_id, ne)

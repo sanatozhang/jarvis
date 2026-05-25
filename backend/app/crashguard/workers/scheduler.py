@@ -98,12 +98,17 @@ async def _tick_once() -> None:
 
     now = datetime.now()
     tag = now.strftime("%Y-%m-%d %H:%M")
+    # 早晚报独立 enabled 闸（2026-05-21）：speed-bump 优先于 cron 匹配。
+    # 速报 = evening 已下线（与早报冗余 + 打扰），日内增量信号交给 hourly_alert。
+    # 想恢复 evening：config.yaml feishu.evening_enabled: true。
     schedule = (
-        ("morning", s.morning_cron),
-        ("evening", s.evening_cron),
+        ("morning", s.morning_cron, getattr(s, "morning_enabled", True)),
+        ("evening", s.evening_cron, getattr(s, "evening_enabled", False)),
     )
     from app.crashguard.services.job_heartbeat import record_heartbeat
-    for report_type, cron_expr in schedule:
+    for report_type, cron_expr, enabled in schedule:
+        if not enabled:
+            continue
         if _last_fired.get(report_type) == tag:
             continue
         if not _cron_matches(cron_expr, now):

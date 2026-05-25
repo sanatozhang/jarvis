@@ -570,6 +570,41 @@ def _datadog_url_for(issue_id: str, window_hours: int = 24) -> str:
 _ALLOWED_WINDOW_HOURS = {24, 168, 336, 720}
 
 
+# ── User 维度 crash-free cache（2026-05-21 加）─────────────────────────────
+# /api/crash/top 是高频接口，每次实时拉 user 维度（F&F scalar 30-60s）会拖垮 UX。
+# 5min 进程内 cache，按 window_hours 分桶。crashguard 仅 scheduler 实例跑，
+# 单进程 cache 足够，无需跨实例共享。
+_USER_DIM_CACHE: Dict[int, "tuple[float, Dict[str, int], Dict[str, int]]"] = {}
+_USER_DIM_CACHE_TTL_SEC = 300
+
+
+async def _cached_user_dim(
+    window_hours: int, settings,
+) -> "tuple[Dict[str, int], Dict[str, int]]":
+    """5min cache 包裹 Datadog F&F scalar user-cardinality 调用。
+
+    Returns (total_users_by_plat, crash_users_by_plat) — 失败回退 ({}, {}).
+    """
+    import time as _t
+    now = _t.time()
+    cached = _USER_DIM_CACHE.get(int(window_hours))
+    if cached and (now - cached[0]) < _USER_DIM_CACHE_TTL_SEC:
+        return cached[1], cached[2]
+    from app.crashguard.services.datadog_client import DatadogClient
+    client = DatadogClient(
+        api_key=settings.datadog_api_key,
+        app_key=settings.datadog_app_key,
+        site=settings.datadog_site,
+        service_filter=settings.datadog_service_filter,
+    )
+    total = await client.count_users_by_platform(window_hours=window_hours) or {}
+    crashed = await client.count_crash_users_by_platform(window_hours=window_hours) or {}
+    total_upper = {k.upper(): v for k, v in total.items()}
+    crashed_upper = {k.upper(): v for k, v in crashed.items()}
+    _USER_DIM_CACHE[int(window_hours)] = (now, total_upper, crashed_upper)
+    return total_upper, crashed_upper
+
+
 async def _aggregate_snapshots_window(
     session, issue_ids: List[str], target_date: date, window_hours: int,
 ) -> Dict[str, Dict[str, int]]:
@@ -861,8 +896,36 @@ async def get_top(
         else:
             crash_free_sessions_pct = None
 
+        # ── Crash-free users %（2026-05-21 主指标切换）──────────────────────
+        # 抓手：CrashMetricSnapshot 表是 sessions 维度的，user 维度没入库
+        # （Phase 2 才补 schema）。所以这里走 Datadog F&F scalar API 实时拉，
+        # 5min 进程内 cache 防止 /api/crash/top 每次请求都打 Datadog。
+        crash_free_users_pct = None
+        cf_users_total = 0
+        cf_users_crashed = 0
+        try:
+            from app.crashguard.config import get_crashguard_settings as _gcs
+            _s = _gcs()
+            if _s.datadog_api_key:
+                cu_total_by_plat, cu_crashed_by_plat = await _cached_user_dim(
+                    int(window_hours), _s,
+                )
+                cf_users_total = sum(int(v or 0) for v in (cu_total_by_plat or {}).values())
+                cf_users_crashed = sum(int(v or 0) for v in (cu_crashed_by_plat or {}).values())
+                if cf_users_total > 0:
+                    crash_free_users_pct = round(
+                        (1.0 - cf_users_crashed / cf_users_total) * 100.0, 3
+                    )
+        except Exception:
+            logger.exception("crash_free_users_pct fetch failed (non-fatal)")
+
         # 聚合（基于过滤后但未分页的全集，便于头部展示真实统计）
         aggregates = {
+            # User 维度（主指标，2026-05-21 加）
+            "crash_free_users_pct": crash_free_users_pct,
+            "crash_free_total_users": cf_users_total,
+            "crash_free_crashed_users": cf_users_crashed,
+            # Session 维度（保留作 FYI 副指标）
             "crash_free_sessions_pct": crash_free_sessions_pct,
             "crash_free_total_sessions": cf_total,
             "crash_free_crashed_sessions": cf_crashed,

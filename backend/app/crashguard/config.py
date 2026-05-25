@@ -148,8 +148,15 @@ class CrashguardSettings(BaseSettings):
     datadog_query_nonfatal: str = "@type:error -@error.is_crash:true -@error.category:ANR -@error.category:\"App Hang\""
 
     # Schedule
-    morning_cron: str = "0 7 * * *"
+    # 早报默认 08:00 触发（2026-05-21 调整：7 点太早，工程师还没到岗；
+    # 8 点正好赶上上班开机看群消息，跟进闭环时效更好）。
+    morning_cron: str = "0 8 * * *"
     evening_cron: str = "0 17 * * *"
+    # 早晚报独立 enabled 开关（2026-05-21 用户决策：速报 = 晚报已下线，
+    # 日内增量信号由 hourly_alert 覆盖，evening_daily 与早报内容冗余且打扰）。
+    # 想恢复速报：env CRASHGUARD_EVENING_ENABLED=true 或 config.yaml feishu.evening_enabled: true
+    morning_enabled: bool = True
+    evening_enabled: bool = False
     # 晚报数据窗口（小时）。早报固定用 datadog_window_hours=24h，晚报用此值。
     # 默认 10h = 早报到晚报之间的工作日内增量；基线 = SHoW 上周同 weekday 同 10h 段。
     # 设计意图：早报=昨日 24h 总览，晚报=日内增量信号，两份卡片**不再冗余**。
@@ -198,6 +205,22 @@ class CrashguardSettings(BaseSettings):
     # PR 状态同步 cron（拉 GitHub 现态回填 DB）；默认每 30 分钟
     # 关闭/合并后 30min 内同步到 jarvis，DRAFT → CLOSED 不会残留
     pr_sync_cron: str = "*/30 * * * *"
+    # === PR Reviewer auto-assign (2026-05-21) ===
+    # 总开关；关闭后 fire-and-forget 与 daily sweep 都直接 return
+    pr_reviewer_enabled: bool = True
+    pr_reviewer_top_n: int = 2
+    pr_reviewer_min_lines_pct: float = 0.20  # blame 行数占比阈值
+    pr_reviewer_blocked_authors: List[str] = Field(
+        default_factory=lambda: [
+            "jarvis-bot@plaud.ai",
+            "noreply@github.com",
+            "sanato.zhang@plaud.ai",  # 自己排除：他也是 fallback 接收人
+        ]
+    )
+    # 每日提醒 cron；默认 09:00 工程师到岗
+    pr_reviewer_daily_cron: str = "0 9 * * *"
+    # 找不到 owner 时的兜底接收人 email（飞书直发）
+    pr_reviewer_fallback_email: str = "sanato.zhang@plaud.ai"
     # 启动后延迟一次性跑 pipeline + auto-analyze（避免重启等到 07:00 才开始）
     warmup_on_startup: bool = True
     # 周期 pipeline cron（与早晚报解耦）；默认每 4 小时整点
@@ -328,7 +351,11 @@ class CrashguardSettings(BaseSettings):
     pr_manual_approve_mode: bool = False
     # Gate#12：PR 落地后 CI 反馈
     gate_ci_feedback_enabled: bool = True
-    gate_ci_feedback_close_on_fail: bool = True  # CI 失败自动关 PR
+    # CI 失败时是否自动 gh pr close。
+    # 2026-05-21 改默认 False — 用户决策：CI 失败由人工 review 决定怎么改，
+    # 不应该被系统直接丢弃。PR 维持 draft/open，飞书 reviewer 收到 ping 后人工处理。
+    # 设 True 时仍按旧行为自动关 + 写 ci_failed_closed 终态。
+    gate_ci_feedback_close_on_fail: bool = False
     # Gate#14：老 draft 污染自动关闭——draft >N 小时且 diff 含 pubspec / .gen.dart
     # 等污染文件，pr_sync tick 内自动关 PR，等下个 cron 用干净 base 重生。
     # 抓手：#987 stale-base 链遗留的 pubspec bump 类问题，源头治理后兜底清扫。
@@ -339,20 +366,22 @@ class CrashguardSettings(BaseSettings):
     auto_pr_fixable_platforms: List[str] = Field(default_factory=lambda: ["android", "ios", "flutter"])
 
     # === PR Review 自动响应（Step 3）===
-    # 默认关，启用前先在测试 PR 上验过。开启后 pr_sync tick 内会拉每条 open PR 的
-    # reviews，对未响应的 review 调 LLM 评判：问题真存在 → 修复 commit；不存在 →
-    # 发评论解释。所有 Gate#1-13 闸门复用。
-    pr_review_response_enabled: bool = False
+    # 2026-05-21 灰度通过后翻 True：pr_sync tick 内拉每条 open PR 的 reviews，
+    # 对未响应的 review 调 LLM 评判：问题真存在 → 修复 commit；不存在 → 发评论解释。
+    # Gate#13 + rebase 兜底 + max_iter 3 + cooldown 30min 多层保护。
+    pr_review_response_enabled: bool = True
     # 每条 PR 最多自动响应 N 轮（防 fix-break-refix 循环）
     pr_review_response_max_iterations: int = 3
     # 同 PR 距上次 dispatch ≤ N min 跳过（cooldown 节流）
     pr_review_response_cooldown_minutes: int = 30
     # 允许响应的 reviewer 白名单——其它 author（特别是 owner 本人 / unknown bot）跳过
     # 默认覆盖 Copilot / Codex / Claude；人工评审走人工 PR 流程，agent 不抢
+    # 注意：不放 "claude"——GitHub 上的 claude bot 大量发"组织 Code Review 配额超额"
+    # 模板消息（body=317 字符但内容是计费警告），不是真 review；放进来会被
+    # collect_actionable_reviews 的 break 抢占，跳过 copilot/codex 真实建议。
     pr_review_response_allowed_authors: list[str] = [
         "copilot-pull-request-reviewer",
         "chatgpt-codex-connector",
-        "claude",
     ]
     # review body 字符数下限——太短的 review（如 "LGTM" "+1"）信噪比低，直接跳过
     pr_review_response_min_body_chars: int = 50
@@ -548,6 +577,10 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["morning_cron"] = f["morning_cron"]
         if "evening_cron" in f:
             flat["evening_cron"] = f["evening_cron"]
+        if "morning_enabled" in f:
+            flat["morning_enabled"] = bool(f["morning_enabled"])
+        if "evening_enabled" in f:
+            flat["evening_enabled"] = bool(f["evening_enabled"])
         if "evening_window_hours" in f:
             flat["evening_window_hours"] = int(f["evening_window_hours"])
     if "repo_paths" in cfg:

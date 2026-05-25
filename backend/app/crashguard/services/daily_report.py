@@ -274,6 +274,14 @@ async def compose_report(
     latest_versions_local: Dict[str, str] = {}   # {"ios": "3.18.1-715", "android": "3.18.1-716"}
     latest_ver_total_sessions: Dict[str, int] = {}
     latest_ver_crashed_sessions: Dict[str, int] = {}
+    # ── User 维度（2026-05-21 加：主指标切换；session 维度并存作 FYI）──
+    # 与 sessions 同口径含 ANR + App Hang，走 Datadog F&F Scalar API
+    total_users_by_plat: Dict[str, int] = {}
+    crash_users_by_plat: Dict[str, int] = {}
+    top_ver_total_users: Dict[str, int] = {}
+    top_ver_crash_users: Dict[str, int] = {}
+    latest_ver_total_users: Dict[str, int] = {}
+    latest_ver_crash_users: Dict[str, int] = {}
     if s_cfg.datadog_api_key:
         try:
             from app.crashguard.services.datadog_client import DatadogClient
@@ -412,11 +420,66 @@ async def compose_report(
             except Exception:
                 logger.exception("latest-version crash-free pull failed (non-fatal)")
 
+            # —— User 维度 crash-free（2026-05-21 主指标切换）——
+            # 与 sessions 同窗口同口径（含 ANR + App Hang）；用户层比 session 层更贴业务。
+            # F&F scalar 单 query ~5-10s × 6 = ~30-60s 增量。失败不致命——
+            # 全部空 dict 时下游 crash-free 详表 user 段不显示，sessions 段照常。
+            try:
+                raw_user_total = await client.count_users_by_platform(
+                    window_hours=data_window_hours
+                )
+                total_users_by_plat = {
+                    k.upper(): v for k, v in (raw_user_total or {}).items()
+                }
+                raw_user_crash = await client.count_crash_users_by_platform(
+                    window_hours=data_window_hours
+                )
+                crash_users_by_plat = {
+                    k.upper(): v for k, v in (raw_user_crash or {}).items()
+                }
+            except Exception:
+                logger.exception("user-dimension all-version pull failed (non-fatal)")
+
+            # 主要版本 user 维度
+            try:
+                _top_versions = {
+                    p: info["version"]
+                    for p, info in (top_user_versions_local or {}).items()
+                    if info and info.get("version")
+                }
+                if _top_versions:
+                    top_ver_total_users = await client.count_users_for_platform_versions(
+                        _top_versions, window_hours=data_window_hours,
+                    ) or {}
+                    top_ver_crash_users = await client.count_crash_users_for_platform_versions(
+                        _top_versions, window_hours=data_window_hours,
+                    ) or {}
+            except Exception:
+                logger.exception("top-version user-dim pull failed (non-fatal)")
+
+            # 最新版本 user 维度
+            try:
+                if latest_versions_local:
+                    latest_ver_total_users = await client.count_users_for_platform_versions(
+                        latest_versions_local, window_hours=data_window_hours,
+                    ) or {}
+                    latest_ver_crash_users = await client.count_crash_users_for_platform_versions(
+                        latest_versions_local, window_hours=data_window_hours,
+                    ) or {}
+            except Exception:
+                logger.exception("latest-version user-dim pull failed (non-fatal)")
+
         except Exception:
             logger.exception("count_sessions failed (non-fatal)")
             top_user_versions_local = {}
             top_ver_total_sessions = {}
             top_ver_crashed_sessions = {}
+            total_users_by_plat = {}
+            crash_users_by_plat = {}
+            top_ver_total_users = {}
+            top_ver_crash_users = {}
+            latest_ver_total_users = {}
+            latest_ver_crash_users = {}
 
     # 用实时窗口数据覆盖 baseline_events
     if realtime_baseline_events:
@@ -634,6 +697,7 @@ async def compose_report(
     # ── Crash-free 详表（全量 + 主要版本）──────────────────────────
     # 抓手：让运维分清「大盘」和「真正承载流量的版本」两个口径；
     # 数据源：Datadog Mobile RUM count(@type:session)，crashed=@session.crash.count:>0（含 ANR/AppHang）。
+    # 2026-05-21 加 user 维度（主指标），session 并存作 FYI。两维度同口径同窗口。
     crash_free_detail_payload: Dict[str, Any] = {}
     have_a_section = bool(total_sessions_by_plat) and bool(distinct_crash_sessions_by_plat)
     if have_a_section:
@@ -648,6 +712,23 @@ async def compose_report(
                 "crash_free_pct": round(pct, 4),
             }
 
+        def _augment_with_users(
+            stats: Dict[str, Any],
+            total_users: int,
+            crashed_users: int,
+        ) -> Dict[str, Any]:
+            """给一个平台/版本的 stats dict 注入 user 维度字段。0 数据时字段缺省，
+            下游渲染按字段存在与否决定显示/隐藏 user 维度段。"""
+            if total_users <= 0:
+                return stats
+            crash_free_u = max(0, total_users - crashed_users)
+            pct_u = (crash_free_u / total_users * 100.0) if total_users > 0 else 0.0
+            stats["total_users"] = int(total_users)
+            stats["crash_free_users"] = int(crash_free_u)
+            stats["crashed_users"] = int(crashed_users)
+            stats["crash_free_users_pct"] = round(pct_u, 4)
+            return stats
+
         all_plats = {}
         for plat_key in ("IOS", "ANDROID"):
             t = int(total_sessions_by_plat.get(plat_key, 0) or 0)
@@ -658,10 +739,21 @@ async def compose_report(
                 bd = (crash_breakdown_by_plat or {}).get(plat_key, {})
                 if bd:
                     stats["breakdown"] = bd
+                # User 维度并存
+                _augment_with_users(
+                    stats,
+                    int(total_users_by_plat.get(plat_key, 0) or 0),
+                    int(crash_users_by_plat.get(plat_key, 0) or 0),
+                )
                 all_plats[plat_key] = stats
         all_total = sum(s["total_sessions"] for s in all_plats.values())
         all_crashed = sum(s["crashed_sessions"] for s in all_plats.values())
         all_summary = _cf_stats(all_total, all_crashed) if all_total > 0 else None
+        # 汇总也带 user 维度
+        all_total_users = sum(int(s.get("total_users") or 0) for s in all_plats.values())
+        all_crashed_users = sum(int(s.get("crashed_users") or 0) for s in all_plats.values())
+        if all_summary is not None and all_total_users > 0:
+            _augment_with_users(all_summary, all_total_users, all_crashed_users)
 
         # C 段：主要版本（按用户量最大版本）
         top_ver_plats: Dict[str, Dict[str, Any]] = {}
@@ -682,6 +774,11 @@ async def compose_report(
             stats["share_of_all_pct"] = (
                 round(v_total / all_total * 100.0, 2) if all_total > 0 else None
             )
+            _augment_with_users(
+                stats,
+                int(top_ver_total_users.get(plat_lc, 0) or 0),
+                int(top_ver_crash_users.get(plat_lc, 0) or 0),
+            )
             top_ver_plats[plat_key] = stats
         top_ver_total = sum(s["total_sessions"] for s in top_ver_plats.values())
         top_ver_crashed = sum(s["crashed_sessions"] for s in top_ver_plats.values())
@@ -691,6 +788,10 @@ async def compose_report(
             top_ver_summary["share_of_all_pct"] = (
                 round(top_ver_total / all_total * 100.0, 2) if all_total > 0 else None
             )
+            top_ver_total_u = sum(int(s.get("total_users") or 0) for s in top_ver_plats.values())
+            top_ver_crash_u = sum(int(s.get("crashed_users") or 0) for s in top_ver_plats.values())
+            if top_ver_total_u > 0:
+                _augment_with_users(top_ver_summary, top_ver_total_u, top_ver_crash_u)
 
         # D 段：最新版本（已在拉取阶段按 session 阈值降级选取，进入此处的版本均满足阈值）
         latest_ver_plats: Dict[str, Dict[str, Any]] = {}
@@ -710,6 +811,11 @@ async def compose_report(
             stats["share_of_all_pct"] = (
                 round(v_total / all_total * 100.0, 2) if all_total > 0 else None
             )
+            _augment_with_users(
+                stats,
+                int(latest_ver_total_users.get(plat_lc, 0) or 0),
+                int(latest_ver_crash_users.get(plat_lc, 0) or 0),
+            )
             latest_ver_plats[plat_key] = stats
         latest_ver_total = sum(s["total_sessions"] for s in latest_ver_plats.values())
         latest_ver_crashed = sum(s["crashed_sessions"] for s in latest_ver_plats.values())
@@ -719,6 +825,10 @@ async def compose_report(
             latest_ver_summary["share_of_all_pct"] = (
                 round(latest_ver_total / all_total * 100.0, 2) if all_total > 0 else None
             )
+            latest_ver_total_u = sum(int(s.get("total_users") or 0) for s in latest_ver_plats.values())
+            latest_ver_crash_u = sum(int(s.get("crashed_users") or 0) for s in latest_ver_plats.values())
+            if latest_ver_total_u > 0:
+                _augment_with_users(latest_ver_summary, latest_ver_total_u, latest_ver_crash_u)
 
         crash_free_detail_payload = {
             "data_window_hours": data_window_hours,
@@ -743,9 +853,13 @@ async def compose_report(
             v = (d or {}).get(k)
             return _fmt_n(int(v)) if v is not None else "—"
 
-        def _pct_cell(d):
-            v = (d or {}).get("crash_free_pct")
+        def _pct_cell(d, key: str = "crash_free_pct"):
+            v = (d or {}).get(key)
             return f"{_cf_emoji(float(v))} **{float(v):.2f}%**" if v is not None else "—"
+
+        def _have_users(*dicts) -> bool:
+            """任一 stats 字典含 total_users 字段才走 user 主指标渲染。"""
+            return any(int((d or {}).get("total_users") or 0) > 0 for d in dicts)
 
         ios = all_plats.get("IOS") or {}
         and_ = all_plats.get("ANDROID") or {}
@@ -760,25 +874,35 @@ async def compose_report(
         cf_lines.append("")
         # 口径说明已迁移至 docs/crashguard/metrics-glossary.md（早晚报不再赘述）
 
-        # A 段表
+        # A 段表 — user 维度主指标 + sessions 维度副数字（2026-05-21）
         cf_lines.append("### A) 全部版本（按平台）")
         cf_lines.append("")
         cf_lines.append("|  | 🍎 iOS | 📱 Android | 汇总 |")
         cf_lines.append("|---|---|---|---|")
+        if _have_users(ios, and_, sm):
+            cf_lines.append(
+                f"| 👤 用户总数 | **{_num_cell(ios, 'total_users')}** | "
+                f"**{_num_cell(and_, 'total_users')}** | **{_num_cell(sm, 'total_users')}** |"
+            )
+            cf_lines.append(
+                f"| 崩溃用户 | {_num_cell(ios, 'crashed_users')} | "
+                f"{_num_cell(and_, 'crashed_users')} | {_num_cell(sm, 'crashed_users')} |"
+            )
+            cf_lines.append(
+                f"| **Crash-free 用户率** | {_pct_cell(ios, 'crash_free_users_pct')} | "
+                f"{_pct_cell(and_, 'crash_free_users_pct')} | {_pct_cell(sm, 'crash_free_users_pct')} |"
+            )
+            cf_lines.append("| _—— 会话维度（FYI）——_ |   |   |   |")
         cf_lines.append(
-            f"| 会话总数 | **{_num_cell(ios, 'total_sessions')}** | "
-            f"**{_num_cell(and_, 'total_sessions')}** | **{_num_cell(sm, 'total_sessions')}** |"
-        )
-        cf_lines.append(
-            f"| Crash-free 会话 | {_num_cell(ios, 'crash_free_sessions')} | "
-            f"{_num_cell(and_, 'crash_free_sessions')} | {_num_cell(sm, 'crash_free_sessions')} |"
+            f"| 会话总数 | {_num_cell(ios, 'total_sessions')} | "
+            f"{_num_cell(and_, 'total_sessions')} | {_num_cell(sm, 'total_sessions')} |"
         )
         cf_lines.append(
             f"| 崩溃会话 | {_num_cell(ios, 'crashed_sessions')} | "
             f"{_num_cell(and_, 'crashed_sessions')} | {_num_cell(sm, 'crashed_sessions')} |"
         )
         cf_lines.append(
-            f"| Crash-free 率 | {_pct_cell(ios)} | {_pct_cell(and_)} | {_pct_cell(sm)} |"
+            f"| Crash-free 会话率 | {_pct_cell(ios)} | {_pct_cell(and_)} | {_pct_cell(sm)} |"
         )
         cf_lines.append("")
 
@@ -806,20 +930,30 @@ async def compose_report(
                 f"{f'{and_ap:.2f}%' if and_ap is not None else '—'} | "
                 f"{f'**{sum_ap:.2f}%**' if sum_ap is not None else '—'} |"
             )
+            if _have_users(ios_v, and_v, tvs):
+                cf_lines.append(
+                    f"| 👤 用户总数 | **{_num_cell(ios_v, 'total_users')}** | "
+                    f"**{_num_cell(and_v, 'total_users')}** | **{_num_cell(tvs, 'total_users')}** |"
+                )
+                cf_lines.append(
+                    f"| 崩溃用户 | {_num_cell(ios_v, 'crashed_users')} | "
+                    f"{_num_cell(and_v, 'crashed_users')} | {_num_cell(tvs, 'crashed_users')} |"
+                )
+                cf_lines.append(
+                    f"| **Crash-free 用户率** | {_pct_cell(ios_v, 'crash_free_users_pct')} | "
+                    f"{_pct_cell(and_v, 'crash_free_users_pct')} | {_pct_cell(tvs, 'crash_free_users_pct')} |"
+                )
+                cf_lines.append("| _—— 会话维度（FYI）——_ |   |   |   |")
             cf_lines.append(
-                f"| 会话总数 | **{_num_cell(ios_v, 'total_sessions')}** | "
-                f"**{_num_cell(and_v, 'total_sessions')}** | **{_num_cell(tvs, 'total_sessions')}** |"
-            )
-            cf_lines.append(
-                f"| Crash-free 会话 | {_num_cell(ios_v, 'crash_free_sessions')} | "
-                f"{_num_cell(and_v, 'crash_free_sessions')} | {_num_cell(tvs, 'crash_free_sessions')} |"
+                f"| 会话总数 | {_num_cell(ios_v, 'total_sessions')} | "
+                f"{_num_cell(and_v, 'total_sessions')} | {_num_cell(tvs, 'total_sessions')} |"
             )
             cf_lines.append(
                 f"| 崩溃会话 | {_num_cell(ios_v, 'crashed_sessions')} | "
                 f"{_num_cell(and_v, 'crashed_sessions')} | {_num_cell(tvs, 'crashed_sessions')} |"
             )
             cf_lines.append(
-                f"| Crash-free 率 | {_pct_cell(ios_v)} | {_pct_cell(and_v)} | {_pct_cell(tvs)} |"
+                f"| Crash-free 会话率 | {_pct_cell(ios_v)} | {_pct_cell(and_v)} | {_pct_cell(tvs)} |"
             )
             cf_lines.append("")
 
@@ -1463,6 +1597,10 @@ async def compose_report(
     else:
         tldr_severity = "green"
 
+    # User 维度合计（2026-05-21 主指标切换；优先 headline / TL;DR 用）
+    total_users_today = sum(int(v or 0) for v in total_users_by_plat.values())
+    crashed_users_today = sum(int(v or 0) for v in crash_users_by_plat.values())
+
     payload["tldr"] = {
         "severity": tldr_severity,
         "platforms": tldr_platforms,
@@ -1471,10 +1609,129 @@ async def compose_report(
         "anomaly_total": len(fatal_news) + len(fatal_surges) + len(fatal_drops),
         "fatal_today_total": today_fatal_total,
         "fatal_baseline_total": base_fatal_total,
+        # User 维度并存
+        "total_users": total_users_today,
+        "crashed_users": crashed_users_today,
     }
+
+    # ── 顶部 Headline：一句话总结今日数据状态 ──────────────────────
+    # 用户诉求（2026-05-21）：早报最顶部一眼能看出"今天有没有事 / 要不要跟进"。
+    # User 维度主指标——影响 X 个用户比 X 个 event 更直觉。
+    headline = _compose_headline(
+        severity=tldr_severity,
+        tldr_platforms=tldr_platforms,
+        new_count=len(fatal_news),
+        surge_count=len(fatal_surges),
+        drop_count=len(fatal_drops),
+        today_fatal_total=today_fatal_total,
+        base_fatal_total=base_fatal_total,
+        total_users=total_users_today,
+        crashed_users=crashed_users_today,
+    )
+    payload["headline"] = headline
+    # markdown 顶部插一行 headline（在标题 lines[0] 之后；Σ 摘要在 insert_at=2 已经插入，
+    # 此处再插一行不影响 attn_lines 顺序，因为我们插在 lines[1] 位置之前）
+    if headline:
+        lines.insert(1, f"> **{headline}**")
+        lines.insert(2, "")
 
     text = "\n".join(lines).rstrip() + "\n"
     return text, payload
+
+
+def _compose_headline(
+    *,
+    severity: str,
+    tldr_platforms: List[Dict[str, Any]],
+    new_count: int,
+    surge_count: int,
+    drop_count: int,
+    today_fatal_total: int,
+    base_fatal_total: int,
+    total_users: int = 0,
+    crashed_users: int = 0,
+) -> str:
+    """生成一句话头条总结（user 维度主指标 + events 兜底）。
+
+    优先级：
+    - red：红/黄平台 fatal +X% + "影响 X 用户"，要求立即跟进
+    - yellow：最高 +X% 平台 + "影响 X 用户"，建议跟进
+    - green + 改善 → "fatal 同比下降，改善"
+    - green + 持平 → "数据平稳，安全无虞"（含 crash-free user %）
+    - unknown：基线缺失，优先展示 X 用户受影响（不展示 events）
+
+    抓手：自然语言 + 单行，工程师扫一眼就能判断"今天要不要点进卡片"。
+    """
+    def _fmt_delta(t: int, b: int) -> Optional[float]:
+        if b == 0:
+            return None
+        return (t - b) / b * 100.0
+
+    plat_chips: List[str] = []
+    for p in tldr_platforms or []:
+        label = p.get("platform_label") or "?"
+        status = p.get("status") or "unknown"
+        delta = p.get("delta_pct")
+        if status not in ("red", "yellow", "green_improve"):
+            continue
+        if delta is None:
+            continue
+        sign = "+" if delta >= 0 else ""
+        plat_chips.append(f"{label} fatal {sign}{delta:.0f}%")
+
+    anomaly_tail_parts: List[str] = []
+    if new_count > 0:
+        anomaly_tail_parts.append(f"🆕 {new_count} 新增")
+    if surge_count > 0:
+        anomaly_tail_parts.append(f"📈 {surge_count} 突增")
+    anomaly_tail = "（" + " / ".join(anomaly_tail_parts) + "）" if anomaly_tail_parts else ""
+
+    # User 维度后缀：影响 X 用户（仅在 user 数据可用时附加）
+    user_impact_tail = ""
+    if crashed_users > 0 and total_users > 0:
+        rate = (1.0 - crashed_users / total_users) * 100.0
+        user_impact_tail = f"，影响 **{crashed_users:,} 用户**（crash-free {rate:.2f}%）"
+    elif crashed_users > 0:
+        user_impact_tail = f"，影响 **{crashed_users:,} 用户**"
+
+    if severity == "red":
+        lead = "🔴 **紧急** —— " + ("；".join(plat_chips) if plat_chips else "出现新增 fatal issue")
+        return f"{lead}{anomaly_tail}{user_impact_tail}，请工程师立刻跟进"
+    if severity == "yellow":
+        lead = "🟡 **关注** —— " + ("；".join(plat_chips) if plat_chips else "fatal 上涨")
+        return f"{lead}{anomaly_tail}{user_impact_tail}，建议工程师跟进"
+    if severity == "green":
+        # 改善优先（有平台 green_improve），否则平稳
+        improves = [c for c in plat_chips if "-" in c]
+        if improves:
+            tail = f"，{drop_count} 项 fatal 下降" if drop_count > 0 else ""
+            return f"✅ **平稳** —— {'；'.join(improves)}，整体改善{tail}{user_impact_tail}"
+        # 完全持平：优先展示 user 维度 crash-free 率
+        if total_users > 0:
+            rate = (1.0 - crashed_users / total_users) * 100.0
+            return (
+                f"✅ **平稳** —— 全平台 fatal 同期持平，"
+                f"**crash-free user {rate:.2f}%**（{total_users:,} 用户），安全无虞"
+            )
+        return "✅ **平稳** —— 全平台 fatal 同期持平，无新增 / 突增 issue，安全无虞"
+    # unknown：基线为 0 或缺失——优先展示 user 数（events 太抽象）
+    if total_users > 0:
+        rate = (1.0 - crashed_users / total_users) * 100.0
+        return (
+            f"⚪ **基线待核** —— 今日 **{total_users:,} 用户**，"
+            f"crash-free {rate:.2f}%（影响 {crashed_users:,} 用户），请人工对照上周"
+        )
+    delta_pct = _fmt_delta(today_fatal_total, base_fatal_total)
+    if delta_pct is None:
+        return (
+            f"⚪ **基线缺失** —— 今日 {today_fatal_total:,} fatal events，"
+            f"上周同段无数据，请人工对照"
+        )
+    sign = "+" if delta_pct >= 0 else ""
+    return (
+        f"⚪ **数据待核** —— 今日 {today_fatal_total:,} fatal events "
+        f"（{sign}{delta_pct:.0f}% vs 上周）"
+    )
 
 
 async def _retrospect_yesterday(target_date: date) -> Optional[str]:

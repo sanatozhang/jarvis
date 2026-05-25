@@ -85,7 +85,7 @@ class LinearSettings(BaseSettings):
 class SSOSettings(BaseSettings):
     """Feishu OAuth SSO settings."""
 
-    enabled: bool = Field(default=False, alias="ENABLE_SSO")
+    enabled: bool = Field(default=True, alias="ENABLE_SSO")
     feishu_app_id: str = Field(default="", alias="SSO_FEISHU_APP_ID")
     feishu_app_secret: str = Field(default="", alias="SSO_FEISHU_APP_SECRET")
     feishu_redirect_uri: str = Field(

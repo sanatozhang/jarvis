@@ -513,6 +513,15 @@ async def _run_linear_analysis(
             identifier, task_id, result.problem_type, result.confidence, is_failure,
         )
 
+        try:
+            from app.services.notify_orchestrator import notify_issue_creator_on_complete
+            await notify_issue_creator_on_complete(
+                issue_id=record_id, task_id=task_id,
+                status="failed" if is_failure else "done",
+            )
+        except Exception as ne:
+            logger.warning("notify_creator_linear_failed task=%s err=%s", task_id, ne)
+
     except Exception as e:
         logger.error("Linear analysis failed for issue %s: %s", linear_issue_id, e, exc_info=True)
         # Try to post error comment

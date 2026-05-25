@@ -89,8 +89,192 @@ def _detect_flutter_subrepo_hint(text: str) -> str:
     return ""
 
 
+# Git 空文件 canonical blob SHA（空内容的 git hash-object 永远是这个）
+_GIT_EMPTY_BLOB_SHA = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+
+
+def _extract_diff_target_paths(diff_text: str) -> list[str]:
+    """从 unified diff 抽取目标文件路径（+++ b/...）。
+
+    返回去重后的 path 列表（相对 repo root）。/dev/null（新增/删除占位）会被过滤掉。
+    """
+    if not diff_text:
+        return []
+    paths: list[str] = []
+    seen: set = set()
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            tail = line[4:].strip()
+            if tail.startswith("b/"):
+                p = tail[2:]
+            elif tail.startswith('"b/'):
+                # 带引号的 git diff（含特殊字符的路径）
+                p = tail[3:].rstrip('"')
+            else:
+                continue
+            if not p or p == "/dev/null":
+                continue
+            if p in seen:
+                continue
+            seen.add(p)
+            paths.append(p)
+    return paths
+
+
+def _is_empty_stub_in_repo(repo_path: str, file_path: str) -> Optional[bool]:
+    """检查 repo 里某路径在 HEAD 上是否是 git 空 blob（e69de29b...）。
+
+    返回：
+      True  — 目标文件存在且 blob 是空 SHA（典型空 stub）
+      False — 文件不存在 / 是新增文件 / 非空 blob
+      None  — 命令执行异常（让调用方降级，不影响主流程）
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-tree", "HEAD", "--", file_path],
+            cwd=repo_path,
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    line = (result.stdout or "").strip()
+    if not line:
+        # 文件不在 HEAD（新增？删除？）— 不是空 stub
+        return False
+    # 格式：<mode> blob <sha>\t<path>
+    parts = line.split()
+    if len(parts) < 3 or parts[1] != "blob":
+        return False
+    return parts[2] == _GIT_EMPTY_BLOB_SHA
+
+
+def _detect_flutter_subrepo_by_blob(fix_diff: str) -> str:
+    """通过 git blob 探测自动选 Flutter sub-repo（治本闭环）。
+
+    底层逻辑：96246ac 引入文本 hint 路由后，发现 AI 几乎不会主动写 "plaud-flutter-global"
+    这种字面，覆盖率 ≈ 0%。本函数补齐——根据 fix_diff 涉及的目标文件路径，
+    在 common / global / cn 三仓里查这些路径的 blob SHA：
+      - 如果 common 里**任一目标**是空 stub（e69de29b...）→ 切到 global
+      - global 里仍是空 stub → 切到 cn
+      - 三仓都空（或都不存在该文件）→ 返回 ""（保留默认 common）
+
+    只有"text hint 为空且 fix_diff 非空"的场景才调本函数；任意异常都回退空字符串。
+    """
+    if not fix_diff or not fix_diff.strip():
+        return ""
+    paths = _extract_diff_target_paths(fix_diff)
+    if not paths:
+        return ""
+    common_path = _platform_repo_path("flutter", "")
+    if not common_path or not Path(common_path).exists():
+        return ""
+
+    # 只要 common 里**任一目标**是空 stub，就触发 fallback 探测
+    any_empty_in_common = False
+    for p in paths:
+        if _is_empty_stub_in_repo(common_path, p) is True:
+            any_empty_in_common = True
+            break
+    if not any_empty_in_common:
+        return ""
+
+    for hint in ("global", "cn"):
+        cand_path = _platform_repo_path("flutter", hint)
+        if not cand_path or not Path(cand_path).exists():
+            continue
+        # 该仓里**至少一个目标文件非空** → 视为有效 fallback
+        for p in paths:
+            stub = _is_empty_stub_in_repo(cand_path, p)
+            if stub is False:
+                # 目标文件存在且非空（或文件不存在但不是空 stub —— 已被 _is_empty_stub_in_repo False 包含）
+                # 这里我们还要排除"文件根本不存在"的 False，所以再 stat 一下
+                if (Path(cand_path) / p).exists():
+                    return hint
+    return ""
+
+
+# 源码 basename 抓取——*.dart / *.kt / *.swift / *.java / *.m / *.mm
+_SOURCE_BASENAME_RE = re.compile(
+    r"`?([A-Za-z_][\w.\-]*\.(?:dart|kt|java|swift|m|mm|h))`?"
+)
+
+
+def _extract_source_basenames(text: str, limit: int = 8) -> list[str]:
+    """从自由文本里抽源码文件 basename（chatbots.view.dart 这种）。
+
+    抓手：AI 在 fix_suggestion / root_cause 经常只写短文件名（没全路径），
+    Gate#1 用 basename rglob 在单 repo 找不到时整路拦截，但实际文件常在
+    sibling sub-repo（global/cn）里。
+    """
+    if not text:
+        return []
+    seen: set = set()
+    out: list[str] = []
+    for m in _SOURCE_BASENAME_RE.finditer(text):
+        b = m.group(1)
+        # 过滤掉 "x.dart" / "z.dart" 这种占位短名（PR description 模板里常见）
+        if len(b) <= 6:
+            continue
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _basename_in_repo(repo_path: str, basename: str) -> bool:
+    """git ls-files 在 repo 里 fuzzy 匹配 basename。比 Path.rglob 快、且尊重 .gitignore。"""
+    if not basename:
+        return False
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "--full-name", "--", f":(glob)**/{basename}"],
+            cwd=repo_path, capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _detect_flutter_subrepo_by_basename(text: str) -> str:
+    """fix_diff 空时的 fallback——从 fix_suggestion/root_cause 抽源码 basename，
+    跨 flutter 三仓 fuzzy 匹配。
+
+    典型用例（ana=96 LateInitError）：
+      - fix_suggestion 写："chatbots.view.dart"
+      - common 找不到此文件
+      - global 真实路径：lib/app/modules/chatbots/chatbots.view.dart ← 命中
+      → 返回 "global"
+
+    规则：
+      - 全部 basename 在 common 都存在 → 不切（common 应付得了）
+      - 否则在 global / cn 里 fuzzy，命中"在 sibling 存在但 common 不存在"的 basename → 切
+    """
+    basenames = _extract_source_basenames(text)
+    if not basenames:
+        return ""
+    common_path = _platform_repo_path("flutter", "")
+    if not common_path or not Path(common_path).exists():
+        return ""
+    # common 全有 → 不切
+    common_hits = {b: _basename_in_repo(common_path, b) for b in basenames}
+    if all(common_hits.values()):
+        return ""
+    for hint in ("global", "cn"):
+        cand_path = _platform_repo_path("flutter", hint)
+        if not cand_path or not Path(cand_path).exists():
+            continue
+        for b in basenames:
+            if not common_hits.get(b) and _basename_in_repo(cand_path, b):
+                return hint
+    return ""
+
+
 def _resolve_candidate_repos(
-    platform: str, fix_text: str, issue_stack: str = "",
+    platform: str, fix_text: str, issue_stack: str = "", fix_diff: str = "",
 ) -> list[tuple[str, str]]:
     """根据 platform + fix_suggestion 文本，返回所有候选 sub-repo 列表。
 
@@ -109,6 +293,17 @@ def _resolve_candidate_repos(
     seen: set = set()
     text = ((fix_text or "") + " " + (issue_stack or "")).lower()
     flutter_hint = _detect_flutter_subrepo_hint(text)
+    # 治本 v2：text hint 没命中时，用 git blob 探测自动选仓——
+    # AI 几乎不会主动写 "plaud-flutter-global" 字面，本路径覆盖率 ≈ 0%；
+    # blob 探测从 fix_diff 反推目标在哪个 sub-repo 里有真代码（非空 stub）。
+    if not flutter_hint and (fix_diff or "").strip():
+        flutter_hint = _detect_flutter_subrepo_by_blob(fix_diff) or flutter_hint
+    # 治本 v3：fix_diff 为空（implementation agent 路径）时——从 fix_text 抽
+    # 源码 basename 跨三仓 fuzzy 匹配。典型救援场景：ana=96 LateInitError 里 AI 只写
+    # "chatbots.view.dart"，common 没此文件，global 真路径 lib/app/modules/.../*.dart
+    # 命中 → 自动切 global，让 Gate#1 path_verify 不再误拦。
+    if not flutter_hint:
+        flutter_hint = _detect_flutter_subrepo_by_basename(fix_text or "") or flutter_hint
 
     def add(name: str, sub_hint: str = "") -> None:
         path = _platform_repo_path(name, sub_hint)
@@ -151,19 +346,26 @@ def _platform_repo_path(platform: str, sub_hint: str = "") -> Optional[str]:
       flutter+cn    → CODE_REPO_PATH/plaud-flutter-cn（sub_hint="cn"）
 
     优先级：
-      1. crashguard.repo_paths.<platform> 显式配置（绝对路径，flutter 直配优先于 hint）
-      2. CODE_REPO_PATH 下的标准 sub-repo 子目录
-      3. None（拒绝创建 PR）
+      1. flutter + 非空 sub_hint（global/cn）→ 跳过 yaml direct override，强制走 wrapper
+         logic（治本：102 实测 yaml direct 钉在 common，旧版直接 return 把 hint 废了，
+         sub-repo 路由形同虚设——本闸口必须先开，blob 探测才有意义）
+      2. crashguard.repo_paths.<platform> 显式配置（绝对路径，default flutter 默认仓）
+      3. CODE_REPO_PATH 下的标准 sub-repo 子目录
+      4. None（拒绝创建 PR）
     """
     s = get_crashguard_settings()
     p = (platform or "").strip().lower()
-    direct = {
-        "flutter": s.repo_path_flutter,
-        "android": s.repo_path_android,
-        "ios": s.repo_path_ios,
-    }.get(p, "")
-    if direct:
-        return os.path.expanduser(direct)
+    hint_norm = (sub_hint or "").strip().lower()
+    # ★ 治本闸口：flutter 显式 hint（global/cn）不走 direct override
+    skip_direct = (p == "flutter" and hint_norm in ("global", "cn"))
+    if not skip_direct:
+        direct = {
+            "flutter": s.repo_path_flutter,
+            "android": s.repo_path_android,
+            "ios": s.repo_path_ios,
+        }.get(p, "")
+        if direct:
+            return os.path.expanduser(direct)
 
     from app.config import get_code_repo_for_platform
     wrapper = get_code_repo_for_platform("app") or ""
@@ -776,6 +978,7 @@ async def _create_one_draft_pr(
         ana_row = (await session.execute(
             select(CrashAnalysis).where(CrashAnalysis.id == analysis_id)
         )).scalar_one_or_none()
+        new_pr_id: Optional[int] = None
         if ana_row is not None:
             row = CrashPullRequest(
                 analysis_id=analysis_id,
@@ -792,11 +995,22 @@ async def _create_one_draft_pr(
             )
             session.add(row)
             await session.commit()
+            new_pr_id = row.id
 
     logger.info(
         "crashguard draft PR created: %s (repo=%s analysis=%d kind=%s)",
         pr_url, repo_logical, analysis_id, change_kind,
     )
+
+    # ─── PR Reviewer auto-assign (fire-and-forget) ───
+    # blame 定位原作者 → 飞书 IM 私聊 ping reviewer；不阻塞主链路
+    if new_pr_id is not None:
+        try:
+            import asyncio as _rev_asyncio
+            from app.crashguard.services.pr_reviewer import resolve_and_notify as _rev_notify
+            _rev_asyncio.create_task(_rev_notify(new_pr_id))
+        except Exception as _rev_e:
+            logger.warning("pr_reviewer dispatch failed pr=%s: %s", pr_url, _rev_e)
 
     # ─── Post-PR QA Agent (fire-and-forget) ───
     # 评估刚创建的 PR 质量；fails open，永不阻塞 PR 主链路。
@@ -2031,6 +2245,7 @@ async def draft_prs_multi(
     fix_text = "\n".join([ana.fix_suggestion or "", ana.solution or "", ana.fix_diff or ""])
     candidates = _resolve_candidate_repos(
         issue.platform or "", fix_text, issue.representative_stack or "",
+        fix_diff=ana.fix_diff or "",
     )
 
     # === Gate#10：多候选先合议——≥2 个平台时锁 primary，只在 primary 仓开 PR ===

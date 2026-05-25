@@ -457,7 +457,11 @@ const EN: Record<string, string> = {
   // Username setup
   "欢迎使用 Apollo": "Welcome to Apollo",
   "请设置您的用户名，用于标记工单操作": "Set your username to track your actions",
+  "请使用 @plaud.ai 邮箱注册": "Please register with a @plaud.ai email",
   "输入您的名字": "Enter your name",
+  "邮箱（@plaud.ai）": "Email (@plaud.ai)",
+  "请输入邮箱": "Please enter your email",
+  "邮箱必须以 @plaud.ai 结尾": "Email must end with @plaud.ai",
   "开始使用": "Get Started",
 
   // Misc
@@ -503,6 +507,9 @@ const EN: Record<string, string> = {
   "App 版本": "App version",
   "OS 版本": "OS version",
   "Crash-free Sessions": "Crash-free Sessions",
+  "Crash-free Users": "Crash-free Users",
+  "users (suffix)": "users",
+  "sessions (suffix)": "sessions",
   "严重崩溃": "Fatal",
   "业务异常": "Non-fatal",
   "Active Issues": "Active Issues",
@@ -856,4 +863,25 @@ const EN: Record<string, string> = {
   "规则内容编写指南": "Rule Content Guide",
   "完整示例": "Full Example",
   "已选": "selected",
+
+  // Login / Logout / Feishu OAuth bind
+  "登出": "Log out",
+  "用飞书登录": "Sign in with Feishu",
+  "仅限 @plaud.ai 邮箱": "@plaud.ai email only",
+  "请使用 @plaud.ai 邮箱登录": "Please sign in with a @plaud.ai email",
+  "登录会话已过期，请重新登录": "Login session expired — please sign in again",
+  "登录会话已过期，请重试": "Login session expired — please retry",
+  "飞书登录失败，请重试": "Feishu login failed — please retry",
+  "登录失败": "Login failed",
+  "绑定飞书邮箱": "Bind Feishu Email",
+  "为了接收飞书通知，请用飞书账号一键绑定您的邮箱（@plaud.ai）。": "To receive Feishu notifications, bind your @plaud.ai email via Feishu in one click.",
+  "当前账号：": "Current account: ",
+  "稍后": "Later",
+  "去飞书绑定": "Bind via Feishu",
+  "✓ 飞书邮箱绑定成功": "✓ Feishu email bound successfully",
+  "飞书绑定失败": "Feishu binding failed",
+  "请使用 @plaud.ai 邮箱": "Please use a @plaud.ai email",
+  "未找到当前用户": "Current user not found",
+  "缺少用户名": "Missing username",
+  "未获取到邮箱信息": "Email not provided by Feishu",
 };

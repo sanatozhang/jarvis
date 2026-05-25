@@ -592,9 +592,10 @@ export const fetchReportDates = () => request<{ dates: string[] }>("/reports/dat
 // Users
 // ============================================================
 
-export const loginUser = (username: string) =>
+export const loginUser = (username: string, email?: string) =>
   request<{ username: string; role: string; feishu_email: string }>("/users/login", {
-    method: "POST", body: JSON.stringify({ username }),
+    method: "POST",
+    body: JSON.stringify(email ? { username, email } : { username }),
   });
 
 export const getUser = (username: string) =>

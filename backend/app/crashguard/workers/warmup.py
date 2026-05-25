@@ -27,6 +27,7 @@ logger = logging.getLogger("crashguard.warmup")
 _WARMUP_DELAY_SEC = 5
 _PIPELINE_TICK_SEC = 60
 _pipeline_last_fired: str = ""
+_pr_reviewer_last_fired: str = ""
 
 
 async def _resolve_latest_release(settings) -> tuple[str, List[str]]:
@@ -352,12 +353,18 @@ async def run_pipeline_and_auto_analyze(reason: str = "warmup") -> dict:
 
 
 async def warmup_on_startup() -> None:
-    """启动后延后 N 秒跑一次 pipeline + auto-analyze。fire-and-forget。"""
+    """启动后延后 N 秒跑一次 pipeline + auto-analyze。fire-and-forget。
+
+    底层逻辑：warmup 跑的 run_pipeline_and_auto_analyze 与 pipeline cron 完全等价，
+    所以成功后**镜像写一条 pipeline 心跳**——避免重启正好错过整点 cron 时
+    pipeline last_success 永远停在旧时间、触发 stale 告警的死结。
+    """
     try:
         await asyncio.sleep(_WARMUP_DELAY_SEC)
     except asyncio.CancelledError:
         return
     from app.crashguard.services.job_heartbeat import record_heartbeat
+    res = None
     try:
         async with record_heartbeat("warmup") as hb:
             res = await run_pipeline_and_auto_analyze(reason="warmup")
@@ -366,6 +373,14 @@ async def warmup_on_startup() -> None:
         raise
     except Exception:
         logger.exception("warmup pipeline failed (non-fatal)")
+        return
+
+    # warmup 成功 → 镜像写 pipeline 心跳（语义：warmup 等价于一次 pipeline tick）
+    try:
+        async with record_heartbeat("pipeline") as hb2:
+            hb2.set_summary({**(res or {}), "via": "warmup_startup"})
+    except Exception:
+        logger.exception("pipeline heartbeat mirror failed (non-fatal)")
 
 
 async def run_deep_analysis_auto_tick() -> dict:
@@ -523,7 +538,7 @@ async def pipeline_scheduler_loop() -> None:
     from app.crashguard.config import get_crashguard_settings
 
     logger.info("crashguard pipeline_scheduler_loop started")
-    global _pipeline_last_fired
+    global _pipeline_last_fired, _pr_reviewer_last_fired
     while True:
         try:
             s = get_crashguard_settings()
@@ -541,6 +556,22 @@ async def pipeline_scheduler_loop() -> None:
                                 hb.set_summary(res)
                         except Exception:
                             logger.exception("pipeline cron tick failed")
+
+                # PR reviewer daily reminder（默认 09:30）
+                rev_cron = getattr(s, "pr_reviewer_daily_cron", "") or ""
+                if getattr(s, "pr_reviewer_enabled", False) and rev_cron:
+                    now2 = datetime.now()
+                    rev_tag = now2.strftime("%Y-%m-%d %H:%M")
+                    if _pr_reviewer_last_fired != rev_tag and _cron_matches(rev_cron, now2):
+                        _pr_reviewer_last_fired = rev_tag
+                        try:
+                            from app.crashguard.services.pr_reviewer import daily_reminder_sweep
+                            from app.crashguard.services.job_heartbeat import record_heartbeat
+                            async with record_heartbeat("pr_reviewer_daily") as hb:
+                                res = await daily_reminder_sweep()
+                                hb.set_summary(res)
+                        except Exception:
+                            logger.exception("pr_reviewer daily sweep failed")
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -10,11 +10,14 @@ SDK: https://github.com/DataDog/datadog-api-client-python
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("crashguard.datadog")
 
@@ -817,6 +820,280 @@ class DatadogClient:
         except Exception as exc:
             logger.warning("count_inactive_crash_sessions_for_platform_versions failed: %s", exc)
             return {}
+
+    # ── User 维度（@usr.id）口径 — Datadog Formulas & Functions Scalar API ──────
+    #
+    # 底层逻辑：SDK aggregate_rum_events 对 CARDINALITY(@usr.id) 不收敛 filter
+    # （实测无论 query 怎么写都返 ~490k 全局 distinct user）。必须走
+    # /api/v2/query/scalar（Dashboard query_value widget 同款），filter 才生效。
+    #
+    # 口径与 sessions 系列严格对齐——fatal 含 ANR + App Hang：
+    #   crashed user filter = @type:error @session.type:user (
+    #       @error.is_crash:true OR @error.category:ANR OR @error.category:"App Hang"
+    #   )
+    #   total user filter   = @type:session @session.type:user
+    #
+    # 与 dashboard widget(`@error.is_crash:true -@error.category:ANR`) 的差异：
+    # 我们口径含 ANR + App Hang，与 Plaud 内部 sessions/告警一致；不严格复刻 widget。
+    #
+    # 不区分 active/inactive：user 是 session 聚合，无法 per-user 归类——这是
+    # session 维度独有的概念。
+
+    _USER_FATAL_FILTER = (
+        '@type:error @session.type:user '
+        '(@error.is_crash:true OR @error.category:ANR OR @error.category:"App Hang")'
+    )
+    _USER_TOTAL_FILTER = "@type:session @session.type:user"
+
+    async def count_users_by_platform(
+        self, window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """最近 N 小时内 distinct user 数，按平台分桶。
+
+        口径：cardinality(@usr.id) WHERE @type:session @session.type:user
+        返回 {"android": int, "ios": int}；失败返回 {} 不致命。
+        """
+        try:
+            return await asyncio.to_thread(
+                self._sync_user_cardinality_by_platform,
+                self._USER_TOTAL_FILTER, window_hours,
+            )
+        except Exception as exc:
+            logger.warning("count_users_by_platform failed: %s", exc)
+            return {}
+
+    async def count_crash_users_by_platform(
+        self, window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """最近 N 小时内 fatal-affected distinct user 数，按平台分桶。
+
+        口径（与 sessions 系列对齐，含 ANR + App Hang）：
+            cardinality(@usr.id) WHERE @type:error @session.type:user
+                                  (is_crash OR ANR OR App Hang)
+        返回 {"android": int, "ios": int}；失败返回 {} 不致命。
+        """
+        try:
+            return await asyncio.to_thread(
+                self._sync_user_cardinality_by_platform,
+                self._USER_FATAL_FILTER, window_hours,
+            )
+        except Exception as exc:
+            logger.warning("count_crash_users_by_platform failed: %s", exc)
+            return {}
+
+    async def count_users_for_platform_versions(
+        self,
+        versions_by_plat: Dict[str, str],
+        window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """版本过滤版 count_users_by_platform（每平台单独一次 scalar 调用）。"""
+        if not versions_by_plat:
+            return {}
+        try:
+            return await asyncio.to_thread(
+                self._sync_versioned_user_cardinality,
+                self._USER_TOTAL_FILTER, versions_by_plat, window_hours,
+            )
+        except Exception as exc:
+            logger.warning("count_users_for_platform_versions failed: %s", exc)
+            return {}
+
+    async def count_crash_users_for_platform_versions(
+        self,
+        versions_by_plat: Dict[str, str],
+        window_hours: int = 24,
+    ) -> Dict[str, int]:
+        """版本过滤版 count_crash_users_by_platform。"""
+        if not versions_by_plat:
+            return {}
+        try:
+            return await asyncio.to_thread(
+                self._sync_versioned_user_cardinality,
+                self._USER_FATAL_FILTER, versions_by_plat, window_hours,
+            )
+        except Exception as exc:
+            logger.warning("count_crash_users_for_platform_versions failed: %s", exc)
+            return {}
+
+    def _sync_user_cardinality_by_platform(
+        self, filter_query: str, window_hours: int,
+    ) -> Dict[str, int]:
+        """走 F&F scalar API，group_by @os.name，归并 ANDROID/IOS 桶。"""
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - max(1, int(window_hours)) * 3600 * 1000
+        rows = self._scalar_user_cardinality(
+            filter_query=filter_query,
+            start_ms=start_ms, end_ms=now_ms,
+            group_by_facets=["@os.name"],
+        )
+        out: Dict[str, int] = {}
+        for key_tuple, count in rows.items():
+            os_name = (key_tuple if isinstance(key_tuple, str) else key_tuple[0]) or ""
+            os_name = os_name.strip().lower()
+            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                key = "ios"
+            elif os_name.startswith("android"):
+                key = "android"
+            else:
+                continue
+            out[key] = out.get(key, 0) + max(0, int(count))
+        return out
+
+    def _sync_versioned_user_cardinality(
+        self,
+        base_filter: str,
+        versions_by_plat: Dict[str, str],
+        window_hours: int,
+    ) -> Dict[str, int]:
+        """每平台 + 版本单独跑一次 scalar 调用（与 _versioned_count 同模式）。"""
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - max(1, int(window_hours)) * 3600 * 1000
+        out: Dict[str, int] = {}
+        for plat, ver in versions_by_plat.items():
+            if not ver:
+                continue
+            ver_safe = str(ver).replace('"', '\\"')
+            # 与 _versioned_count 同口径：用短名 `version`（Plaud RUM facet 别名）
+            filter_query = f'{base_filter} version:"{ver_safe}"'
+            rows = self._scalar_user_cardinality(
+                filter_query=filter_query,
+                start_ms=start_ms, end_ms=now_ms,
+                group_by_facets=["@os.name"],
+            )
+            expected = (plat or "").strip().lower()
+            for key_tuple, count in rows.items():
+                os_name = (key_tuple if isinstance(key_tuple, str) else key_tuple[0]) or ""
+                os_name = os_name.strip().lower()
+                if int(count) <= 0:
+                    continue
+                if expected == "ios" and (
+                    os_name.startswith("ipados")
+                    or os_name.startswith("ios")
+                    or "iphone" in os_name
+                ):
+                    out[expected] = out.get(expected, 0) + int(count)
+                elif expected == "android" and os_name.startswith("android"):
+                    out[expected] = out.get(expected, 0) + int(count)
+                # 平台对不上号的桶忽略（与 _versioned_count 一致）
+        return out
+
+    def _scalar_user_cardinality(
+        self,
+        *,
+        filter_query: str,
+        start_ms: int,
+        end_ms: int,
+        group_by_facets: Optional[List[str]] = None,
+    ) -> Dict[Any, int]:
+        """通用 F&F scalar API + cardinality(@usr.id) 查询。
+
+        Returns: {group_key: count}
+        - 无 group_by → {"total": count}
+        - 单 facet   → {facet_val_str: count}
+        - 多 facet   → {(v1, v2, ...): count}
+
+        异常透传给 caller（async 层 except Exception 兜底）。429 → 记 rate-limit。
+        """
+        body = {
+            "data": {
+                "type": "scalar_request",
+                "attributes": {
+                    "formulas": [{"formula": "query1"}],
+                    "queries": [{
+                        "name": "query1",
+                        "data_source": "rum",
+                        "search": {"query": self._inject_service(filter_query)},
+                        "indexes": ["*"],
+                        "group_by": [
+                            {
+                                "facet": f,
+                                "limit": 30,
+                                "sort": {
+                                    "order": "desc",
+                                    "aggregation": "cardinality",
+                                    "metric": "@usr.id",
+                                },
+                            }
+                            for f in (group_by_facets or [])
+                        ],
+                        "compute": {"aggregation": "cardinality", "metric": "@usr.id"},
+                    }],
+                    "from": int(start_ms),
+                    "to": int(end_ms),
+                },
+            }
+        }
+        url = f"https://api.{self.site}/api/v2/query/scalar"
+        # F&F scalar API 在大窗口（>24h）+ group_by 时单次可能 ~30-60s。给到 90s 留 buffer。
+        # 429 触发熔断；HTTP 错误透传给 caller 兜底（async 层 try/except 转 {}）。
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={
+                "DD-API-KEY": self.api_key,
+                "DD-APPLICATION-KEY": self.app_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        last_exc: Optional[Exception] = None
+        for attempt in range(2):  # 1 retry on transient timeout
+            try:
+                with urllib.request.urlopen(req, timeout=90) as r:
+                    payload = json.loads(r.read())
+                last_exc = None
+                break
+            except urllib.error.HTTPError as exc:
+                if getattr(exc, "code", None) == _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
+                    raise
+                if getattr(exc, "code", None) in _RETRY_STATUSES and attempt == 0:
+                    last_exc = exc
+                    time.sleep(2.0)
+                    continue
+                raise
+            except (TimeoutError, OSError) as exc:
+                if attempt == 0:
+                    last_exc = exc
+                    time.sleep(2.0)
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+
+        cols = (
+            payload.get("data", {})
+            .get("attributes", {})
+            .get("columns", [])
+        ) or []
+        val_col = next((c for c in cols if c.get("type") == "number"), None)
+        if not val_col:
+            return {}
+        group_cols = [c for c in cols if c.get("type") == "group"]
+        values = val_col.get("values") or []
+        if not group_cols:
+            if not values:
+                return {}
+            try:
+                return {"total": int(values[0])}
+            except (TypeError, ValueError):
+                return {}
+        out: Dict[Any, int] = {}
+        for i, raw_val in enumerate(values):
+            keys: List[str] = []
+            for gc in group_cols:
+                gv = gc.get("values") or []
+                cell = gv[i] if i < len(gv) else None
+                if isinstance(cell, list):
+                    keys.append(cell[0] if cell else "")
+                else:
+                    keys.append(cell or "")
+            key: Any = keys[0] if len(keys) == 1 else tuple(keys)
+            try:
+                out[key] = int(raw_val)
+            except (TypeError, ValueError):
+                continue
+        return out
 
     def _versioned_count(
         self,

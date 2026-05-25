@@ -393,3 +393,344 @@ def test_platform_repo_path_flutter_routes_by_hint(monkeypatch, tmp_path):
     assert common and common.endswith("plaud-flutter-common")
     assert global_ and global_.endswith("plaud-flutter-global")
     assert cn and cn.endswith("plaud-flutter-cn")
+
+
+def test_platform_repo_path_flutter_hint_bypasses_yaml_direct(monkeypatch, tmp_path):
+    """治本闸口：yaml direct override 钉在 common 时，sub_hint=global/cn 必须切到对应仓。
+
+    102 实测根因：crashguard.repo_paths.flutter = "/.../plaud-flutter-common"，
+    旧版 _platform_repo_path 命中 direct 立即 return，sub_hint 完全失效——
+    导致 _detect_flutter_subrepo_by_blob 把三仓都查在 common 自己身上。
+    """
+    from app.crashguard.services import pr_drafter
+    wrapper = tmp_path / "plaud_ai"
+    wrapper.mkdir()
+    common_dir = wrapper / "plaud-flutter-common"
+    global_dir = wrapper / "plaud-flutter-global"
+    cn_dir = wrapper / "plaud-flutter-cn"
+    for d in (common_dir, global_dir, cn_dir):
+        d.mkdir()
+        (d / ".git").write_text("gitdir: fake")
+
+    # 模拟 102 配置：yaml direct 钉死在 common
+    monkeypatch.setattr(
+        pr_drafter, "get_crashguard_settings",
+        lambda: type("S", (), {
+            "repo_path_flutter": str(common_dir),  # ★ 102 实配
+            "repo_path_android": "", "repo_path_ios": "",
+        })(),
+    )
+    import app.config as cfg
+    monkeypatch.setattr(cfg, "get_code_repo_for_platform", lambda _: str(wrapper))
+
+    # 无 hint → 走 direct → common
+    assert pr_drafter._platform_repo_path("flutter") == str(common_dir)
+    assert pr_drafter._platform_repo_path("flutter", "") == str(common_dir)
+    # 有 hint → 跳过 direct → 切到对应 sub-repo
+    assert pr_drafter._platform_repo_path("flutter", "global") == str(global_dir)
+    assert pr_drafter._platform_repo_path("flutter", "cn") == str(cn_dir)
+
+
+# ─────────── 治本 v2：blob 探测自动 fallback ───────────
+
+def test_extract_diff_target_paths_basic():
+    from app.crashguard.services.pr_drafter import _extract_diff_target_paths
+    diff = (
+        "--- a/lib/x.dart\n"
+        "+++ b/lib/x.dart\n"
+        "@@ -1 +1 @@\n"
+        "-a\n+b\n"
+    )
+    assert _extract_diff_target_paths(diff) == ["lib/x.dart"]
+
+
+def test_extract_diff_target_paths_multi_file_dedup():
+    from app.crashguard.services.pr_drafter import _extract_diff_target_paths
+    diff = (
+        "--- a/lib/a.dart\n"
+        "+++ b/lib/a.dart\n"
+        "@@ -1 +1 @@\n-x\n+y\n"
+        "--- a/lib/b.dart\n"
+        "+++ b/lib/b.dart\n"
+        "@@ -1 +1 @@\n-x\n+y\n"
+        "--- a/lib/a.dart\n"  # 同文件重复出现
+        "+++ b/lib/a.dart\n"
+        "@@ -2 +2 @@\n-x\n+y\n"
+    )
+    assert _extract_diff_target_paths(diff) == ["lib/a.dart", "lib/b.dart"]
+
+
+def test_extract_diff_target_paths_skips_dev_null():
+    from app.crashguard.services.pr_drafter import _extract_diff_target_paths
+    diff = (
+        "--- a/lib/removed.dart\n"
+        "+++ /dev/null\n"
+        "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n"
+        "--- /dev/null\n"
+        "+++ b/lib/added.dart\n"
+        "@@ -0,0 +1,1 @@\n+new\n"
+    )
+    assert _extract_diff_target_paths(diff) == ["lib/added.dart"]
+
+
+def test_extract_diff_target_paths_empty():
+    from app.crashguard.services.pr_drafter import _extract_diff_target_paths
+    assert _extract_diff_target_paths("") == []
+    assert _extract_diff_target_paths("no diff here") == []
+
+
+def _make_real_repo(repo_dir, files: dict[str, str]):
+    """在 repo_dir 建一个真 git 仓，commit files。
+    files: {relative_path: content}（content="" 即空 stub）
+    """
+    import subprocess
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.io"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo_dir, check=True)
+    for p, c in files.items():
+        f = repo_dir / p
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(c)
+        subprocess.run(["git", "add", "--", p], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo_dir, check=True)
+
+
+def test_is_empty_stub_detects_empty_file(tmp_path):
+    """git 空 blob (e69de29b...) 应被识别为空 stub"""
+    from app.crashguard.services.pr_drafter import _is_empty_stub_in_repo
+    repo = tmp_path / "r"
+    _make_real_repo(repo, {"lib/empty.dart": "", "lib/real.dart": "void main(){}\n"})
+    assert _is_empty_stub_in_repo(str(repo), "lib/empty.dart") is True
+    assert _is_empty_stub_in_repo(str(repo), "lib/real.dart") is False
+
+
+def test_is_empty_stub_returns_false_for_missing_file(tmp_path):
+    """目标文件不在 HEAD → 返回 False（不是空 stub，是不存在）"""
+    from app.crashguard.services.pr_drafter import _is_empty_stub_in_repo
+    repo = tmp_path / "r"
+    _make_real_repo(repo, {"lib/x.dart": "content"})
+    assert _is_empty_stub_in_repo(str(repo), "lib/nope.dart") is False
+
+
+def test_is_empty_stub_returns_none_for_non_git(tmp_path):
+    """非 git 目录 → 返回 None，让调用方降级"""
+    from app.crashguard.services.pr_drafter import _is_empty_stub_in_repo
+    d = tmp_path / "not_a_repo"
+    d.mkdir()
+    (d / "x.dart").write_text("hi")
+    assert _is_empty_stub_in_repo(str(d), "x.dart") is None
+
+
+def _setup_three_flutter_repos(tmp_path, monkeypatch, common_files, global_files, cn_files):
+    """建三个 sub-repo 真 git 仓 + mock 路由"""
+    from app.crashguard.services import pr_drafter
+    wrapper = tmp_path / "plaud_ai"
+    _make_real_repo(wrapper / "plaud-flutter-common", common_files)
+    _make_real_repo(wrapper / "plaud-flutter-global", global_files)
+    _make_real_repo(wrapper / "plaud-flutter-cn", cn_files)
+
+    monkeypatch.setattr(
+        pr_drafter, "get_crashguard_settings",
+        lambda: type("S", (), {"repo_path_flutter": "", "repo_path_android": "",
+                                "repo_path_ios": ""})(),
+    )
+    import app.config as cfg
+    monkeypatch.setattr(cfg, "get_code_repo_for_platform", lambda _: str(wrapper))
+    return wrapper
+
+
+def test_detect_flutter_subrepo_by_blob_falls_back_to_global(tmp_path, monkeypatch):
+    """common 是空 stub + global 有真代码 → 探测到 'global'"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_blob
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/push_helper.dart": ""},                  # 空 stub
+        global_files={"lib/push_helper.dart": "class PushHelper{}"},  # 真实
+        cn_files={"lib/push_helper.dart": "class PushHelperCN{}"},
+    )
+    diff = "--- a/lib/push_helper.dart\n+++ b/lib/push_helper.dart\n@@ -1 +1 @@\n-x\n+y\n"
+    assert _detect_flutter_subrepo_by_blob(diff) == "global"
+
+
+def test_detect_flutter_subrepo_by_blob_falls_back_to_cn_when_global_also_empty(tmp_path, monkeypatch):
+    """common 空 + global 也空 + cn 有真代码 → 探测到 'cn'"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_blob
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/push_helper.dart": ""},
+        global_files={"lib/push_helper.dart": ""},  # global 也空
+        cn_files={"lib/push_helper.dart": "class PushHelperCN{}"},
+    )
+    diff = "--- a/lib/push_helper.dart\n+++ b/lib/push_helper.dart\n@@ -1 +1 @@\n-x\n+y\n"
+    assert _detect_flutter_subrepo_by_blob(diff) == "cn"
+
+
+def test_detect_flutter_subrepo_by_blob_returns_empty_when_common_real(tmp_path, monkeypatch):
+    """common 已经是真代码 → 不切仓"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_blob
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/foo.dart": "real code"},
+        global_files={"lib/foo.dart": "real code global"},
+        cn_files={"lib/foo.dart": "real code cn"},
+    )
+    diff = "--- a/lib/foo.dart\n+++ b/lib/foo.dart\n@@ -1 +1 @@\n-x\n+y\n"
+    assert _detect_flutter_subrepo_by_blob(diff) == ""
+
+
+def test_detect_flutter_subrepo_by_blob_returns_empty_for_empty_diff():
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_blob
+    assert _detect_flutter_subrepo_by_blob("") == ""
+    assert _detect_flutter_subrepo_by_blob("no diff") == ""
+
+
+def test_resolve_candidate_repos_uses_blob_fallback_when_text_hint_missing(tmp_path, monkeypatch):
+    """E2E：AI 没写文本 hint，但 fix_diff 文件在 common 是空 stub → 自动路由到 global"""
+    from app.crashguard.services.pr_drafter import _resolve_candidate_repos
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/push.dart": ""},
+        global_files={"lib/push.dart": "real"},
+        cn_files={"lib/push.dart": "real cn"},
+    )
+    fix_diff = "--- a/lib/push.dart\n+++ b/lib/push.dart\n@@ -1 +1 @@\n-x\n+y\n"
+    cands = _resolve_candidate_repos(
+        platform="flutter", fix_text="some generic fix", issue_stack="",
+        fix_diff=fix_diff,
+    )
+    # 应该路由到 global 仓
+    assert len(cands) == 1
+    name, path = cands[0]
+    assert name == "flutter"
+    assert path.endswith("plaud-flutter-global")
+
+
+def test_resolve_candidate_repos_text_hint_overrides_blob_probe(tmp_path, monkeypatch):
+    """AI 明确写 'plaud-flutter-cn' → 不再走 blob 探测，直接路由 cn"""
+    from app.crashguard.services.pr_drafter import _resolve_candidate_repos
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/x.dart": ""},
+        global_files={"lib/x.dart": "real"},  # blob 探测会选 global
+        cn_files={"lib/x.dart": "real cn"},
+    )
+    fix_diff = "--- a/lib/x.dart\n+++ b/lib/x.dart\n@@ -1 +1 @@\n-x\n+y\n"
+    cands = _resolve_candidate_repos(
+        platform="flutter",
+        fix_text="see plaud-flutter-cn/lib/x.dart",  # 文本 hint=cn
+        fix_diff=fix_diff,
+    )
+    assert len(cands) == 1
+    assert cands[0][1].endswith("plaud-flutter-cn")
+
+
+def test_resolve_candidate_repos_no_fallback_when_common_real(tmp_path, monkeypatch):
+    """common 已有真代码 → 保留 common，不切仓"""
+    from app.crashguard.services.pr_drafter import _resolve_candidate_repos
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/util.dart": "void util(){}"},
+        global_files={"lib/util.dart": "void util(){}"},
+        cn_files={"lib/util.dart": "void util(){}"},
+    )
+    fix_diff = "--- a/lib/util.dart\n+++ b/lib/util.dart\n@@ -1 +1 @@\n-x\n+y\n"
+    cands = _resolve_candidate_repos(
+        platform="flutter", fix_text="", fix_diff=fix_diff,
+    )
+    assert len(cands) == 1
+    assert cands[0][1].endswith("plaud-flutter-common")
+
+
+# ─────────── 治本 v3：fix_suggestion basename 探测 ───────────
+
+def test_extract_source_basenames_basic():
+    from app.crashguard.services.pr_drafter import _extract_source_basenames
+    text = "请修改 chatbots.view.dart 和 home.controller.dart，并参考 MainActivity.kt"
+    out = _extract_source_basenames(text)
+    assert "chatbots.view.dart" in out
+    assert "home.controller.dart" in out
+    assert "MainActivity.kt" in out
+
+
+def test_extract_source_basenames_skips_placeholders():
+    """太短的占位（如 x.dart / y.kt）不算"""
+    from app.crashguard.services.pr_drafter import _extract_source_basenames
+    out = _extract_source_basenames("just x.dart and y.kt")
+    assert "x.dart" not in out
+    assert "y.kt" not in out
+
+
+def test_extract_source_basenames_dedup_and_limit():
+    from app.crashguard.services.pr_drafter import _extract_source_basenames
+    text = " ".join(["chatbots.view.dart"] * 5 + ["home.view.dart"] * 5)
+    out = _extract_source_basenames(text, limit=8)
+    assert out == ["chatbots.view.dart", "home.view.dart"]
+
+
+def test_extract_source_basenames_handles_backticks():
+    from app.crashguard.services.pr_drafter import _extract_source_basenames
+    text = "在 `chatbots.view.dart` 中改字段"
+    assert "chatbots.view.dart" in _extract_source_basenames(text)
+
+
+def test_detect_flutter_subrepo_by_basename_routes_global(tmp_path, monkeypatch):
+    """common 没 chatbots.view.dart，global 真有 lib/app/modules/chatbots/chatbots.view.dart
+    → 探测返回 'global'"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_basename
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/other.dart": "x"},  # common 没 chatbots
+        global_files={"lib/app/modules/chatbots/chatbots.view.dart": "class C{}"},
+        cn_files={"lib/cn_other.dart": "y"},
+    )
+    text = "请修改 `chatbots.view.dart` 中的 late 字段"
+    assert _detect_flutter_subrepo_by_basename(text) == "global"
+
+
+def test_detect_flutter_subrepo_by_basename_routes_cn_when_only_cn_has(tmp_path, monkeypatch):
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_basename
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/other.dart": "x"},
+        global_files={"lib/other.dart": "x"},
+        cn_files={"lib/app/modules/wechat/wechat_share.dart": "class W{}"},
+    )
+    assert _detect_flutter_subrepo_by_basename("调用 wechat_share.dart 的接口") == "cn"
+
+
+def test_detect_flutter_subrepo_by_basename_no_switch_when_common_has_all(tmp_path, monkeypatch):
+    """common 全有 → 不切（common 应付得了）"""
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_basename
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/util/file_util.dart": "x"},
+        global_files={"lib/util/file_util.dart": "x"},
+        cn_files={"lib/util/file_util.dart": "x"},
+    )
+    assert _detect_flutter_subrepo_by_basename("修改 file_util.dart") == ""
+
+
+def test_detect_flutter_subrepo_by_basename_empty_text():
+    from app.crashguard.services.pr_drafter import _detect_flutter_subrepo_by_basename
+    assert _detect_flutter_subrepo_by_basename("") == ""
+    assert _detect_flutter_subrepo_by_basename("no source file names here") == ""
+
+
+def test_resolve_candidate_repos_uses_basename_when_fix_diff_empty(tmp_path, monkeypatch):
+    """E2E：fix_diff 空 + fix_suggestion 提到 basename → 自动切到对应仓"""
+    from app.crashguard.services.pr_drafter import _resolve_candidate_repos
+    _setup_three_flutter_repos(
+        tmp_path, monkeypatch,
+        common_files={"lib/other.dart": "x"},
+        global_files={"lib/app/modules/chatbots/chatbots.view.dart": "class C{}"},
+        cn_files={"lib/cn.dart": "y"},
+    )
+    cands = _resolve_candidate_repos(
+        platform="flutter",
+        fix_text="将 `chatbots.view.dart` 中的 late 改为可空类型",
+        fix_diff="",  # 空 fix_diff → 触发 basename fallback
+    )
+    assert len(cands) == 1
+    assert cands[0][1].endswith("plaud-flutter-global")
