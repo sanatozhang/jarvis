@@ -236,12 +236,22 @@ async def serve_issue_file(issue_id: str, filename: str):
 @router.get("/{issue_id}/download-logs")
 @_handle_exceptions("Failed to download logs")
 async def download_logs(issue_id: str):
-    """Download log files for an issue.
+    """Download log files for an issue — returns the user's ORIGINAL upload.
 
-    Lookup order:
-      1. Decrypted .log/.txt in task workspace logs/ (may be cleaned for old tasks)
-      2. Decrypted .log/.txt in issue workspace processed/ (may be cleaned)
-      3. Raw .plaud encrypted source in task or issue raw/ (retained long-term)
+    Lookup order (priority: hand back what the user gave us):
+      1. Raw uploaded files in issue or task workspace raw/ — primary
+         (.plaud encrypted source, .log, .zip, anything they uploaded).
+         Matches the size shown on the issue detail page (feedback.py records
+         `size=len(content)` from the raw upload).
+      2. Decrypted .log/.txt in task workspace logs/ or issue workspace
+         processed/ — fallback only when raw is absent (e.g. old issues whose
+         raw was cleaned, or Linear/Feishu imports without a cached upload).
+
+    Historical bug (fixed 2026-05-25 — see fb_78d0606c6d / fb_12a7b3d4d0):
+    the order used to be inverted — we returned the 271 KB windowed plaud.log
+    for an issue whose UI advertised a 53 MB .plaud, leaving users confused
+    about whether the file got corrupted. The decrypted artefact is an
+    internal AI input, not a user-visible product.
 
     Single file → direct download; multiple → zipped.
     """
@@ -261,34 +271,36 @@ async def download_logs(issue_id: str):
         if task:
             task_id = task.id
 
-    # Tier 1+2: decrypted logs
-    decrypted_dirs: list[Path] = []
-    if task_id:
-        decrypted_dirs.append(workspace_dir / task_id / "logs")
-    decrypted_dirs.append(workspace_dir / issue_id / "processed")
-
     log_files: list[Path] = []
     seen_names: set[str] = set()
-    for d in decrypted_dirs:
+
+    # Tier 1: raw uploaded files (what user actually uploaded — primary).
+    # Note feedback.py routes images to images/ at upload time, so iterating
+    # raw/ here is naturally log-only.
+    raw_dirs: list[Path] = [workspace_dir / issue_id / "raw"]
+    if task_id:
+        raw_dirs.append(workspace_dir / task_id / "raw")
+
+    for d in raw_dirs:
         if not d.exists():
             continue
         for f in sorted(d.iterdir()):
-            if f.is_file() and f.name not in seen_names and f.suffix.lower() in (".log", ".txt"):
+            if f.is_file() and f.name not in seen_names:
                 log_files.append(f)
                 seen_names.add(f.name)
 
-    # Tier 3: fall back to raw .plaud (encrypted source, retained for hundreds of tasks)
+    # Tier 2: fall back to decrypted .log/.txt only when raw is gone.
     if not log_files:
-        raw_dirs: list[Path] = []
+        decrypted_dirs: list[Path] = []
         if task_id:
-            raw_dirs.append(workspace_dir / task_id / "raw")
-        raw_dirs.append(workspace_dir / issue_id / "raw")
+            decrypted_dirs.append(workspace_dir / task_id / "logs")
+        decrypted_dirs.append(workspace_dir / issue_id / "processed")
 
-        for d in raw_dirs:
+        for d in decrypted_dirs:
             if not d.exists():
                 continue
             for f in sorted(d.iterdir()):
-                if f.is_file() and f.name not in seen_names and f.suffix.lower() == ".plaud":
+                if f.is_file() and f.name not in seen_names and f.suffix.lower() in (".log", ".txt"):
                     log_files.append(f)
                     seen_names.add(f.name)
 

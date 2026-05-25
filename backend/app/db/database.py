@@ -321,18 +321,49 @@ async def init_db():
     # 设上 PRAGMA。之前在 init_db 里一次性 set 只影响那一条，新 conn 全部
     # 默认 busy_timeout=0 → 拿不到锁就立刻抛 OperationalError。
     if "sqlite" in db_url:
+        import sqlite3 as _sqlite3
+        import time as _time
         from sqlalchemy import event
+
+        # virtiofs (macOS Docker mount) 偶发 page-cache 错位 → SQLite 在新
+        # connection 上执行 `PRAGMA journal_mode=WAL` 抛 "disk I/O error"。
+        # DB 已经持久化在 WAL 模式（init_db 末尾验证过），所以这条 PRAGMA
+        # 本质上是空操作 + 校验；transient I/O glitch 用退避重试即可。
+        # 若 3 次仍失败，原样抛出 — 让下面的 handle_error 翻译成 disconnect，
+        # 连接池丢弃坏 handle，下次 checkout 拿新 connection。
+        # 上下文：2026-05-25 release_poller 30s tick 引爆，导致 ~14 min disk
+        # I/O 错误风暴；本重试逻辑让单条 connection 对 virtiofs glitch 免疫。
+        _IO_RETRY_BACKOFFS = (0.05, 0.10, 0.20)
+
+        def _execute_pragma_with_retry(cursor, sql: str) -> None:
+            last_exc = None
+            for backoff in _IO_RETRY_BACKOFFS + (None,):
+                try:
+                    cursor.execute(sql)
+                    return
+                except _sqlite3.OperationalError as e:
+                    msg = str(e).lower()
+                    if "disk i/o" not in msg and "database is locked" not in msg:
+                        raise
+                    last_exc = e
+                    if backoff is None:
+                        break
+                    _time.sleep(backoff)
+            assert last_exc is not None
+            raise last_exc
 
         @event.listens_for(_engine.sync_engine, "connect")
         def _sqlite_pragmas_on_connect(dbapi_conn, conn_record):
             cursor = dbapi_conn.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=30000")
-            # WAL 下用 NORMAL 同步级别（事务安全 + 大幅降低 fsync 阻塞）
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            # 每 1000 帧自动 checkpoint，避免 WAL 文件无限增长导致 reader 卡读
-            cursor.execute("PRAGMA wal_autocheckpoint=1000")
-            cursor.close()
+            try:
+                _execute_pragma_with_retry(cursor, "PRAGMA journal_mode=WAL")
+                _execute_pragma_with_retry(cursor, "PRAGMA busy_timeout=30000")
+                # WAL 下用 NORMAL 同步级别（事务安全 + 大幅降低 fsync 阻塞）
+                _execute_pragma_with_retry(cursor, "PRAGMA synchronous=NORMAL")
+                # 每 1000 帧自动 checkpoint，避免 WAL 文件无限增长导致 reader 卡读
+                _execute_pragma_with_retry(cursor, "PRAGMA wal_autocheckpoint=1000")
+            finally:
+                cursor.close()
 
         # 把 "disk I/O error" 翻译成 disconnect，让 SQLAlchemy 不要复用坏 handle
         @event.listens_for(_engine.sync_engine, "handle_error")
