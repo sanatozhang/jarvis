@@ -10,6 +10,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings
 
+from app.config import PROJECT_ROOT
+
 
 class CoreguardSettings(BaseSettings):
     enabled: bool = True
@@ -34,7 +36,8 @@ class CoreguardSettings(BaseSettings):
 
     model_config = {
         "env_prefix": "COREGUARD_",
-        "env_file": ".env",
+        # 用绝对路径（同 crashguard 模式），避免 cwd 在 backend/ 时找不到根目录 .env
+        "env_file": str(PROJECT_ROOT / ".env"),
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
