@@ -78,4 +78,13 @@ def show_baseline_window(current_start: datetime) -> tuple[datetime, datetime]:
 
 
 def to_ms(dt: datetime) -> int:
+    """把 datetime 转 Unix epoch milliseconds（按 UTC 解释）。
+
+    底层逻辑：naive datetime.timestamp() 按 OS 本地时区解释，会导致
+    UTC datetime 被当作 BJT → 时间窗口偏 8h，所有 SHoW 对比都错。
+    必须显式打 tzinfo=UTC。
+    """
+    from datetime import timezone as _tz
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_tz.utc)
     return int(dt.timestamp() * 1000)
