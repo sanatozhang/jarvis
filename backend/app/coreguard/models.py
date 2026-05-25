@@ -43,3 +43,21 @@ class CoreguardMetricSnapshot(Base):
         UniqueConstraint("metric_key", "window_start", name="uq_coreguard_metric_window"),
         Index("ix_coreguard_metric_window_desc", "metric_key", "window_start"),
     )
+
+
+class CoreguardJobHeartbeat(Base):
+    """调度心跳（同 crashguard.crash_job_heartbeats 模式）。"""
+    __tablename__ = "coreguard_job_heartbeats"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_name = Column(String(64), nullable=False, index=True)
+    fired_at = Column(DateTime, nullable=False, index=True)
+    status = Column(String(16), default="ok")          # ok / failed / partial
+    duration_ms = Column(Integer, default=0)
+    summary = Column(Text, default="{}")               # JSON
+    error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_coreguard_heartbeat_job_fired", "job_name", "fired_at"),
+    )

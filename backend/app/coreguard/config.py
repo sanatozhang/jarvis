@@ -34,6 +34,10 @@ class CoreguardSettings(BaseSettings):
     # Demo 阈值（Crash-free sessions 收紧到 0.5pp）
     demo_threshold_pp: float = 0.5
 
+    # Scheduler — hourly_watch cron 每小时第 5 分钟跑 22 指标 SHoW 对比
+    scheduler_enabled: bool = True
+    hourly_watch_cron: str = "5 * * * *"
+
     model_config = {
         "env_prefix": "COREGUARD_",
         # 用绝对路径（同 crashguard 模式），避免 cwd 在 backend/ 时找不到根目录 .env

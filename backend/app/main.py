@@ -284,6 +284,23 @@ from app.coreguard.api import coreguard as _coreguard_api  # noqa: E402
 app.include_router(_coreguard_api.router)
 
 
+# Coreguard scheduler 启动 hook（在 lifespan 之外用 startup event）
+@app.on_event("startup")
+async def _start_coreguard_scheduler():
+    try:
+        from app.coreguard.config import get_coreguard_settings
+        s = get_coreguard_settings()
+        if not s.enabled or not s.scheduler_enabled:
+            logger.info("coreguard scheduler disabled (enabled=%s, scheduler_enabled=%s)",
+                        s.enabled, s.scheduler_enabled)
+            return
+        from app.coreguard.workers.scheduler import scheduler_loop
+        asyncio.create_task(scheduler_loop())
+        logger.info("coreguard scheduler started")
+    except Exception as e:
+        logger.exception("coreguard scheduler failed to start: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------

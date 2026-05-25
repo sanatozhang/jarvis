@@ -90,6 +90,29 @@ async def reload_config() -> Dict[str, Any]:
     return {"ok": True, "total": len(cfg.metrics), "alertable": len(cfg.alertable())}
 
 
+@router.get("/jobs/status")
+async def jobs_status(limit: int = Query(10, ge=1, le=50)) -> Dict[str, Any]:
+    """查 scheduler 心跳 — 最近 N 次每个 job 的执行状态。"""
+    from app.coreguard.models import CoreguardJobHeartbeat
+    out: Dict[str, Any] = {"jobs": {}}
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(CoreguardJobHeartbeat).order_by(CoreguardJobHeartbeat.fired_at.desc()).limit(limit * 5)
+        )).scalars().all()
+    by_job: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_job.setdefault(r.job_name, []).append({
+            "fired_at": r.fired_at.isoformat() if r.fired_at else None,
+            "status": r.status,
+            "duration_ms": r.duration_ms,
+            "summary": r.summary,
+            "error": r.error or None,
+        })
+    for job, items in by_job.items():
+        out["jobs"][job] = items[:limit]
+    return out
+
+
 @router.get("/snapshots")
 async def list_snapshots(
     metric_key: Optional[str] = Query(None),
