@@ -34,9 +34,11 @@ class CoreguardSettings(BaseSettings):
     # Demo 阈值（Crash-free sessions 收紧到 0.5pp）
     demo_threshold_pp: float = 0.5
 
-    # Scheduler — hourly_watch cron 每小时第 5 分钟跑 22 指标 SHoW 对比
+    # Scheduler — hourly_watch cron 每小时第 15 分钟跑 22 指标 SHoW 对比
+    # 底层逻辑：Datadog RUM 入仓延迟实测 0-10min 才稳定，给 15min 缓冲
+    # 避免漏掉窗口末段 5-13% 的 events（fact-check 见 commit 描述）
     scheduler_enabled: bool = True
-    hourly_watch_cron: str = "5 * * * *"
+    hourly_watch_cron: str = "15 * * * *"
 
     model_config = {
         "env_prefix": "COREGUARD_",
