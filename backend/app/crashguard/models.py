@@ -68,7 +68,7 @@ class CrashSnapshot(Base):
     snapshot_date = Column(Date, nullable=False)
     app_version = Column(String(32), default="")
     events_count = Column(Integer, default=0)
-    users_affected = Column(Integer, default=0)         # Datadog 不直接返回，留待 Plan 2.5 RUM Events API
+    users_affected = Column(Integer, default=0)         # per-issue user count 仍未在 batched Issues API 返回；全局 distinct user 已用 cardinality(@usr.id) 实现于 datadog_client.py:824+（2026-05-25 实测填充率 92.7%）
     sessions_affected = Column(Integer, default=0)      # Datadog impacted_sessions
     crash_free_rate = Column(Float, default=1.0)
     crash_free_impact_score = Column(Float, default=0.0)

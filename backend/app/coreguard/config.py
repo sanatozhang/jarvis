@@ -40,6 +40,15 @@ class CoreguardSettings(BaseSettings):
     scheduler_enabled: bool = True
     hourly_watch_cron: str = "15 * * * *"
 
+    # 样本量地板（共用一次 cardinality(@usr.id) 查询）：
+    # 当前窗口 distinct user < min_users → 静默写快照，不发飞书
+    # 2026-05-25 实测填充率 92.7%（与 crashguard `latest_version_min_sessions=300` 对齐颗粒度）
+    min_users: int = 300
+
+    # P1 N=2 防抖：单点 breach 仅写快照，连续 2 次才入飞书卡（P0 不防抖立刻报）
+    # 上一个窗口的 breached 状态从 CoreguardMetricSnapshot 历史快照读
+    p1_consecutive_breach: int = 2
+
     model_config = {
         "env_prefix": "COREGUARD_",
         # 用绝对路径（同 crashguard 模式），避免 cwd 在 backend/ 时找不到根目录 .env

@@ -50,11 +50,7 @@ const NAV_ITEMS = [
     label: "崩溃看板",
     icon: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z",
   },
-  {
-    href: "/release",
-    label: "发布管理",
-    icon: "M12 19l9 2-9-18-9 18 9-2zm0 0v-8",
-  },
+  // { href: "/release", label: "发布管理", icon: "M12 19l9 2-9-18-9 18 9-2zm0 0v-8" },  // Hidden 2026-05-25 per user request — feature paused
   {
     href: "/settings",
     label: "系统设置",

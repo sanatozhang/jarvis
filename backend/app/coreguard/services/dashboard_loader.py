@@ -36,6 +36,8 @@ class MetricConfig:
     # 由 dashboard JSON 注入（启动时一次性）
     queries: Optional[List[Dict[str, Any]]] = None
     formula: Optional[str] = None
+    # Datadog 真实 widget id（用于 fullscreen_widget 深链 — 让飞书卡片点开后直接定位 tile）
+    datadog_widget_id: Optional[int] = None
 
 
 @dataclass
@@ -88,10 +90,12 @@ async def _fetch_dashboard(dashboard_id: str) -> Optional[dict]:
 
 
 def _index_widgets(dashboard_json: dict) -> Dict[int, dict]:
-    """按顺序 index → widget definition."""
+    """按顺序 index → widget；保留 Datadog 真实 id 用于 fullscreen 深链。"""
     out: Dict[int, dict] = {}
     for idx, w in enumerate(dashboard_json.get("widgets", [])):
-        out[idx] = w.get("definition", {})
+        d = dict(w.get("definition", {}))
+        d["_dd_widget_id"] = w.get("id")
+        out[idx] = d
     return out
 
 
@@ -137,6 +141,7 @@ async def load_metrics_config() -> MetricsConfig:
             mismatch += 1
             logger.warning("metric %s: title mismatch (yaml=%r, dashboard=%r)", m.key, m.title, dd_title)
             # 不阻断，仍然加载 queries（title 漂移自查）
+        m.datadog_widget_id = defi.get("_dd_widget_id")
         reqs = defi.get("requests", [])
         if not reqs:
             continue

@@ -330,8 +330,9 @@ class DatadogClient:
                     "first_seen_version": _attr(issue_attrs, "first_seen_version", "") or "",
                     "last_seen_version": _attr(issue_attrs, "last_seen_version", "") or "",
                     "events_count": int(_attr(metric_attrs, "total_count", 0) or 0),
-                    # Datadog Error Tracking 只返回 sessions 维度，不返回 users。
-                    # users_affected 走单独的 RUM Events API（Plan 2.5），目前置 0。
+                    # batched Issues API 仍只稳定返 sessions 维度；用 attr 直读做兜底。
+                    # 全局 distinct user 走 cardinality(@usr.id)（见 count_users_by_platform / count_crash_users_by_platform）；
+                    # 2026-05-25 实测 @usr.id 填充率 92.7%，旧"Plan 2.5"路径已落地。
                     "users_affected": int(_attr(metric_attrs, "impacted_users", 0) or 0),
                     "sessions_affected": int(_attr(metric_attrs, "impacted_sessions", 0) or 0),
                     "stack_trace": stack_trace,
@@ -1291,8 +1292,8 @@ class DatadogClient:
         """
         最近 N 小时内，每个平台「用户量最大」的 app 版本。
 
-        口径（session 维度——`@usr.id` 在 Plaud RUM 上几乎为空，session 是更准的代理；
-              24h 内同一用户通常 1-3 个 session，session 维度与用户维度高度相关）：
+        口径（session 维度——历史保留，业务上各告警 SLA 对齐使用 session 颗粒度；
+              `@usr.id` 2026-05-25 实测填充率 92.7%，与 session ratio≈1.14，两口径可互换）：
             filter   = @type:session
             compute  = CARDINALITY(@session.id)
             group_by = @os.name × @application.version

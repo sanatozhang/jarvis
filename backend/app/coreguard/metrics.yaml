@@ -21,7 +21,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 0.5 }
+    threshold: { pp: 1.0 }
     alert_enabled: true
 
   - key: crash_free_users
@@ -31,7 +31,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 0.5 }
+    threshold: { pp: 1.0 }
     alert_enabled: true
 
   - key: android_anr
@@ -41,7 +41,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: up_is_bad
-    threshold: { pp: 0.5 }
+    threshold: { pp: 1.0 }
     alert_enabled: true
 
   - key: hang_rate
@@ -51,7 +51,7 @@ metrics:
     tier: P0
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.2 }
+    threshold: { pct: 0.5 }
     alert_enabled: true
 
   - key: memory_usage
@@ -80,7 +80,7 @@ metrics:
     widget_type: query_value
     tier: P1
     value_type: count_pct
-    direction: up_is_bad
+    direction: down_is_bad
     threshold: { pct: 0.25 }
     alert_enabled: true
 
@@ -91,7 +91,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: ios_jank_count_p90
@@ -151,7 +151,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 0.5 }
+    threshold: { pp: 1.0 }
     alert_enabled: true
 
   - key: cloud_download_success_rate
@@ -181,7 +181,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 0.5 }
+    threshold: { pp: 1.0 }
     alert_enabled: true
 
   - key: audio_decode_success_rate
@@ -301,7 +301,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: share_export_success_rate
@@ -321,7 +321,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: home_file_list_load_p90
@@ -331,7 +331,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: detail_first_screen_load_p75
@@ -341,7 +341,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: detail_webview_first_render_p75
@@ -351,7 +351,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: detail_tab_switch_p75
@@ -361,7 +361,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: api_request_volume
@@ -370,8 +370,8 @@ metrics:
     widget_type: timeseries
     tier: P2
     value_type: count_pct
-    direction: up_is_bad
-    threshold: { pct: 0.25 }
+    direction: both
+    threshold: { pct: 0.50 }
     alert_enabled: false
 
   - key: api_latency_p95
@@ -381,7 +381,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: api_call_success_rate
@@ -391,7 +391,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 0.5 }
+    threshold: { pp: 1.0 }
     alert_enabled: true
 
   - key: ai_task_transcribe_success_rate
@@ -401,7 +401,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 0.5 }
+    threshold: { pp: 1.0 }
     alert_enabled: true
 
   - key: ai_task_add_note_success_rate
@@ -421,7 +421,7 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true
 
   - key: highlight_click_success_rate
@@ -441,5 +441,5 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.25 }
+    threshold: { pct: 0.20 }
     alert_enabled: true

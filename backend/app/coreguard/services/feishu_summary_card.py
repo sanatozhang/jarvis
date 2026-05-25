@@ -108,8 +108,28 @@ def _headline(breached: List[Dict[str, Any]]) -> str:
 # Card builder
 # ---------------------------------------------------------------------------
 
-def _breached_block(r: Dict[str, Any]) -> str:
-    """单条异常的展示块（lark_md）。"""
+def _build_dashboard_url(
+    dashboard_id: str, datadog_site: str,
+    start_ms: int, end_ms: int,
+    widget_id: Optional[int] = None,
+) -> str:
+    """构造时间范围深链。若有 datadog_widget_id → 加 fullscreen_widget 直接打开 tile。"""
+    base = (
+        f"https://app.{datadog_site}/dashboard/{dashboard_id}"
+        f"?from_ts={start_ms}&to_ts={end_ms}&live=false"
+    )
+    if widget_id is not None:
+        base += f"&fullscreen_widget={widget_id}"
+    return base
+
+
+def _breached_block(
+    r: Dict[str, Any],
+    cur_start_ms: int, cur_end_ms: int,
+    base_start_ms: int, base_end_ms: int,
+    dashboard_id: str, datadog_site: str,
+) -> str:
+    """单条异常的展示块（lark_md）— 当前值 / 上周值各挂一条 Datadog 深链。"""
     tier = r["tier"]
     title = r["title"]
     cur = _fmt_value(r["value_type"], r["current_value"])
@@ -119,10 +139,15 @@ def _breached_block(r: Dict[str, Any]) -> str:
     direction_word = _direction_word(r["direction"], r["change"])
     emoji = _bad_emoji(r["direction"], r["change"])
 
+    widget_id = r.get("datadog_widget_id")
+    cur_url = _build_dashboard_url(dashboard_id, datadog_site, cur_start_ms, cur_end_ms, widget_id)
+    base_url = _build_dashboard_url(dashboard_id, datadog_site, base_start_ms, base_end_ms, widget_id)
+
+    # lark_md `[text](url)` 把 cur/base 都做成可点超链，不暴露原始 URL
     return (
         f"**[{tier}] {title}** {emoji}\n"
         f"　{direction_word} `{chg}` (阈值 {th})\n"
-        f"　当前 `{cur}` · 上周 `{base}`"
+        f"　当前 [`{cur}`]({cur_url}) · 上周 [`{base}`]({base_url})"
     )
 
 
@@ -164,11 +189,15 @@ def build_summary_card(
     # cur_start/cur_end 是 datetime.utcnow() 返回的 naive UTC datetime；
     # naive .timestamp() 默认按本地时区解释会偏 8h，必须显式打上 UTC tzinfo。
     from datetime import timezone as _tz
-    from_ts = int(cur_start.replace(tzinfo=_tz.utc).timestamp() * 1000)
-    to_ts = int(cur_end.replace(tzinfo=_tz.utc).timestamp() * 1000)
+    def _utc_ms(dt):
+        return int(dt.replace(tzinfo=_tz.utc).timestamp() * 1000)
+    cur_start_ms = _utc_ms(cur_start)
+    cur_end_ms = _utc_ms(cur_end)
+    base_start_ms = _utc_ms(base_start)
+    base_end_ms = _utc_ms(base_end)
     dashboard_url = (
         f"https://app.{datadog_site}/dashboard/{dashboard_id}"
-        f"?from_ts={from_ts}&to_ts={to_ts}&live=false"
+        f"?from_ts={cur_start_ms}&to_ts={cur_end_ms}&live=false"
     )
     elements.append({
         "tag": "note",
@@ -193,7 +222,12 @@ def build_summary_card(
         for r in breached_sorted:
             elements.append({
                 "tag": "div",
-                "text": {"tag": "lark_md", "content": _breached_block(r)},
+                "text": {"tag": "lark_md", "content": _breached_block(
+                    r,
+                    cur_start_ms, cur_end_ms,
+                    base_start_ms, base_end_ms,
+                    dashboard_id, datadog_site,
+                )},
             })
 
     # 缺数据兜底（仅当真有 errored 时）
