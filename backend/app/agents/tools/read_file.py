@@ -11,7 +11,7 @@ SCHEMA: Dict[str, Any] = {
     "name": "read_file",
     "description": (
         "Read a file relative to the workspace root. Returns the file content as text. "
-        "Use `offset` and `limit` (in bytes) for large files. Max 2 MB per call."
+        "Use `offset` and `limit` (in bytes) for large files. Max 200 KB per call."
     ),
     "input_schema": {
         "type": "object",
@@ -27,21 +27,40 @@ SCHEMA: Dict[str, Any] = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of bytes to read (default 2_000_000, max 2_000_000).",
-                "default": 2_000_000,
+                "description": "Maximum number of bytes to read (default 200_000, max 200_000).",
+                "default": 200_000,
             },
         },
         "required": ["path"],
     },
 }
 
-_MAX_BYTES = 2_000_000
+_MAX_BYTES = 200_000   # 200 KB — reduced from 2 MB to prevent context explosion
+
+# These files are already embedded in the prompt; reading them again bloats
+# the messages array with hundreds of thousands of redundant tokens.
+_READ_BLACKLIST = frozenset({
+    "context/extraction_full.json",
+    "prompt.md",
+    "fixup_prompt.md",
+})
 
 
 async def execute(workspace: Path, inp: Dict[str, Any]) -> ToolResult:
     path = inp.get("path")
     if not isinstance(path, str) or not path:
         raise ToolError("read_file: 'path' is required and must be a string")
+
+    # Block files that are already provided in the prompt to avoid context bloat
+    if path in _READ_BLACKLIST:
+        return ToolResult(
+            content=(
+                f"[{path} 已包含在分析 prompt 中，请直接使用 prompt 里的摘要内容，"
+                "无需重复读取此文件（重复读取会导致 context 过大）。]"
+            ),
+            result_summary=f"blocked: {path} is already embedded in prompt",
+        )
+
     offset = int(inp.get("offset", 0) or 0)
     limit = int(inp.get("limit", _MAX_BYTES) or _MAX_BYTES)
     if offset < 0:

@@ -40,6 +40,28 @@ def _update_progress(task_id: str, progress: TaskProgress):
 @router.post("", response_model=TaskProgress)
 async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
     """Create a new analysis task for an issue."""
+    # ── Dedup guard: skip if a recent non-failed task exists for this issue ──
+    # Prevents duplicate token consumption from webhook double-fires or rapid
+    # re-analyze clicks. Follow-up questions always bypass this check because
+    # they are intentional re-runs with a new question.
+    if not req.followup_question:
+        recent = await db.get_recent_active_task_for_issue(req.issue_id, within_minutes=10)
+        if recent:
+            logger.info(
+                "Dedup: issue %s already has task %s (status=%s, age<10min) — returning existing",
+                req.issue_id, recent.id, recent.status,
+            )
+            existing = TaskProgress(
+                task_id=recent.id,
+                issue_id=req.issue_id,
+                status=TaskStatus(recent.status),
+                progress=recent.progress or 0,
+                message=recent.message or "已有分析任务在进行中或已完成（10分钟内）",
+            )
+            if recent.id in _progress_store:
+                return _progress_store[recent.id]
+            return existing
+
     task_id = f"task_{uuid.uuid4().hex[:12]}"
 
     agent_type_str = req.agent_type.value if req.agent_type else ""

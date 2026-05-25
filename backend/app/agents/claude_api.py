@@ -35,6 +35,92 @@ logger = logging.getLogger("jarvis.agent.claude_api")
 _VERTEX_ANTHROPIC_VERSION = "vertex-2023-10-16"
 _VERTEX_MODEL_PATH_TPL = "/publishers/anthropic/models/{model}:rawPredict"
 
+# ── Context budget ──────────────────────────────────────────────────────────
+# Keep the effective context under this many *estimated* tokens (chars / 4).
+# Sonnet 200K context; we stay well below to leave room for the response.
+_MAX_CONTEXT_TOKENS = 60_000
+_TOOL_RESULT_TRIM_CHARS = 2_000   # each old tool result is trimmed to this
+
+
+def _estimate_tokens(messages: List[Dict[str, Any]]) -> int:
+    """Rough token estimate: total JSON chars / 4."""
+    total = 0
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total += len(block.get("text", "")) + len(block.get("content", ""))
+                elif isinstance(block, str):
+                    total += len(block)
+    return total // 4
+
+
+def _trim_messages(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], bool]:
+    """Trim old tool results when estimated context exceeds budget.
+
+    Strategy:
+    - Always preserve messages[0] (the original prompt) intact.
+    - Walk messages[1:] and truncate any tool_result block whose content
+      exceeds _TOOL_RESULT_TRIM_CHARS.
+    - Returns (trimmed_messages, was_trimmed).
+    """
+    if _estimate_tokens(messages) * 4 <= _MAX_CONTEXT_TOKENS * 4:
+        return messages, False
+
+    trimmed = [messages[0]]   # prompt is sacred — never touched
+    trimmed_count = 0
+    for msg in messages[1:]:
+        if msg.get("role") != "user":
+            trimmed.append(msg)
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            trimmed.append(msg)
+            continue
+        new_content = []
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and isinstance(block.get("content"), str)
+                and len(block["content"]) > _TOOL_RESULT_TRIM_CHARS
+            ):
+                original_len = len(block["content"])
+                block = {
+                    **block,
+                    "content": (
+                        block["content"][:_TOOL_RESULT_TRIM_CHARS]
+                        + f"\n...[trimmed: {original_len - _TOOL_RESULT_TRIM_CHARS} chars removed to stay within context budget]..."
+                    ),
+                }
+                trimmed_count += 1
+            new_content.append(block)
+        trimmed.append({**msg, "content": new_content})
+    return trimmed, trimmed_count > 0
+
+
+# ── Loop detection ──────────────────────────────────────────────────────────
+_LOOP_WINDOW = 4        # check last N turns
+_LOOP_NUDGE_AFTER = 3   # send nudge after this many identical-pattern turns
+
+
+def _detect_loop(recent_tool_patterns: List[frozenset]) -> bool:
+    """Return True if the last _LOOP_WINDOW turns all called the same tool set."""
+    if len(recent_tool_patterns) < _LOOP_WINDOW:
+        return False
+    window = recent_tool_patterns[-_LOOP_WINDOW:]
+    return len(set(window)) == 1
+
+
+_LOOP_FINISH_NUDGE = (
+    "你已连续多轮执行相同的操作，没有取得新证据。"
+    "请立即根据已有信息做出最终判断，使用 write_file 工具将结果写入 output/result.json，然后结束分析。"
+    "宁可 confidence=low 也要写出 result.json，不写等于分析失败。"
+)
+
 
 class _TraceWriter:
     """Append-only jsonl trace logger.
@@ -171,12 +257,34 @@ class ClaudeApiAgent(BaseAgent):
 
         current_model = cfg.model
         last_stop_reason = ""
+        recent_tool_patterns: List[frozenset] = []
+        loop_nudge_sent = False
 
         try:
             if on_progress:
                 await _maybe_await(on_progress(60, "Claude API 分析中..."))
 
             for turn in range(cfg.max_turns):
+                # ── Context budget guard: trim old tool results before each turn ──
+                messages, was_trimmed = _trim_messages(messages)
+                if was_trimmed:
+                    estimated = _estimate_tokens(messages)
+                    logger.info(
+                        "Turn %d: trimmed messages to stay within context budget (~%d tokens)",
+                        turn, estimated,
+                    )
+                    trace.write({"turn": turn, "event": "context_trimmed", "estimated_tokens": estimated})
+
+                # ── Loop detection: nudge agent to finish if stuck ──
+                if not loop_nudge_sent and _detect_loop(recent_tool_patterns):
+                    logger.warning(
+                        "Turn %d: tool loop detected (pattern=%s × %d turns), injecting finish nudge",
+                        turn, list(recent_tool_patterns[-1]) if recent_tool_patterns else "?", _LOOP_WINDOW,
+                    )
+                    trace.write({"turn": turn, "event": "loop_nudge_injected"})
+                    messages.append({"role": "user", "content": [{"type": "text", "text": _LOOP_FINISH_NUDGE}]})
+                    loop_nudge_sent = True
+
                 t0 = time.perf_counter()
                 body = {
                     "model": current_model,
@@ -275,6 +383,10 @@ class ClaudeApiAgent(BaseAgent):
                             })
 
                     messages.append({"role": "user", "content": tool_results})
+
+                    # Track tool pattern for loop detection
+                    pattern = frozenset(c["name"] for c in tool_calls_log)
+                    recent_tool_patterns.append(pattern)
 
                     trace.write({
                         "turn": turn,

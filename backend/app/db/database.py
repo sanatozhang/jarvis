@@ -709,6 +709,33 @@ async def set_issue_created_by(issue_id: str, username: str):
             await session.commit()
 
 
+async def get_recent_active_task_for_issue(
+    issue_id: str,
+    within_minutes: int = 10,
+) -> Optional[TaskRecord]:
+    """Return the most recent non-failed task for issue_id created within the last N minutes.
+
+    Used to throttle duplicate analysis triggers (e.g. webhook double-fire,
+    impatient re-analyze clicks). Returns None if no such task exists.
+    """
+    from datetime import timedelta
+    from sqlalchemy import select
+    cutoff = datetime.utcnow() - timedelta(minutes=within_minutes)
+    async with get_session() as session:
+        stmt = (
+            select(TaskRecord)
+            .where(
+                TaskRecord.issue_id == issue_id,
+                TaskRecord.status.in_(["queued", "analyzing", "done"]),
+                TaskRecord.created_at >= cutoff,
+            )
+            .order_by(TaskRecord.created_at.desc())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
 async def create_task(task_id: str, issue_id: str, agent_type: str = "") -> TaskRecord:
     async with get_session() as session:
         record = TaskRecord(
