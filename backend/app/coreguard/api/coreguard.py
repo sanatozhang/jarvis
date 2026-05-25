@@ -90,6 +90,16 @@ async def reload_config() -> Dict[str, Any]:
     return {"ok": True, "total": len(cfg.metrics), "alertable": len(cfg.alertable())}
 
 
+@router.post("/jobs/trigger")
+async def trigger_job(job: str = Query("coreguard_hourly_watch")) -> Dict[str, Any]:
+    """手动触发一次调度 job — 等价 cron 跑一次（写 heartbeat + 真发 email）。"""
+    if job == "coreguard_hourly_watch":
+        from app.coreguard.workers.scheduler import _run_hourly_watch_once
+        await _run_hourly_watch_once()
+        return {"ok": True, "job": job}
+    return {"ok": False, "reason": f"unknown job: {job}"}
+
+
 @router.get("/jobs/status")
 async def jobs_status(limit: int = Query(10, ge=1, le=50)) -> Dict[str, Any]:
     """查 scheduler 心跳 — 最近 N 次每个 job 的执行状态。"""
