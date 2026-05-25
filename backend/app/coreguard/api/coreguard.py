@@ -12,7 +12,9 @@ from sqlalchemy import select
 
 from app.coreguard.config import get_coreguard_settings
 from app.coreguard.models import CoreguardMetricSnapshot
+from app.coreguard.services.dashboard_loader import get_metrics_config
 from app.coreguard.services.demo_runner import run_demo
+from app.coreguard.services.metric_watcher import run_all as watcher_run_all
 from app.db.database import get_session
 
 logger = logging.getLogger("coreguard.api")
@@ -46,6 +48,46 @@ async def demo_run(
         return {"ok": False, "reason": "coreguard disabled"}
     result = await run_demo(force_alert=force_alert)
     return {"ok": True, **result}
+
+
+@router.post("/run-all")
+async def run_all_endpoint(
+    dry_run: bool = Query(False, description="True=只入库不发飞书"),
+    force_alert: bool = Query(False, description="True=即便全部正常也发一张演示卡"),
+) -> Dict[str, Any]:
+    """跑 metrics.yaml 中所有 alert_enabled 指标，一次性入库 + 聚合摘要发飞书。"""
+    s = get_coreguard_settings()
+    if not s.enabled:
+        return {"ok": False, "reason": "coreguard disabled"}
+    result = await watcher_run_all(dry_run=dry_run, force_alert=force_alert)
+    return {"ok": True, **result}
+
+
+@router.get("/metrics")
+async def list_metrics() -> Dict[str, Any]:
+    """列出 metrics.yaml 配置 + dashboard 注入的 queries 状态。"""
+    cfg = await get_metrics_config(force_reload=False)
+    items = []
+    for m in cfg.metrics:
+        items.append({
+            "key": m.key, "title": m.title, "widget_id": m.widget_id,
+            "tier": m.tier, "value_type": m.value_type, "direction": m.direction,
+            "threshold": m.threshold, "alert_enabled": m.alert_enabled,
+            "queries_loaded": m.queries is not None, "formula": m.formula,
+        })
+    return {
+        "total": len(cfg.metrics),
+        "alertable": len(cfg.alertable()),
+        "dashboard_id": cfg.dashboard.get("id"),
+        "items": items,
+    }
+
+
+@router.post("/reload-config")
+async def reload_config() -> Dict[str, Any]:
+    """强制重载 metrics.yaml + 重拉 dashboard JSON。"""
+    cfg = await get_metrics_config(force_reload=True)
+    return {"ok": True, "total": len(cfg.metrics), "alertable": len(cfg.alertable())}
 
 
 @router.get("/snapshots")
