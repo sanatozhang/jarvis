@@ -26,20 +26,31 @@ def _resolve_template_vars(queries: List[Dict[str, Any]], template_vars: Optiona
     demo 阶段：默认全部替换为空字符串（即 union 全平台/全版本）。
     """
     tvars = template_vars or {}
+
+    def _strip(qstr: str) -> str:
+        for k, v in tvars.items():
+            qstr = qstr.replace(f"${k}", v)
+        # 删未替换的 dashboard template var（含 .value 后缀变体）
+        # 例: "os.name:$os_name.value" → "os.name:"  → tag 被清空导致语法错；干脆把 key:$xxx 整段删
+        import re
+        qstr = re.sub(r'\b[\w.]+:\$[\w.]+(\.[\w]+)?\b', '', qstr)  # tag form: key:$var or key:$var.suffix
+        qstr = re.sub(r',\s*\$\w+', '', qstr)                       # ",$version" 形式
+        qstr = re.sub(r'\$\w+(\.\w+)?', '', qstr)                   # 剩余 $var 全删
+        qstr = re.sub(r',\s*,', ',', qstr)                          # 双逗号
+        qstr = re.sub(r',\s*\}', '}', qstr)                         # 末尾多余逗号
+        qstr = " ".join(qstr.split())
+        return qstr
+
     out: List[Dict[str, Any]] = []
     for q in queries:
         q2 = dict(q)
+        # RUM 类型: search.query
         search = q2.get("search")
         if isinstance(search, dict) and "query" in search:
-            qstr = search["query"]
-            for k, v in tvars.items():
-                qstr = qstr.replace(f"${k}", v)
-            # 默认把所有未替换的 $xxx 视为空
-            for placeholder in ("$os_name", "$version", "$usr.id"):
-                qstr = qstr.replace(placeholder, "")
-            # 多空格合并
-            qstr = " ".join(qstr.split())
-            q2["search"] = {**search, "query": qstr}
+            q2["search"] = {**search, "query": _strip(search["query"])}
+        # Metrics 类型: query 字段
+        if isinstance(q2.get("query"), str):
+            q2["query"] = _strip(q2["query"])
         out.append(q2)
     return out
 
