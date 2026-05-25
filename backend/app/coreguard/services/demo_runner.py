@@ -148,9 +148,13 @@ async def run_demo(force_alert: bool = False, now: Optional[datetime] = None) ->
     alert_sent = False
     should_alert = force_alert or breached
     if should_alert:
+        # 修 naive datetime.timestamp() 时区 bug — 强制按 UTC 解释
+        from datetime import timezone as _tz
+        _from_ts = int(cur_start.replace(tzinfo=_tz.utc).timestamp() * 1000)
+        _to_ts = int(cur_end.replace(tzinfo=_tz.utc).timestamp() * 1000)
         dashboard_url = (
             f"https://app.{s.datadog_site}/dashboard/{s.dashboard_id}"
-            f"?from_ts={dm.to_ms(cur_start)}&to_ts={dm.to_ms(cur_end)}&live=false"
+            f"?from_ts={_from_ts}&to_ts={_to_ts}&live=false"
         )
         card = build_demo_alert_card(
             metric_title=dm.METRIC_TITLE,

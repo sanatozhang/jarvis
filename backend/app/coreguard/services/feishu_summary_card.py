@@ -161,8 +161,11 @@ def build_summary_card(
     })
 
     # 窗口对比信息（小字）
-    from_ts = int(cur_start.timestamp() * 1000)
-    to_ts = int(cur_end.timestamp() * 1000)
+    # cur_start/cur_end 是 datetime.utcnow() 返回的 naive UTC datetime；
+    # naive .timestamp() 默认按本地时区解释会偏 8h，必须显式打上 UTC tzinfo。
+    from datetime import timezone as _tz
+    from_ts = int(cur_start.replace(tzinfo=_tz.utc).timestamp() * 1000)
+    to_ts = int(cur_end.replace(tzinfo=_tz.utc).timestamp() * 1000)
     dashboard_url = (
         f"https://app.{datadog_site}/dashboard/{dashboard_id}"
         f"?from_ts={from_ts}&to_ts={to_ts}&live=false"
