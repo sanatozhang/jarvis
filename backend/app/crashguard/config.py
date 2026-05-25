@@ -213,9 +213,16 @@ class CrashguardSettings(BaseSettings):
     pr_reviewer_blocked_authors: List[str] = Field(
         default_factory=lambda: [
             "jarvis-bot@plaud.ai",
+            "crashguard-bot@plaud.ai",  # crashguard 自己 commit 的 author，不能自我指派
             "noreply@github.com",
             "sanato.zhang@plaud.ai",  # 自己排除：他也是 fallback 接收人
         ]
+    )
+    # 域名白名单：只有匹配的域名才允许进入 reviewer 名单。
+    # 治理历史 commit 残留的 @qq.com / 外部域名（如 root@kaaaaai.cn）— 无法对接飞书。
+    # 空列表表示不过滤（向后兼容旧行为）。
+    pr_reviewer_allowed_email_domains: List[str] = Field(
+        default_factory=lambda: ["plaud.ai"]
     )
     # 每日提醒 cron；默认 09:00 工程师到岗
     pr_reviewer_daily_cron: str = "0 9 * * *"
@@ -247,8 +254,8 @@ class CrashguardSettings(BaseSettings):
     # 3h 块对齐到 UTC 00/03/06/09/12/15/18/21；小时颗粒度噪声大，工作日/周末活跃差异大时
     # 3 小时块是 P&L 平衡点。早晚报和此告警都不含 PR 修复内容。
     hourly_alert_enabled: bool = True
-    # cron 每 3 小时块的第 5 分钟触发：Datadog ingest 延迟 3-5 分钟，避开数据未到位
-    hourly_alert_cron: str = "5 */3 * * *"
+    # cron 每 3 小时块的第 15 分钟触发：2026-05-25 fact-check 实测 Datadog ingest 0-10min 才稳定
+    hourly_alert_cron: str = "15 */3 * * *"
     # 上涨阈值（百分比，默认 10%）
     hourly_alert_growth_threshold_pct: float = 10.0
     # 「新增」窗口：最近 N 天首次出现的 issue 视为新增
@@ -290,7 +297,9 @@ class CrashguardSettings(BaseSettings):
     # "整体健康度"颗粒度——即使没有单 issue 飙升，整体 crash-free 跌穿基线也要报警。
     # 用 Datadog Mobile RUM 原生口径：(1 - crashed_sessions/total_sessions) * 100。
     # 对比基线：当前 10min 窗口 vs 前 1h 平均 crash_free_pct。
-    core_metric_enabled: bool = True
+    # 2026-05-25 暂停：与 coreguard P0 Crash-free 双频率重叠 + end=now 漏数严重
+    # 启用前需先改窗口算法 [now-10min, now) → [now-15min, now-5min) 给 ingest 缓冲
+    core_metric_enabled: bool = False
     core_metric_cron: str = "*/10 * * * *"
     # 报警触发阈值：crash_free_pct 相对前 1h 变化绝对值 >= N pp（percentage points）
     # 例：基线 99.5%，当前 99.0% → 变化 0.5 pp，>=0.3 触发

@@ -181,7 +181,7 @@ crashguard:
   # 早晚报和此告警都**不含**修复 PR 内容；PR 状态查看走前端 /crashguard。
   hourly_alert:
     enabled: true
-    cron: "5 */3 * * *"            # 每 3 小时第 5 分钟（SHoW-3h；ingest 延迟 3-5 分钟）
+    cron: "15 */3 * * *"           # 每 3 小时第 15 分钟（2026-05-25 fact-check：Datadog ingest 0-10min 才稳定，:05 漏 5-13%）
     growth_threshold_pct: 10       # 超过基线 10% 触发上涨告警
     new_window_days: 30            # 近 30 天首次出现 = 新增告警
     min_baseline_events: 20        # 上周同 3h 块 < 20 件则跳过百分比判定（小基数噪声）
@@ -210,8 +210,8 @@ crashguard:
   # 用 Datadog Mobile RUM 原生 crash-free sessions % 口径；对比基线 = 前 1h 加权均值。
   # 卡片不含 PR 修复内容；点击 web view 跳 /crashguard/reports?type=core_metric_alert
   core_metric:
-    enabled: true
-    cron: "*/10 * * * *"           # 每 10 分钟一次
+    enabled: false                 # 2026-05-25 暂停：① 与 coreguard P0 Crash-free 双频率重叠 ② end=now 漏数严重（Datadog ingest 0-10min 延迟）
+    cron: "*/10 * * * *"           # 每 10 分钟一次（暂停态保留 cron 字符串，启用前需先改窗口算法加 5min 缓冲）
     change_threshold_pp: 0.3       # crash-free % 变化绝对值 >= N pp 触发（pp=百分点）
     min_sessions: 500              # 当前 10min 窗口 sessions < N 不告警（5/14 上调 100→500：原门槛太低，145 sess 这种数据无统计意义）
     min_crashed_sessions: 10       # crashed_sessions < 10 不告警（5/15 上调 3→10：配合 30min 滑动均值，个位数崩溃统计意义不足）
