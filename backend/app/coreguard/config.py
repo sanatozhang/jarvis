@@ -38,6 +38,26 @@ class CoreguardSettings(BaseSettings):
     }
 
 
+def _load_crashguard_feishu_from_yaml() -> dict:
+    """从 config.yaml::crashguard.feishu 段读取 target_chat_id / target_email / alert_email。
+
+    Crashguard 实际 chat_id 在 yaml 不在 env（见 config.yaml line 150）。coreguard demo
+    阶段直接读 yaml 公共配置（不 import crashguard 模块，保隔离合约）。
+    """
+    try:
+        from app.config import _load_yaml, PROJECT_ROOT
+        yaml_path = PROJECT_ROOT / "config.yaml"
+        data = _load_yaml(yaml_path) or {}
+        feishu = (data.get("crashguard") or {}).get("feishu") or {}
+        return {
+            "target_chat_id": feishu.get("target_chat_id", "") or "",
+            "target_email": feishu.get("target_email", "") or "",
+            "alert_email": feishu.get("alert_email", "") or "",
+        }
+    except Exception:
+        return {"target_chat_id": "", "target_email": "", "alert_email": ""}
+
+
 @lru_cache(maxsize=1)
 def get_coreguard_settings() -> CoreguardSettings:
     s = CoreguardSettings()
@@ -46,8 +66,21 @@ def get_coreguard_settings() -> CoreguardSettings:
         s.datadog_api_key = os.environ.get("CRASHGUARD_DATADOG_API_KEY", "")
     if not s.datadog_app_key:
         s.datadog_app_key = os.environ.get("CRASHGUARD_DATADOG_APP_KEY", "")
+
+    # Feishu chat_id / email 回落顺序：
+    #   COREGUARD_* env → CRASHGUARD_* env → config.yaml::crashguard.feishu.*
+    yaml_feishu = _load_crashguard_feishu_from_yaml()
     if not s.feishu_target_chat_id:
-        s.feishu_target_chat_id = os.environ.get("CRASHGUARD_FEISHU_TARGET_CHAT_ID", "")
+        s.feishu_target_chat_id = (
+            os.environ.get("CRASHGUARD_FEISHU_TARGET_CHAT_ID", "")
+            or yaml_feishu["target_chat_id"]
+        )
     if not s.feishu_target_email:
-        s.feishu_target_email = os.environ.get("CRASHGUARD_FEISHU_TARGET_EMAIL", "")
+        # 告警优先用 alert_email（点对点），其次 target_email（兜底）
+        s.feishu_target_email = (
+            os.environ.get("CRASHGUARD_FEISHU_ALERT_EMAIL", "")
+            or os.environ.get("CRASHGUARD_FEISHU_TARGET_EMAIL", "")
+            or yaml_feishu["alert_email"]
+            or yaml_feishu["target_email"]
+        )
     return s
