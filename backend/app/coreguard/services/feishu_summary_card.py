@@ -1,4 +1,11 @@
-"""Coreguard 聚合摘要卡：一次跑发一张卡，列所有超阈指标 + 正常摘要 + 异常数据。"""
+"""Coreguard 聚合摘要卡 v2 — 只列异常 + 顶部一句话总结 + dashboard 链接。
+
+设计原则：
+  - 一眼看出问题：标题 + headline 一句话总结
+  - 正常项不展示：减少视觉噪声
+  - 异常项突出：颜色 + 箭头 + 涨跌方向 + 阈值对比
+  - dashboard 直链：可立即跳转 Datadog 查看
+"""
 from __future__ import annotations
 
 import logging
@@ -7,13 +14,16 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("coreguard.feishu_summary")
 
 
+# ---------------------------------------------------------------------------
+# Formatters
+# ---------------------------------------------------------------------------
+
 def _fmt_value(value_type: str, v: Optional[float]) -> str:
     if v is None:
         return "—"
     if value_type == "percent_pp":
         return f"{v:.3f}%"
     if value_type == "latency_pct":
-        # 假设单位是 ms；统一保留 1 位
         return f"{v:.2f}"
     return f"{v:.2f}"
 
@@ -34,45 +44,92 @@ def _fmt_threshold(value_type: str, threshold: Dict[str, float]) -> str:
     return f"±{threshold.get('pct', 0)*100:.0f}%"
 
 
-def _arrow(direction: str, change: Optional[float]) -> str:
+def _direction_word(direction: str, change: Optional[float]) -> str:
+    """生成「上涨/下降」自然语言。"""
     if change is None:
-        return ""
-    bad_down = (direction == "down_is_bad" and change < 0)
-    bad_up = (direction == "up_is_bad" and change > 0)
-    if bad_down or bad_up:
-        return "🔻" if change < 0 else "🔺"
-    return "↘" if change < 0 else "↗"
+        return "无数据"
+    if change > 0:
+        return "上涨"
+    if change < 0:
+        return "下降"
+    return "持平"
 
 
-def _breached_row(r: Dict[str, Any]) -> str:
+def _bad_emoji(direction: str, change: Optional[float]) -> str:
+    """异常方向标记。"""
+    if change is None:
+        return "⚪"
+    bad_up = direction == "up_is_bad" and change > 0
+    bad_down = direction == "down_is_bad" and change < 0
+    if bad_up:
+        return "🔺"
+    if bad_down:
+        return "🔻"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Headline (一句话总结)
+# ---------------------------------------------------------------------------
+
+def _headline(breached: List[Dict[str, Any]]) -> str:
+    if not breached:
+        return "本小时所有核心指标正常"
+
+    # 按 tier 分组
+    p0 = [r for r in breached if r["tier"] == "P0"]
+    p1 = [r for r in breached if r["tier"] == "P1"]
+
+    # 找最严重的一个（按 change 绝对幅度）
+    def _severity(r):
+        c = r.get("change")
+        if c is None:
+            return 0
+        return abs(c)
+
+    worst = max(breached, key=_severity)
+    direction_word = _direction_word(worst["direction"], worst["change"])
+    change_str = _fmt_change(worst["value_type"], worst["change"])
+
+    parts = []
+    if p0:
+        parts.append(f"{len(p0)} 项 P0 核心指标异常")
+    if p1:
+        parts.append(f"{len(p1)} 项 P1 性能指标异常")
+    summary = "、".join(parts)
+
+    return (
+        f"{summary}：**{worst['title']}** {direction_word} `{change_str}` "
+        f"（vs 上周同时段），需立即跟进。"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Card builder
+# ---------------------------------------------------------------------------
+
+def _breached_block(r: Dict[str, Any]) -> str:
+    """单条异常的展示块（lark_md）。"""
     tier = r["tier"]
     title = r["title"]
     cur = _fmt_value(r["value_type"], r["current_value"])
     base = _fmt_value(r["value_type"], r["baseline_value"])
     chg = _fmt_change(r["value_type"], r["change"])
-    arrow = _arrow(r["direction"], r["change"])
     th = _fmt_threshold(r["value_type"], r["threshold"])
-    return f"**[{tier}] {title}** {arrow}\n　当前 `{cur}` ｜ 上周 `{base}` ｜ 变化 `{chg}` (阈值 `{th}`)"
+    direction_word = _direction_word(r["direction"], r["change"])
+    emoji = _bad_emoji(r["direction"], r["change"])
 
-
-def _healthy_top(rs: List[Dict[str, Any]], top: int = 5) -> str:
-    """正常项摘要：列前 top 个，剩余折叠成 `... +N more`。"""
-    if not rs:
-        return "—"
-    lines = []
-    for r in rs[:top]:
-        cur = _fmt_value(r["value_type"], r["current_value"])
-        chg = _fmt_change(r["value_type"], r["change"])
-        lines.append(f"・{r['title']} `{cur}` ({chg})")
-    if len(rs) > top:
-        lines.append(f"・…还有 {len(rs) - top} 项正常")
-    return "\n".join(lines)
+    return (
+        f"**[{tier}] {title}** {emoji}\n"
+        f"　{direction_word} `{chg}` (阈值 {th})\n"
+        f"　当前 `{cur}` · 上周 `{base}`"
+    )
 
 
 def build_summary_card(
     cur_start, cur_end, base_start, base_end,
     breached: List[Dict[str, Any]],
-    healthy: List[Dict[str, Any]],
+    healthy: List[Dict[str, Any]],   # 仍接收以保持签名，但不展示
     errored: List[Dict[str, Any]],
     forced: bool,
     dashboard_id: str,
@@ -83,58 +140,80 @@ def build_summary_card(
     n_err = len(errored)
     total = n_breach + n_healthy + n_err
 
-    # Header
+    # Header 颜色 + 标题
     if n_breach > 0:
         template = "red"
-        headline = f"⚠️ {n_breach} 项异常 / 共 {total} 项"
+        title = f"[coreguard] ⚠️ 核心指标异常告警 ({n_breach}/{total})"
     elif forced:
         template = "blue"
-        headline = f"🧪 强制演示 — {total} 项全部正常"
+        title = f"[coreguard] 🧪 演示 — {total} 项全部正常"
     else:
         template = "green"
-        headline = f"✅ {n_healthy} 项全部正常"
-
-    title = f"[coreguard·核心指标] {headline}"
+        title = f"[coreguard] ✅ {total} 项核心指标全部正常"
 
     elements: List[Dict[str, Any]] = []
 
-    # 窗口信息
-    window_label = (
-        f"**当前窗口** {cur_start.strftime('%Y-%m-%d %H:%M')} ~ {cur_end.strftime('%H:%M')} UTC\n"
-        f"**上周同时段** {base_start.strftime('%Y-%m-%d %H:%M')} ~ {base_end.strftime('%H:%M')} UTC"
-    )
-    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": window_label}})
-    elements.append({"tag": "hr"})
+    # 顶部一句话 headline
+    headline_text = _headline(breached)
+    elements.append({
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": f"📢 {headline_text}"},
+    })
 
-    # 异常列表
-    if breached:
-        # P0 在前，P1 在后
-        breached_sorted = sorted(breached, key=lambda x: (0 if x["tier"] == "P0" else 1, x["title"]))
-        body = "\n\n".join(_breached_row(r) for r in breached_sorted)
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"### 🔴 异常指标\n\n{body}"}})
-        elements.append({"tag": "hr"})
-
-    # 正常项摘要
-    if healthy:
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"### 🟢 正常项 ({n_healthy})\n{_healthy_top(healthy, top=5)}"}})
-
-    # 异常/缺数据
-    if errored:
-        err_lines = "\n".join(f"・{r['title']} — {r.get('error') or 'no data'}" for r in errored[:5])
-        if len(errored) > 5:
-            err_lines += f"\n・…还有 {len(errored) - 5} 项"
-        elements.append({"tag": "hr"})
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"### ⚪ 缺数据/异常 ({n_err})\n{err_lines}"}})
-
-    # Footer
+    # 窗口对比信息（小字）
     from_ts = int(cur_start.timestamp() * 1000)
     to_ts = int(cur_end.timestamp() * 1000)
-    dashboard_url = f"https://app.{datadog_site}/dashboard/{dashboard_id}?from_ts={from_ts}&to_ts={to_ts}&live=false"
-    elements.append({"tag": "hr"})
+    dashboard_url = (
+        f"https://app.{datadog_site}/dashboard/{dashboard_id}"
+        f"?from_ts={from_ts}&to_ts={to_ts}&live=false"
+    )
     elements.append({
         "tag": "note",
-        "elements": [{"tag": "lark_md",
-                      "content": f"📊 [打开 Datadog Dashboard]({dashboard_url})  ·  Demo 阶段（无 Ack / 升级，正式版扩展）"}]
+        "elements": [{
+            "tag": "lark_md",
+            "content": (
+                f"当前 {cur_start.strftime('%m-%d %H:%M')} ~ {cur_end.strftime('%H:%M')} UTC"
+                f"  ·  上周 {base_start.strftime('%m-%d %H:%M')} ~ {base_end.strftime('%H:%M')} UTC"
+                f"  ·  共评估 {total} 项 (异常 {n_breach}{('，缺数据 '+str(n_err)) if n_err else ''})"
+            ),
+        }],
+    })
+
+    # 异常列表（核心区）
+    if breached:
+        elements.append({"tag": "hr"})
+        # P0 在前
+        breached_sorted = sorted(
+            breached,
+            key=lambda x: (0 if x["tier"] == "P0" else 1, -(abs(x.get("change") or 0))),
+        )
+        for r in breached_sorted:
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": _breached_block(r)},
+            })
+
+    # 缺数据兜底（仅当真有 errored 时）
+    if errored and n_err > 0:
+        elements.append({"tag": "hr"})
+        names = "、".join(r["title"] for r in errored[:5])
+        if n_err > 5:
+            names += f" 等 {n_err} 项"
+        elements.append({
+            "tag": "note",
+            "elements": [{"tag": "lark_md", "content": f"⚪ 缺数据：{names}"}],
+        })
+
+    # Footer — dashboard 链接（按钮形式更显眼）
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "action",
+        "actions": [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📊 打开 Datadog Dashboard 排查"},
+            "type": "primary",
+            "url": dashboard_url,
+        }],
     })
 
     return {
@@ -147,6 +226,10 @@ def build_summary_card(
     }
 
 
+# ---------------------------------------------------------------------------
+# Sender — email 优先（演示阶段不打扰群）
+# ---------------------------------------------------------------------------
+
 async def send(card: Dict[str, Any]) -> bool:
     from app.coreguard.config import get_coreguard_settings
     s = get_coreguard_settings()
@@ -154,10 +237,17 @@ async def send(card: Dict[str, Any]) -> bool:
         logger.info("feishu_enabled=false, skip send")
         return False
     if not s.feishu_target_chat_id and not s.feishu_target_email:
-        logger.warning("no feishu target")
+        logger.warning("no feishu target configured")
         return False
+
+    # 优先级：prefer_email=true → email first；否则 chat_id first
+    use_email = s.feishu_prefer_email and bool(s.feishu_target_email)
+
     try:
         from app.services.feishu_cli import send_interactive_card
+        if use_email:
+            logger.info("coreguard send via email=%s (demo private)", s.feishu_target_email)
+            return await send_interactive_card(email=s.feishu_target_email, card=card)
         if s.feishu_target_chat_id:
             return await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
         return await send_interactive_card(email=s.feishu_target_email, card=card)

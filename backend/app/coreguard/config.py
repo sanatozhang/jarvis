@@ -23,6 +23,8 @@ class CoreguardSettings(BaseSettings):
     # Feishu（demo 默认复用 crashguard 群）
     feishu_target_chat_id: str = ""
     feishu_target_email: str = ""
+    # 演示阶段：email 优先于 chat_id（点对点不打扰群）
+    feishu_prefer_email: bool = False
 
     # Demo dashboard 锁定
     dashboard_id: str = "4h8-qff-zra"
