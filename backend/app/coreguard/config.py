@@ -45,9 +45,8 @@ def _load_crashguard_feishu_from_yaml() -> dict:
     阶段直接读 yaml 公共配置（不 import crashguard 模块，保隔离合约）。
     """
     try:
-        from app.config import _load_yaml, PROJECT_ROOT
-        yaml_path = PROJECT_ROOT / "config.yaml"
-        data = _load_yaml(yaml_path) or {}
+        from app.config import _load_yaml
+        data = _load_yaml() or {}    # 注意：无参数，全局 PROJECT_ROOT/config.yaml
         feishu = (data.get("crashguard") or {}).get("feishu") or {}
         return {
             "target_chat_id": feishu.get("target_chat_id", "") or "",
