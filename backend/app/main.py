@@ -98,6 +98,8 @@ async def lifespan(app: FastAPI):
 
     # Import crashguard models to register with SQLAlchemy Base
     from app.crashguard import models as _crashguard_models  # noqa: F401
+    # Import coreguard models too (independent module, same Base)
+    from app.coreguard import models as _coreguard_models  # noqa: F401
 
     await init_db()
     logger.info("Database initialized.")
@@ -276,6 +278,10 @@ app.include_router(release_router, prefix="/api/release", tags=["Release"])
 # Crashguard API（独立子模块，prefix 在 router 内部声明 /api/crash）
 from app.crashguard.api import crash as _crash_api  # noqa: E402
 app.include_router(_crash_api.router)
+
+# Coreguard API（独立子模块，prefix /api/coreguard，demo 阶段）
+from app.coreguard.api import coreguard as _coreguard_api  # noqa: E402
+app.include_router(_coreguard_api.router)
 
 
 # ---------------------------------------------------------------------------
