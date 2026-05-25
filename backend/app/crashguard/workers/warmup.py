@@ -28,6 +28,7 @@ _WARMUP_DELAY_SEC = 5
 _PIPELINE_TICK_SEC = 60
 _pipeline_last_fired: str = ""
 _pr_reviewer_last_fired: str = ""
+_pr_pending_review_last_fired: str = ""
 
 
 async def _resolve_latest_release(settings) -> tuple[str, List[str]]:
@@ -538,7 +539,7 @@ async def pipeline_scheduler_loop() -> None:
     from app.crashguard.config import get_crashguard_settings
 
     logger.info("crashguard pipeline_scheduler_loop started")
-    global _pipeline_last_fired, _pr_reviewer_last_fired
+    global _pipeline_last_fired, _pr_reviewer_last_fired, _pr_pending_review_last_fired
     while True:
         try:
             s = get_crashguard_settings()
@@ -572,6 +573,25 @@ async def pipeline_scheduler_loop() -> None:
                                 hb.set_summary(res)
                         except Exception:
                             logger.exception("pr_reviewer daily sweep failed")
+
+                # PR pending-review 工作日 10:00 积压提醒
+                ppr_cron = getattr(s, "pr_pending_review_cron", "") or ""
+                if getattr(s, "pr_pending_review_enabled", False) and ppr_cron:
+                    now3 = datetime.now()
+                    ppr_tag = now3.strftime("%Y-%m-%d %H:%M")
+                    if (_pr_pending_review_last_fired != ppr_tag
+                            and _cron_matches(ppr_cron, now3)):
+                        _pr_pending_review_last_fired = ppr_tag
+                        try:
+                            from app.crashguard.services.pr_pending_review_alert import (
+                                run_pending_review_alert,
+                            )
+                            from app.crashguard.services.job_heartbeat import record_heartbeat
+                            async with record_heartbeat("pr_pending_review") as hb:
+                                res = await run_pending_review_alert()
+                                hb.set_summary(res)
+                        except Exception:
+                            logger.exception("pr_pending_review_alert failed")
         except asyncio.CancelledError:
             raise
         except Exception:

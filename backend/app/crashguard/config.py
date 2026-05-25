@@ -228,6 +228,12 @@ class CrashguardSettings(BaseSettings):
     pr_reviewer_daily_cron: str = "0 9 * * *"
     # 找不到 owner 时的兜底接收人 email（飞书直发）
     pr_reviewer_fallback_email: str = "sanato.zhang@plaud.ai"
+    # PR 创建模式：False=直接 ready（默认，治本：draft PR 不会被 reviewer 自动通知/触发 Copilot review）
+    # True=保留 --draft（旧行为，需要工程师手动 ready）
+    pr_create_as_draft: bool = False
+    # 工作日 10:00 给 sanato 发等 review 的 PR 列表（避免 PR 长期积压）
+    pr_pending_review_cron: str = "0 10 * * 1-5"
+    pr_pending_review_enabled: bool = True
     # 启动后延迟一次性跑 pipeline + auto-analyze（避免重启等到 07:00 才开始）
     warmup_on_startup: bool = True
     # 周期 pipeline cron（与早晚报解耦）；默认每 4 小时整点

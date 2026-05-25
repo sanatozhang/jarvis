@@ -830,7 +830,11 @@ async def _create_one_draft_pr(
     change_kind: str,
     prep_branch: bool,
 ) -> tuple[dict, bool]:
-    """单仓库 PR 内核：在 cwd 里 add → commit → push → gh pr create --draft → 写 DB。
+    """单仓库 PR 内核：在 cwd 里 add → commit → push → gh pr create [--draft] → 写 DB。
+
+    PR 模式由 settings.pr_create_as_draft 控制（默认 False=ready）。
+    治本：draft PR 在 GH 上不触发 reviewer 通知/Copilot review；改为 ready 后
+    走正常 review 流程，crashguard 自身的 reviewer 飞书指派照常进行。
 
     prep_branch=True 时（submodule 场景），先把脏工作树 stash 起来、fetch origin、checkout
     到 base_ref 的新临时分支、再 pop stash——把改动迁移到一个干净的 PR base 上。
@@ -957,11 +961,13 @@ async def _create_one_draft_pr(
                 "branch_name": branch}, pushed
     pushed = True
 
-    rc, stdout, err = _run_git(
-        ["gh", "pr", "create", "--draft", "--title", pr_title, "--body", pr_body,
-         "--head", branch],
-        cwd, timeout=120,
-    )
+    _s = get_crashguard_settings()
+    _create_draft = bool(getattr(_s, "pr_create_as_draft", False))
+    _gh_args = ["gh", "pr", "create", "--title", pr_title, "--body", pr_body,
+                "--head", branch]
+    if _create_draft:
+        _gh_args.insert(3, "--draft")
+    rc, stdout, err = _run_git(_gh_args, cwd, timeout=120)
     if rc != 0:
         # 兜底：gh pr create 失败时，把刚 push 的分支从 remote 删掉，避免污染
         _run_git(["git", "push", push_remote, "--delete", branch], cwd, timeout=30)
@@ -987,7 +993,7 @@ async def _create_one_draft_pr(
                 branch_name=branch,
                 pr_url=pr_url,
                 pr_number=pr_number,
-                pr_status="draft",
+                pr_status="draft" if _create_draft else "open",
                 triggered_by=triggered_by,
                 approved_by=approver or "human",
                 approved_at=datetime.utcnow(),
