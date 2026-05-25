@@ -124,15 +124,26 @@ async def run_job_health_check() -> Dict[str, Any]:
         return {"skipped": "job_health_alert_disabled"}
 
     # 与 _JOB_META 保持对齐——但本服务避免反向 import api 层，重新声明一份精简元数据
+    # enabled_field: 任务自身的 kill switch；为 "" 表示该任务无独立开关（受 enabled/feishu_enabled 总控）
     job_meta: List[Dict[str, str]] = [
-        {"name": "core_metric", "cron_field": "core_metric_cron"},
-        {"name": "hourly_alert", "cron_field": "hourly_alert_cron"},
-        {"name": "analyze_tick", "cron_field": "analyze_cron"},
-        {"name": "pr_sync", "cron_field": "pr_sync_cron"},
-        {"name": "pipeline", "cron_field": "pipeline_cron"},
-        {"name": "morning_daily", "cron_field": "morning_cron"},
-        {"name": "evening_daily", "cron_field": "evening_cron"},
-        {"name": "top_crash_auto_pr", "cron_field": "top_crash_auto_pr_cron"},
+        {"name": "core_metric", "cron_field": "core_metric_cron",
+         "enabled_field": "core_metric_enabled"},
+        {"name": "hourly_alert", "cron_field": "hourly_alert_cron",
+         "enabled_field": "hourly_alert_enabled"},
+        {"name": "analyze_tick", "cron_field": "analyze_cron",
+         "enabled_field": ""},
+        {"name": "pr_sync", "cron_field": "pr_sync_cron",
+         "enabled_field": ""},
+        {"name": "pipeline", "cron_field": "pipeline_cron",
+         "enabled_field": ""},
+        {"name": "morning_daily", "cron_field": "morning_cron",
+         "enabled_field": "morning_enabled"},
+        # evening_daily 2026-05-21 起默认 evening_enabled=False，但 evening_cron 字段
+        # 保留——alerter 必须看 enabled_field 跳过，否则 stale 永远叫
+        {"name": "evening_daily", "cron_field": "evening_cron",
+         "enabled_field": "evening_enabled"},
+        {"name": "top_crash_auto_pr", "cron_field": "top_crash_auto_pr_cron",
+         "enabled_field": "top_crash_auto_pr_enabled"},
     ]
 
     now_utc = datetime.utcnow()
@@ -159,11 +170,20 @@ async def run_job_health_check() -> Dict[str, Any]:
     unhealthy: List[Dict[str, Any]] = []
     auto_retried: List[str] = []
 
+    skipped_disabled: List[str] = []
+
     async with get_session() as session:
         for meta in job_meta:
             jn = meta["name"]
             cron_expr = getattr(s, meta["cron_field"], "") or ""
             interval = _interval_minutes_from_cron(cron_expr)
+
+            # 任务自身 kill switch：disabled 任务跳过所有健康度判定
+            # 抓手：evening_daily 已下线后 stale 永远叫的问题
+            ef = meta.get("enabled_field") or ""
+            if ef and not getattr(s, ef, True):
+                skipped_disabled.append(jn)
+                continue
 
             # 上次心跳
             last_row = (await session.execute(
@@ -297,6 +317,7 @@ async def run_job_health_check() -> Dict[str, Any]:
     if not unhealthy:
         return {
             "ok": True, "alerted": False, "scanned": len(job_meta),
+            "skipped_disabled": skipped_disabled,
             "auto_retried": auto_retried,
         }
 
@@ -334,5 +355,6 @@ async def run_job_health_check() -> Dict[str, Any]:
         "sent": sent_ok,
         "unhealthy_count": len(unhealthy),
         "unhealthy_jobs": [it["job_name"] for it in unhealthy],
+        "skipped_disabled": skipped_disabled,
         "auto_retried": auto_retried,
     }
