@@ -171,6 +171,77 @@ def test_filter_authors_case_insensitive_block():
     assert out == []
 
 
+def test_filter_authors_domain_whitelist_strips_non_plaud_ai():
+    """白名单：只 plaud.ai 域名通过，qq.com / kaaaaai.cn 直接剔除。
+
+    抓手：治理 #1077 root@kaaaaai.cn / #1074 727732656@qq.com 等历史 commit
+    被选成 reviewer 但飞书发不出去的问题。
+    """
+    from app.crashguard.services.pr_reviewer import _filter_authors
+    counter = Counter({
+        "alice@plaud.ai": 5,
+        "727732656@qq.com": 8,
+        "root@kaaaaai.cn": 3,
+        "bob@plaud.ai": 2,
+    })
+    out = _filter_authors(
+        counter, blocked=[], top_n=2, min_lines_pct=0.20,
+        allowed_domains=["plaud.ai"],
+    )
+    assert out == [("alice@plaud.ai", 5), ("bob@plaud.ai", 2)]
+
+
+def test_filter_authors_domain_whitelist_case_insensitive():
+    """域名比较应大小写不敏感且支持前缀 @"""
+    from app.crashguard.services.pr_reviewer import _filter_authors
+    counter = Counter({"Alice@Plaud.AI": 5, "spam@QQ.com": 3})
+    out = _filter_authors(
+        counter, blocked=[], top_n=2, min_lines_pct=0.20,
+        allowed_domains=["@plaud.ai"],  # 容忍前导 @
+    )
+    assert out == [("Alice@Plaud.AI", 5)]
+
+
+def test_filter_authors_empty_allowed_domains_means_no_restriction():
+    """allowed_domains=None / [] 时向后兼容旧行为，不做域名过滤"""
+    from app.crashguard.services.pr_reviewer import _filter_authors
+    counter = Counter({"alice@plaud.ai": 5, "bot@qq.com": 3})
+    out_none = _filter_authors(counter, blocked=[], top_n=2, min_lines_pct=0.20)
+    out_empty = _filter_authors(
+        counter, blocked=[], top_n=2, min_lines_pct=0.20, allowed_domains=[],
+    )
+    assert out_none == [("alice@plaud.ai", 5), ("bot@qq.com", 3)]
+    assert out_empty == out_none
+
+
+def test_filter_authors_domain_then_block_combined():
+    """白名单先剔除非 plaud.ai，黑名单再剔除 crashguard-bot"""
+    from app.crashguard.services.pr_reviewer import _filter_authors
+    counter = Counter({
+        "crashguard-bot@plaud.ai": 20,
+        "alice@plaud.ai": 5,
+        "spam@qq.com": 100,
+    })
+    out = _filter_authors(
+        counter,
+        blocked=["crashguard-bot@plaud.ai"],
+        top_n=2, min_lines_pct=0.20,
+        allowed_domains=["plaud.ai"],
+    )
+    assert out == [("alice@plaud.ai", 5)]
+
+
+def test_filter_authors_domain_whitelist_all_filtered_returns_empty():
+    """白名单把所有 author 都过滤光时返回空（外层会用 bot_only 兜底）"""
+    from app.crashguard.services.pr_reviewer import _filter_authors
+    counter = Counter({"a@qq.com": 10, "root@kaaaaai.cn": 5})
+    out = _filter_authors(
+        counter, blocked=[], top_n=2, min_lines_pct=0.20,
+        allowed_domains=["plaud.ai"],
+    )
+    assert out == []
+
+
 def test_resolve_reviewers_by_blame_pr_url_missing():
     from app.crashguard.services.pr_reviewer import resolve_reviewers_by_blame
     settings = MagicMock()

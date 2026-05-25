@@ -111,13 +111,23 @@ def _filter_authors(
     blocked: List[str],
     top_n: int,
     min_lines_pct: float,
+    allowed_domains: Optional[List[str]] = None,
 ) -> List[Tuple[str, int]]:
     """过滤 blocked author + 软占比阈值；按行数降序返回前 top_n。
 
     软门控：min_lines_pct 先做一轮"主推荐"筛选；若主推荐 < top_n，
     则从被门控掉的剩余 non-blocked author 里按行数降序补足 top_n。
     即"必须挑够 top_n 人"，min_lines_pct 只决定排序优先级而非硬上限。
+
+    allowed_domains 非空时只保留域名匹配的 email（白名单先于黑名单）。
+    用于剔除 @qq.com / 外部域名等无法对接飞书的历史 commit author。
     """
+    if allowed_domains:
+        domain_set = {d.lower().strip().lstrip("@") for d in allowed_domains if d}
+        counter = Counter({
+            e: n for e, n in counter.items()
+            if "@" in e and e.rsplit("@", 1)[1].lower().strip() in domain_set
+        })
     blocked_set = {b.lower().strip() for b in blocked}
     filtered = Counter({
         e: n for e, n in counter.items() if e.lower().strip() not in blocked_set
@@ -188,6 +198,7 @@ def resolve_reviewers_by_blame(
         list(settings.pr_reviewer_blocked_authors or []),
         int(settings.pr_reviewer_top_n or 2),
         float(settings.pr_reviewer_min_lines_pct or 0.20),
+        allowed_domains=list(getattr(settings, "pr_reviewer_allowed_email_domains", []) or []),
     )
     if not filtered:
         return ReviewerResolution(reason="bot_only")
