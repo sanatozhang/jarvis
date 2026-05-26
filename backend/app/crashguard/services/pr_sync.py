@@ -511,16 +511,26 @@ async def _try_run_review_responder(
 
     from app.crashguard.services.pr_review_responder import (
         fetch_pr_reviews,
+        fetch_pr_review_comments,
         collect_actionable_reviews,
         dispatch_review_response,
     )
     from app.crashguard.services.pr_reviewer import _resolve_repo_path_for_pr
 
-    # 1. 拉 reviews
-    ok, reviews, err = fetch_pr_reviews(repo_slug, pr_number)
+    # 1. 拉 reviews — 优先行级 review comment（可 reply 到 thread），PR-level review 兜底
+    reviews = []
+    ok_lvl, lvl_items, lvl_err = fetch_pr_review_comments(repo_slug, pr_number)
+    if ok_lvl:
+        reviews.extend(lvl_items)
+    else:
+        logger.info("pr_review_responder fetch_pr_review_comments failed (continue with PR-level): %s", lvl_err)
+    ok, top_items, err = fetch_pr_reviews(repo_slug, pr_number)
     if not ok:
-        logger.info("pr_review_responder fetch_pr_reviews failed: %s", err)
-        return {"ok": False, "stage": "fetch_pr_reviews", "error": err}
+        if not reviews:
+            logger.info("pr_review_responder fetch_pr_reviews failed: %s", err)
+            return {"ok": False, "stage": "fetch_pr_reviews", "error": err}
+    else:
+        reviews.extend(top_items)
 
     # 2. 加载 PR 行 + collect actionable
     async with get_session() as session:

@@ -50,11 +50,17 @@ query($owner: String!, $repo: String!, $number: Int!) {
 
 @dataclass
 class ReviewItem:
-    review_id: str            # PRR_xxx GraphQL global id
+    review_id: str            # PRR_xxx (PR-level review) / REST_C_<id> (行级 review comment)
     author: str               # login 名（小写化对比时）
     state: str                # COMMENTED / CHANGES_REQUESTED / APPROVED / DISMISSED / PENDING
     submitted_at: datetime    # UTC naive
     body: str                 # 完整 review body 文本
+    # 行级 review comment（REST id）— 有值时 reply 挂到该 thread 下；
+    # PR-level review 没有可 reply 的目标，仍用 fallback 顶层 issue comment。
+    source_comment_id: Optional[int] = None
+    # 行级 comment 才有：用于 prompt 上下文显示
+    path: str = ""             # 改动文件路径（如 lib/foo.dart）
+    line: Optional[int] = None # 行号（None 代表 PR-level review）
 
 
 def _parse_iso(s: str) -> Optional[datetime]:
@@ -70,6 +76,65 @@ def _parse_iso(s: str) -> Optional[datetime]:
         return None
 
 
+def fetch_pr_review_comments(
+    repo_slug: str, pr_number: int, timeout: int = 30
+) -> tuple[bool, List[ReviewItem], str]:
+    """拉 PR 的**行级** review comment（绑代码行的，可 reply 到 thread 下面）。
+
+    底层逻辑：crashguard 之前只拉 PR-level review，只能写顶层 issue comment；
+    reviewer 完全感觉不到回应挂在哪。改用行级 comment 后，每条 reply 都能
+    通过 in_reply_to 形成 GH thread——reviewer 在自己评论下看到具体回应。
+
+    返回 (ok, items, error)。每项 source_comment_id 是 REST id，可用于 reply。
+    """
+    if "/" not in repo_slug:
+        return False, [], f"invalid repo_slug: {repo_slug}"
+    import os as _os
+    sub_env = dict(_os.environ)
+    for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+        sub_env.pop(k, None)
+    try:
+        r = subprocess.run(
+            ["gh", "api", f"repos/{repo_slug}/pulls/{pr_number}/comments",
+             "--paginate"],
+            capture_output=True, text=True, timeout=timeout, env=sub_env,
+        )
+        if r.returncode != 0:
+            return False, [], (r.stderr or "").strip()[:300]
+        try:
+            data = json.loads(r.stdout or "[]")
+        except json.JSONDecodeError as e:
+            return False, [], f"json decode failed: {e}"
+        if not isinstance(data, list):
+            return False, [], f"unexpected payload type: {type(data).__name__}"
+        out: List[ReviewItem] = []
+        for c in data:
+            cid = c.get("id")
+            if not cid:
+                continue
+            # 跳过已是 reply 的（in_reply_to_id != null）— 只对原 comment 做 reply
+            if c.get("in_reply_to_id"):
+                continue
+            sat = _parse_iso(c.get("created_at") or "")
+            out.append(ReviewItem(
+                review_id=f"REST_C_{cid}",
+                author=((c.get("user") or {}).get("login") or "").strip(),
+                state="COMMENTED",  # 行级 comment 默认 COMMENTED
+                submitted_at=sat or datetime.utcnow(),
+                body=(c.get("body") or ""),
+                source_comment_id=int(cid),
+                path=(c.get("path") or ""),
+                line=c.get("line") or c.get("original_line"),
+            ))
+        return True, out, ""
+    except subprocess.TimeoutExpired:
+        return False, [], f"gh api timeout after {timeout}s"
+    except FileNotFoundError:
+        return False, [], "gh CLI not installed"
+    except Exception as e:
+        return False, [], f"gh api error: {e}"
+
+
 def fetch_pr_reviews(
     repo_slug: str, pr_number: int, timeout: int = 30
 ) -> tuple[bool, List[ReviewItem], str]:
@@ -77,6 +142,9 @@ def fetch_pr_reviews(
 
     返回 (ok, reviews, error_str)。
     剥 GH_TOKEN/GITHUB_TOKEN 让 gh 走 OAuth（和 pr_drafter / pr_sync 同款）。
+
+    注意：拉的是 PR-level review（整条 review 容器），如需 reply 到具体代码行
+    的 thread，用 fetch_pr_review_comments。两者 actionable 单元都是 ReviewItem。
     """
     if "/" not in repo_slug:
         return False, [], f"invalid repo_slug: {repo_slug}"
@@ -477,18 +545,36 @@ def _read_review_response(repo_path: str) -> tuple[bool, Dict[str, Any], str]:
 
 
 def _post_pr_comment(
-    repo_slug: str, pr_number: int, body: str, timeout: int = 30,
+    repo_slug: str, pr_number: int, body: str,
+    in_reply_to: Optional[int] = None, timeout: int = 30,
 ) -> tuple[bool, str]:
-    """gh pr comment 发评论。剥 GH_TOKEN 走 OAuth。"""
+    """发 PR 评论。剥 GH_TOKEN 走 OAuth。
+
+    in_reply_to 非 None 时走 `gh api POST repos/{slug}/pulls/{n}/comments`
+    with `in_reply_to=<id>`——挂到对应行级 review comment 的 thread 下面，
+    reviewer 在自己评论下能看到回应（这才是真 "reply"）。
+
+    in_reply_to=None 时 fallback 到 `gh pr comment`（写 PR 顶层 issue comment），
+    用于 PR-level review 没有行级 comment 时的兜底。
+    """
     sub_env = dict(os.environ)
     for k in ("GH_TOKEN", "GITHUB_TOKEN"):
         sub_env.pop(k, None)
     try:
-        r = subprocess.run(
-            ["gh", "pr", "comment", str(pr_number),
-             "--repo", repo_slug, "--body", body],
-            capture_output=True, text=True, timeout=timeout, env=sub_env,
-        )
+        if in_reply_to is not None and in_reply_to > 0:
+            r = subprocess.run(
+                ["gh", "api", "-X", "POST",
+                 f"repos/{repo_slug}/pulls/{pr_number}/comments",
+                 "-F", f"in_reply_to={int(in_reply_to)}",
+                 "-f", f"body={body}"],
+                capture_output=True, text=True, timeout=timeout, env=sub_env,
+            )
+        else:
+            r = subprocess.run(
+                ["gh", "pr", "comment", str(pr_number),
+                 "--repo", repo_slug, "--body", body],
+                capture_output=True, text=True, timeout=timeout, env=sub_env,
+            )
         if r.returncode != 0:
             return False, (r.stderr or "").strip()[:300]
         return True, (r.stdout or "").strip()
@@ -496,6 +582,30 @@ def _post_pr_comment(
         return False, f"gh pr comment timeout ({timeout}s)"
     except Exception as e:
         return False, f"gh pr comment error: {e}"
+
+
+def _format_source_review_quote(rv: ReviewItem) -> str:
+    """顶部 quote 块：回应的是哪位 reviewer 的哪条 review。
+
+    抓手：当前 gh pr comment 写到 PR 顶层 issue conversation，无法挂到 review 下面
+    形成 GH thread；treatment A = 在 body 顶部贴 source review 摘要，让读者
+    立即看清"回应的是谁的哪条 review"。截断 200 字避免刷屏。
+    """
+    body = (rv.body or "").strip()
+    if body:
+        if len(body) > 200:
+            body = body[:200].rstrip() + "..."
+        quoted = "\n".join("> " + ln for ln in body.splitlines())
+    else:
+        quoted = "> _(empty review body)_"
+    submitted = rv.submitted_at.strftime("%Y-%m-%d %H:%M UTC") if rv.submitted_at else "?"
+    author = rv.author or "?"
+    state = rv.state or "?"
+    return (
+        f"> 👆 **回应 @{author} 的 review**（{state} · {submitted}）：\n"
+        f"{quoted}\n\n"
+        f"---\n\n"
+    )
 
 
 def _format_response_comment(
@@ -510,6 +620,8 @@ def _format_response_comment(
     quote = data.get("reviewer_quote", "")
     evidence = data.get("evidence_files", []) or []
     iter_count = actionable.iter_count
+
+    source_quote = _format_source_review_quote(actionable.review)
 
     if verdict == "addressed":
         head = (
@@ -535,7 +647,7 @@ def _format_response_comment(
     if evidence:
         body += f"\n**证据文件**: {', '.join(evidence[:5])}\n"
     body += "\n---\n_本评论由 crashguard 自动生成；如有异议请 @ 工程师手动跟进。_"
-    return body
+    return source_quote + body
 
 
 async def _record_iteration(
@@ -654,8 +766,11 @@ async def dispatch_review_response(
 
     # 6. 发 PR 评论
     body_md = _format_response_comment(actionable, data, fix_commit_sha)
+    # 行级 review comment → reply 到 thread；PR-level review → fallback 顶层
+    reply_to = actionable.review.source_comment_id
     ok_comm, comm_err = _post_pr_comment(
         actionable.repo_slug, actionable.pr_number, body_md,
+        in_reply_to=reply_to,
     )
     if not ok_comm:
         logger.warning(

@@ -453,3 +453,192 @@ def test_format_response_comment_three_verdicts():
         "explanation": "ambiguous", "reviewer_quote": "qqq",
     })
     assert "工程师裁决" in c3
+
+
+# ---------- treatment A: source review quote in body ----------
+
+def test_format_response_comment_prepends_source_review_quote():
+    """Treatment A：评论顶部必须带 source review quote，让读者看清回应的是哪条 review。"""
+    rv = _make_review(
+        "PRR_42", "luffyYH",
+        "请检查 line 198 的空指针保护是否完整\n额外提示：还要看 line 201",
+    )
+    a = ActionableReview(
+        pr_id=7, pr_url="https://github.com/x/y/pull/99",
+        repo_slug="x/y", pr_number=99, review=rv, iter_count=1,
+    )
+    c = _format_response_comment(a, {
+        "verdict": "addressed", "confidence": "high",
+        "explanation": "已修复空指针", "reviewer_quote": "line 198",
+    }, fix_commit_sha="deadbeef0123")
+
+    # source quote 必须在 body 最前面（在 robot header 之前）
+    assert c.index("回应 @luffyYH") < c.index("crashguard review-responder"), \
+        "source review quote 应该在 robot header 之前"
+
+    # @ 提到原 reviewer
+    assert "@luffyYH" in c
+    # state + 时间戳出现
+    assert "COMMENTED" in c
+    # 原 review body 摘要（用 markdown quote 形式）
+    assert "> 请检查 line 198" in c
+    # 第二行也带 quote 前缀
+    assert "> 额外提示：还要看 line 201" in c
+    # 仍然保留原有 verdict 内容
+    assert "已修复" in c and "deadbeef01" in c
+
+
+def test_format_source_review_quote_truncates_long_body():
+    """超过 200 字的 review body 应该截断 + 加省略号。"""
+    from app.crashguard.services.pr_review_responder import _format_source_review_quote
+    long_body = "a" * 300
+    rv = _make_review("PRR_1", "alice", long_body)
+    out = _format_source_review_quote(rv)
+    assert "..." in out
+    # 截断到 ~200 字（quote 前缀 + 200 chars body）
+    assert "a" * 300 not in out
+    assert "a" * 200 in out
+
+
+def test_format_source_review_quote_handles_empty_body():
+    """空 body 不能炸；显示占位符。"""
+    from app.crashguard.services.pr_review_responder import _format_source_review_quote
+    rv = _make_review("PRR_1", "bot", "")
+    out = _format_source_review_quote(rv)
+    assert "@bot" in out
+    assert "empty review body" in out
+
+
+# ---------- treatment B: reply to review thread via gh api ----------
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_post_pr_comment_falls_back_to_gh_pr_comment_when_no_reply_target(monkeypatch):
+    """in_reply_to=None 时走 gh pr comment 顶层路径（兼容老链路）。"""
+    from app.crashguard.services import pr_review_responder as prr
+    captured = {}
+
+    def fake_run(args, **kw):
+        captured["args"] = list(args)
+        return _FakeProc(returncode=0, stdout="https://github.com/o/r/pull/1#issuecomment-1")
+
+    monkeypatch.setattr(prr.subprocess, "run", fake_run)
+    ok, out = prr._post_pr_comment("o/r", 1, "hi")
+    assert ok is True
+    assert captured["args"][:3] == ["gh", "pr", "comment"]
+    assert "--body" in captured["args"]
+
+
+def test_post_pr_comment_uses_gh_api_with_in_reply_to(monkeypatch):
+    """in_reply_to 提供时必须走 gh api POST，挂到 thread 下面（治本主路径）。"""
+    from app.crashguard.services import pr_review_responder as prr
+    captured = {}
+
+    def fake_run(args, **kw):
+        captured["args"] = list(args)
+        return _FakeProc(returncode=0, stdout='{"id": 999}')
+
+    monkeypatch.setattr(prr.subprocess, "run", fake_run)
+    ok, out = prr._post_pr_comment("o/r", 42, "thread reply body",
+                                    in_reply_to=3296638067)
+    assert ok is True
+    a = captured["args"]
+    assert a[:4] == ["gh", "api", "-X", "POST"]
+    assert "repos/o/r/pulls/42/comments" in a
+    # in_reply_to 用 -F（gh 转 number）
+    assert "-F" in a
+    idx = a.index("-F")
+    assert a[idx + 1] == "in_reply_to=3296638067"
+    # body 用 -f（string）
+    assert "-f" in a
+
+
+def test_post_pr_comment_in_reply_to_zero_falls_back(monkeypatch):
+    """in_reply_to <=0 等价于 None（防御性兜底）。"""
+    from app.crashguard.services import pr_review_responder as prr
+    captured = {}
+
+    def fake_run(args, **kw):
+        captured["args"] = list(args)
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(prr.subprocess, "run", fake_run)
+    ok, _ = prr._post_pr_comment("o/r", 1, "x", in_reply_to=0)
+    assert ok is True
+    assert captured["args"][:3] == ["gh", "pr", "comment"]
+
+
+def test_fetch_pr_review_comments_skips_replies_and_extracts_fields(monkeypatch):
+    """行级 review comment 解析：skip 已是 reply 的（in_reply_to_id 非空），提取 path/line/source_comment_id。"""
+    from app.crashguard.services import pr_review_responder as prr
+    payload = [
+        {"id": 100, "user": {"login": "Copilot"}, "body": "issue 1",
+         "created_at": "2026-05-25T10:00:00Z",
+         "path": "lib/foo.dart", "line": 198, "original_line": 198,
+         "in_reply_to_id": None},
+        {"id": 200, "user": {"login": "sanatozhang"}, "body": "Accepted",
+         "created_at": "2026-05-25T10:05:00Z",
+         "path": "lib/foo.dart", "line": 198,
+         "in_reply_to_id": 100},  # ← 这条是 reply，应跳过
+        {"id": 300, "user": {"login": "chatgpt-codex-connector"}, "body": "issue 3",
+         "created_at": "2026-05-25T10:10:00Z",
+         "path": "lib/bar.dart", "original_line": 360,
+         "in_reply_to_id": None},
+    ]
+    import json as _json
+
+    def fake_run(args, **kw):
+        return _FakeProc(returncode=0, stdout=_json.dumps(payload))
+
+    monkeypatch.setattr(prr.subprocess, "run", fake_run)
+    ok, items, err = prr.fetch_pr_review_comments("o/r", 1)
+    assert ok is True
+    assert err == ""
+    # 应该剩 2 条（id=100, id=300）
+    ids = sorted(it.source_comment_id for it in items)
+    assert ids == [100, 300]
+    by_id = {it.source_comment_id: it for it in items}
+    assert by_id[100].path == "lib/foo.dart" and by_id[100].line == 198
+    assert by_id[100].review_id == "REST_C_100"
+    assert by_id[300].path == "lib/bar.dart" and by_id[300].line == 360
+    assert by_id[300].author == "chatgpt-codex-connector"
+
+
+def test_fetch_pr_review_comments_handles_empty_and_error(monkeypatch):
+    """空数组 / gh api 失败 / JSON 损坏 都不能炸。"""
+    from app.crashguard.services import pr_review_responder as prr
+
+    # 空数组
+    monkeypatch.setattr(prr.subprocess, "run",
+                        lambda *a, **kw: _FakeProc(returncode=0, stdout="[]"))
+    ok, items, _ = prr.fetch_pr_review_comments("o/r", 1)
+    assert ok is True and items == []
+
+    # gh api 失败
+    monkeypatch.setattr(prr.subprocess, "run",
+                        lambda *a, **kw: _FakeProc(returncode=1, stderr="not found"))
+    ok2, items2, err2 = prr.fetch_pr_review_comments("o/r", 1)
+    assert ok2 is False and "not found" in err2
+
+    # JSON 损坏
+    monkeypatch.setattr(prr.subprocess, "run",
+                        lambda *a, **kw: _FakeProc(returncode=0, stdout="{not-json"))
+    ok3, items3, err3 = prr.fetch_pr_review_comments("o/r", 1)
+    assert ok3 is False and "json" in err3.lower()
+
+
+def test_review_item_default_source_comment_id_is_none():
+    """老 fetch_pr_reviews 走的 PR-level review 没有 source_comment_id（reply 走 fallback）。"""
+    from app.crashguard.services.pr_review_responder import ReviewItem
+    rv = ReviewItem(
+        review_id="PRR_x", author="claude", state="COMMENTED",
+        submitted_at=datetime.utcnow(), body="...",
+    )
+    assert rv.source_comment_id is None
+    assert rv.path == ""
+    assert rv.line is None
