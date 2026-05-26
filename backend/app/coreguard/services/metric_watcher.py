@@ -347,7 +347,7 @@ async def run_all(dry_run: bool = False, now: Optional[datetime] = None,
         "suppressed": len(suppressed),
         "healthy": len(healthy),
         "errored": len(errored),
-        "user_count": user_count,
+        "user_count": global_user_count,  # 保留字段名兼容；语义=全局 session 用户数
         "min_users": min_users,
         "dry_run": dry_run,
         "force_alert": force_alert,
