@@ -509,13 +509,21 @@ async def run_deep_analysis_auto_tick() -> dict:
 
 
 def _cron_matches(expr: str, now: datetime) -> bool:
-    """复用 scheduler.py 的极简 cron 解析（M H * * * 或 */N 形式）。"""
+    """cron 表达式匹配（M H DOM MON DOW）。
+
+    支持：
+      - `*`             任意
+      - `N`             单值
+      - `N-M`           连续 range
+      - `N,M,K`         离散 list
+      - `*/N`           step
+    DOW 约定 Unix cron 标准：Sun=0, Mon=1, ..., Sat=6。
+    Python weekday() 是 Mon=0...Sun=6，转换为 cron dow = (py_weekday + 1) % 7。
+    """
     parts = (expr or "").split()
     if len(parts) != 5:
         return False
     minute_f, hour_f, dom_f, month_f, dow_f = parts
-    if dom_f != "*" or month_f != "*" or dow_f != "*":
-        return False
 
     def field_match(field: str, value: int) -> bool:
         if field == "*":
@@ -526,12 +534,27 @@ def _cron_matches(expr: str, now: datetime) -> bool:
                 return step > 0 and value % step == 0
             except ValueError:
                 return False
+        if "," in field:
+            return any(field_match(f.strip(), value) for f in field.split(","))
+        if "-" in field:
+            try:
+                a, b = field.split("-", 1)
+                return int(a) <= value <= int(b)
+            except ValueError:
+                return False
         try:
             return int(field) == value
         except ValueError:
             return False
 
-    return field_match(minute_f, now.minute) and field_match(hour_f, now.hour)
+    cron_dow = (now.weekday() + 1) % 7
+    return (
+        field_match(minute_f, now.minute)
+        and field_match(hour_f, now.hour)
+        and field_match(dom_f, now.day)
+        and field_match(month_f, now.month)
+        and field_match(dow_f, cron_dow)
+    )
 
 
 async def pipeline_scheduler_loop() -> None:

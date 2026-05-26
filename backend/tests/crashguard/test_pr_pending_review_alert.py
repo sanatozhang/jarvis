@@ -34,6 +34,11 @@ def _make_settings(monkeypatch, **overrides):
         "app.crashguard.config.get_crashguard_settings",
         lambda: s,
     )
+    # 让 weekday() 永远=周二（避免测试在周末跑失败）
+    monkeypatch.setattr(
+        "app.crashguard.services.pr_pending_review_alert._now_local",
+        lambda: datetime(2026, 5, 26, 10, 0),
+    )
     return s
 
 
@@ -49,11 +54,14 @@ def test_build_pending_review_card_groups_by_repo_and_sorts_by_age():
         {"pr_url": "u3", "pr_number": 3, "repo": "ios", "pr_status": "open",
          "reviewer_emails": [], "age_days": 0},
     ]
-    card = build_pending_review_card(prs)
-    assert card["header"]["title"]["content"].startswith("⏰")
-    assert "3 条" in card["header"]["title"]["content"]
-    # 标题反映总数 + template
-    assert card["header"]["template"] in ("blue", "orange", "red")
+    card = build_pending_review_card(prs, stats={
+        "today_merged": 2, "today_closed": 1, "today_created": 4, "total_pending": 3,
+    })
+    # 新标题：日报样式（含 merged/pending 数）
+    title = card["header"]["title"]["content"]
+    assert "日报" in title or "merged" in title.lower()
+    assert "+2 merged" in title and "3 pending" in title
+    assert card["header"]["template"] in ("blue", "orange", "red", "green")
 
     # 全文应该包含 PR# 和 link
     import json as _json
@@ -67,7 +75,7 @@ def test_build_pending_review_card_groups_by_repo_and_sorts_by_age():
     assert "(未指派)" in body
 
 
-def test_build_pending_review_card_template_escalates_with_count():
+def test_build_pending_review_card_template_escalates_with_pending():
     from app.crashguard.services.pr_pending_review_alert import build_pending_review_card
     few = [{"pr_url": "u", "pr_number": i, "repo": "r", "pr_status": "open",
             "reviewer_emails": [], "age_days": 0} for i in range(3)]
@@ -75,9 +83,46 @@ def test_build_pending_review_card_template_escalates_with_count():
                "reviewer_emails": [], "age_days": 0} for i in range(7)]
     many = [{"pr_url": "u", "pr_number": i, "repo": "r", "pr_status": "open",
              "reviewer_emails": [], "age_days": 0} for i in range(12)]
-    assert build_pending_review_card(few)["header"]["template"] == "blue"
-    assert build_pending_review_card(medium)["header"]["template"] == "orange"
-    assert build_pending_review_card(many)["header"]["template"] == "red"
+    base_stats = {"today_merged": 0, "today_closed": 0, "today_created": 0}
+    assert build_pending_review_card(
+        few, stats={**base_stats, "total_pending": 3})["header"]["template"] == "blue"
+    assert build_pending_review_card(
+        medium, stats={**base_stats, "total_pending": 7})["header"]["template"] == "orange"
+    assert build_pending_review_card(
+        many, stats={**base_stats, "total_pending": 12})["header"]["template"] == "red"
+    # green: 今日 merged 多 + pending 少 → 流速好
+    assert build_pending_review_card(
+        few, stats={"today_merged": 5, "today_closed": 0,
+                    "today_created": 0, "total_pending": 3})["header"]["template"] == "green"
+
+
+def test_build_pending_review_card_includes_today_stats():
+    """日报顶部必须含今日 merged/closed/新建 统计行。"""
+    from app.crashguard.services.pr_pending_review_alert import build_pending_review_card
+    import json as _json
+    card = build_pending_review_card(
+        prs=[{"pr_url": "u", "pr_number": 100, "repo": "flutter",
+              "pr_status": "open", "reviewer_emails": [], "age_days": 0}],
+        stats={"today_merged": 3, "today_closed": 1, "today_created": 5, "total_pending": 1},
+    )
+    body = _json.dumps(card, ensure_ascii=False)
+    # 数字必须出现且 label 正确
+    assert "merged" in body.lower()
+    assert "3" in body  # today_merged
+    assert "closed" in body.lower()
+    assert "1" in body
+    assert "新建" in body or "created" in body.lower()
+    assert "5" in body
+
+
+def test_today_utc_window_returns_24h_range():
+    """北京"今日" 应该返回 UTC 24 小时窗口。"""
+    from app.crashguard.services.pr_pending_review_alert import _today_utc_window
+    start, end = _today_utc_window()
+    # 范围正好 24 小时
+    assert (end - start).total_seconds() == 86400
+    # start 在 end 之前
+    assert start < end
 
 
 # ---------- main entry ----------
@@ -101,8 +146,8 @@ async def test_run_alert_no_target_email(patched_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_alert_no_pending_skips_send(patched_session, monkeypatch):
-    """库里没有等 review 的 PR 时不发送、不打扰。"""
+async def test_run_alert_no_pending_no_activity_skips_send(patched_session, monkeypatch):
+    """库里没有等 review 的 PR + 今日也无 merged/closed/created 时不发送、不打扰。"""
     from app.crashguard.services.pr_pending_review_alert import run_pending_review_alert
     _make_settings(monkeypatch)
     send_mock = AsyncMock(return_value=True)
@@ -110,8 +155,39 @@ async def test_run_alert_no_pending_skips_send(patched_session, monkeypatch):
     res = await run_pending_review_alert()
     assert res["pending_count"] == 0
     assert res["sent"] is False
-    assert res["skip_reason"] == "no_pending"
+    assert res["skip_reason"] == "no_pending_no_activity"
     send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_alert_sends_when_today_has_merge_even_if_no_pending(
+    patched_session, monkeypatch
+):
+    """无 pending 但今日有 merged → 仍发日报（让管理者看到流速）。"""
+    from app.crashguard.services.pr_pending_review_alert import run_pending_review_alert
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    _make_settings(monkeypatch)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.services.feishu_cli.send_interactive_card", send_mock)
+
+    async with get_session() as s:
+        # 今日刚 merged 的 PR（没 pending）
+        s.add(CrashPullRequest(
+            analysis_id=1, datadog_issue_id="i1", repo="flutter",
+            pr_number=999, pr_url="https://example.com/999",
+            pr_status="merged",
+            merged_at=datetime.utcnow(),
+            created_at=datetime.utcnow() - timedelta(hours=2),
+        ))
+        await s.commit()
+
+    res = await run_pending_review_alert()
+    assert res["pending_count"] == 0
+    assert res["today_merged"] >= 1
+    assert res["sent"] is True
+    send_mock.assert_called_once()
 
 
 @pytest.mark.asyncio
