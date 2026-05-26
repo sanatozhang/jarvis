@@ -736,6 +736,35 @@ async def get_recent_active_task_for_issue(
         return result.scalar_one_or_none()
 
 
+async def get_recent_timeout_task_for_issue(
+    issue_id: str,
+    within_minutes: int = 10,
+) -> Optional[TaskRecord]:
+    """Return the most recent timeout-failed task for issue_id in last N minutes.
+
+    Reason: 同一条工单（同 prompt 同日志）刚因 task_timeout_exceeded 失败，立刻
+    重跑是确定性会再次超时的浪费 —— 反而把孤儿子进程问题放大。这里把它当成
+    专用 dedup 信号：UI 上立刻再点「重试」会被拒绝，要等冷却期。
+    """
+    from datetime import timedelta
+    from sqlalchemy import select
+    cutoff = datetime.utcnow() - timedelta(minutes=within_minutes)
+    async with get_session() as session:
+        stmt = (
+            select(TaskRecord)
+            .where(
+                TaskRecord.issue_id == issue_id,
+                TaskRecord.status == "failed",
+                TaskRecord.error.like("task_timeout_exceeded%"),
+                TaskRecord.created_at >= cutoff,
+            )
+            .order_by(TaskRecord.created_at.desc())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
 async def create_task(task_id: str, issue_id: str, agent_type: str = "") -> TaskRecord:
     async with get_session() as session:
         record = TaskRecord(

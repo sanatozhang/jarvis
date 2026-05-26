@@ -57,6 +57,28 @@ class ClaudeCodeAgent(BaseAgent):
 
         cli_env = _make_cli_env()
 
+        import time as _time
+        _start_ts = _time.monotonic()
+
+        async def _heartbeat() -> None:
+            # Claude CLI 在 -p 模式不暴露中间进度，wrapper 自己造心跳；让 SSE
+            # 端能看到「还在跑」而不是 60% 卡死错觉。每 15s 打一次。
+            while True:
+                await asyncio.sleep(15)
+                if on_progress is None:
+                    continue
+                elapsed = int(_time.monotonic() - _start_ts)
+                try:
+                    pct = min(85, 60 + elapsed // 30)
+                    await _maybe_await(on_progress(
+                        pct,
+                        f"Claude Code 分析中（已 {elapsed}s / 超时 {self.config.timeout}s）...",
+                    ))
+                except Exception:
+                    pass
+
+        proc: Optional[asyncio.subprocess.Process] = None
+        hb_task: Optional[asyncio.Task] = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -67,10 +89,15 @@ class ClaudeCodeAgent(BaseAgent):
                 env=cli_env,
             )
 
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode("utf-8")),
-                timeout=self.config.timeout,
-            )
+            hb_task = asyncio.create_task(_heartbeat())
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode("utf-8")),
+                    timeout=self.config.timeout,
+                )
+            finally:
+                if hb_task is not None and not hb_task.done():
+                    hb_task.cancel()
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
@@ -145,6 +172,26 @@ class ClaudeCodeAgent(BaseAgent):
             result = self._parse_claude_output(workspace, raw_output)
             result.agent_type = "claude_code"
             return result
+
+        except asyncio.CancelledError:
+            # 外层 pipeline timeout（api/tasks.py:442 asyncio.wait_for）把我们 cancel 了。
+            # 必须主动 kill 子进程，否则它在外层 task 已经标 failed 之后还在跑，
+            # 吃 token / CPU / API quota，是真正的孤儿进程。
+            elapsed = int(_time.monotonic() - _start_ts)
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                    logger.warning(
+                        "Claude Code subprocess killed on outer cancel (pid=%s, elapsed=%ds)",
+                        proc.pid, elapsed,
+                    )
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2)
+                    except asyncio.TimeoutError:
+                        pass
+                except Exception as e:
+                    logger.warning("Failed to kill subprocess on outer cancel: %s", e)
+            raise
 
         except asyncio.TimeoutError:
             logger.error("Claude Code timed out after %ds", self.config.timeout)

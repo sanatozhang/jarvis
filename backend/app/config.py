@@ -184,6 +184,10 @@ class ConcurrencySettings(BaseSettings):
     max_agent_sessions: int = 3
     max_downloads: int = 5
     task_timeout: int = 600
+    # 长日志档（解密后单文件 > task_large_log_bytes）超时放宽到 task_timeout_large。
+    # 应对 fb_26d82348bf 类 case：533k 行 plaud.log 在 600s 内确定性超时 → 重试也超时。
+    task_timeout_large: int = 1200
+    task_large_log_bytes: int = 30 * 1024 * 1024  # 30MB raw / ~80k+ lines
 
 
 class JenkinsServerConfig(BaseSettings):

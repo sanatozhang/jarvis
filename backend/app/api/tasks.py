@@ -62,6 +62,28 @@ async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
                 return _progress_store[recent.id]
             return existing
 
+        # ── Timeout cooldown：同 prompt 同日志刚超时失败，立刻重跑大概率再超时
+        # 并且会把孤儿子进程问题放大。给 10min 冷却，让用户/工程师介入。──
+        recent_timeout = await db.get_recent_timeout_task_for_issue(req.issue_id, within_minutes=10)
+        if recent_timeout:
+            logger.warning(
+                "Timeout cooldown: issue %s recently failed (task=%s) with %s — "
+                "blocking new task to avoid deterministic re-timeout",
+                req.issue_id, recent_timeout.id, recent_timeout.error,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "timeout_cooldown",
+                    "message": (
+                        "该工单 10 分钟内刚因分析超时失败，相同 prompt 立即重跑大概率再超时。"
+                        "请稍后再试，或先调整工程师参数（max_turns / timeout / 工单规则）。"
+                    ),
+                    "last_failed_task": recent_timeout.id,
+                    "last_error": recent_timeout.error,
+                },
+            )
+
     task_id = f"task_{uuid.uuid4().hex[:12]}"
 
     agent_type_str = req.agent_type.value if req.agent_type else ""
@@ -397,6 +419,43 @@ async def fix_false_failures():
 # ---------------------------------------------------------------------------
 # Background task runner
 # ---------------------------------------------------------------------------
+def _resolve_task_timeout(issue_id: str, concurrency_settings) -> int:
+    """选择本任务的 pipeline 超时（s）。
+
+    底层逻辑：fb_26d82348bf 这种 533k 行的解密日志，600s 是确定性不够的。
+    根据 workspace/raw/ 下日志文件大小自动选档：
+      - 任一文件 ≥ task_large_log_bytes  → task_timeout_large (默认 1200s)
+      - 否则                              → task_timeout       (默认 600s)
+    探测失败一律回退到 task_timeout，绝不阻塞主流程。
+    """
+    base = concurrency_settings.task_timeout or 600
+    try:
+        large_bytes = getattr(concurrency_settings, "task_large_log_bytes", 0) or 0
+        large_timeout = getattr(concurrency_settings, "task_timeout_large", 0) or base
+        if large_bytes <= 0 or large_timeout <= base:
+            return base
+
+        from app.config import get_settings as _gs
+        from pathlib import Path
+        workspace_dir = Path(_gs().storage.workspace_dir) / issue_id / "raw"
+        if not workspace_dir.exists():
+            return base
+        for p in workspace_dir.rglob("*"):
+            try:
+                if p.is_file() and p.stat().st_size >= large_bytes:
+                    logger.info(
+                        "Large-log timeout escalation for issue %s: %s = %d bytes ≥ %d → timeout=%ds",
+                        issue_id, p.name, p.stat().st_size, large_bytes, large_timeout,
+                    )
+                    return large_timeout
+            except Exception:
+                continue
+        return base
+    except Exception as e:
+        logger.debug("Timeout resolver fell back to base (%ds): %s", base, e)
+        return base
+
+
 async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None, username: str = "", followup_question: str = ""):
     """Run the full analysis pipeline as a background task."""
     import time as _time
@@ -437,7 +496,8 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
         # stuck L1.5/agent step can't keep a worker slot indefinitely.
         # arq path already has job_timeout in queue.py:WorkerSettings.
         from app.config import get_settings as _get_settings
-        _task_timeout = _get_settings().concurrency.task_timeout or 600
+        _cc = _get_settings().concurrency
+        _task_timeout = _resolve_task_timeout(issue_id, _cc)
         try:
             result = await asyncio.wait_for(
                 run_analysis_pipeline(
