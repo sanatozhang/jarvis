@@ -6,12 +6,18 @@ import {
   fetchCrashJobsStatus,
   fetchCrashJobHeartbeats,
   triggerCrashJobNow,
+  fetchCoreguardJobsStatus,
+  fetchCoreguardJobHeartbeats,
+  triggerCoreguardJobNow,
   fetchAlertChannelsStatus,
   formatSGT,
   type CrashJobStatusItem,
   type CrashJobHeartbeatItem,
   type AlertChannelsStatus,
 } from "@/lib/api";
+
+// 按 item.module 分发到对应模块的 API（隔离合约：coreguard 心跳走自己的 endpoint）
+const _isCoreguard = (it: { module?: string } | undefined) => it?.module === "coreguard";
 import { useT } from "@/lib/i18n";
 
 const D = {
@@ -73,8 +79,14 @@ export default function CrashguardJobsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetchCrashJobsStatus();
-      setItems(r.items);
+      // 并行拉 crashguard + coreguard，coreguard 失败不阻塞主表（容错）
+      const [crashRes, coreRes] = await Promise.all([
+        fetchCrashJobsStatus(),
+        fetchCoreguardJobsStatus().catch(() => ({ items: [] as CrashJobStatusItem[] })),
+      ]);
+      // crashguard 后端没注入 module 字段，前端补默认值方便分发逻辑统一
+      const crashItems = crashRes.items.map((it) => ({ ...it, module: it.module ?? ("crashguard" as const) }));
+      setItems([...crashItems, ...coreRes.items]);
       setError(null);
     } catch (e: any) {
       setError(String(e?.message || e));
@@ -106,6 +118,12 @@ export default function CrashguardJobsPage() {
     };
   }, [load, loadAlertChannels]);
 
+  // 按 item.module 分发到正确模块的 trigger / heartbeats API
+  const _triggerFor = (it: CrashJobStatusItem) =>
+    _isCoreguard(it) ? triggerCoreguardJobNow(it.name) : triggerCrashJobNow(it.name);
+  const _heartbeatsFor = (it: CrashJobStatusItem) =>
+    _isCoreguard(it) ? fetchCoreguardJobHeartbeats(it.name, 50) : fetchCrashJobHeartbeats(it.name, 50);
+
   const runAllUnhealthy = async () => {
     const unhealthy = items.filter((it) => it.health !== "ok");
     if (!unhealthy.length) { setToast("✓ 所有任务状态正常，无需触发"); return; }
@@ -114,8 +132,8 @@ export default function CrashguardJobsPage() {
     for (const it of unhealthy) {
       setRunning((m) => ({ ...m, [it.name]: true }));
       try {
-        const r = await triggerCrashJobNow(it.name);
-        const s = (r.result as any) || {};
+        const r: any = await _triggerFor(it);
+        const s = (r.result as any) || r || {};
         const label = s.skipped ? `skipped` : s.alerted ? `alerted ✅` : s.error ? `error` : "ok";
         results.push(`${it.name} → ${label}`);
       } catch (e: any) {
@@ -130,11 +148,13 @@ export default function CrashguardJobsPage() {
 
   const runNow = async (jobName: string) => {
     if (running[jobName]) return;
+    const it = items.find((x) => x.name === jobName);
+    if (!it) { setToast(`✗ 未知任务 ${jobName}`); return; }
     setRunning((m) => ({ ...m, [jobName]: true }));
     setToast(null);
     try {
-      const r = await triggerCrashJobNow(jobName);
-      const summary = (r.result as any) || {};
+      const r: any = await _triggerFor(it);
+      const summary = (r.result as any) || r || {};
       // 简短摘要：skipped / alerted / ok
       let label = "ok";
       if (summary.skipped) label = `skipped: ${summary.skipped}`;
@@ -150,11 +170,12 @@ export default function CrashguardJobsPage() {
   };
 
   const openHistory = async (jobName: string) => {
+    const it = items.find((x) => x.name === jobName);
     setOpenJob(jobName);
     setHistoryLoading(true);
     setHistory([]);
     try {
-      const r = await fetchCrashJobHeartbeats(jobName, 50);
+      const r = it ? await _heartbeatsFor(it) : await fetchCrashJobHeartbeats(jobName, 50);
       setHistory(r.items);
     } catch (e: any) {
       setError(String(e?.message || e));

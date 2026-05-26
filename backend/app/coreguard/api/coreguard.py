@@ -90,37 +90,247 @@ async def reload_config() -> Dict[str, Any]:
     return {"ok": True, "total": len(cfg.metrics), "alertable": len(cfg.alertable())}
 
 
-@router.post("/jobs/trigger")
-async def trigger_job(job: str = Query("coreguard_hourly_watch")) -> Dict[str, Any]:
-    """手动触发一次调度 job — 等价 cron 跑一次（写 heartbeat + 真发 email）。"""
-    if job == "coreguard_hourly_watch":
-        from app.coreguard.workers.scheduler import _run_hourly_watch_once
-        await _run_hourly_watch_once()
-        return {"ok": True, "job": job}
-    return {"ok": False, "reason": f"unknown job: {job}"}
+# ---------------------------------------------------------------------------
+# Jobs status — crashguard 兼容 shape，让前端 /crashguard/jobs 页能聚合显示
+# ---------------------------------------------------------------------------
+# 隔离合约：coreguard 拷贝 cron 解析助手而不是 import crashguard，保持模块独立。
+_COREGUARD_JOB_META: List[Dict[str, str]] = [
+    {
+        "name": "coreguard_hourly_watch",
+        "cron_field": "hourly_watch_cron",
+        "label": "Coreguard 小时监控",
+        "desc": "22 个核心指标 SHoW 对比，breach 走飞书/邮件告警",
+        "enabled_field": "scheduler_enabled",
+    },
+]
+
+
+def _coreguard_next_fire_time(cron_expr: str, now_dt) -> Optional[str]:
+    """对极简 cron 算下一个触发时刻。仅支持 `M H * * *` 或 `*/N`。"""
+    from datetime import datetime, timedelta
+    parts = (cron_expr or "").split()
+    if len(parts) != 5:
+        return None
+    minute_f, hour_f, dom_f, month_f, dow_f = parts
+    if dom_f != "*" or month_f != "*" or dow_f != "*":
+        return None
+
+    def _step(f: str) -> Optional[int]:
+        if f.startswith("*/"):
+            try:
+                return int(f[2:])
+            except ValueError:
+                return None
+        return None
+
+    def _fixed(f: str) -> Optional[int]:
+        if f == "*":
+            return None
+        try:
+            return int(f)
+        except ValueError:
+            return None
+
+    cur = (now_dt or datetime.now()).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    for _ in range(60 * 24 + 60):
+        m_ok = (minute_f == "*"
+                or (_step(minute_f) is not None and cur.minute % _step(minute_f) == 0)
+                or (_fixed(minute_f) is not None and cur.minute == _fixed(minute_f)))
+        h_ok = (hour_f == "*"
+                or (_step(hour_f) is not None and cur.hour % _step(hour_f) == 0)
+                or (_fixed(hour_f) is not None and cur.hour == _fixed(hour_f)))
+        if m_ok and h_ok:
+            return cur.isoformat()
+        cur += timedelta(minutes=1)
+    return None
+
+
+def _coreguard_interval_minutes_from_cron(cron_expr: str) -> Optional[int]:
+    """从极简 cron 推算"两次触发预期间隔分钟数"，用于 stale 判定。"""
+    parts = (cron_expr or "").split()
+    if len(parts) != 5:
+        return None
+    minute_f, hour_f, *_ = parts
+    if minute_f.startswith("*/"):
+        try:
+            return max(1, int(minute_f[2:]))
+        except ValueError:
+            return None
+    if hour_f.startswith("*/"):
+        try:
+            return max(1, int(hour_f[2:]) * 60)
+        except ValueError:
+            return None
+    # M H * * *：固定分钟 + 固定小时 → 一天一次（1440min）
+    if minute_f != "*" and hour_f != "*":
+        return 24 * 60
+    # M * * * *：每小时固定第 M 分钟 → 60min
+    if minute_f != "*" and hour_f == "*":
+        return 60
+    return None
 
 
 @router.get("/jobs/status")
-async def jobs_status(limit: int = Query(10, ge=1, le=50)) -> Dict[str, Any]:
-    """查 scheduler 心跳 — 最近 N 次每个 job 的执行状态。"""
+async def jobs_status() -> Dict[str, Any]:
+    """所有 coreguard 定时任务的 cron + 上次心跳 + 健康度判定。
+
+    Shape 与 `/api/crash/jobs/status` 一致（items 列表，每项含 cron / health 等），
+    便于前端 `/crashguard/jobs` 页统一聚合渲染。
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import desc
     from app.coreguard.models import CoreguardJobHeartbeat
-    out: Dict[str, Any] = {"jobs": {}}
+    import json as _json
+
+    s = get_coreguard_settings()
+    now = datetime.now()
+    now_utc = datetime.utcnow()
+
+    items: List[Dict[str, Any]] = []
+    async with get_session() as session:
+        for meta in _COREGUARD_JOB_META:
+            jn = meta["name"]
+            cron_expr = getattr(s, meta["cron_field"], "") if meta["cron_field"] else ""
+            enabled_flag = (
+                bool(getattr(s, meta["enabled_field"], True))
+                if meta["enabled_field"] else True
+            )
+
+            last_row = (await session.execute(
+                select(CoreguardJobHeartbeat)
+                .where(CoreguardJobHeartbeat.job_name == jn)
+                .order_by(desc(CoreguardJobHeartbeat.fired_at))
+                .limit(1)
+            )).scalars().first()
+            # 兼容历史心跳：早期 coreguard 用 "ok"，对齐后用 "success"。
+            # 两个都识别为成功，避免老数据被误判 stale。
+            last_success_row = (await session.execute(
+                select(CoreguardJobHeartbeat)
+                .where(
+                    CoreguardJobHeartbeat.job_name == jn,
+                    CoreguardJobHeartbeat.status.in_(["success", "ok"]),
+                )
+                .order_by(desc(CoreguardJobHeartbeat.fired_at))
+                .limit(1)
+            )).scalars().first()
+            recent = (await session.execute(
+                select(CoreguardJobHeartbeat)
+                .where(CoreguardJobHeartbeat.job_name == jn)
+                .order_by(desc(CoreguardJobHeartbeat.fired_at))
+                .limit(50)
+            )).scalars().all()
+            fail_count_50 = sum(1 for r in recent if r.status == "failed")
+            # 历史心跳 "partial" 等价 crashguard "degraded"，对齐后都用 "degraded"
+            degraded_count_50 = sum(1 for r in recent if r.status in ("degraded", "partial"))
+            consecutive_failures = 0
+            for r in recent:
+                if r.status == "failed":
+                    consecutive_failures += 1
+                else:
+                    break
+            consecutive_unhealthy = 0
+            for r in recent:
+                if r.status in ("degraded", "partial", "failed"):
+                    consecutive_unhealthy += 1
+                else:
+                    break
+
+            interval_minutes = _coreguard_interval_minutes_from_cron(cron_expr)
+            stale = False
+            if interval_minutes and last_success_row is not None and last_success_row.fired_at:
+                age_minutes = (now_utc - last_success_row.fired_at).total_seconds() / 60.0
+                if age_minutes > 2 * interval_minutes:
+                    stale = True
+            elif interval_minutes and last_success_row is None and last_row is not None:
+                stale = True
+
+            last_summary: Dict[str, Any] = {}
+            if last_row and last_row.summary:
+                try:
+                    last_summary = _json.loads(last_row.summary or "{}")
+                except Exception:
+                    last_summary = {}
+
+            items.append({
+                "name": jn,
+                "label": meta["label"],
+                "desc": meta["desc"],
+                "cron": cron_expr,
+                "enabled": enabled_flag,
+                "interval_minutes": interval_minutes,
+                "next_fire_at": _coreguard_next_fire_time(cron_expr, now) if cron_expr else None,
+                "last_fired_at": last_row.fired_at.isoformat() if last_row and last_row.fired_at else None,
+                "last_status": last_row.status if last_row else None,
+                "last_duration_ms": int(last_row.duration_ms or 0) if last_row else 0,
+                "last_error": (last_row.error or "")[:300] if last_row else "",
+                "last_summary": last_summary,
+                "last_success_at": (
+                    last_success_row.fired_at.isoformat()
+                    if last_success_row and last_success_row.fired_at else None
+                ),
+                "fail_count_in_recent_50": fail_count_50,
+                "degraded_count_in_recent_50": degraded_count_50,
+                "consecutive_failures": consecutive_failures,
+                "consecutive_unhealthy": consecutive_unhealthy,
+                "stale": stale,
+                "health": (
+                    "stale" if stale
+                    else "failing" if consecutive_failures >= 3
+                    else "failing" if consecutive_unhealthy >= 6
+                    else "degraded" if (fail_count_50 + degraded_count_50) >= 10
+                    else "ok"
+                ),
+                # 前端按这个字段分发 trigger / heartbeats 调用到正确模块
+                "module": "coreguard",
+            })
+
+    return {
+        "items": items,
+        "server_time_local": now.isoformat(),
+        "server_time_utc": now_utc.isoformat(),
+    }
+
+
+@router.get("/jobs/{job_name}/heartbeats")
+async def job_heartbeats(job_name: str, limit: int = Query(50, ge=1, le=200)) -> Dict[str, Any]:
+    """单个 job 的最近 N 次心跳历史。"""
+    from sqlalchemy import desc
+    from app.coreguard.models import CoreguardJobHeartbeat
+
+    items: List[Dict[str, Any]] = []
     async with get_session() as session:
         rows = (await session.execute(
-            select(CoreguardJobHeartbeat).order_by(CoreguardJobHeartbeat.fired_at.desc()).limit(limit * 5)
+            select(CoreguardJobHeartbeat)
+            .where(CoreguardJobHeartbeat.job_name == job_name)
+            .order_by(desc(CoreguardJobHeartbeat.fired_at))
+            .limit(limit)
         )).scalars().all()
-    by_job: Dict[str, List[Dict[str, Any]]] = {}
-    for r in rows:
-        by_job.setdefault(r.job_name, []).append({
-            "fired_at": r.fired_at.isoformat() if r.fired_at else None,
-            "status": r.status,
-            "duration_ms": r.duration_ms,
-            "summary": r.summary,
-            "error": r.error or None,
-        })
-    for job, items in by_job.items():
-        out["jobs"][job] = items[:limit]
-    return out
+        for r in rows:
+            items.append({
+                "fired_at": r.fired_at.isoformat() if r.fired_at else None,
+                "status": r.status,
+                "duration_ms": int(r.duration_ms or 0),
+                "summary": r.summary or "",
+                "error": (r.error or "")[:500],
+            })
+    return {"job_name": job_name, "items": items}
+
+
+@router.post("/jobs/{job_name}/run-now")
+async def run_job_now(job_name: str) -> Dict[str, Any]:
+    """手动触发一次 job — 写心跳 + 真实业务效果（同 cron 路径）。"""
+    if job_name == "coreguard_hourly_watch":
+        from app.coreguard.workers.scheduler import _run_hourly_watch_once
+        await _run_hourly_watch_once()
+        return {"ok": True, "job": job_name}
+    return {"ok": False, "reason": f"unknown coreguard job: {job_name}"}
+
+
+# 保留旧 trigger endpoint 一段时间做向后兼容（无外部消费者，下个 sprint 可删）
+@router.post("/jobs/trigger")
+async def trigger_job(job: str = Query("coreguard_hourly_watch")) -> Dict[str, Any]:
+    """[Deprecated] 改用 POST /jobs/{job_name}/run-now。"""
+    return await run_job_now(job)
 
 
 @router.get("/snapshots")

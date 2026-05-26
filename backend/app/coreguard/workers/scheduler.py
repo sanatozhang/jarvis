@@ -76,7 +76,9 @@ async def _write_heartbeat(job_name: str, status: str, duration_ms: int,
 async def _run_hourly_watch_once() -> None:
     """跑一次 hourly_watch（含写心跳）。"""
     start = time.monotonic()
-    status = "ok"
+    # 对齐 crashguard 三态契约（success / degraded / failed）—— 之前写的是 "ok"/"partial"，
+    # 导致 jobs_status 的 last_success_row 查询命不中（按 "success" 过滤），误判 stale。
+    status = "success"
     error = None
     summary: dict = {}
     try:
@@ -91,7 +93,7 @@ async def _run_hourly_watch_once() -> None:
             "alert_sent": result.get("alert_sent"),
         }
         if result.get("errored", 0) > 0:
-            status = "partial"
+            status = "degraded"
     except Exception as e:
         status = "failed"
         error = repr(e)[:500]

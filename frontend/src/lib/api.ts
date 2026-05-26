@@ -1442,6 +1442,9 @@ export interface CrashJobStatusItem {
   consecutive_failures: number;
   stale: boolean;
   health: "ok" | "degraded" | "failing" | "stale";
+  // 模块归属 — 前端按这个字段分发 trigger / heartbeats 调用到正确后端 API。
+  // crashguard 自家任务该字段缺省（向后兼容），coreguard 任务由后端注入 "coreguard"。
+  module?: "crashguard" | "coreguard";
 }
 
 export const fetchCrashJobsStatus = () =>
@@ -1450,6 +1453,25 @@ export const fetchCrashJobsStatus = () =>
     server_time_local: string;
     server_time_utc: string;
   }>("/crash/jobs/status");
+
+// Coreguard 心跳走独立 API（隔离合约），shape 已经在后端对齐 crashguard。
+export const fetchCoreguardJobsStatus = () =>
+  request<{
+    items: CrashJobStatusItem[];
+    server_time_local: string;
+    server_time_utc: string;
+  }>("/coreguard/jobs/status");
+
+export const fetchCoreguardJobHeartbeats = (jobName: string, limit = 50) =>
+  request<{ job_name: string; items: CrashJobHeartbeatItem[] }>(
+    `/coreguard/jobs/${encodeURIComponent(jobName)}/heartbeats?limit=${limit}`,
+  );
+
+export const triggerCoreguardJobNow = (jobName: string) =>
+  request<{ ok: boolean; job?: string; reason?: string }>(
+    `/coreguard/jobs/${encodeURIComponent(jobName)}/run-now`,
+    { method: "POST", body: "{}" },
+  );
 
 export interface CrashJobHeartbeatItem {
   id: number;
