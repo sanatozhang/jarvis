@@ -180,6 +180,23 @@ async def lifespan(app: FastAPI):
         logger.info("crashguard warmup scheduled (60s after startup)")
     crashguard_pipeline_task = asyncio.create_task(pipeline_scheduler_loop())
 
+    # Coreguard 每小时 :15 SHoW 对比 22 指标（独立子模块，无 import 耦合）
+    # 治本：FastAPI 0.93+ lifespan 与 @app.on_event("startup") 互斥，老 on_event 装饰器
+    # 被静默忽略。必须挂到 lifespan 内才会真启动（2026-05-26 修复）。
+    coreguard_scheduler_task = None
+    try:
+        from app.coreguard.config import get_coreguard_settings
+        _cog = get_coreguard_settings()
+        if _cog.enabled and _cog.scheduler_enabled:
+            from app.coreguard.workers.scheduler import scheduler_loop as _coreguard_loop
+            coreguard_scheduler_task = asyncio.create_task(_coreguard_loop())
+            logger.info("coreguard scheduler started (cron=%s)", _cog.hourly_watch_cron)
+        else:
+            logger.info("coreguard scheduler disabled (enabled=%s scheduler_enabled=%s)",
+                        _cog.enabled, _cog.scheduler_enabled)
+    except Exception as e:
+        logger.warning("coreguard scheduler start failed (non-fatal): %s", e)
+
     # Daily escalation reminder (09:00 Asia/Shanghai) — gated by ENABLE_ONCALL_NOTIFY
     import os
     reminder_task = None
@@ -284,21 +301,9 @@ from app.coreguard.api import coreguard as _coreguard_api  # noqa: E402
 app.include_router(_coreguard_api.router)
 
 
-# Coreguard scheduler 启动 hook（在 lifespan 之外用 startup event）
-@app.on_event("startup")
-async def _start_coreguard_scheduler():
-    try:
-        from app.coreguard.config import get_coreguard_settings
-        s = get_coreguard_settings()
-        if not s.enabled or not s.scheduler_enabled:
-            logger.info("coreguard scheduler disabled (enabled=%s, scheduler_enabled=%s)",
-                        s.enabled, s.scheduler_enabled)
-            return
-        from app.coreguard.workers.scheduler import scheduler_loop
-        asyncio.create_task(scheduler_loop())
-        logger.info("coreguard scheduler started")
-    except Exception as e:
-        logger.exception("coreguard scheduler failed to start: %s", e)
+# Coreguard scheduler 已挂到 lifespan 函数内（main.py:182+）。
+# 这里之前的 @app.on_event("startup") 装饰器在 FastAPI 0.93+ 用 lifespan 后被静默忽略，
+# 是 2026-05-26 早报缺失业务指标的根因——已移除，避免后续误以为还能用。
 
 
 # ---------------------------------------------------------------------------
