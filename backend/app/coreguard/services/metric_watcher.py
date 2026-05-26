@@ -53,8 +53,32 @@ class MetricResult:
 
 
 def _judge(cfg: MetricConfig, cur: Optional[float], base: Optional[float]) -> tuple[bool, Optional[float]]:
-    """单点判定：breached + change（按 value_type）。支持方向 down_is_bad / up_is_bad / both。"""
-    if cur is None or base is None:
+    """单点判定：breached + change（按 value_type）。
+
+    支持 4 种 value_type：
+      - percent_pp        : SHoW 绝对百分点差 cur-base 与 threshold.pp 比
+      - latency_pct       : SHoW 相对比例 (cur-base)/base 与 threshold.pct 比
+      - count_pct         : 同 latency_pct
+      - absolute_threshold: 不走 SHoW，cur 直接与 threshold.red 比（用于
+                            dashboard 已定义业务红线的指标如 Hang Rate / ANR）
+    """
+    if cur is None:
+        return False, None
+
+    if cfg.value_type == "absolute_threshold":
+        red = cfg.threshold.get("red")
+        if red is None:
+            return False, None
+        red = float(red)
+        change = cur - red  # change = 超出红线多少（正=已越红线）
+        if cfg.direction == "up_is_bad":
+            return cur >= red, change
+        if cfg.direction == "down_is_bad":
+            return cur <= red, change
+        return abs(change) >= 0, change
+
+    # 以下走 SHoW 对比，需要 base
+    if base is None:
         return False, None
     if cfg.value_type == "percent_pp":
         change = cur - base
@@ -68,7 +92,6 @@ def _judge(cfg: MetricConfig, cur: Optional[float], base: Optional[float]) -> tu
         return change <= -thresh, change
     if cfg.direction == "up_is_bad":
         return change >= thresh, change
-    # both: 绝对值任一方向超阈即触发（如 API 请求量 暴涨/暴跌都报）
     return abs(change) >= thresh, change
 
 
@@ -80,19 +103,17 @@ async def _scalar_safe(queries, formula, s_ms, e_ms) -> Optional[float]:
         return None
 
 
-async def _user_count_safe(s_ms: int, e_ms: int) -> int:
-    """拉取窗口内 distinct @usr.id 数（cardinality）。
+_GLOBAL_SESSION_FILTER = "@type:session @session.type:user"
 
-    实测 2026-05-25 填充率 92.7%，远高于历史"data hole"假设。
-    与 crashguard.datadog_client._USER_TOTAL_FILTER 同口径。
-    失败回 0（保守，等价于"样本不足"→ 触发 min_users 兜底，不发飞书）。
-    """
+
+async def _query_distinct_users(search_filter: str, s_ms: int, e_ms: int) -> int:
+    """通用：用 search filter 跑 cardinality(@usr.id)。失败回 0（保守 → 触发 gate）。"""
     try:
         v = await query_scalar(
             queries=[{
                 "name": "u",
                 "data_source": "rum",
-                "search": {"query": "@type:session @session.type:user"},
+                "search": {"query": search_filter},
                 "indexes": ["*"],
                 "compute": {"aggregation": "cardinality", "metric": "@usr.id"},
                 "group_by": [],
@@ -102,8 +123,53 @@ async def _user_count_safe(s_ms: int, e_ms: int) -> int:
         )
         return int(v or 0)
     except Exception as e:
-        logger.warning("user_count scalar failed: %s", e)
+        logger.warning("user_count scalar failed for filter=%r: %s", search_filter, e)
         return 0
+
+
+async def _user_count_safe(s_ms: int, e_ms: int) -> int:
+    """[兼容] 全局 session 用户数。新代码请用 _metric_user_count。"""
+    return await _query_distinct_users(_GLOBAL_SESSION_FILTER, s_ms, e_ms)
+
+
+def _strip_template_vars(q: str) -> str:
+    """剔除 dashboard template vars（$os_name / $version），scalar API 不识别。"""
+    if not q:
+        return ""
+    return q.replace("$os_name", "").replace("$version", "").strip()
+
+
+async def _metric_user_count(cfg: MetricConfig, s_ms: int, e_ms: int,
+                              cache: Dict[str, int]) -> Optional[int]:
+    """按 metric 自身 queries 的 search filter 求 distinct user_count，取 MAX（代表真实人群）。
+
+    Args:
+        cfg: 单个 MetricConfig
+        s_ms, e_ms: 窗口时间戳（ms）
+        cache: 同窗口内的 filter→count 缓存（多个 metric 共享相同 filter 时复用）
+
+    Returns:
+        - RUM 类型：MAX(各 query 的 cardinality(@usr.id))
+        - metrics 类型（ANR/Hang/Memory/Refresh）：None，调用方应回落到全局 user_count
+    """
+    if not cfg.queries:
+        return None
+    ds = (cfg.queries[0].get("data_source") or "metrics").lower()
+    if ds != "rum":
+        return None  # metrics 类型无法 cardinality，调用方决策回落
+
+    counts: List[int] = []
+    for q in cfg.queries:
+        f = _strip_template_vars((q.get("search") or {}).get("query") or "")
+        if not f:
+            continue
+        if f in cache:
+            counts.append(cache[f])
+            continue
+        c = await _query_distinct_users(f, s_ms, e_ms)
+        cache[f] = c
+        counts.append(c)
+    return max(counts) if counts else None
 
 
 async def _was_breached_in_prev_window(metric_key: str, cur_start: datetime) -> bool:
@@ -215,19 +281,29 @@ async def run_all(dry_run: bool = False, now: Optional[datetime] = None,
     logger.info("metric_watcher.run_all: total=%d targets=%d dry_run=%s force=%s",
                 len(cfg.metrics), len(targets), dry_run, force_alert)
 
-    # 全指标共享一次 user_count 查询（cardinality(@usr.id)）做样本量兜底
-    user_count = await _user_count_safe(dm.to_ms(cur_start), dm.to_ms(cur_end))
-    logger.info("metric_watcher: distinct user_count=%d (min_users gate=%d)", user_count, min_users)
+    s_ms, e_ms = dm.to_ms(cur_start), dm.to_ms(cur_end)
+    # 全局 session 用户数：metrics-type 指标（ANR/Hang/Memory/Refresh）回落用
+    global_user_count = await _query_distinct_users(_GLOBAL_SESSION_FILTER, s_ms, e_ms)
+    logger.info("metric_watcher: global session user_count=%d", global_user_count)
+
+    # per-metric user_count 缓存（同窗口内同 filter 复用，避免 N+1）
+    user_count_cache: Dict[str, int] = {_GLOBAL_SESSION_FILTER: global_user_count}
 
     # 串行跑（避免一次性并发 22 个 datadog 请求被限流；可后续调成 gather 分批）
     results: List[MetricResult] = []
     for c in targets:
         r = await evaluate_one(c, cur_start, cur_end, base_start, base_end)
-        r.sessions_count = user_count  # 复用字段，颗粒度上 user_count 比 sessions 更准
-        # Gate A: 样本量地板
-        if r.breached and user_count < min_users:
+        # per-metric user_count（rum）or 回落到全局（metrics 类型）
+        muc = await _metric_user_count(c, s_ms, e_ms, user_count_cache)
+        if muc is None:
+            muc = global_user_count  # metrics 类型回落
+        r.sessions_count = muc       # 颗粒度对齐：这个 metric 真实人群
+        # 每指标 effective_min_users = override > global
+        effective_min = int(c.min_users) if c.min_users is not None else min_users
+        # Gate A: 样本量地板（per-metric）
+        if r.breached and muc < effective_min:
             r.alertable = False
-            r.skip_reason = f"min_users 兜底 ({user_count} < {min_users})"
+            r.skip_reason = f"min_users 兜底 ({muc} < {effective_min}, metric 口径)"
         # Gate B: P1 N=2 防抖（P0 不走防抖立即报）
         elif r.breached and r.tier == "P1" and p1_n >= 2:
             prev_breached = await _was_breached_in_prev_window(r.key, cur_start)

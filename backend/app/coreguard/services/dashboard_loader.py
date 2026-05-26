@@ -33,6 +33,10 @@ class MetricConfig:
     threshold: Dict[str, float]    # {"pp": 0.5} 或 {"pct": 0.20}
     alert_enabled: bool
 
+    # 单指标 min_users override（None = 用 tier 级全局 settings.min_users）
+    # 仅用于"小流量噪声大"的指标（音频导入 / AI 转写 / 云上传等）— v3 2026-05-26
+    min_users: Optional[int] = None
+
     # 由 dashboard JSON 注入（启动时一次性）
     queries: Optional[List[Dict[str, Any]]] = None
     formula: Optional[str] = None
@@ -116,6 +120,7 @@ async def load_metrics_config() -> MetricsConfig:
                 direction=m.get("direction", "down_is_bad"),
                 threshold=m.get("threshold", {}),
                 alert_enabled=bool(m.get("alert_enabled", False)),
+                min_users=(int(m["min_users"]) if m.get("min_users") is not None else None),
             )
             for m in raw.get("metrics", [])
         ],

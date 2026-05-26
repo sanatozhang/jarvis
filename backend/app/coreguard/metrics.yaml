@@ -21,7 +21,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 1.0 }
+    threshold: { pp: 0.5 }   # v3 2026-05-26: 1.0pp → 0.5pp（实测 60d worst drop -0.66pp 抓得到）
     alert_enabled: true
 
   - key: crash_free_users
@@ -31,7 +31,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 1.0 }
+    threshold: { pp: 0.3 }   # v3 2026-05-26: 1.0pp → 0.3pp（实测 60d worst drop -0.37pp）
     alert_enabled: true
 
   - key: android_anr
@@ -39,9 +39,9 @@ metrics:
     widget_id: 2
     widget_type: query_value
     tier: P0
-    value_type: percent_pp
-    direction: up_is_bad
-    threshold: { pp: 1.0 }
+    value_type: percent_pp          # v4 2026-05-26 修正：dashboard red 0.47% 是 Google Play 合规线
+    direction: up_is_bad            # 不是小时级告警线 → 回退 SHoW + 放宽阈值
+    threshold: { pp: 3.0 }          # 1.0 → 2.0 → 3.0（ANR 自然抖动 1-3%）
     alert_enabled: true
 
   - key: hang_rate
@@ -49,9 +49,9 @@ metrics:
     widget_id: 3
     widget_type: query_value
     tier: P0
-    value_type: latency_pct
+    value_type: absolute_threshold   # v4 2026-05-26: SHoW → 绝对阈值（ns/h 单位，SHoW 抖动太大）
     direction: up_is_bad
-    threshold: { pct: 0.5 }
+    threshold: { red: 1200000000 }   # dashboard red line: 12 亿 ns/h
     alert_enabled: true
 
   - key: memory_usage
@@ -151,7 +151,8 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 1.0 }
+    threshold: { pp: 3.0 }   # v2 2026-05-26: 1.0pp → 3.0pp（小流量噪声）
+    min_users: 500
     alert_enabled: true
 
   - key: cloud_download_success_rate
@@ -181,8 +182,11 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 1.0 }
-    alert_enabled: true
+    threshold: { pp: 3.0 }
+    min_users: 500
+    # v4 2026-05-26: 移出核心指标 —— metric 真实人群 19-84，不适合做 SHoW 告警
+    # 真实业务问题应通过 dashboard 人工观察或单独 anomaly detection 处理
+    alert_enabled: false
 
   - key: audio_decode_success_rate
     title: "音频解码成功率"
@@ -361,7 +365,8 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.20 }
+    threshold: { pct: 0.30 }  # v2 2026-05-26: 0.20 → 0.30（N=2 后仍 8% breach）
+    min_users: 500
     alert_enabled: true
 
   - key: api_request_volume
@@ -392,7 +397,7 @@ metrics:
     value_type: percent_pp
     direction: down_is_bad
     threshold: { pp: 1.0 }
-    alert_enabled: true
+    alert_enabled: false   # v3 2026-05-26: dashboard 公式漏 *100，恒=100.000；待 dashboard owner 修后再开
 
   - key: ai_task_transcribe_success_rate
     title: "AI任务-转写成功率"
@@ -401,7 +406,8 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 1.0 }
+    threshold: { pp: 3.0 }   # v2 2026-05-26: 1.0pp → 3.0pp
+    min_users: 500
     alert_enabled: true
 
   - key: ai_task_add_note_success_rate
@@ -431,8 +437,9 @@ metrics:
     tier: P1
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 1.0 }
-    alert_enabled: true
+    threshold: { pp: 2.0 }
+    # v4 2026-05-26: 移出核心指标 —— metric 真实人群 1-50，样本太小无法做 SHoW 告警
+    alert_enabled: false
 
   - key: audio_upload_cloud_duration
     title: "Audio Upload Cloud Duration (s) - P50 / P75 / P95"
