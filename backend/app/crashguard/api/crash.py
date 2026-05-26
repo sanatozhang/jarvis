@@ -2282,11 +2282,10 @@ async def audit_cleanup(req: AuditCleanupRequest) -> Dict[str, Any]:
 # === Job Heartbeats / Cron 任务观测 ===
 
 # job_name → (cron 配置字段名, 显示名, 任务说明)
+# 监控页可见任务清单 —— evening_daily / core_metric 已下线信号通道（前者由
+# hourly_alert + core_metric 替代，后者迁移到 coreguard_hourly_watch），从这里
+# 移除避免运营误以为还在跑。scheduler 本身不动（kill switch 已经把它们关了）。
 _JOB_META: List[Dict[str, str]] = [
-    {"name": "core_metric", "cron_field": "core_metric_cron",
-     "label": "核心指标告警",
-     "desc": "10min crash-free sessions % vs 前 1h 加权均值",
-     "enabled_field": "core_metric_enabled"},
     {"name": "hourly_alert", "cron_field": "hourly_alert_cron",
      "label": "小时级告警 (SHoW-3h)",
      "desc": "单 issue 突增/新增告警，每 3h 第 5min 触发",
@@ -2303,10 +2302,6 @@ _JOB_META: List[Dict[str, str]] = [
     {"name": "morning_daily", "cron_field": "morning_cron",
      "label": "日报 (07:00)",
      "desc": "昨日 24h 总览，SHoW-24h 基线",
-     "enabled_field": "feishu_enabled"},
-    {"name": "evening_daily", "cron_field": "evening_cron",
-     "label": "速报 (17:00)",
-     "desc": "日内 N 小时增量，SHoW-Nh 基线",
      "enabled_field": "feishu_enabled"},
     {"name": "warmup", "cron_field": "",
      "label": "启动 warmup",
