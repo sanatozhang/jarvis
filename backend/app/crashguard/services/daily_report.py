@@ -2061,6 +2061,18 @@ async def send_daily_report(
     except Exception:
         logger.exception("auto-analyze attention dispatch failed (non-fatal)")
 
+    # ── coreguard 业务健康度板块（2026-05-26 统一品牌「核心指标」）──
+    # 跨模块：crashguard 调用 coreguard 提供的只读 daily_section.build_morning_section()，
+    # 仅传 dict 字符串，coreguard 不引 crashguard import（保 ADR-0001 隔离方向）。
+    coreguard_section = None
+    if report_type == "morning":
+        try:
+            from app.coreguard.services.daily_section import build_morning_section
+            coreguard_section = await build_morning_section(target_date)
+        except Exception:
+            logger.exception("coreguard daily_section 拼装失败（non-fatal，跳过该板块）")
+            coreguard_section = None
+
     # 优先用飞书 interactive card；失败回退到 text
     sent = False
     try:
@@ -2072,6 +2084,7 @@ async def send_daily_report(
             markdown=text,
             payload=payload,
             frontend_base_url=s.frontend_base_url or "http://localhost:3000",
+            coreguard_section=coreguard_section,
         )
         if target_email:
             sent = await send_interactive_card(email=target_email, card=card)

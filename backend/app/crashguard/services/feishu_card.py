@@ -13,7 +13,7 @@ Hourly 告警卡片复用同样的色板和 layout 风格——新增/上涨用 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def _split_sections(markdown: str) -> List[Dict[str, str]]:
@@ -471,6 +471,7 @@ def build_daily_card(
     markdown: str,
     payload: Dict[str, Any],
     frontend_base_url: str = "http://localhost:3000",
+    coreguard_section: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """构造飞书 interactive card payload（v2 schema）。
 
@@ -501,16 +502,17 @@ def build_daily_card(
     else:
         template = "red" if has_anomaly else "turquoise"
 
-    # 早晚报差异化
+    # 早晚报差异化（统一品牌 [核心指标] 2026-05-26：稳定性 + 业务健康度合并视角）
     evening_window_h = int(payload.get("data_window_hours") or 10)
+    cg_available = bool(coreguard_section and coreguard_section.get("available"))
     if is_morning:
-        title_text = f"🌅 Crashguard 日报 · {target_date}"
+        title_text = f"🌅 [核心指标] 昨日复盘 · {target_date}"
         scope_md = (
-            f"📊 **数据口径**：过去 **24h**（昨日总览） · "
-            f"基线：**上周同 weekday 同 24h 段**（SHoW-24h）"
+            f"📊 **数据口径**：稳定性 **24h** SHoW vs 上周同日"
+            + (f" · 业务指标 **SHoW-1h × {coreguard_section.get('windows_covered', 0)} 窗口**" if cg_available else "")
         )
     else:
-        title_text = f"🌇 Crashguard 速报 · {target_date}"
+        title_text = f"🌇 [核心指标] 速报 · {target_date}"
         scope_md = (
             f"📊 **数据口径**：过去 **{evening_window_h}h**（日内增量） · "
             f"基线：**上周同 weekday 同 {evening_window_h}h 段**（SHoW-{evening_window_h}h）"
@@ -528,7 +530,13 @@ def build_daily_card(
     # ── Headline 一句话总结（最顶置，2026-05-21 加）──
     # 用户诉求：扫一眼就知道今天有没有事、要不要立刻跟进。
     # 比 _tldr_headline 更高层——直接给结论，不堆 chip。
-    headline = payload.get("headline")
+    # 2026-05-26 统一品牌：若 coreguard 业务侧有持续异常，hint 拼到 headline 前
+    headline = payload.get("headline") or ""
+    cg_hint = coreguard_section.get("headline_hint") if cg_available else None
+    if cg_hint and headline:
+        headline = f"{cg_hint}；{headline}"
+    elif cg_hint:
+        headline = cg_hint
     if headline:
         elements.append(_div(f"## {headline}"))
 
@@ -542,10 +550,13 @@ def build_daily_card(
     sections = _split_sections(markdown)
 
     # 主题分类：标题里含这些关键字 → 必看（默认展开）；其余 → 折叠
-    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR", "Crash-free 详表")
+    # 2026-05-26：Crash-free 详表 从 EXPANDED 白名单移除（用户要求默认折叠）
+    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR")
 
     crash_free_detail = payload.get("crash_free_detail") or {}
     dual_window = payload.get("dual_window") or {}
+    # 稳定性异常（severity=red/yellow）时把 Crash-free 详表自动展开，否则默认折叠
+    crash_free_auto_expand = severity in ("red", "yellow")
 
     for sec in sections:
         title = sec["title"]
@@ -556,12 +567,12 @@ def build_daily_card(
             # 无标题段（首段 intro）—— 跳过，已被 TL;DR 替代
             continue
 
-        # 拦截 Crash-free 详表：飞书 lark_md 不支持 table，改用 column_set 双列原生布局
-        # 同时注入 dual_window WoW 对比（替代已移除的「双窗口对照」section）
+        # 拦截 Crash-free 详表：放到 collapsible_panel 里（默认折叠，红/黄 severity 时自动展开）
         if "Crash-free 详表" in title and crash_free_detail:
-            elements.append(_div(f"**{title}**"))
-            elements.extend(_build_crash_free_columns(crash_free_detail, dual_window=dual_window))
-            elements.append({"tag": "hr"})
+            indicator = "▼" if crash_free_auto_expand else "▶"
+            panel_title = f"{indicator} **{title}**（点开查看 iOS / Android 双列明细 + WoW）"
+            inner = _build_crash_free_columns(crash_free_detail, dual_window=dual_window)
+            elements.append(_collapsible_panel(panel_title, inner, expanded=crash_free_auto_expand))
             continue
 
         # 双窗口对照已合并入 Crash-free 详表，直接跳过不渲染
@@ -584,6 +595,18 @@ def build_daily_card(
             elements.append(
                 _collapsible_panel(panel_title, sec_elements, expanded=False)
             )
+
+    # ── 业务健康度详表（coreguard 板块）— 持续异常自动展开，其他折叠 ──
+    if cg_available:
+        cg_indicator = "▼" if coreguard_section.get("auto_expand") else "▶"
+        cg_title = (
+            f"{cg_indicator} **业务健康度详表 "
+            f"{coreguard_section.get('section_title_suffix', '')}**"
+        )
+        cg_inner = [_div(coreguard_section.get("section_markdown", ""))]
+        elements.append(_collapsible_panel(
+            cg_title, cg_inner, expanded=bool(coreguard_section.get("auto_expand")),
+        ))
 
     # ── 底部按钮（v2 schema：button 直接作为 element，不再 wrap 在 action 里）──
     elements.append({
