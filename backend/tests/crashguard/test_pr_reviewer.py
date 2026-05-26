@@ -1026,3 +1026,193 @@ def test_resolve_repo_path_uses_url_for_flutter_common(monkeypatch):
     result = pr_reviewer._resolve_repo_path_for_pr(pr, settings)
     assert captured["sub_hint"] == ""
     assert result == "/fake/flutter-common"
+
+
+# ============================================================
+# C 方案: email → GH login → add-reviewer
+# ============================================================
+class _FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_parse_repo_slug_and_pr_number():
+    from app.crashguard.services.pr_reviewer import _parse_repo_slug_and_pr_number
+    assert _parse_repo_slug_and_pr_number(
+        "https://github.com/Plaud-AI/plaud-flutter-common/pull/1190"
+    ) == ("Plaud-AI/plaud-flutter-common", 1190)
+    assert _parse_repo_slug_and_pr_number("") == ("", 0)
+    assert _parse_repo_slug_and_pr_number("not-a-url") == ("", 0)
+
+
+def test_resolve_email_to_github_login_happy_path(monkeypatch):
+    """commits search 返回 login 字符串 → 缓存 + 返回。"""
+    from app.crashguard.services import pr_reviewer as pr_mod
+    pr_mod._email_to_login_cache.clear()
+
+    def fake_run(args, **kw):
+        # 验证调用参数
+        assert "search/commits" in " ".join(args)
+        assert "luffy@plaud.ai" in " ".join(args)
+        return _FakeProc(returncode=0, stdout="luffyYH\n")
+
+    monkeypatch.setattr(pr_mod.subprocess, "run", fake_run)
+    login = pr_mod._resolve_email_to_github_login(
+        "luffy@plaud.ai", "Plaud-AI/plaud-flutter-common",
+    )
+    assert login == "luffyYH"
+    # cache 命中：第二次调用不应 hit subprocess
+    monkeypatch.setattr(pr_mod.subprocess, "run",
+                        lambda *a, **kw: pytest.fail("应走 cache 不查 API"))
+    assert pr_mod._resolve_email_to_github_login(
+        "luffy@plaud.ai", "Plaud-AI/plaud-flutter-common",
+    ) == "luffyYH"
+
+
+def test_resolve_email_to_github_login_not_found_caches_negative(monkeypatch):
+    """search 返回空 stdout 表示无匹配 → cache None，下次也不重查。"""
+    from app.crashguard.services import pr_reviewer as pr_mod
+    pr_mod._email_to_login_cache.clear()
+    call_count = {"n": 0}
+
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        return _FakeProc(returncode=0, stdout="")
+
+    monkeypatch.setattr(pr_mod.subprocess, "run", fake_run)
+    assert pr_mod._resolve_email_to_github_login(
+        "ghost@external.com", "owner/repo",
+    ) is None
+    # 第二次：应走负缓存
+    assert pr_mod._resolve_email_to_github_login(
+        "ghost@external.com", "owner/repo",
+    ) is None
+    assert call_count["n"] == 1, "第二次不应再调 subprocess"
+
+
+def test_resolve_email_to_github_login_api_failure_returns_none(monkeypatch):
+    """gh api 失败 → 返回 None，不抛异常。"""
+    from app.crashguard.services import pr_reviewer as pr_mod
+    pr_mod._email_to_login_cache.clear()
+    monkeypatch.setattr(pr_mod.subprocess, "run",
+                        lambda *a, **kw: _FakeProc(returncode=1, stderr="rate limit"))
+    assert pr_mod._resolve_email_to_github_login(
+        "x@plaud.ai", "owner/repo",
+    ) is None
+
+
+def test_resolve_email_invalid_inputs_returns_none(monkeypatch):
+    from app.crashguard.services import pr_reviewer as pr_mod
+    assert pr_mod._resolve_email_to_github_login("", "o/r") is None
+    assert pr_mod._resolve_email_to_github_login("x@y.com", "") is None
+    assert pr_mod._resolve_email_to_github_login("x@y.com", "no-slash") is None
+
+
+def test_add_github_reviewers_batch_success(monkeypatch):
+    """一次 POST 加多个 reviewer，成功路径。"""
+    from app.crashguard.services import pr_reviewer as pr_mod
+    captured = {}
+
+    def fake_run(args, **kw):
+        captured["args"] = list(args)
+        return _FakeProc(returncode=0, stdout="{}")
+
+    monkeypatch.setattr(pr_mod.subprocess, "run", fake_run)
+    added, failed = pr_mod._add_github_reviewers(
+        "https://github.com/Plaud-AI/plaud-flutter-common/pull/1190",
+        ["luffyYH", "Victor-Plaud"],
+    )
+    assert added == ["luffyYH", "Victor-Plaud"]
+    assert failed == []
+    # 校验 args
+    a = captured["args"]
+    assert a[:4] == ["gh", "api", "-X", "POST"]
+    assert "repos/Plaud-AI/plaud-flutter-common/pulls/1190/requested_reviewers" in a
+    # 数组形式：reviewers[]=login 多次
+    assert "reviewers[]=luffyYH" in a
+    assert "reviewers[]=Victor-Plaud" in a
+
+
+def test_add_github_reviewers_batch_fail_falls_back_one_by_one(monkeypatch):
+    """batch 失败时 fallback 单个加，隔离失败 login。"""
+    from app.crashguard.services import pr_reviewer as pr_mod
+    call_count = {"n": 0}
+
+    def fake_run(args, **kw):
+        call_count["n"] += 1
+        # 第 1 次（batch）失败；第 2 次（fallback A）成功；第 3 次（fallback B）422
+        if call_count["n"] == 1:
+            return _FakeProc(returncode=1, stderr="HTTP 422")
+        if "reviewers[]=goodLogin" in args:
+            return _FakeProc(returncode=0)
+        return _FakeProc(returncode=1, stderr="HTTP 422: not a collaborator")
+
+    monkeypatch.setattr(pr_mod.subprocess, "run", fake_run)
+    added, failed = pr_mod._add_github_reviewers(
+        "https://github.com/o/r/pull/1",
+        ["goodLogin", "badLogin"],
+    )
+    assert added == ["goodLogin"]
+    assert failed == ["badLogin"]
+
+
+def test_add_github_reviewers_invalid_pr_url(monkeypatch):
+    """非法 PR URL 直接返回，不调 API。"""
+    from app.crashguard.services import pr_reviewer as pr_mod
+    monkeypatch.setattr(pr_mod.subprocess, "run",
+                        lambda *a, **kw: pytest.fail("不应调 API"))
+    added, failed = pr_mod._add_github_reviewers("not-a-url", ["a", "b"])
+    assert added == []
+    assert failed == ["a", "b"]
+
+
+def test_add_github_reviewers_empty_list_noop(monkeypatch):
+    from app.crashguard.services import pr_reviewer as pr_mod
+    monkeypatch.setattr(pr_mod.subprocess, "run",
+                        lambda *a, **kw: pytest.fail("不应调 API"))
+    assert pr_mod._add_github_reviewers("https://github.com/o/r/pull/1", []) == ([], [])
+
+
+def test_sync_github_reviewers_full_chain(monkeypatch):
+    """端到端：emails → resolve login → add-reviewer。"""
+    from app.crashguard.services import pr_reviewer as pr_mod
+    pr_mod._email_to_login_cache.clear()
+
+    # mock resolve: alice→Alice; bob→None (ghost)
+    monkeypatch.setattr(pr_mod, "_resolve_email_to_github_login",
+                        lambda email, repo, timeout=15:
+                        {"alice@plaud.ai": "Alice"}.get(email))
+    # mock add: 成功
+    monkeypatch.setattr(pr_mod, "_add_github_reviewers",
+                        lambda url, logins, timeout=30: (logins, []))
+
+    resolved, added, failed = pr_mod.sync_github_reviewers_for_emails(
+        "https://github.com/o/r/pull/1",
+        ["alice@plaud.ai", "bob@plaud.ai"],
+    )
+    assert resolved == ["Alice"]
+    assert added == ["Alice"]
+    # bob 反查失败 → 进 failed
+    assert "bob@plaud.ai" in failed
+
+
+def test_sync_github_reviewers_no_login_resolved_skips_add(monkeypatch):
+    """全部 email 反查失败时不调 _add_github_reviewers。"""
+    from app.crashguard.services import pr_reviewer as pr_mod
+    monkeypatch.setattr(pr_mod, "_resolve_email_to_github_login",
+                        lambda *a, **kw: None)
+    called = {"add": False}
+
+    def fake_add(*a, **kw):
+        called["add"] = True
+        return ([], [])
+
+    monkeypatch.setattr(pr_mod, "_add_github_reviewers", fake_add)
+    resolved, added, failed = pr_mod.sync_github_reviewers_for_emails(
+        "https://github.com/o/r/pull/1", ["ghost@x.com"],
+    )
+    assert resolved == [] and added == []
+    assert failed == ["ghost@x.com"]
+    assert called["add"] is False

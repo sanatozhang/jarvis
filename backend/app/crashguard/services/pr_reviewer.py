@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 from collections import Counter
@@ -20,6 +21,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("crashguard.pr_reviewer")
+
+# 进程级 email → GH login 缓存。key=(email_lower, repo_slug_lower)，
+# value=login str（命中）/ None（负缓存：找不到对应 GH 用户）。
+# Plaud 员工映射稳定，缓存命中率高 → 大幅减少 GH API 调用。
+_email_to_login_cache: Dict[Tuple[str, str], Optional[str]] = {}
 
 
 # ============================================================
@@ -418,6 +424,164 @@ async def _send_fallback(
 
 
 # ============================================================
+# GitHub 正式 reviewer 同步：email → GH login → gh pr edit --add-reviewer
+# ============================================================
+_PR_URL_RE = re.compile(r"https?://github\.com/([^/]+/[^/]+)/pull/(\d+)")
+
+
+def _parse_repo_slug_and_pr_number(pr_url: str) -> Tuple[str, int]:
+    """https://github.com/owner/repo/pull/123 → ('owner/repo', 123)。失败返回 ('', 0)。"""
+    m = _PR_URL_RE.match(pr_url or "")
+    if not m:
+        return "", 0
+    return m.group(1), int(m.group(2))
+
+
+def _resolve_email_to_github_login(
+    email: str, repo_slug: str, timeout: int = 15,
+) -> Optional[str]:
+    """通过 GH commits search API 反查 email 对应的 GitHub login。
+
+    底层逻辑：crashguard 的 reviewer email 来自 git blame，必然在 repo
+    commits 里出现过 → commits search 必然能找到匹配的 author.login。
+    （实测命中率 4/4：aaron.luo/victor/chance/luffy 全部解析正确。）
+
+    进程级 cache：员工 email→login 映射稳定，命中后直接返回；负缓存
+    （找不到 GH user）也缓存，避免重复 API 调用。
+    """
+    if not email or not repo_slug or "/" not in repo_slug:
+        return None
+    key = (email.lower().strip(), repo_slug.lower())
+    if key in _email_to_login_cache:
+        return _email_to_login_cache[key]
+
+    sub_env = dict(os.environ)
+    for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+        sub_env.pop(k, None)
+    try:
+        r = subprocess.run(
+            ["gh", "api",
+             f"search/commits?q=author-email:{email}+repo:{repo_slug}",
+             "--jq", ".items[0].author.login // empty"],
+            capture_output=True, text=True, timeout=timeout, env=sub_env,
+        )
+        if r.returncode != 0:
+            logger.debug(
+                "gh search/commits failed email=%s repo=%s: %s",
+                email, repo_slug, (r.stderr or "")[:200],
+            )
+            _email_to_login_cache[key] = None
+            return None
+        login = (r.stdout or "").strip()
+        if not login or login.lower() == "null":
+            _email_to_login_cache[key] = None
+            return None
+        _email_to_login_cache[key] = login
+        return login
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning("email→login lookup exception email=%s: %s", email, e)
+        return None
+
+
+def _add_github_reviewers(
+    pr_url: str, github_logins: List[str], timeout: int = 30,
+) -> Tuple[List[str], List[str]]:
+    """gh api POST .../requested_reviewers 加 GH 正式 reviewer。
+
+    返回 (added, failed)。failed 含 GH 返回 422/403 的 login（非 collaborator
+    / 已经是 reviewer / author 自己等情况都进 failed）。
+
+    一次性 batch 加（一次 API call），失败时 fall back 单个加（隔离单条错误）。
+    """
+    if not pr_url or not github_logins:
+        return [], []
+    repo_slug, pr_number = _parse_repo_slug_and_pr_number(pr_url)
+    if not repo_slug or pr_number <= 0:
+        return [], list(github_logins)
+
+    sub_env = dict(os.environ)
+    for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+        sub_env.pop(k, None)
+
+    # 一次性 batch：用 -f 'reviewers[]=login' 多次表达数组
+    args = ["gh", "api", "-X", "POST",
+            f"repos/{repo_slug}/pulls/{pr_number}/requested_reviewers"]
+    for lg in github_logins:
+        args.extend(["-f", f"reviewers[]={lg}"])
+    try:
+        r = subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout, env=sub_env,
+        )
+        if r.returncode == 0:
+            logger.info(
+                "gh add-reviewer ok pr=%s logins=%s",
+                pr_url, github_logins,
+            )
+            return list(github_logins), []
+        err = (r.stderr or "").strip()[:200]
+        logger.warning(
+            "gh batch add-reviewer failed pr=%s logins=%s err=%s; trying one-by-one",
+            pr_url, github_logins, err,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning("gh add-reviewer exception: %s", e)
+        return [], list(github_logins)
+
+    # Fallback：逐个加，隔离失败 login
+    added: List[str] = []
+    failed: List[str] = []
+    for lg in github_logins:
+        try:
+            r1 = subprocess.run(
+                ["gh", "api", "-X", "POST",
+                 f"repos/{repo_slug}/pulls/{pr_number}/requested_reviewers",
+                 "-f", f"reviewers[]={lg}"],
+                capture_output=True, text=True, timeout=timeout, env=sub_env,
+            )
+            if r1.returncode == 0:
+                added.append(lg)
+            else:
+                logger.info(
+                    "gh add-reviewer single fail pr=%s login=%s: %s",
+                    pr_url, lg, (r1.stderr or "").strip()[:150],
+                )
+                failed.append(lg)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            logger.warning("gh add-reviewer single exception login=%s: %s", lg, e)
+            failed.append(lg)
+    return added, failed
+
+
+def sync_github_reviewers_for_emails(
+    pr_url: str, emails: List[str],
+) -> Tuple[List[str], List[str], List[str]]:
+    """高级入口：emails → resolve login → batch add-reviewer。
+
+    返回 (resolved_logins, added, failed)：
+      - resolved_logins：成功反查到 GH login 的子集
+      - added：成功 add-reviewer 的 login
+      - failed：解析失败的 email + add 失败的 login（合并）
+    """
+    repo_slug, _ = _parse_repo_slug_and_pr_number(pr_url)
+    if not repo_slug:
+        return [], [], list(emails)
+
+    resolved: List[str] = []
+    unresolved_emails: List[str] = []
+    for em in emails:
+        lg = _resolve_email_to_github_login(em, repo_slug)
+        if lg:
+            resolved.append(lg)
+        else:
+            unresolved_emails.append(em)
+
+    if not resolved:
+        return [], [], unresolved_emails
+    added, add_failed = _add_github_reviewers(pr_url, resolved)
+    return resolved, added, unresolved_emails + add_failed
+
+
+# ============================================================
 # GitHub review 状态检测
 # ============================================================
 # 已知 review-bot login（这些 author 的 review record 不算"真人 review"）
@@ -575,6 +739,29 @@ async def resolve_and_notify(pr_id: int, skip_fallback: bool = False) -> Dict:
         sent, fallback_reason = await notify_reviewers(
             pr, resolution, s, skip_fallback=skip_fallback,
         )
+
+        # 2.5 GH 正式 reviewer 同步（fire-and-forget；不阻塞主流程）
+        # 抓手：飞书私聊只是建议，reviewer 在 GH UI 上无 review-requested 标记，
+        # 也看不到"我负责 review 的 PR 中心"。同步 add-reviewer 后：
+        # - reviewer 在 GH 主页 /pulls 看到该 PR
+        # - 在 PR 上有"Awaiting requested review"提示
+        # 失败（非 collaborator / author 自己 / 已是 reviewer）graceful 静默。
+        gh_synced_logins: List[str] = []
+        if getattr(s, "pr_reviewer_github_sync_enabled", True) and sent:
+            try:
+                resolved, added, gh_failed = sync_github_reviewers_for_emails(
+                    pr.pr_url or "", sent,
+                )
+                gh_synced_logins = added
+                if gh_failed:
+                    logger.info(
+                        "gh reviewer sync partial pr=%s added=%s failed=%s",
+                        pr.pr_url, added, gh_failed,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "gh reviewer sync exception pr=%s: %s", pr.pr_url, e,
+                )
 
         # 3. 写回 DB
         now = datetime.utcnow()

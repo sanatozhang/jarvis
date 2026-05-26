@@ -231,6 +231,10 @@ class CrashguardSettings(BaseSettings):
     # PR 创建模式：False=直接 ready（默认，治本：draft PR 不会被 reviewer 自动通知/触发 Copilot review）
     # True=保留 --draft（旧行为，需要工程师手动 ready）
     pr_create_as_draft: bool = False
+    # GH 正式 reviewer 同步：飞书发完后顺手 gh api POST .../requested_reviewers
+    # 让 reviewer 在 GH 主页 /pulls 看到 review-requested 状态。
+    # 失败（非 collaborator / author 自己 / 已是 reviewer）graceful 静默不阻塞。
+    pr_reviewer_github_sync_enabled: bool = True
     # 工作日 10:00 给 sanato 发等 review 的 PR 列表（避免 PR 长期积压）
     pr_pending_review_cron: str = "0 10 * * 1-5"
     pr_pending_review_enabled: bool = True
