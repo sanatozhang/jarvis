@@ -46,6 +46,10 @@ class _AggMetric:
     worst_window_start: Optional[datetime] = None  # 最严重 breach 所在窗口
     worst_current_value: Optional[float] = None
     worst_baseline_value: Optional[float] = None
+    # WoW 对照（上周同日同一 metric 的表现）— v4 2026-05-26
+    baseline_breach_windows: int = 0
+    baseline_total_windows: int = 0
+    baseline_longest_consecutive: int = 0
 
 
 def _date_range_utc(target_date: _date_t) -> Tuple[datetime, datetime]:
@@ -201,13 +205,32 @@ def _render_section_md(
     healthy_count: int,
     total_metrics: int,
     windows_covered: int,
+    baseline_windows_covered: int,
+    wow_overall: Optional[str],
     dashboard_id: str,
     datadog_site: str,
 ) -> str:
     """生成业务健康度板块完整 lark_md 字符串。"""
-    parts = [
+    header = (
         f"📊 评估 `{total_metrics * windows_covered}` 数据点（`{total_metrics}` 指标 × `{windows_covered}` 小时）"
-    ]
+        + (f" · 上周同日基线 `{baseline_windows_covered}` 小时" if baseline_windows_covered else " · 上周同日无基线数据")
+    )
+    parts = [header]
+    if wow_overall:
+        parts.append(f"📈 **趋势对照**：{wow_overall}")
+    def _wow_chip(m: _AggMetric) -> str:
+        """生成"本日 vs 上周同日"对照 chip。"""
+        cur = m.breach_windows
+        base = m.baseline_breach_windows
+        # 趋势箭头：本日比上周多/少多少次 breach
+        if base == 0 and cur > 0:
+            return f"🔺新增（上周同日 0 次）"
+        if cur > base * 1.5 and base > 0:
+            return f"🔺恶化（上周同日 `{base}/{m.baseline_total_windows}`）"
+        if cur < base * 0.5:
+            return f"🔻改善（上周同日 `{base}/{m.baseline_total_windows}`）"
+        return f"≈持平（上周同日 `{base}/{m.baseline_total_windows}`）"
+
     if persistent:
         lines = [f"🚨 **持续异常（≥2 小时连续 breach，已触发飞书实时告警）**："]
         for m in persistent:
@@ -219,8 +242,8 @@ def _render_section_md(
             ch_str = _fmt_change(m.value_type, m.worst_change)
             lines.append(
                 f"- {_emoji_tier(m.tier)} [{m.tier}] **{m.title}**: "
-                f"最长连续 `{m.longest_consecutive}h` · 共 `{m.breach_windows}/{m.total_windows}` 次 breach\n"
-                f"　• 最严重时段 Δ `{ch_str}`: 当前 [{cur_str}]({cur_url}) · 上周 [{base_str}]({base_url})"
+                f"最长连续 `{m.longest_consecutive}h` · 共 `{m.breach_windows}/{m.total_windows}` 次 breach · {_wow_chip(m)}\n"
+                f"　• 最严重时段 Δ `{ch_str}`: 当前 [{cur_str}]({cur_url}) · SHoW 上周 [{base_str}]({base_url})"
             )
         parts.append("\n".join(lines))
 
@@ -235,8 +258,8 @@ def _render_section_md(
             ch_str = _fmt_change(m.value_type, m.worst_change)
             lines.append(
                 f"- {_emoji_tier(m.tier)} [{m.tier}] **{m.title}**: "
-                f"`{m.breach_windows}/{m.total_windows}` 次单点 · Δ `{ch_str}`\n"
-                f"　• 当前 [{cur_str}]({cur_url}) · 上周 [{base_str}]({base_url})"
+                f"`{m.breach_windows}/{m.total_windows}` 次单点 · Δ `{ch_str}` · {_wow_chip(m)}\n"
+                f"　• 当前 [{cur_str}]({cur_url}) · SHoW 上周 [{base_str}]({base_url})"
             )
         if len(transient) > 5:
             lines.append(f"- … 其余 `{len(transient) - 5}` 项偶发异常未展开")
@@ -310,7 +333,22 @@ async def build_morning_section(
             "healthy_count": 0,
             "total_metrics": 0,
             "windows_covered": 0,
+            "wow_overall": None,
+            "baseline_windows_covered": 0,
         }
+
+    # WoW 对照：上周同日（target_date - 7d）—— v4 2026-05-26
+    # 若上周同日无数据（cron 当时未跑），baseline_breach_windows 保持 0
+    baseline_date = target_date - timedelta(days=7)
+    base_start, base_end = _date_range_utc(baseline_date)
+    baseline_metrics, baseline_windows_covered = await _aggregate_snapshots(base_start, base_end)
+    baseline_by_key = {bm.key: bm for bm in baseline_metrics}
+    for m in metrics:
+        bm = baseline_by_key.get(m.key)
+        if bm:
+            m.baseline_breach_windows = bm.breach_windows
+            m.baseline_total_windows = bm.total_windows
+            m.baseline_longest_consecutive = bm.longest_consecutive
 
     persistent, transient, healthy_count = _classify(metrics, persistent_threshold_hours)
     total_metrics = len(metrics)
@@ -318,8 +356,24 @@ async def build_morning_section(
     dashboard_id = settings.dashboard_id
     datadog_site = settings.datadog_site
 
+    # （wow_overall 计算前置到此处，给 render 用）
+    cur_p = sum(m.breach_windows for m in persistent)
+    base_p = sum(m.baseline_breach_windows for m in persistent)
+    if persistent:
+        if base_p == 0 and cur_p > 0:
+            _wow_overall = "🔺 持续异常全是新增（上周同日 0 小时 breach）"
+        elif cur_p > base_p * 1.5 and base_p > 0:
+            _wow_overall = f"🔺 恶化（上周同日 `{base_p}h breach` → 本日 `{cur_p}h breach`）"
+        elif cur_p < base_p * 0.5:
+            _wow_overall = f"🔻 改善（上周同日 `{base_p}h breach` → 本日 `{cur_p}h breach`）"
+        else:
+            _wow_overall = f"≈ 持平（上周同日 `{base_p}h breach` ↔ 本日 `{cur_p}h breach`）"
+    else:
+        _wow_overall = None
+
     section_md = _render_section_md(
         persistent, transient, healthy_count, total_metrics, windows_covered,
+        baseline_windows_covered, _wow_overall,
         dashboard_id, datadog_site,
     )
 
@@ -343,4 +397,6 @@ async def build_morning_section(
         "healthy_count": healthy_count,
         "total_metrics": total_metrics,
         "windows_covered": windows_covered,
+        "wow_overall": _wow_overall,
+        "baseline_windows_covered": baseline_windows_covered,
     }
