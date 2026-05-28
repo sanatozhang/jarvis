@@ -277,26 +277,26 @@ async def test_run_alert_sends_with_pending_prs(patched_session, monkeypatch):
             pr_status="open", reviewer_emails='[]',
             created_at=datetime.utcnow(),
         ))
-        # 已合入（应排除）
+        # 已合入（应不在 pending 清单；也不在"昨日 merged" — merged_at 是真实当下，不在 patched 昨日窗口）
         s.add(CrashPullRequest(
             analysis_id=3, datadog_issue_id="i3", repo="flutter",
             pr_number=300, pr_url="https://example.com/300",
             pr_status="merged", merged_at=datetime.utcnow(),
-            created_at=datetime.utcnow() - timedelta(days=5),
+            created_at=datetime.utcnow() - timedelta(days=30),
         ))
-        # 已关闭（应排除）
+        # 已关闭（同上推理）
         s.add(CrashPullRequest(
             analysis_id=4, datadog_issue_id="i4", repo="ios",
             pr_number=400, pr_url="https://example.com/400",
             pr_status="closed", closed_at=datetime.utcnow(),
-            created_at=datetime.utcnow() - timedelta(days=3),
+            created_at=datetime.utcnow() - timedelta(days=30),
         ))
-        # 已被 review（应排除）
+        # 已被 review（pending 清单不收；review_decision 空也不收 approved）
         s.add(CrashPullRequest(
             analysis_id=5, datadog_issue_id="i5", repo="flutter",
             pr_number=500, pr_url="https://example.com/500",
             pr_status="open", reviewed_at=datetime.utcnow(),
-            created_at=datetime.utcnow() - timedelta(days=1),
+            created_at=datetime.utcnow() - timedelta(days=30),
         ))
         await s.commit()
 
@@ -319,6 +319,65 @@ async def test_run_alert_sends_with_pending_prs(patched_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_alert_lists_yesterday_merged_closed_created(patched_session, monkeypatch):
+    """昨日 merged / closed / 新建 PR 必须各自成节，PR# 与 URL 出现在卡片里。"""
+    from app.crashguard.services.pr_pending_review_alert import (
+        run_pending_review_alert, _yesterday_utc_window,
+    )
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    _make_settings(monkeypatch)  # _now_local = 2026-05-26 10:00
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.services.feishu_cli.send_interactive_card", send_mock)
+
+    start_utc, end_utc = _yesterday_utc_window()
+    mid_utc = start_utc + (end_utc - start_utc) / 2  # 昨日窗口中点
+
+    async with get_session() as s:
+        # 昨日 merged
+        s.add(CrashPullRequest(
+            analysis_id=20, datadog_issue_id="ya", repo="flutter",
+            pr_number=2001, pr_url="https://example.com/2001",
+            pr_status="merged", merged_at=mid_utc,
+            created_at=mid_utc - timedelta(hours=2),
+        ))
+        # 昨日 closed (未合)
+        s.add(CrashPullRequest(
+            analysis_id=21, datadog_issue_id="yb", repo="ios",
+            pr_number=2002, pr_url="https://example.com/2002",
+            pr_status="closed", closed_at=mid_utc,
+            created_at=mid_utc - timedelta(hours=3),
+        ))
+        # 昨日新建（仍 open，无 merged/closed/reviewed）
+        s.add(CrashPullRequest(
+            analysis_id=22, datadog_issue_id="yc", repo="flutter",
+            pr_number=2003, pr_url="https://example.com/2003",
+            pr_status="open",
+            created_at=mid_utc,
+        ))
+        await s.commit()
+
+    res = await run_pending_review_alert()
+    assert res["yesterday_merged"] == 1
+    assert res["yesterday_closed"] == 1
+    # 三个 PR 的 created_at 都落在昨日窗口
+    assert res["yesterday_created"] == 3
+    assert res["sent"] is True
+
+    import json as _json
+    body = _json.dumps(send_mock.call_args.kwargs["card"], ensure_ascii=False)
+    # 三个 PR 号都要出现 + URL 都要出现
+    for n in (2001, 2002, 2003):
+        assert f"#{n}" in body, f"missing #{n}"
+        assert f"https://example.com/{n}" in body, f"missing URL for #{n}"
+    # 小节标题
+    assert "昨日 merged" in body
+    assert "昨日 closed" in body
+    assert "昨日新建" in body
+
+
+@pytest.mark.asyncio
 async def test_run_alert_lists_approved_prs_separately(patched_session, monkeypatch):
     """review_decision='APPROVED' 且未 merge 的 PR 应进 approved 清单，不进 pending。"""
     from app.crashguard.services.pr_pending_review_alert import run_pending_review_alert
@@ -330,14 +389,15 @@ async def test_run_alert_lists_approved_prs_separately(patched_session, monkeypa
     monkeypatch.setattr("app.services.feishu_cli.send_interactive_card", send_mock)
 
     async with get_session() as s:
-        # approved 但未 merge —— 必须进 approved 清单（reviewed_at 也已写）
+        # approved 但未 merge —— 必须进 approved 清单
+        # created_at 远早于 patched 昨日窗口，避免误进"昨日新建"清单
         s.add(CrashPullRequest(
             analysis_id=10, datadog_issue_id="ia", repo="flutter",
             pr_number=777, pr_url="https://example.com/777",
             pr_status="open",
             reviewed_at=datetime.utcnow(),
             review_decision="APPROVED",
-            created_at=datetime.utcnow() - timedelta(days=1),
+            created_at=datetime.utcnow() - timedelta(days=30),
         ))
         # pending —— reviewed_at IS NULL，review_decision 也未填
         s.add(CrashPullRequest(
@@ -345,7 +405,7 @@ async def test_run_alert_lists_approved_prs_separately(patched_session, monkeypa
             pr_number=888, pr_url="https://example.com/888",
             pr_status="open",
             review_decision="",
-            created_at=datetime.utcnow(),
+            created_at=datetime.utcnow() - timedelta(days=30),
         ))
         # changes_requested —— reviewed_at 已写但 decision 不是 APPROVED → 都不进
         s.add(CrashPullRequest(
@@ -354,7 +414,7 @@ async def test_run_alert_lists_approved_prs_separately(patched_session, monkeypa
             pr_status="open",
             reviewed_at=datetime.utcnow(),
             review_decision="CHANGES_REQUESTED",
-            created_at=datetime.utcnow(),
+            created_at=datetime.utcnow() - timedelta(days=30),
         ))
         await s.commit()
 

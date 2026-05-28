@@ -68,19 +68,24 @@ def build_pending_review_card(
     stats: Dict[str, int] = None,
     frontend_base_url: str = "",
     approved_prs: List[Dict] = None,
+    yesterday_merged_prs: List[Dict] = None,
+    yesterday_closed_prs: List[Dict] = None,
+    yesterday_created_prs: List[Dict] = None,
 ) -> Dict:
-    """构造飞书 interactive card：昨日交付 stats + approved 待 merge + 当前积压清单。
+    """构造飞书 interactive card：昨日交付 stats + 4 个 PR 清单（merged/closed/新建/approved）+ 当前积压清单。
 
-    prs: List[{pr_url, pr_number, repo, reviewer_emails(List[str]), age_days, pr_status}]
-    approved_prs: 已 approve 但未 merge 的 PR 清单（卡最后一公里），同 prs 结构；
-                  None 或空列表则不渲染该小节。
-    stats: {"yesterday_merged": N, "yesterday_closed": M, "yesterday_created": K,
-            "total_pending": T, "total_approved": A}
-           若为 None，按 prs 长度回退（保持向后兼容）。
-    frontend_base_url: 用于生成"查看完整 PR 列表"链接（按 status 筛选 merged/closed/...）；
-                       空字符串则不渲染该链接（向后兼容）。
+    prs: 当前 pending 清单（reviewed_at IS NULL）
+    approved_prs: 已 approve 待 merge 清单（卡最后一公里）
+    yesterday_merged_prs: 昨日已 merged 清单
+    yesterday_closed_prs: 昨日已 closed (未合) 清单
+    yesterday_created_prs: 昨日新建清单
+    stats: 计数 dict，向后兼容
+    frontend_base_url: "完整 PR 列表"链接，空字符串则不渲染
     """
     approved_prs = approved_prs or []
+    yesterday_merged_prs = yesterday_merged_prs or []
+    yesterday_closed_prs = yesterday_closed_prs or []
+    yesterday_created_prs = yesterday_created_prs or []
     n = len(prs)
     n_approved = len(approved_prs)
     s = stats or {}
@@ -132,29 +137,64 @@ def build_pending_review_card(
             ),
         }})
 
-    # 「✅ 已 approve 待 merge」清单 — 卡最后一公里，PR 作者需推 merge
-    if approved_prs:
+    def _render_pr_section(title: str, prs_in: List[Dict], emoji: str, suffix_fn) -> None:
+        """渲染一个 PR 清单小节：分隔线 + 标题 + 按 repo 分组 + 每个 PR 一行带链接。"""
+        if not prs_in:
+            return
         blocks.append({"tag": "hr"})
         blocks.append({"tag": "div", "text": {
             "tag": "lark_md",
-            "content": f"**🟢 已 approve 待 merge（{n_approved} 条）**——PR 作者请尽快合入：",
+            "content": f"**{title}（{len(prs_in)} 条）**",
         }})
-        approved_by_repo: Dict[str, List[Dict]] = {}
-        for p in approved_prs:
-            approved_by_repo.setdefault(p.get("repo") or "unknown", []).append(p)
-        for repo in sorted(approved_by_repo.keys()):
-            repo_prs = sorted(approved_by_repo[repo], key=lambda x: -x.get("age_days", 0))
-            lines = [f"\n**📦 {repo} ({len(repo_prs)} 条)**"]
+        by_repo_local: Dict[str, List[Dict]] = {}
+        for p in prs_in:
+            by_repo_local.setdefault(p.get("repo") or "unknown", []).append(p)
+        for r in sorted(by_repo_local.keys()):
+            repo_prs = sorted(by_repo_local[r], key=lambda x: -x.get("age_days", 0))
+            lines = [f"\n**📦 {r} ({len(repo_prs)} 条)**"]
             for p in repo_prs:
-                age = p.get("age_days", 0)
-                age_str = f"{age}天" if age > 0 else "今天"
                 lines.append(
-                    f"🟢 [#{p.get('pr_number')}]({p.get('pr_url')}) · {age_str} · approved"
+                    f"{emoji} [#{p.get('pr_number')}]({p.get('pr_url')}) · {suffix_fn(p)}"
                 )
             blocks.append({"tag": "div", "text": {
                 "tag": "lark_md",
                 "content": "\n".join(lines),
             }})
+
+    # 「✅ 昨日 merged」清单 — 用户能直接点链接看哪些被合入
+    _render_pr_section(
+        title="✅ 昨日 merged",
+        prs_in=yesterday_merged_prs,
+        emoji="✅",
+        suffix_fn=lambda p: f"{p.get('repo','')} merged",
+    )
+
+    # 「❌ 昨日 closed 未合」清单
+    _render_pr_section(
+        title="❌ 昨日 closed（未合）",
+        prs_in=yesterday_closed_prs,
+        emoji="❌",
+        suffix_fn=lambda p: f"{p.get('repo','')} closed",
+    )
+
+    # 「🆕 昨日新建」清单
+    _render_pr_section(
+        title="🆕 昨日新建",
+        prs_in=yesterday_created_prs,
+        emoji="🆕",
+        suffix_fn=lambda p: f"{p.get('repo','')} created",
+    )
+
+    # 「🟢 已 approve 待 merge」清单 — PR 作者请尽快合入
+    if approved_prs:
+        _render_pr_section(
+            title="🟢 已 approve 待 merge —— PR 作者请尽快合入",
+            prs_in=approved_prs,
+            emoji="🟢",
+            suffix_fn=lambda p: (
+                f"{(p.get('age_days') or 0)}天" if (p.get('age_days') or 0) > 0 else "今天"
+            ) + " · approved",
+        )
 
     blocks.append({"tag": "hr"})
     blocks.append({"tag": "div", "text": {
@@ -208,32 +248,48 @@ async def _collect_yesterday_stats(session) -> Dict[str, int]:
     """拉昨日（北京）完整 24h 的 merged / closed / created PR 计数。
 
     closed 计数排除 merged（避免重复 — merged PR 也会有 closed_at）。
+
+    保持函数名 + 返回 dict 计数键，向后兼容单测。
+    """
+    breakdown = await _collect_yesterday_breakdown(session)
+    return {
+        "yesterday_merged": len(breakdown["merged"]),
+        "yesterday_closed": len(breakdown["closed"]),
+        "yesterday_created": len(breakdown["created"]),
+    }
+
+
+async def _collect_yesterday_breakdown(session) -> Dict[str, list]:
+    """拉昨日（北京）完整 24h 的 merged / closed / created PR **实际行**。
+
+    返回 {"merged": [CrashPullRequest, ...], "closed": [...], "created": [...]}
+    closed 排除 merged 防重复。供日报渲染具体 PR 清单 + 链接。
     """
     from app.crashguard.models import CrashPullRequest
-    from sqlalchemy import select, func, and_
+    from sqlalchemy import select, and_
 
     start_utc, end_utc = _yesterday_utc_window()
 
-    merged_q = select(func.count()).select_from(CrashPullRequest).where(
+    merged_q = select(CrashPullRequest).where(
         and_(CrashPullRequest.merged_at >= start_utc,
              CrashPullRequest.merged_at < end_utc)
     )
-    closed_q = select(func.count()).select_from(CrashPullRequest).where(
+    closed_q = select(CrashPullRequest).where(
         and_(CrashPullRequest.closed_at >= start_utc,
              CrashPullRequest.closed_at < end_utc,
-             CrashPullRequest.merged_at.is_(None))  # 排除 merged 双计
+             CrashPullRequest.merged_at.is_(None))
     )
-    created_q = select(func.count()).select_from(CrashPullRequest).where(
+    created_q = select(CrashPullRequest).where(
         and_(CrashPullRequest.created_at >= start_utc,
              CrashPullRequest.created_at < end_utc)
     )
-    yesterday_merged = (await session.execute(merged_q)).scalar_one() or 0
-    yesterday_closed = (await session.execute(closed_q)).scalar_one() or 0
-    yesterday_created = (await session.execute(created_q)).scalar_one() or 0
+    merged_rows = (await session.execute(merged_q)).scalars().all()
+    closed_rows = (await session.execute(closed_q)).scalars().all()
+    created_rows = (await session.execute(created_q)).scalars().all()
     return {
-        "yesterday_merged": int(yesterday_merged),
-        "yesterday_closed": int(yesterday_closed),
-        "yesterday_created": int(yesterday_created),
+        "merged": list(merged_rows),
+        "closed": list(closed_rows),
+        "created": list(created_rows),
     }
 
 
@@ -281,7 +337,13 @@ async def run_pending_review_alert() -> Dict:
             CrashPullRequest.review_decision == "APPROVED",
         )
         approved_rows = (await session.execute(approved_stmt)).scalars().all()
-        stats = await _collect_yesterday_stats(session)
+        # 昨日实际 merged / closed / created PR 行（供清单渲染）
+        breakdown = await _collect_yesterday_breakdown(session)
+        stats = {
+            "yesterday_merged": len(breakdown["merged"]),
+            "yesterday_closed": len(breakdown["closed"]),
+            "yesterday_created": len(breakdown["created"]),
+        }
 
     total_pending = len(rows)
     total_approved = len(approved_rows)
@@ -312,6 +374,9 @@ async def run_pending_review_alert() -> Dict:
 
     prs = [_row_to_dict(r) for r in rows]
     approved_prs = [_row_to_dict(r) for r in approved_rows]
+    yesterday_merged_prs = [_row_to_dict(r) for r in breakdown["merged"]]
+    yesterday_closed_prs = [_row_to_dict(r) for r in breakdown["closed"]]
+    yesterday_created_prs = [_row_to_dict(r) for r in breakdown["created"]]
 
     card = build_pending_review_card(
         prs,
@@ -322,6 +387,9 @@ async def run_pending_review_alert() -> Dict:
         },
         frontend_base_url=getattr(s, "frontend_base_url", "") or "",
         approved_prs=approved_prs,
+        yesterday_merged_prs=yesterday_merged_prs,
+        yesterday_closed_prs=yesterday_closed_prs,
+        yesterday_created_prs=yesterday_created_prs,
     )
 
     from app.services import feishu_cli
