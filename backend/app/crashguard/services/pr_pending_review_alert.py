@@ -137,15 +137,26 @@ def build_pending_review_card(
             ),
         }})
 
-    def _render_pr_section(title: str, prs_in: List[Dict], emoji: str, suffix_fn) -> None:
-        """渲染一个 PR 清单小节：分隔线 + 标题 + 按 repo 分组 + 每个 PR 一行带链接。"""
-        if not prs_in:
+    def _render_pr_section(title: str, prs_in: List[Dict], emoji: str, suffix_fn,
+                            always_show: bool = True, empty_hint: str = "（昨日无）") -> None:
+        """渲染一个 PR 清单小节：分隔线 + 标题 + 按 repo 分组 + 每个 PR 一行带链接。
+
+        always_show=True：即便 prs_in 为空也渲染小节 + empty_hint 占位（保持结构对称）。
+        always_show=False：空时不渲染该小节。
+        """
+        if not prs_in and not always_show:
             return
         blocks.append({"tag": "hr"})
         blocks.append({"tag": "div", "text": {
             "tag": "lark_md",
             "content": f"**{title}（{len(prs_in)} 条）**",
         }})
+        if not prs_in:
+            blocks.append({"tag": "div", "text": {
+                "tag": "lark_md",
+                "content": f"_{empty_hint}_",
+            }})
+            return
         by_repo_local: Dict[str, List[Dict]] = {}
         for p in prs_in:
             by_repo_local.setdefault(p.get("repo") or "unknown", []).append(p)
@@ -161,40 +172,44 @@ def build_pending_review_card(
                 "content": "\n".join(lines),
             }})
 
-    # 「✅ 昨日 merged」清单 — 用户能直接点链接看哪些被合入
+    # 「✅ 昨日 merged」清单 — 即便 0 也展示，对称用户期望
     _render_pr_section(
         title="✅ 昨日 merged",
         prs_in=yesterday_merged_prs,
         emoji="✅",
         suffix_fn=lambda p: f"{p.get('repo','')} merged",
+        always_show=True,
     )
 
-    # 「❌ 昨日 closed 未合」清单
+    # 「❌ 昨日 closed 未合」清单 — 即便 0 也展示
     _render_pr_section(
         title="❌ 昨日 closed（未合）",
         prs_in=yesterday_closed_prs,
         emoji="❌",
         suffix_fn=lambda p: f"{p.get('repo','')} closed",
+        always_show=True,
     )
 
-    # 「🆕 昨日新建」清单
+    # 「🆕 昨日新建」清单 — 即便 0 也展示
     _render_pr_section(
         title="🆕 昨日新建",
         prs_in=yesterday_created_prs,
         emoji="🆕",
         suffix_fn=lambda p: f"{p.get('repo','')} created",
+        always_show=True,
     )
 
-    # 「🟢 已 approve 待 merge」清单 — PR 作者请尽快合入
-    if approved_prs:
-        _render_pr_section(
-            title="🟢 已 approve 待 merge —— PR 作者请尽快合入",
-            prs_in=approved_prs,
-            emoji="🟢",
-            suffix_fn=lambda p: (
-                f"{(p.get('age_days') or 0)}天" if (p.get('age_days') or 0) > 0 else "今天"
-            ) + " · approved",
-        )
+    # 「🟢 已 approve 待 merge」清单 — 即便 0 也展示
+    _render_pr_section(
+        title="🟢 已 approve 待 merge —— PR 作者请尽快合入",
+        prs_in=approved_prs,
+        emoji="🟢",
+        suffix_fn=lambda p: (
+            f"{(p.get('age_days') or 0)}天" if (p.get('age_days') or 0) > 0 else "今天"
+        ) + " · approved",
+        always_show=True,
+        empty_hint="（暂无 approved 待合的 PR）",
+    )
 
     blocks.append({"tag": "hr"})
     blocks.append({"tag": "div", "text": {

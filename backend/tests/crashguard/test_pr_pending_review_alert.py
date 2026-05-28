@@ -147,8 +147,8 @@ def test_build_card_renders_approved_section():
     assert "#11" in body and "uP" in body
 
 
-def test_build_card_no_approved_section_when_empty():
-    """没有 approved PR 时不渲染该小节标题，避免空白噪音。"""
+def test_build_card_shows_empty_sections_with_placeholder():
+    """新语义：4 个清单始终渲染，0 条时显示「（昨日无）」/「（暂无...）」占位。"""
     from app.crashguard.services.pr_pending_review_alert import build_pending_review_card
     import json as _json
     card = build_pending_review_card(
@@ -158,8 +158,14 @@ def test_build_card_no_approved_section_when_empty():
                "total_pending": 1, "total_approved": 0},
     )
     body = _json.dumps(card, ensure_ascii=False)
-    # 顶部 stats 计数行仍有（数字 0），但不出现"PR 作者请尽快合入"的小节标题
-    assert "PR 作者请尽快合入" not in body
+    # 4 个小节标题必须出现（用户期望对称性）
+    assert "昨日 merged" in body
+    assert "昨日 closed" in body
+    assert "昨日新建" in body
+    assert "已 approve 待 merge" in body
+    # 空时显示占位
+    assert "昨日无" in body
+    assert "暂无 approved" in body
 
 
 def test_yesterday_utc_window_returns_24h_range_ending_before_today():
