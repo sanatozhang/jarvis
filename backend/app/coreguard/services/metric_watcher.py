@@ -336,7 +336,7 @@ async def run_all(dry_run: bool = False, now: Optional[datetime] = None,
             dashboard_id=cfg.dashboard.get("id") or settings.dashboard_id,
             datadog_site=settings.datadog_site,
         )
-        alert_sent = await send(card)
+        alert_sent = await send(card, breach_count=len(alertable))
 
     return {
         "current_window": [cur_start.isoformat(), cur_end.isoformat()],

@@ -267,27 +267,111 @@ def build_summary_card(
 # Sender — email 优先（演示阶段不打扰群）
 # ---------------------------------------------------------------------------
 
-async def send(card: Dict[str, Any]) -> bool:
+def _today_local_date():
+    """配额按 Asia/Shanghai 自然日切（容器 TZ=Asia/Shanghai → datetime.now 即可）。"""
+    from datetime import date as _date_t
+    return _date_t.today()
+
+
+def _extract_card_title(card: Dict[str, Any]) -> str:
+    try:
+        return ((card.get("header") or {}).get("title") or {}).get("content", "") or ""
+    except Exception:
+        return ""
+
+
+async def _count_group_sent_today(today) -> int:
+    """今日已成功发到群的告警数（用于配额判定）。"""
+    from sqlalchemy import select, func
+    from app.coreguard.models import CoreguardAlertDispatch
+    from app.db.database import get_session
+    async with get_session() as session:
+        n = (await session.execute(
+            select(func.count(CoreguardAlertDispatch.id)).where(
+                CoreguardAlertDispatch.sent_date == today,
+                CoreguardAlertDispatch.target_kind == "group",
+                CoreguardAlertDispatch.sent_ok.is_(True),
+            )
+        )).scalar_one()
+    return int(n or 0)
+
+
+async def _record_dispatch(
+    *, today, target_kind: str, target_value: str, sent_ok: bool,
+    alert_title: str, breach_count: int, overflow_from_group: bool,
+) -> None:
+    from app.coreguard.models import CoreguardAlertDispatch
+    from app.db.database import get_session
+    async with get_session() as session:
+        row = CoreguardAlertDispatch(
+            sent_date=today,
+            target_kind=target_kind,
+            target_value=(target_value or "")[:128],
+            sent_ok=sent_ok,
+            alert_title=(alert_title or "")[:256],
+            breach_count=int(breach_count or 0),
+            overflow_from_group=overflow_from_group,
+        )
+        session.add(row)
+        await session.commit()
+
+
+async def send(card: Dict[str, Any], breach_count: int = 0) -> bool:
+    """路由规则（2026-05-28 新）：
+       1) 有群 + 今日群配额未满 → 发群（target_kind='group'）
+       2) 群配额已满 或 无群 → 发 overflow_email（target_kind='email', overflow_from_group=True）
+       3) 两者都没配置 → skip
+    每次成功/失败均写入 coreguard_alert_dispatches 用于审计 + 配额判定。
+    """
     from app.coreguard.config import get_coreguard_settings
     s = get_coreguard_settings()
     if not s.feishu_enabled:
         logger.info("feishu_enabled=false, skip send")
         return False
-    if not s.feishu_target_chat_id and not s.feishu_target_email:
-        logger.warning("no feishu target configured")
+    if not s.feishu_target_chat_id and not s.feishu_overflow_email and not s.feishu_target_email:
+        logger.warning("no feishu target configured (chat_id/overflow_email/target_email 全空)")
         return False
 
-    # 优先级：prefer_email=true → email first；否则 chat_id first
-    use_email = s.feishu_prefer_email and bool(s.feishu_target_email)
+    today = _today_local_date()
+    title = _extract_card_title(card)
+    quota = int(s.feishu_group_daily_quota or 0)
+    sent_today = await _count_group_sent_today(today) if s.feishu_target_chat_id else 0
 
     try:
         from app.services.feishu_cli import send_interactive_card
-        if use_email:
-            logger.info("coreguard send via email=%s (demo private)", s.feishu_target_email)
-            return await send_interactive_card(email=s.feishu_target_email, card=card)
-        if s.feishu_target_chat_id:
-            return await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
-        return await send_interactive_card(email=s.feishu_target_email, card=card)
+
+        # 1) 优先群（配额内）
+        if s.feishu_target_chat_id and sent_today < quota:
+            ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
+            logger.info(
+                "coreguard send → group %s (today %d/%d, ok=%s)",
+                s.feishu_target_chat_id, sent_today + (1 if ok else 0), quota, ok,
+            )
+            await _record_dispatch(
+                today=today, target_kind="group",
+                target_value=s.feishu_target_chat_id, sent_ok=bool(ok),
+                alert_title=title, breach_count=breach_count, overflow_from_group=False,
+            )
+            return bool(ok)
+
+        # 2) 群配额已满 / 无群 → 转个人
+        overflow = s.feishu_overflow_email or s.feishu_target_email
+        if overflow:
+            ok = await send_interactive_card(email=overflow, card=card)
+            logger.info(
+                "coreguard send → overflow email %s (group_sent_today=%d quota=%d, ok=%s)",
+                overflow, sent_today, quota, ok,
+            )
+            await _record_dispatch(
+                today=today, target_kind="email",
+                target_value=overflow, sent_ok=bool(ok),
+                alert_title=title, breach_count=breach_count,
+                overflow_from_group=(sent_today >= quota and bool(s.feishu_target_chat_id)),
+            )
+            return bool(ok)
+
+        logger.warning("group quota exhausted but no overflow_email configured, dropping alert")
+        return False
     except Exception as e:
         logger.error("feishu send_interactive_card failed: %s", e)
         return False

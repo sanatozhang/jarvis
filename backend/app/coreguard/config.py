@@ -26,7 +26,12 @@ class CoreguardSettings(BaseSettings):
     feishu_target_chat_id: str = ""
     feishu_target_email: str = ""
     # 演示阶段：email 优先于 chat_id（点对点不打扰群）
+    # 2026-05-28：已废弃，新路由用 group_daily_quota + overflow_email；保留字段避免 env 校验失败
     feishu_prefer_email: bool = False
+    # 2026-05-28 群配额：每日最多发到群 N 条，超出转 overflow_email（不打扰群里其他人）
+    feishu_group_daily_quota: int = 2
+    # 群配额溢出的个人邮箱；不设回落 feishu_target_email
+    feishu_overflow_email: str = ""
 
     # Demo dashboard 锁定
     dashboard_id: str = "4h8-qff-zra"
@@ -102,4 +107,7 @@ def get_coreguard_settings() -> CoreguardSettings:
             or yaml_feishu["alert_email"]
             or yaml_feishu["target_email"]
         )
+    # overflow_email：未单独配置时回落 target_email；保证"群配额满 → 总有去处"
+    if not s.feishu_overflow_email:
+        s.feishu_overflow_email = s.feishu_target_email
     return s
