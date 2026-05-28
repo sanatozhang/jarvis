@@ -177,6 +177,9 @@ class CrashPullRequest(Base):
     reviewer_assigned_at = Column(DateTime, nullable=True)  # 首次成功通知时间
     last_reminder_at = Column(DateTime, nullable=True)      # 最近一次提醒（每日幂等基准）
     reviewed_at = Column(DateTime, nullable=True)           # 检测到 GH review/merge/close 即停推
+    # GitHub PR reviewDecision：APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED / ""（未触发 review）
+    # 抓手：approved 但未 merge 是「卡最后一公里」状态，日报单列让 PR 作者推 merge
+    review_decision = Column(String(32), default="")
     # 兜底原因：ok / blame_empty / pr_url_missing / diff_empty / repo_missing / bot_only / all_unresolved
     reviewer_fallback_reason = Column(String(64), default="")
     created_at = Column(DateTime, default=datetime.utcnow)

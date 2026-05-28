@@ -458,6 +458,8 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
         closed_at = _parse_iso_dt(payload.get("closedAt"))
         if closed_at:
             row.closed_at = closed_at
+        # 持久化 reviewDecision — 日报需识别 "已 approve 待 merge" 卡最后一公里状态
+        row.review_decision = review_decision
         row.last_synced_at = datetime.utcnow()
         await session.commit()
 

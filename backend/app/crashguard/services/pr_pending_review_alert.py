@@ -67,22 +67,28 @@ def build_pending_review_card(
     prs: List[Dict],
     stats: Dict[str, int] = None,
     frontend_base_url: str = "",
+    approved_prs: List[Dict] = None,
 ) -> Dict:
-    """构造飞书 interactive card：昨日交付 stats + 当前积压 PR 清单。
+    """构造飞书 interactive card：昨日交付 stats + approved 待 merge + 当前积压清单。
 
     prs: List[{pr_url, pr_number, repo, reviewer_emails(List[str]), age_days, pr_status}]
+    approved_prs: 已 approve 但未 merge 的 PR 清单（卡最后一公里），同 prs 结构；
+                  None 或空列表则不渲染该小节。
     stats: {"yesterday_merged": N, "yesterday_closed": M, "yesterday_created": K,
-            "total_pending": T}
+            "total_pending": T, "total_approved": A}
            若为 None，按 prs 长度回退（保持向后兼容）。
     frontend_base_url: 用于生成"查看完整 PR 列表"链接（按 status 筛选 merged/closed/...）；
                        空字符串则不渲染该链接（向后兼容）。
     """
+    approved_prs = approved_prs or []
     n = len(prs)
+    n_approved = len(approved_prs)
     s = stats or {}
     yesterday_merged = int(s.get("yesterday_merged", 0))
     yesterday_closed = int(s.get("yesterday_closed", 0))
     yesterday_created = int(s.get("yesterday_created", 0))
     total_pending = int(s.get("total_pending", n))
+    total_approved = int(s.get("total_approved", n_approved))
 
     # 色阶：昨日 merged 多 = green（流速好），积压多 → orange/red
     if yesterday_merged >= 3 and total_pending < 10:
@@ -111,7 +117,8 @@ def build_pending_review_card(
             f"  ✅ merged: **{yesterday_merged}**\n"
             f"  ❌ closed (未合): **{yesterday_closed}**\n"
             f"  🆕 新建: **{yesterday_created}**\n"
-            f"  ⏳ 当前 pending (等 review): **{total_pending}**"
+            f"  ⏳ 当前 pending (等 review): **{total_pending}**\n"
+            f"  🟢 已 approve 待 merge: **{total_approved}**"
         ),
     }})
     # 加一行"完整 PR 列表"入口（按状态可筛 merged/closed/draft/open）
@@ -124,6 +131,30 @@ def build_pending_review_card(
                 f"[{pr_list_url}]({pr_list_url})"
             ),
         }})
+
+    # 「✅ 已 approve 待 merge」清单 — 卡最后一公里，PR 作者需推 merge
+    if approved_prs:
+        blocks.append({"tag": "hr"})
+        blocks.append({"tag": "div", "text": {
+            "tag": "lark_md",
+            "content": f"**🟢 已 approve 待 merge（{n_approved} 条）**——PR 作者请尽快合入：",
+        }})
+        approved_by_repo: Dict[str, List[Dict]] = {}
+        for p in approved_prs:
+            approved_by_repo.setdefault(p.get("repo") or "unknown", []).append(p)
+        for repo in sorted(approved_by_repo.keys()):
+            repo_prs = sorted(approved_by_repo[repo], key=lambda x: -x.get("age_days", 0))
+            lines = [f"\n**📦 {repo} ({len(repo_prs)} 条)**"]
+            for p in repo_prs:
+                age = p.get("age_days", 0)
+                age_str = f"{age}天" if age > 0 else "今天"
+                lines.append(
+                    f"🟢 [#{p.get('pr_number')}]({p.get('pr_url')}) · {age_str} · approved"
+                )
+            blocks.append({"tag": "div", "text": {
+                "tag": "lark_md",
+                "content": "\n".join(lines),
+            }})
 
     blocks.append({"tag": "hr"})
     blocks.append({"tag": "div", "text": {
@@ -162,7 +193,10 @@ def build_pending_review_card(
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"📊 crashguard PR 日报 · 昨日 +{yesterday_merged} merged / 当前 {total_pending} pending",
+                "content": (
+                    f"📊 crashguard PR 日报 · 昨日 +{yesterday_merged} merged "
+                    f"/ 待 merge {total_approved} / pending {total_pending}"
+                ),
             },
             "template": template,
         },
@@ -240,39 +274,54 @@ async def run_pending_review_alert() -> Dict:
             CrashPullRequest.reviewed_at.is_(None),
         )
         rows = (await session.execute(stmt)).scalars().all()
+        # approved 待 merge：reviewDecision='APPROVED' 且仍未合入/未关闭
+        approved_stmt = select(CrashPullRequest).where(
+            CrashPullRequest.merged_at.is_(None),
+            CrashPullRequest.closed_at.is_(None),
+            CrashPullRequest.review_decision == "APPROVED",
+        )
+        approved_rows = (await session.execute(approved_stmt)).scalars().all()
         stats = await _collect_yesterday_stats(session)
 
     total_pending = len(rows)
+    total_approved = len(approved_rows)
     activity_yesterday = (
         stats["yesterday_merged"] + stats["yesterday_closed"] + stats["yesterday_created"]
     )
-    if total_pending == 0 and activity_yesterday == 0:
-        logger.info("pr_pending_review_alert: 0 pending + 0 yesterday activity, skip")
+    if total_pending == 0 and total_approved == 0 and activity_yesterday == 0:
+        logger.info("pr_pending_review_alert: 0 pending + 0 approved + 0 yesterday activity, skip")
         return {
-            "pending_count": 0,
+            "pending_count": 0, "approved_count": 0,
             **stats,
             "sent": False, "skip_reason": "no_pending_no_activity",
         }
 
-    prs: List[Dict] = []
-    for r in rows:
+    def _row_to_dict(r) -> Dict:
         try:
             revs = json.loads(r.reviewer_emails or "[]")
         except (json.JSONDecodeError, TypeError):
             revs = []
-        prs.append({
+        return {
             "pr_url": r.pr_url or "",
             "pr_number": r.pr_number,
             "repo": r.repo or "unknown",
             "pr_status": r.pr_status or "",
             "reviewer_emails": revs,
             "age_days": _age_days(r.created_at) if r.created_at else 0,
-        })
+        }
+
+    prs = [_row_to_dict(r) for r in rows]
+    approved_prs = [_row_to_dict(r) for r in approved_rows]
 
     card = build_pending_review_card(
         prs,
-        stats={**stats, "total_pending": total_pending},
+        stats={
+            **stats,
+            "total_pending": total_pending,
+            "total_approved": total_approved,
+        },
         frontend_base_url=getattr(s, "frontend_base_url", "") or "",
+        approved_prs=approved_prs,
     )
 
     from app.services import feishu_cli
@@ -281,19 +330,23 @@ async def run_pending_review_alert() -> Dict:
     except Exception as e:
         logger.exception("send_interactive_card failed: %s", e)
         return {
-            "pending_count": total_pending, **stats,
+            "pending_count": total_pending, "approved_count": total_approved, **stats,
             "sent": False, "skip_reason": f"send_error:{e}",
         }
 
     if not ok:
         return {
-            "pending_count": total_pending, **stats,
+            "pending_count": total_pending, "approved_count": total_approved, **stats,
             "sent": False, "skip_reason": "send_failed",
         }
 
     logger.info(
-        "pr_pending_review_alert sent: pending=%d y_merged=%d y_closed=%d y_created=%d target=%s",
-        total_pending, stats["yesterday_merged"], stats["yesterday_closed"],
+        "pr_pending_review_alert sent: pending=%d approved=%d y_merged=%d y_closed=%d y_created=%d target=%s",
+        total_pending, total_approved,
+        stats["yesterday_merged"], stats["yesterday_closed"],
         stats["yesterday_created"], target_email,
     )
-    return {"pending_count": total_pending, **stats, "sent": True}
+    return {
+        "pending_count": total_pending, "approved_count": total_approved,
+        **stats, "sent": True,
+    }

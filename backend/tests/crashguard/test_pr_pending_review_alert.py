@@ -57,10 +57,11 @@ def test_build_pending_review_card_groups_by_repo_and_sorts_by_age():
     card = build_pending_review_card(prs, stats={
         "yesterday_merged": 2, "yesterday_closed": 1, "yesterday_created": 4, "total_pending": 3,
     })
-    # 新标题：日报样式（含 merged/pending 数）
+    # 新标题：日报样式（含 merged / 待 merge / pending 数）
     title = card["header"]["title"]["content"]
     assert "日报" in title or "merged" in title.lower()
-    assert "+2 merged" in title and "3 pending" in title
+    assert "+2 merged" in title
+    assert "pending 3" in title or "3 pending" in title
     assert card["header"]["template"] in ("blue", "orange", "red", "green")
 
     # 全文应该包含 PR# 和 link
@@ -113,6 +114,52 @@ def test_build_pending_review_card_includes_today_stats():
     assert "1" in body
     assert "新建" in body or "created" in body.lower()
     assert "5" in body
+
+
+def test_build_card_renders_approved_section():
+    """已 approve 待 merge 必须单独成节，PR 号与链接都要出现，且与积压清单分离。"""
+    from app.crashguard.services.pr_pending_review_alert import build_pending_review_card
+    import json as _json
+    pending = [{"pr_url": "uP", "pr_number": 11, "repo": "flutter",
+                "pr_status": "open", "reviewer_emails": [], "age_days": 3}]
+    approved = [
+        {"pr_url": "uA1", "pr_number": 22, "repo": "flutter",
+         "pr_status": "open", "reviewer_emails": [], "age_days": 1},
+        {"pr_url": "uA2", "pr_number": 33, "repo": "ios",
+         "pr_status": "open", "reviewer_emails": [], "age_days": 2},
+    ]
+    card = build_pending_review_card(
+        pending,
+        stats={"yesterday_merged": 0, "yesterday_closed": 0, "yesterday_created": 0,
+               "total_pending": 1, "total_approved": 2},
+        approved_prs=approved,
+    )
+    body = _json.dumps(card, ensure_ascii=False)
+    # 标题含「待 merge 2」
+    title = card["header"]["title"]["content"]
+    assert "待 merge 2" in title
+    # 顶部 stats 含 approved 行
+    assert "已 approve 待 merge" in body
+    # approved 清单出现 PR# 与 URL
+    assert "#22" in body and "uA1" in body
+    assert "#33" in body and "uA2" in body
+    # 积压清单也在
+    assert "#11" in body and "uP" in body
+
+
+def test_build_card_no_approved_section_when_empty():
+    """没有 approved PR 时不渲染该小节标题，避免空白噪音。"""
+    from app.crashguard.services.pr_pending_review_alert import build_pending_review_card
+    import json as _json
+    card = build_pending_review_card(
+        prs=[{"pr_url": "u", "pr_number": 1, "repo": "r", "pr_status": "open",
+              "reviewer_emails": [], "age_days": 0}],
+        stats={"yesterday_merged": 0, "yesterday_closed": 0, "yesterday_created": 0,
+               "total_pending": 1, "total_approved": 0},
+    )
+    body = _json.dumps(card, ensure_ascii=False)
+    # 顶部 stats 计数行仍有（数字 0），但不出现"PR 作者请尽快合入"的小节标题
+    assert "PR 作者请尽快合入" not in body
 
 
 def test_yesterday_utc_window_returns_24h_range_ending_before_today():
@@ -269,6 +316,60 @@ async def test_run_alert_sends_with_pending_prs(patched_session, monkeypatch):
     assert "#300" not in card_body
     assert "#400" not in card_body
     assert "#500" not in card_body
+
+
+@pytest.mark.asyncio
+async def test_run_alert_lists_approved_prs_separately(patched_session, monkeypatch):
+    """review_decision='APPROVED' 且未 merge 的 PR 应进 approved 清单，不进 pending。"""
+    from app.crashguard.services.pr_pending_review_alert import run_pending_review_alert
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    _make_settings(monkeypatch)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.services.feishu_cli.send_interactive_card", send_mock)
+
+    async with get_session() as s:
+        # approved 但未 merge —— 必须进 approved 清单（reviewed_at 也已写）
+        s.add(CrashPullRequest(
+            analysis_id=10, datadog_issue_id="ia", repo="flutter",
+            pr_number=777, pr_url="https://example.com/777",
+            pr_status="open",
+            reviewed_at=datetime.utcnow(),
+            review_decision="APPROVED",
+            created_at=datetime.utcnow() - timedelta(days=1),
+        ))
+        # pending —— reviewed_at IS NULL，review_decision 也未填
+        s.add(CrashPullRequest(
+            analysis_id=11, datadog_issue_id="ib", repo="ios",
+            pr_number=888, pr_url="https://example.com/888",
+            pr_status="open",
+            review_decision="",
+            created_at=datetime.utcnow(),
+        ))
+        # changes_requested —— reviewed_at 已写但 decision 不是 APPROVED → 都不进
+        s.add(CrashPullRequest(
+            analysis_id=12, datadog_issue_id="ic", repo="flutter",
+            pr_number=999, pr_url="https://example.com/999",
+            pr_status="open",
+            reviewed_at=datetime.utcnow(),
+            review_decision="CHANGES_REQUESTED",
+            created_at=datetime.utcnow(),
+        ))
+        await s.commit()
+
+    res = await run_pending_review_alert()
+    assert res["pending_count"] == 1, f"only #888 should be pending: {res}"
+    assert res["approved_count"] == 1, f"only #777 should be approved: {res}"
+    assert res["sent"] is True
+    send_mock.assert_called_once()
+
+    import json as _json
+    body = _json.dumps(send_mock.call_args.kwargs["card"], ensure_ascii=False)
+    assert "#777" in body  # approved 出现
+    assert "#888" in body  # pending 出现
+    # changes_requested 既不在 pending 也不在 approved
+    assert "#999" not in body
 
 
 @pytest.mark.asyncio
