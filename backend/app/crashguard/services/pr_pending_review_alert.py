@@ -1,14 +1,15 @@
-"""工作日 10:00 飞书 PR 日报：今日 merged/closed/新建 stats + 积压清单。
+"""工作日 10:00 飞书 PR 日报：昨日 merged/closed/新建 stats + 当前积压清单。
 
 抓手：crashguard 自动 PR 越攒越多没合入会污染指标 + 错过修复窗口；
-每天上班时间给 reviewer 推一份积压清单逼着收尾。同时附今日 merged/closed/新建
-统计，让管理者一眼看到 PR 流速。
+每天上班时间给 reviewer 推**昨日完整 24h 的交付汇总** + **当前积压清单**，
+闭环昨日、规划今日。早上 10:00 报"今日"无意义——才上班 1h，数据近乎零。
 
 口径：
-- 今日 merged = merged_at 落在北京当日 [00:00, 24:00)
-- 今日 closed = closed_at 落在北京当日 [00:00, 24:00)（merged 也算 closed，分开统计）
-- 今日新建 = created_at 落在北京当日
+- 昨日 merged = merged_at 落在北京昨日 [00:00, 24:00)
+- 昨日 closed = closed_at 落在北京昨日 [00:00, 24:00)（merged 也算 closed，分开统计）
+- 昨日新建 = created_at 落在北京昨日
 - pending（等 review）= merged_at IS NULL AND closed_at IS NULL AND reviewed_at IS NULL
+  （当前快照，非昨日；积压是动态的）
 
 cron 由 settings.pr_pending_review_cron 控制（默认 "0 10 * * 1-5" 工作日 10:00）。
 心跳记录 job_name="pr_pending_review"。
@@ -31,19 +32,29 @@ def _now_local() -> datetime:
     return datetime.now()
 
 
-def _today_utc_window() -> tuple[datetime, datetime]:
-    """北京"今日" [00:00, 24:00) 对应的 UTC naive 范围。
+def _yesterday_utc_window() -> tuple[datetime, datetime]:
+    """北京"昨日" [00:00, 24:00) 对应的 UTC naive 范围。
 
     容器内 datetime.now() 已是北京时间（TZ=Asia/Shanghai）；
     db 字段（merged_at/closed_at/created_at）写入用 utcnow() → UTC naive。
     返回 (start_utc, end_utc) 用于 SQL >= / < 过滤。
+
+    例：北京 2026-05-28 10:00 触发 → 窗口为北京 [2026-05-27 00:00, 2026-05-28 00:00)
+    → UTC naive [2026-05-26 16:00, 2026-05-27 16:00)。
     """
     now_local = _now_local()
-    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    # 北京 → UTC 减 8 小时（容器内 .now() 是 +08，所以本地 0:00 = UTC 16:00 前一天）
-    start_utc = start_local - timedelta(hours=8)
+    today_local_midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_local_midnight = today_local_midnight - timedelta(days=1)
+    # 北京 → UTC 减 8 小时
+    start_utc = yesterday_local_midnight - timedelta(hours=8)
     end_utc = start_utc + timedelta(days=1)
     return start_utc, end_utc
+
+
+def _yesterday_local_date_str() -> str:
+    """北京"昨日"的 YYYY-MM-DD (Weekday) 字符串，用于卡片展示。"""
+    yesterday = _now_local() - timedelta(days=1)
+    return yesterday.strftime("%Y-%m-%d (%a)")
 
 
 def _age_days(created_at: datetime) -> int:
@@ -53,21 +64,22 @@ def _age_days(created_at: datetime) -> int:
 
 
 def build_pending_review_card(prs: List[Dict], stats: Dict[str, int] = None) -> Dict:
-    """构造飞书 interactive card：日报 stats + 积压 PR 清单。
+    """构造飞书 interactive card：昨日交付 stats + 当前积压 PR 清单。
 
     prs: List[{pr_url, pr_number, repo, reviewer_emails(List[str]), age_days, pr_status}]
-    stats: {"today_merged": N, "today_closed": M, "today_created": K, "total_pending": T}
+    stats: {"yesterday_merged": N, "yesterday_closed": M, "yesterday_created": K,
+            "total_pending": T}
            若为 None，按 prs 长度回退（保持向后兼容）。
     """
     n = len(prs)
     s = stats or {}
-    today_merged = int(s.get("today_merged", 0))
-    today_closed = int(s.get("today_closed", 0))
-    today_created = int(s.get("today_created", 0))
+    yesterday_merged = int(s.get("yesterday_merged", 0))
+    yesterday_closed = int(s.get("yesterday_closed", 0))
+    yesterday_created = int(s.get("yesterday_created", 0))
     total_pending = int(s.get("total_pending", n))
 
-    # 色阶：今日 merged 多 = green, 单看 pending → orange/red
-    if today_merged >= 3 and total_pending < 10:
+    # 色阶：昨日 merged 多 = green（流速好），积压多 → orange/red
+    if yesterday_merged >= 3 and total_pending < 10:
         template = "green"
     elif total_pending >= 10:
         template = "red"
@@ -82,23 +94,24 @@ def build_pending_review_card(prs: List[Dict], stats: Dict[str, int] = None) -> 
         by_repo.setdefault(p.get("repo") or "unknown", []).append(p)
 
     blocks: List[Dict] = []
-    # 顶部 stats 区块
-    today_str = datetime.now().strftime("%Y-%m-%d (%a)")
+    # 顶部 stats 区块：报昨日（不是今日）
+    today_str = _now_local().strftime("%Y-%m-%d (%a)")
+    yesterday_str = _yesterday_local_date_str()
     blocks.append({"tag": "div", "text": {
         "tag": "lark_md",
         "content": (
-            f"**📅 {today_str}**\n\n"
-            f"📊 **今日 PR 流速**:\n"
-            f"  ✅ merged: **{today_merged}**\n"
-            f"  ❌ closed (未合): **{today_closed}**\n"
-            f"  🆕 新建: **{today_created}**\n"
+            f"**📅 今日 {today_str} · 昨日收尾汇总**\n\n"
+            f"📊 **昨日 PR 流速（{yesterday_str}）**:\n"
+            f"  ✅ merged: **{yesterday_merged}**\n"
+            f"  ❌ closed (未合): **{yesterday_closed}**\n"
+            f"  🆕 新建: **{yesterday_created}**\n"
             f"  ⏳ 当前 pending (等 review): **{total_pending}**"
         ),
     }})
     blocks.append({"tag": "hr"})
     blocks.append({"tag": "div", "text": {
         "tag": "lark_md",
-        "content": f"**📋 积压清单（{n} 条等 review）**——按仓库分组：",
+        "content": f"**📋 当前积压（{n} 条等 review）**——按仓库分组：",
     }})
 
     for repo in sorted(by_repo.keys()):
@@ -124,7 +137,7 @@ def build_pending_review_card(prs: List[Dict], stats: Dict[str, int] = None) -> 
     blocks.append({"tag": "hr"})
     blocks.append({"tag": "note", "elements": [{
         "tag": "plain_text",
-        "content": "每个工作日 10:00 自动发送；merged / closed / 已 review 过的不再列出。",
+        "content": "每个工作日 10:00 自动发送；昨日完整 24h 交付 + 当前积压；merged / closed / 已 review 过的不再列出。",
     }]})
 
     return {
@@ -132,7 +145,7 @@ def build_pending_review_card(prs: List[Dict], stats: Dict[str, int] = None) -> 
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"📊 crashguard PR 日报 · 今日 +{today_merged} merged / {total_pending} pending",
+                "content": f"📊 crashguard PR 日报 · 昨日 +{yesterday_merged} merged / 当前 {total_pending} pending",
             },
             "template": template,
         },
@@ -140,15 +153,15 @@ def build_pending_review_card(prs: List[Dict], stats: Dict[str, int] = None) -> 
     }
 
 
-async def _collect_today_stats(session) -> Dict[str, int]:
-    """拉今日（北京）的 merged / closed / created PR 计数。
+async def _collect_yesterday_stats(session) -> Dict[str, int]:
+    """拉昨日（北京）完整 24h 的 merged / closed / created PR 计数。
 
     closed 计数排除 merged（避免重复 — merged PR 也会有 closed_at）。
     """
     from app.crashguard.models import CrashPullRequest
     from sqlalchemy import select, func, and_
 
-    start_utc, end_utc = _today_utc_window()
+    start_utc, end_utc = _yesterday_utc_window()
 
     merged_q = select(func.count()).select_from(CrashPullRequest).where(
         and_(CrashPullRequest.merged_at >= start_utc,
@@ -163,24 +176,24 @@ async def _collect_today_stats(session) -> Dict[str, int]:
         and_(CrashPullRequest.created_at >= start_utc,
              CrashPullRequest.created_at < end_utc)
     )
-    today_merged = (await session.execute(merged_q)).scalar_one() or 0
-    today_closed = (await session.execute(closed_q)).scalar_one() or 0
-    today_created = (await session.execute(created_q)).scalar_one() or 0
+    yesterday_merged = (await session.execute(merged_q)).scalar_one() or 0
+    yesterday_closed = (await session.execute(closed_q)).scalar_one() or 0
+    yesterday_created = (await session.execute(created_q)).scalar_one() or 0
     return {
-        "today_merged": int(today_merged),
-        "today_closed": int(today_closed),
-        "today_created": int(today_created),
+        "yesterday_merged": int(yesterday_merged),
+        "yesterday_closed": int(yesterday_closed),
+        "yesterday_created": int(yesterday_created),
     }
 
 
 async def run_pending_review_alert() -> Dict:
-    """主入口：拉今日 stats + 等 review PR → 构造日报卡片 → 发飞书。
+    """主入口：拉昨日 stats + 当前等 review PR → 构造日报卡片 → 发飞书。
 
-    返回 {"pending_count": N, "today_merged": M, "today_closed": K,
-          "today_created": L, "sent": bool, "skip_reason": str}。
+    返回 {"pending_count": N, "yesterday_merged": M, "yesterday_closed": K,
+          "yesterday_created": L, "sent": bool, "skip_reason": str}。
 
-    即便 pending=0，只要今日有 merged / closed / created 任一不为 0 也发日报
-    （管理者能看到 PR 流速）；全 0 才跳过。
+    即便 pending=0，只要昨日有 merged / closed / created 任一不为 0 也发日报
+    （管理者能看到昨日 PR 流速）；全 0 才跳过。
     """
     from app.crashguard.config import get_crashguard_settings
     from app.crashguard.models import CrashPullRequest
@@ -210,14 +223,14 @@ async def run_pending_review_alert() -> Dict:
             CrashPullRequest.reviewed_at.is_(None),
         )
         rows = (await session.execute(stmt)).scalars().all()
-        stats = await _collect_today_stats(session)
+        stats = await _collect_yesterday_stats(session)
 
     total_pending = len(rows)
-    activity_today = (
-        stats["today_merged"] + stats["today_closed"] + stats["today_created"]
+    activity_yesterday = (
+        stats["yesterday_merged"] + stats["yesterday_closed"] + stats["yesterday_created"]
     )
-    if total_pending == 0 and activity_today == 0:
-        logger.info("pr_pending_review_alert: 0 pending + 0 today activity, skip")
+    if total_pending == 0 and activity_yesterday == 0:
+        logger.info("pr_pending_review_alert: 0 pending + 0 yesterday activity, skip")
         return {
             "pending_count": 0,
             **stats,
@@ -260,8 +273,8 @@ async def run_pending_review_alert() -> Dict:
         }
 
     logger.info(
-        "pr_pending_review_alert sent: pending=%d merged=%d closed=%d created=%d target=%s",
-        total_pending, stats["today_merged"], stats["today_closed"],
-        stats["today_created"], target_email,
+        "pr_pending_review_alert sent: pending=%d y_merged=%d y_closed=%d y_created=%d target=%s",
+        total_pending, stats["yesterday_merged"], stats["yesterday_closed"],
+        stats["yesterday_created"], target_email,
     )
     return {"pending_count": total_pending, **stats, "sent": True}

@@ -55,7 +55,7 @@ def test_build_pending_review_card_groups_by_repo_and_sorts_by_age():
          "reviewer_emails": [], "age_days": 0},
     ]
     card = build_pending_review_card(prs, stats={
-        "today_merged": 2, "today_closed": 1, "today_created": 4, "total_pending": 3,
+        "yesterday_merged": 2, "yesterday_closed": 1, "yesterday_created": 4, "total_pending": 3,
     })
     # 新标题：日报样式（含 merged/pending 数）
     title = card["header"]["title"]["content"]
@@ -83,7 +83,7 @@ def test_build_pending_review_card_template_escalates_with_pending():
                "reviewer_emails": [], "age_days": 0} for i in range(7)]
     many = [{"pr_url": "u", "pr_number": i, "repo": "r", "pr_status": "open",
              "reviewer_emails": [], "age_days": 0} for i in range(12)]
-    base_stats = {"today_merged": 0, "today_closed": 0, "today_created": 0}
+    base_stats = {"yesterday_merged": 0, "yesterday_closed": 0, "yesterday_created": 0}
     assert build_pending_review_card(
         few, stats={**base_stats, "total_pending": 3})["header"]["template"] == "blue"
     assert build_pending_review_card(
@@ -92,8 +92,8 @@ def test_build_pending_review_card_template_escalates_with_pending():
         many, stats={**base_stats, "total_pending": 12})["header"]["template"] == "red"
     # green: 今日 merged 多 + pending 少 → 流速好
     assert build_pending_review_card(
-        few, stats={"today_merged": 5, "today_closed": 0,
-                    "today_created": 0, "total_pending": 3})["header"]["template"] == "green"
+        few, stats={"yesterday_merged": 5, "yesterday_closed": 0,
+                    "yesterday_created": 0, "total_pending": 3})["header"]["template"] == "green"
 
 
 def test_build_pending_review_card_includes_today_stats():
@@ -103,26 +103,36 @@ def test_build_pending_review_card_includes_today_stats():
     card = build_pending_review_card(
         prs=[{"pr_url": "u", "pr_number": 100, "repo": "flutter",
               "pr_status": "open", "reviewer_emails": [], "age_days": 0}],
-        stats={"today_merged": 3, "today_closed": 1, "today_created": 5, "total_pending": 1},
+        stats={"yesterday_merged": 3, "yesterday_closed": 1, "yesterday_created": 5, "total_pending": 1},
     )
     body = _json.dumps(card, ensure_ascii=False)
     # 数字必须出现且 label 正确
     assert "merged" in body.lower()
-    assert "3" in body  # today_merged
+    assert "3" in body  # yesterday_merged
     assert "closed" in body.lower()
     assert "1" in body
     assert "新建" in body or "created" in body.lower()
     assert "5" in body
 
 
-def test_today_utc_window_returns_24h_range():
-    """北京"今日" 应该返回 UTC 24 小时窗口。"""
-    from app.crashguard.services.pr_pending_review_alert import _today_utc_window
-    start, end = _today_utc_window()
+def test_yesterday_utc_window_returns_24h_range_ending_before_today():
+    """北京"昨日" 应该返回 UTC 24 小时窗口，且 end 必须早于今日北京 0:00。"""
+    from datetime import datetime as _dt, timedelta as _td
+    from app.crashguard.services.pr_pending_review_alert import (
+        _yesterday_utc_window, _now_local,
+    )
+    start, end = _yesterday_utc_window()
     # 范围正好 24 小时
     assert (end - start).total_seconds() == 86400
-    # start 在 end 之前
     assert start < end
+    # end 必须 ≤ 今日北京 0:00 对应的 UTC（= 今日北京 0:00 - 8h）
+    today_local_midnight = _now_local().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    today_utc_midnight = today_local_midnight - _td(hours=8)
+    assert end <= today_utc_midnight, (
+        f"end {end} must not bleed into today, today_utc_midnight={today_utc_midnight}"
+    )
 
 
 # ---------- main entry ----------
@@ -160,32 +170,37 @@ async def test_run_alert_no_pending_no_activity_skips_send(patched_session, monk
 
 
 @pytest.mark.asyncio
-async def test_run_alert_sends_when_today_has_merge_even_if_no_pending(
+async def test_run_alert_sends_when_yesterday_has_merge_even_if_no_pending(
     patched_session, monkeypatch
 ):
-    """无 pending 但今日有 merged → 仍发日报（让管理者看到流速）。"""
-    from app.crashguard.services.pr_pending_review_alert import run_pending_review_alert
+    """无 pending 但昨日有 merged → 仍发日报（让管理者看到昨日流速）。"""
+    from app.crashguard.services.pr_pending_review_alert import (
+        run_pending_review_alert, _yesterday_utc_window,
+    )
     from app.crashguard.models import CrashPullRequest
     from app.db.database import get_session
 
-    _make_settings(monkeypatch)
+    _make_settings(monkeypatch)  # _now_local 已 patch 为 2026-05-26 10:00
     send_mock = AsyncMock(return_value=True)
     monkeypatch.setattr("app.services.feishu_cli.send_interactive_card", send_mock)
 
+    # 落在昨日 UTC 窗口的中间点（保证不会跨边界）
+    start_utc, end_utc = _yesterday_utc_window()
+    mid_utc = start_utc + (end_utc - start_utc) / 2
+
     async with get_session() as s:
-        # 今日刚 merged 的 PR（没 pending）
         s.add(CrashPullRequest(
             analysis_id=1, datadog_issue_id="i1", repo="flutter",
             pr_number=999, pr_url="https://example.com/999",
             pr_status="merged",
-            merged_at=datetime.utcnow(),
-            created_at=datetime.utcnow() - timedelta(hours=2),
+            merged_at=mid_utc,
+            created_at=mid_utc - timedelta(hours=2),
         ))
         await s.commit()
 
     res = await run_pending_review_alert()
     assert res["pending_count"] == 0
-    assert res["today_merged"] >= 1
+    assert res["yesterday_merged"] >= 1
     assert res["sent"] is True
     send_mock.assert_called_once()
 
