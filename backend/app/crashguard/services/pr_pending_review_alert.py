@@ -63,13 +63,19 @@ def _age_days(created_at: datetime) -> int:
     return max(0, delta.days)
 
 
-def build_pending_review_card(prs: List[Dict], stats: Dict[str, int] = None) -> Dict:
+def build_pending_review_card(
+    prs: List[Dict],
+    stats: Dict[str, int] = None,
+    frontend_base_url: str = "",
+) -> Dict:
     """构造飞书 interactive card：昨日交付 stats + 当前积压 PR 清单。
 
     prs: List[{pr_url, pr_number, repo, reviewer_emails(List[str]), age_days, pr_status}]
     stats: {"yesterday_merged": N, "yesterday_closed": M, "yesterday_created": K,
             "total_pending": T}
            若为 None，按 prs 长度回退（保持向后兼容）。
+    frontend_base_url: 用于生成"查看完整 PR 列表"链接（按 status 筛选 merged/closed/...）；
+                       空字符串则不渲染该链接（向后兼容）。
     """
     n = len(prs)
     s = stats or {}
@@ -108,6 +114,17 @@ def build_pending_review_card(prs: List[Dict], stats: Dict[str, int] = None) -> 
             f"  ⏳ 当前 pending (等 review): **{total_pending}**"
         ),
     }})
+    # 加一行"完整 PR 列表"入口（按状态可筛 merged/closed/draft/open）
+    if frontend_base_url:
+        pr_list_url = f"{frontend_base_url.rstrip('/')}/crashguard/pull-requests"
+        blocks.append({"tag": "div", "text": {
+            "tag": "lark_md",
+            "content": (
+                f"🔗 **查看完整 PR 列表（merged / closed / draft / open 全状态）**："
+                f"[{pr_list_url}]({pr_list_url})"
+            ),
+        }})
+
     blocks.append({"tag": "hr"})
     blocks.append({"tag": "div", "text": {
         "tag": "lark_md",
@@ -252,9 +269,11 @@ async def run_pending_review_alert() -> Dict:
             "age_days": _age_days(r.created_at) if r.created_at else 0,
         })
 
-    card = build_pending_review_card(prs, stats={
-        **stats, "total_pending": total_pending,
-    })
+    card = build_pending_review_card(
+        prs,
+        stats={**stats, "total_pending": total_pending},
+        frontend_base_url=getattr(s, "frontend_base_url", "") or "",
+    )
 
     from app.services import feishu_cli
     try:
