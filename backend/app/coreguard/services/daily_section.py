@@ -296,6 +296,88 @@ def _build_summary_chip(persistent: List[_AggMetric], transient: List[_AggMetric
     return " · ".join(parts)
 
 
+async def _check_day_level(target_date: _date_t) -> List[_AggMetric]:
+    """对配了 `daily_threshold` 的指标做 day-level SHoW（24h avg vs 上周同日 24h avg）。
+
+    返回命中 daily_threshold 的 _AggMetric 列表（带 day-level 标记），调用方 merge 进
+    persistent 桶。**铁律：无异常返回空 list，绝不出现"全部正常"占位行。**
+
+    数据源直拉 Datadog（不依赖 snapshot 表，因为目标指标 alert_enabled=False 已经
+    不写 hourly snapshot）。30d 数据驱动决策：cold_startup_p90 daily SHoW 阈值定 0.10。
+    """
+    try:
+        from app.coreguard.services.dashboard_loader import get_metrics_config
+        from app.coreguard.services.datadog_scalar import query_scalar
+        cfg = await get_metrics_config(force_reload=False)
+    except Exception as e:
+        logger.warning("day-level: metrics_config load failed: %s", e)
+        return []
+
+    # 目标 metric：配了 daily_threshold + 有可用 queries
+    targets = [m for m in cfg.metrics if m.daily_threshold and m.queries]
+    if not targets:
+        return []
+
+    cur_start = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
+    cur_end = cur_start + timedelta(days=1)
+    base_start = cur_start - timedelta(days=7)
+    base_end = base_start + timedelta(days=1)
+
+    cur_s_ms, cur_e_ms = int(cur_start.timestamp() * 1000), int(cur_end.timestamp() * 1000)
+    base_s_ms, base_e_ms = int(base_start.timestamp() * 1000), int(base_end.timestamp() * 1000)
+
+    breaches: List[_AggMetric] = []
+    for m in targets:
+        try:
+            cur_v = await query_scalar(m.queries, m.formula or "query1", cur_s_ms, cur_e_ms)
+            base_v = await query_scalar(m.queries, m.formula or "query1", base_s_ms, base_e_ms)
+        except Exception as e:
+            logger.warning("day-level: query failed for %s: %s", m.key, e)
+            continue
+        if cur_v is None or base_v is None or base_v == 0:
+            continue
+
+        # 判定 change + direction
+        if m.value_type == "percent_pp":
+            change = cur_v - base_v  # 绝对百分点差
+            threshold = float(m.daily_threshold.get("pp", 1.0))
+            breach = (m.direction == "up_is_bad" and change >= threshold) or \
+                     (m.direction == "down_is_bad" and -change >= threshold)
+        else:
+            # latency_pct / count_pct: 相对变化
+            change = (cur_v - base_v) / base_v
+            threshold = float(m.daily_threshold.get("pct", 0.20))
+            breach = (m.direction == "up_is_bad" and change >= threshold) or \
+                     (m.direction == "down_is_bad" and -change >= threshold)
+
+        if not breach:
+            continue
+
+        # 命中 → 构造一个 day-level _AggMetric 假装是 persistent 项；longest_consecutive=24
+        # 让现有渲染逻辑识别为"持续异常"等级
+        agg = _AggMetric(
+            key=m.key,
+            title=m.title + " (day-level)",
+            tier=m.tier,
+            value_type=m.value_type,
+            direction=m.direction,
+            threshold=m.daily_threshold,
+            datadog_widget_id=m.datadog_widget_id,
+            breach_windows=24,           # 等效"全天 breach"，让渲染层置顶
+            total_windows=24,
+            longest_consecutive=24,      # ≥ persistent_threshold_hours
+            worst_change=change,
+            worst_window_start=cur_start.replace(tzinfo=None),
+            worst_current_value=cur_v,
+            worst_baseline_value=base_v,
+        )
+        breaches.append(agg)
+        logger.info("day-level breach: %s Δ=%+.3f (cur=%.2f, base=%.2f, th=%s)",
+                    m.key, change, cur_v, base_v, m.daily_threshold)
+
+    return breaches
+
+
 async def build_morning_section(
     target_date: _date_t,
     persistent_threshold_hours: int = 2,
@@ -351,6 +433,19 @@ async def build_morning_section(
             m.baseline_longest_consecutive = bm.longest_consecutive
 
     persistent, transient, healthy_count = _classify(metrics, persistent_threshold_hours)
+
+    # Day-level SHoW 检查：对 hourly OFF 但配了 daily_threshold 的指标，直接拉
+    # Datadog 24h 平均 vs 上周同日 24h 平均比较；命中阈值的 merge 进 persistent。
+    # 全健康 → 无任何 day-level 字样出现（铁律：有问题才显示）。
+    day_level_breaches = await _check_day_level(target_date)
+    if day_level_breaches:
+        persistent.extend(day_level_breaches)
+        # 重新按 tier + 严重程度排序（_classify 内同款 key）
+        def _rkey(m: _AggMetric):
+            tier_order = {"P0": 0, "P1": 1, "P2": 2}.get(m.tier, 3)
+            return (tier_order, -(abs(m.worst_change or 0)))
+        persistent.sort(key=_rkey)
+
     total_metrics = len(metrics)
     settings = get_coreguard_settings()
     dashboard_id = settings.dashboard_id

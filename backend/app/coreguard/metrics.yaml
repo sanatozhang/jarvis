@@ -91,8 +91,12 @@ metrics:
     tier: P1
     value_type: latency_pct
     direction: up_is_bad
-    threshold: { pct: 0.20 }
-    alert_enabled: true
+    # v5 2026-05-28: hourly 阈值字段已删 — 设备分布漂移 + P90 尾部敏感，
+    # hourly SHoW 自然抖动 avg|chg|=17.4%，根本不可用。改走早报 day-level。
+    # 30d Datadog 实测：daily SHoW avg|chg|=14.2%, max=27.1%, P90=31.6%；
+    # pct=0.10 在 30d 内 1 次告警（5/27 的 +27% 异常），alert rate 4% 合理。
+    daily_threshold: { pct: 0.10 }
+    alert_enabled: false   # 不参与 hourly；daily 检查走 daily_section.py
 
   - key: ios_jank_count_p90
     title: "APP单次使用的卡顿次数iOS（p90）"

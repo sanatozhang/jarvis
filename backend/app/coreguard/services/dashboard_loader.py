@@ -30,8 +30,12 @@ class MetricConfig:
     tier: str                      # P0 / P1 / P2
     value_type: str                # percent_pp / latency_pct / count_pct
     direction: str                 # down_is_bad / up_is_bad
-    threshold: Dict[str, float]    # {"pp": 0.5} 或 {"pct": 0.20}
-    alert_enabled: bool
+    # threshold 用于 hourly SHoW 判定；指标完全走 day-level 路径时可缺省。
+    threshold: Optional[Dict[str, float]] = None    # {"pp": 0.5} 或 {"pct": 0.20}
+    alert_enabled: bool = False
+    # day-level SHoW 阈值（24h 平均 vs 上周同日 24h 平均）；只在 daily_section 里用，
+    # 与 alert_enabled 独立 —— 一个 metric 可以 hourly OFF / daily ON（如 cold_startup_p90）
+    daily_threshold: Optional[Dict[str, float]] = None
 
     # 单指标 min_users override（None = 用 tier 级全局 settings.min_users）
     # 仅用于"小流量噪声大"的指标（音频导入 / AI 转写 / 云上传等）— v3 2026-05-26
@@ -118,8 +122,9 @@ async def load_metrics_config() -> MetricsConfig:
                 tier=m.get("tier", "P2"),
                 value_type=m.get("value_type", "percent_pp"),
                 direction=m.get("direction", "down_is_bad"),
-                threshold=m.get("threshold", {}),
+                threshold=(m.get("threshold") or None),
                 alert_enabled=bool(m.get("alert_enabled", False)),
+                daily_threshold=(m.get("daily_threshold") or None),
                 min_users=(int(m["min_users"]) if m.get("min_users") is not None else None),
             )
             for m in raw.get("metrics", [])
