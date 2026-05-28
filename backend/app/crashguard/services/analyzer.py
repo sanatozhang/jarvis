@@ -1232,11 +1232,13 @@ def _format_top_dist(items: list, max_n: int = 3) -> str:
 
 async def _persist_distribution_to_issue(issue_id: str, detail: Dict[str, Any]) -> None:
     """把 RUM 事件分布 + 完整堆栈回写到 CrashIssue 缓存字段"""
+    import json as _json
     top_os = _format_top_dist(detail.get("os_distribution") or [])
     top_device = _format_top_dist(detail.get("device_distribution") or [])
     top_ver = _format_top_dist(detail.get("version_distribution") or [])
     full_stack = (detail.get("full_stack") or "").strip()
-    if not (top_os or top_device or top_ver or full_stack):
+    variants = detail.get("stack_variants") or []
+    if not (top_os or top_device or top_ver or full_stack or variants):
         return
     async with get_session() as session:
         row = (await session.execute(
@@ -1250,7 +1252,16 @@ async def _persist_distribution_to_issue(issue_id: str, detail: Dict[str, Any]) 
             row.top_device = top_device
         if top_ver:
             row.top_app_version = top_ver
-        # 用 RUM 事件里 score 最高的完整堆栈覆盖 search_issues 返回的单行错误消息
-        if full_stack and len(full_stack) > len(row.representative_stack or ""):
+        # 主桶（占比最高）的代表堆栈作为 representative_stack — 覆盖旧策略下选错的「长但冷门」堆栈
+        if variants:
+            main = next((v for v in variants if v.get("is_main")), variants[0])
+            main_stack = (main.get("representative_stack") or "").strip()
+            if main_stack:
+                row.representative_stack = main_stack[:32000]
+            try:
+                row.stack_variants = _json.dumps(variants, ensure_ascii=False)[:200000]
+            except Exception:
+                row.stack_variants = "[]"
+        elif full_stack and len(full_stack) > len(row.representative_stack or ""):
             row.representative_stack = full_stack[:32000]
         await session.commit()

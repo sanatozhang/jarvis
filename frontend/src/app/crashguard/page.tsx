@@ -1985,8 +1985,9 @@ function DetailDrawer({
   t: (k: string) => string;
 }) {
   const [stackExpanded, setStackExpanded] = useState(false);
+  const [stackVariantIdx, setStackVariantIdx] = useState(0);
   // Reset expansion when switching to a different issue
-  useEffect(() => { setStackExpanded(false); }, [detail?.datadog_issue_id]);
+  useEffect(() => { setStackExpanded(false); setStackVariantIdx(0); }, [detail?.datadog_issue_id]);
 
   return (
     <div
@@ -2181,13 +2182,61 @@ function DetailDrawer({
 
             <Section title={t("代表性堆栈")}>
               {(() => {
-                const raw = detail.representative_stack || "";
+                const variants = (detail.stack_variants || []).filter((v) => v && v.representative_stack);
+                const hasVariants = variants.length > 1;
+                const activeIdx = hasVariants ? Math.min(stackVariantIdx, variants.length - 1) : 0;
+                const active = hasVariants ? variants[activeIdx] : null;
+                const raw = active ? active.representative_stack : (detail.representative_stack || "");
                 const lines = raw.split("\n");
                 const PREVIEW = 20;
                 const hasMore = lines.length > PREVIEW;
                 const visible = stackExpanded ? lines : lines.slice(0, PREVIEW);
                 return (
                   <div>
+                    {hasVariants && (
+                      <>
+                        <div
+                          className="mb-2 text-[11px]"
+                          style={{ color: D.text2 }}
+                        >
+                          {t("Datadog 此 issue 内混入")} <strong style={{ color: D.text1 }}>{variants.length}</strong> {t("种不同堆栈，按事件占比排序：")}
+                        </div>
+                        <div className="mb-2 flex flex-wrap gap-1.5">
+                          {variants.map((v, i) => {
+                            const isActive = i === activeIdx;
+                            return (
+                              <button
+                                key={`${v.top_frame}-${i}`}
+                                onClick={() => { setStackVariantIdx(i); setStackExpanded(false); }}
+                                className="rounded px-2 py-1 text-[11px] font-mono"
+                                title={v.top_frame}
+                                style={{
+                                  background: isActive ? D.accent : D.surfaceAlt,
+                                  color: isActive ? "#fff" : D.text1,
+                                  border: `1px solid ${isActive ? D.accent : D.border}`,
+                                  cursor: "pointer",
+                                  maxWidth: 360,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                <span style={{ opacity: 0.75, marginRight: 4 }}>{v.pct}%</span>
+                                <span>{v.top_frame}</span>
+                                {v.is_main && <span style={{ marginLeft: 4, opacity: 0.7 }}>★</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {active && (
+                          <div className="mb-2 text-[11px]" style={{ color: D.text2 }}>
+                            <span>{t("事件数")}: <strong style={{ color: D.text1 }}>{active.count}</strong></span>
+                            {active.sample_app_version && <span style={{ marginLeft: 12 }}>{t("版本")}: {active.sample_app_version}</span>}
+                            {active.sample_view && <span style={{ marginLeft: 12 }}>{t("页面")}: {active.sample_view}</span>}
+                          </div>
+                        )}
+                      </>
+                    )}
                     <pre
                       className="rounded p-3 text-xs font-mono overflow-auto whitespace-pre"
                       style={{

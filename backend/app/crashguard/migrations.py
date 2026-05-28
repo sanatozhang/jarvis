@@ -46,6 +46,8 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_issues", "top_os", "VARCHAR(256)", "''"),
     ("crash_issues", "top_device", "VARCHAR(256)", "''"),
     ("crash_issues", "top_app_version", "VARCHAR(128)", "''"),
+    # 2026-05-28：Datadog issue 内多顶帧时存 variants 数组（JSON），前端切换显示
+    ("crash_issues", "stack_variants", "TEXT", "'[]'"),
     # prewarm 重试计数 + 上次失败原因
     ("crash_issues", "prewarm_attempts", "INTEGER", "0"),
     ("crash_issues", "prewarm_last_error", "TEXT", "''"),

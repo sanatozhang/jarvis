@@ -367,15 +367,15 @@ class DatadogClient:
 
         from collections import Counter
 
-        best_event = None
-        best_score = float("-inf")
-        best_stack = ""
         device_counter: Counter = Counter()
         os_counter: Counter = Counter()
         version_counter: Counter = Counter()
         view_counter: Counter = Counter()
         country_counter: Counter = Counter()
+        # frame bucket → 桶内事件列表 [(score, stack, inner, tags, app_ver, view, ev)]
+        frame_buckets: Dict[str, List[tuple]] = {}
 
+        scanned_events = 0
         for ev in events:
             inner = self._extract_inner_attrs(ev)
             if not inner:
@@ -383,10 +383,7 @@ class DatadogClient:
             tags = self._extract_event_tags(ev)
             stack = self._extract_path(inner, "error", "stack") or ""
             score = self._score_stack(stack)
-            if score > best_score:
-                best_score = score
-                best_event = (ev, inner, tags)
-                best_stack = stack
+            scanned_events += 1
 
             # bucket: 机型 / OS 版本 / app 版本 / 页面 / 国家
             dev = self._extract_device(inner)
@@ -405,10 +402,43 @@ class DatadogClient:
             if geo:
                 country_counter[geo] += 1
 
-        if best_event is None:
+            # 顶帧分桶（Layer over Datadog grouping）
+            fk = self._top_frame_key(stack)
+            frame_buckets.setdefault(fk, []).append((score, stack, inner, tags, ver or "", view or "", ev))
+
+        if not frame_buckets:
             return None
-        ev, inner, tags = best_event
-        total = len(events)
+
+        # bucket 按事件数排序；每桶内挑得分最高的当代表
+        sorted_buckets = sorted(
+            frame_buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])
+        )
+
+        def _pick_best(bucket_evs: List[tuple]) -> tuple:
+            return max(bucket_evs, key=lambda t: t[0])
+
+        # 主桶（占比最高）
+        main_key, main_evs = sorted_buckets[0]
+        main_best = _pick_best(main_evs)
+        _, best_stack, inner, tags, _, _, ev = main_best
+        total = scanned_events
+
+        # 构造 stack_variants：每桶取代表，附 count + pct + 样本 app_version/view
+        stack_variants: List[Dict[str, Any]] = []
+        for fk, bucket_evs in sorted_buckets[:6]:  # 上限 6 个桶
+            best = _pick_best(bucket_evs)
+            _score, b_stack, _b_inner, _b_tags, b_ver, b_view, _ = best
+            cnt = len(bucket_evs)
+            stack_variants.append({
+                "top_frame": fk,
+                "count": cnt,
+                "pct": round(cnt * 100.0 / total, 1) if total else 0.0,
+                "representative_stack": (b_stack or "")[:32000],
+                "sample_app_version": b_ver,
+                "sample_view": b_view,
+                "stack_quality": self._stack_quality_label(b_stack),
+                "is_main": fk == main_key,
+            })
 
         # Plan A/B/C: 符号化增强（容错，失败原样保留）
         platform_str = self._extract_path(inner, "os", "name") or ""
@@ -443,6 +473,10 @@ class DatadogClient:
             "version_distribution": _top_with_pct(version_counter, total, 5),
             "view_distribution": _top_with_pct(view_counter, total, 5),
             "country_distribution": _top_with_pct(country_counter, total, 5),
+            # 顶帧 bucket（Datadog issue 内不同代码路径的分布；点最大桶 = 主代表）
+            "stack_variants": stack_variants,
+            "stack_bucket_count": len(frame_buckets),
+            "main_bucket_pct": round(len(main_evs) * 100.0 / total, 1) if total else 0.0,
         }
 
     @staticmethod
@@ -499,6 +533,31 @@ class DatadogClient:
         if "_kdartisolatesnapshotinstructions" in s:
             return "aot_pointers_unsymbolicated"
         return "raw"
+
+    @staticmethod
+    def _top_frame_key(stack: str) -> str:
+        """从堆栈第一帧抽出 bucket key（去掉 :line / `#N` 前缀 / 多余空格）。
+
+        Datadog 端 fingerprint 粒度过粗时（同 error+message 全归一个 issue），
+        用归一化顶帧把不同代码路径的事件分桶。
+        """
+        if not stack:
+            return "(empty)"
+        first = stack.split("\n", 1)[0].strip()
+        if not first:
+            return "(empty)"
+        # 未符号化 AOT 指针：abs 0x... / _kDartIsolateSnapshotInstructions
+        low = first.lower()
+        if "abs 0000" in low or "_kdartisolatesnapshotinstructions" in low:
+            return "(unsymbolicated_native)"
+        # 剥 "#N " 索引前缀
+        import re as _re
+        m = _re.match(r"^#\d+\s+", first)
+        if m:
+            first = first[m.end():].strip()
+        # 剥掉行号尾巴: ":1234)" -> ")"
+        first = _re.sub(r":\d+\)", ")", first)
+        return first[:300] or "(empty)"
 
     async def count_sessions_in_window(
         self,

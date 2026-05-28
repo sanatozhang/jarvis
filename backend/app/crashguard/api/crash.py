@@ -558,7 +558,9 @@ def _datadog_url_for(issue_id: str, window_hours: int = 24) -> str:
         host = site
     else:
         host = f"app.{site}"
-    base = f"https://{host}/rum/error-tracking/issue/{issue_id}"
+    # 2026-05-28：路径从 /rum/error-tracking/issue/ 改为 /error-tracking/issue/，
+    # 减少一次 Datadog 自身 301 重定向。两者落地是同一 issue，但后者是 Datadog UI 的真实路径。
+    base = f"https://{host}/error-tracking/issue/{issue_id}"
     if window_hours and window_hours > 0:
         to_ms = int(_time.time() * 1000)
         from_ms = to_ms - int(window_hours) * 3600 * 1000
@@ -568,6 +570,20 @@ def _datadog_url_for(issue_id: str, window_hours: int = 24) -> str:
 
 # 支持的时间窗口档位（小时）。1d / 7d / 14d / 30d
 _ALLOWED_WINDOW_HOURS = {24, 168, 336, 720}
+
+
+def _safe_load_variants(raw: str) -> list:
+    """容错解析 crash_issues.stack_variants JSON。坏数据返回 []，不抛异常。"""
+    if not raw or raw == "[]":
+        return []
+    try:
+        import json as _json
+        data = _json.loads(raw)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
 
 
 # ── User 维度 crash-free cache（2026-05-21 加）─────────────────────────────
@@ -1189,6 +1205,7 @@ async def get_issue_detail(
         "lifetime_max_events": int(issue.total_events or 0),
         "lifetime_max_users": int(issue.total_users_affected or 0),
         "representative_stack": issue.representative_stack or "",
+        "stack_variants": _safe_load_variants(getattr(issue, "stack_variants", "") or ""),
         "tags": tags,
         "status": issue.status or "open",
         "assignee": getattr(issue, "assignee", "") or "",

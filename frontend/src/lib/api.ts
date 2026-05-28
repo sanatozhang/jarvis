@@ -1097,6 +1097,17 @@ export interface CrashAnalysis {
   created_at?: string;
 }
 
+export interface CrashStackVariant {
+  top_frame: string;
+  count: number;
+  pct: number;
+  representative_stack: string;
+  sample_app_version?: string;
+  sample_view?: string;
+  stack_quality?: string;
+  is_main?: boolean;
+}
+
 export interface CrashIssueDetail {
   datadog_issue_id: string;
   datadog_url: string;
@@ -1111,6 +1122,7 @@ export interface CrashIssueDetail {
   total_events: number;
   total_users_affected: number;
   representative_stack: string;
+  stack_variants?: CrashStackVariant[];
   tags: Record<string, unknown>;
   status: CrashStatus;
   assignee: string;

@@ -53,6 +53,12 @@ class CrashIssue(Base):
     top_os = Column(String(256), default="")             # 例: "Android 14 (40%), Android 13 (20%)"
     top_device = Column(String(256), default="")         # 例: "Samsung SM-S911B (40%), Sony SO-52C (20%)"
     top_app_version = Column(String(128), default="")    # 例: "3.16.0-634 (60%), 3.15.1-631 (30%)"
+    # 2026-05-28：Datadog 同 issue_id 内不同代码路径的堆栈变体（JSON）
+    #   [{"top_frame": "State.setState (...)", "count": 149, "pct": 74.5,
+    #     "representative_stack": "...", "sample_app_version": "3.19.0-717",
+    #     "sample_view": "/home", "stack_quality": "symbolicated_dart", "is_main": true}, ...]
+    # 由 prewarmer 写入，前端 detail 可切换显示
+    stack_variants = Column(Text, default="[]")
     prewarm_attempts = Column(Integer, default=0)        # 已尝试预热次数
     prewarm_last_error = Column(Text, default="")        # 最近一次失败原因
     prewarm_last_at = Column(DateTime, nullable=True)    # 最近一次预热时间
