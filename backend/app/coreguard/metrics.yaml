@@ -155,7 +155,7 @@ metrics:
     tier: P0
     value_type: percent_pp
     direction: down_is_bad
-    threshold: { pp: 2.5 }   # v5 2026-05-28: 3.0 → 2.5pp（30d 实测 worst -3.75pp，2.5 抓得到）
+    threshold: { pp: 4.0 }   # v6 2026-05-28: 2.5 → 4.0pp（实测 2.5 噪声过大，扩到 4.0 只保留真异常）
     min_users: 500
     alert_enabled: true
 
