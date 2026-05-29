@@ -482,7 +482,8 @@ export default function HomePage() {
     if (escalateLoading) return;
     setEscalateLoading(true);
     try {
-      const res = await escalateIssue(issueId, escalateNote, username || "");
+      const myEmail = typeof window !== "undefined" ? localStorage.getItem("appllo_feishu_email") || "" : "";
+      const res = await escalateIssue(issueId, escalateNote, username || "", myEmail);
       const groupExists = (res as any).group_exists;
       setToast(groupExists ? t("已通知值周工程师（飞书群已存在）") : t("已转交工程师"));
       setShowEscalateDialog(false);

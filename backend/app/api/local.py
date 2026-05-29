@@ -21,7 +21,7 @@ from sqlalchemy import select, func
 
 from app.config import get_settings
 from app.db import database as db
-from app.services.feishu_cli import FeishuCLI, create_escalation_group, is_feishu_source
+from app.services.feishu_cli import FeishuCLI, add_members_to_chat, create_escalation_group, is_feishu_source
 
 logger = logging.getLogger("jarvis.api.local")
 router = APIRouter()
@@ -346,6 +346,7 @@ async def delete_issue(issue_id: str):
 class EscalateRequest(BaseModel):
     note: str = ""
     escalated_by: str = ""
+    escalated_by_email: str = ""  # 点击转交者的 plaud 邮箱（用于自动拉其进群）
     appllo_url: str = ""  # Frontend passes the full issue URL
 
 
@@ -362,8 +363,19 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
     if not issue_rec:
         raise HTTPException(status_code=404, detail="Issue not found")
 
+    # 解析点击转交者的 plaud 邮箱：优先前端直传（登录态已有），回退 user 表 feishu_email。
+    # 这是"建群人自动进群"的关键——之前只传 username，查不到 email 就没被拉进群。
+    user = await db.get_user(body.escalated_by) if body.escalated_by else None
+    user_email = (body.escalated_by_email or "").strip() or (user or {}).get("feishu_email", "")
+
     # Short-circuit: already escalated with an active group → return existing info
     if issue_rec.escalated_at and issue_rec.escalation_chat_id:
+        # 群已存在：把当前点击的人也拉进群（"点击即加入"），非致命
+        if user_email:
+            try:
+                await add_members_to_chat(issue_rec.escalation_chat_id, [user_email])
+            except Exception as e:
+                logger.warning("Failed to add clicker %s to existing group: %s", user_email, e)
         return {
             "status": "escalated",
             "issue_id": issue_id,
@@ -396,8 +408,7 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
 
     appllo_url = body.appllo_url or ""
 
-    user = await db.get_user(body.escalated_by) if body.escalated_by else None
-    user_email = (user or {}).get("feishu_email", "")
+    # user_email 已在上方解析（优先前端直传 plaud 邮箱）
 
     chat_result = None
 

@@ -678,13 +678,13 @@ export const getOncallStats = () =>
 // Inaccurate
 // ============================================================
 
-export const escalateIssue = (issueId: string, note: string = "", escalatedBy: string = "") => {
+export const escalateIssue = (issueId: string, note: string = "", escalatedBy: string = "", escalatedByEmail: string = "") => {
   const appllo_url = typeof window !== "undefined"
     ? `${window.location.origin}/tracking?detail=${issueId}`
     : "";
-  return request<{ status: string; chat_id?: string; group_name?: string; share_link?: string }>(`/local/${issueId}/escalate`, {
+  return request<{ status: string; chat_id?: string; group_name?: string; share_link?: string; group_exists?: boolean }>(`/local/${issueId}/escalate`, {
     method: "POST",
-    body: JSON.stringify({ note, escalated_by: escalatedBy, appllo_url }),
+    body: JSON.stringify({ note, escalated_by: escalatedBy, escalated_by_email: escalatedByEmail, appllo_url }),
   });
 };
 

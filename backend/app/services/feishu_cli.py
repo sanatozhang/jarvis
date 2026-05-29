@@ -733,6 +733,31 @@ async def _emails_to_open_id_map(emails: List[str]) -> Dict[str, str]:
         return {}
 
 
+async def add_members_to_chat(chat_id: str, emails: List[str]) -> List[str]:
+    """把指定邮箱（解析成 open_id 后）加入已存在的飞书群。非致命，返回成功加入的邮箱。
+
+    用于"点击即加入"：群已建好后，触发 escalate 的人也应被拉进群。
+    """
+    emails = [e for e in (emails or []) if e]
+    if not chat_id or not emails:
+        return []
+    open_ids = await _emails_to_open_ids(emails)
+    if not open_ids:
+        logger.warning("add_members_to_chat: no open_ids resolved for %s", emails)
+        return []
+    try:
+        await _feishu_api(
+            "POST", f"/im/v1/chats/{chat_id}/members",
+            params={"member_id_type": "open_id"},
+            body={"id_list": open_ids},
+        )
+        logger.info("Added %d member(s) to existing group %s", len(open_ids), chat_id)
+        return emails
+    except Exception as e:
+        logger.warning("Failed to add members to existing group %s: %s", chat_id, e)
+        return []
+
+
 async def create_escalation_group(
     user_email: str,
     issue_id: str,
