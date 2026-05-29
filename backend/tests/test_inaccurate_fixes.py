@@ -92,6 +92,25 @@ def test_system_failure_clamps_confidence_to_low(tmp_path):
     assert result.confidence == Confidence.LOW
 
 
+def test_signature_ending_user_reply_not_truncation(tmp_path):
+    """fb_dbe8f0f110：root_cause 完整(句号收尾)，user_reply 是以签名结尾的完整邮件
+    （'Plaud Support Team'），不得被误判截断 → system_failure 必须 False。"""
+    full_reply = (
+        "Dear User,\n\nThank you for reaching out. Based on the logs, your device is not "
+        "broadcasting a BLE signal. Please try a hard reset; if it persists, contact us for "
+        "inspection or replacement.\n\nWe are here to help.\n\nBest regards,\nPlaud Support Team"
+    )
+    ws = _write_result_json(tmp_path, {
+        "problem_type": "蓝牙连接异常 - 搜索不到设备",
+        "root_cause": "日志显示设备从未出现在任何 BLE 扫描结果中，最可能是设备未在广播 BLE 信号。",  # 句号收尾
+        "confidence": "low",
+        "user_reply": full_reply,
+        "user_reply_en": full_reply,
+    })
+    result = BaseAgent.parse_result(ws, raw_output="")
+    assert result.system_failure is False  # 关键：签名结尾不算截断
+
+
 def test_truncated_root_cause_flags_system_failure(tmp_path):
     """fb_fb4107609a：root_cause 半句截断 → 标 system_failure 且置信 low。"""
     ws = _write_result_json(tmp_path, {

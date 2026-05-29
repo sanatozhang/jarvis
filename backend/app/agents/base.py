@@ -566,31 +566,42 @@ output/       ← 请将 result.json 写入此目录
             # 中英结束标点 + 闭合符号都视为完整收尾
             return tail not in "。！？.!?…」』）)]\"'》>"
 
-        truncated_fields: List[str] = []
-        for fname, fval in (
-            ("root_cause", _raw_rc_zh),
-            ("user_reply", _raw_reply_zh),
-            ("root_cause_en", _raw_rc_en),
-            ("user_reply_en", _raw_reply_en),
-        ):
-            if _looks_truncated(fval):
-                truncated_fields.append(fname)
+        # 截断检测分两类（实战 fb_dbe8f0f110 复盘）：
+        #   - 分析字段 root_cause/_en：模型把根因写到一半被切 = 分析不完整 → 触发 system_failure。
+        #   - 回复字段 user_reply/_en：是给用户的模板邮件，结尾天然是签名（如 "Plaud Support Team"、
+        #     "敬上"），末字不是句号 ≠ 截断。它若误判会连累完整分析整单失败 → 只记录、不触发。
+        analysis_truncated: List[str] = [
+            fname for fname, fval in (("root_cause", _raw_rc_zh), ("root_cause_en", _raw_rc_en))
+            if _looks_truncated(fval)
+        ]
+        reply_truncated: List[str] = [
+            fname for fname, fval in (("user_reply", _raw_reply_zh), ("user_reply_en", _raw_reply_en))
+            if _looks_truncated(fval)
+        ]
 
-        # 任一字段截断 OR repair 触发 → 标 system_failure 让 worker 推 soft-fail 告警
+        # repair 触发 OR 分析字段截断 → 标 system_failure 让 worker 推 soft-fail 告警。
+        # 回复字段截断不触发（避免误杀完整分析），仅在 confidence_reason 留痕。
         _system_failure = bool(data.get("system_failure", False))
         _confidence_reason = data.get("confidence_reason", "")
-        if repair_used or truncated_fields:
+        if repair_used or analysis_truncated:
             _system_failure = True
             _truncation_note = (
-                f"输出截断检测：repair_used={repair_used}, fields={truncated_fields or '[]'}"
+                f"输出截断检测：repair_used={repair_used}, analysis_fields={analysis_truncated or '[]'}"
             )
             _confidence_reason = (
                 f"{_confidence_reason}; {_truncation_note}".strip("; ")
                 if _confidence_reason else _truncation_note
             )
             logger.warning(
-                "Truncation detected for analysis: repair=%s fields=%s — flagged system_failure",
-                repair_used, truncated_fields,
+                "Analysis truncation detected: repair=%s fields=%s — flagged system_failure",
+                repair_used, analysis_truncated,
+            )
+        elif reply_truncated:
+            # 仅告知，不影响 system_failure（多半是邮件签名结尾，非真截断）
+            logger.info(
+                "Reply field(s) %s end without terminal punctuation (likely a signature) — "
+                "NOT flagging system_failure",
+                reply_truncated,
             )
 
         if translation_failures:
