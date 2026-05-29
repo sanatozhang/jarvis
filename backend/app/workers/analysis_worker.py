@@ -8,7 +8,10 @@ Orchestrates the full flow:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -229,14 +232,65 @@ async def run_analysis_pipeline(
     platform = (getattr(issue, "platform", "") or "").strip().lower()
     logger.info("Platform: %s (issue %s)", platform or "app (default)", issue_id)
 
-    for fp in downloaded_files:
-        log_path, incorrect, reason = process_log_file_for_platform(
-            fp, workspace / "processed", platform=platform,
-        )
-        if log_path:
-            log_paths.append(log_path)
-        if incorrect and reason:
-            log_parse_issues.append(reason)
+    processed_dir = workspace / "processed"
+
+    # 🎁 解密结果按 issue 级缓存：重试/追问会建新 task workspace 并重新解密同一份 23MB→146MB
+    # 原始日志（纯阻塞重活）。这里用 manifest 精确 replay 上次解密产出的 log_paths（不靠盲 glob，
+    # 避免 process_log_file 的选文件/合并逻辑被错位还原），命中即整目录拷回，跳过解密。
+    decrypt_cache_root = Path(settings.storage.workspace_dir) / "_cache" / issue_id
+    decrypt_cache_processed = decrypt_cache_root / "processed"
+    decrypt_manifest = decrypt_cache_root / "decrypt_manifest.json"
+    reused_decrypt = False
+
+    if decrypt_manifest.exists() and decrypt_cache_processed.exists():
+        try:
+            manifest = json.loads(decrypt_manifest.read_text(encoding="utf-8"))
+            if manifest.get("platform", "") == platform:
+                await asyncio.to_thread(
+                    shutil.copytree, decrypt_cache_processed, processed_dir, dirs_exist_ok=True
+                )
+                cached = [processed_dir / rel for rel in manifest.get("log_paths", [])]
+                cached = [p for p in cached if p.exists()]
+                if cached:
+                    log_paths = cached
+                    reused_decrypt = True
+                    logger.info(
+                        "Reused cached decryption for issue %s (%d log files) — skipped re-decrypt (省阻塞重活)",
+                        issue_id, len(log_paths),
+                    )
+        except Exception as e:
+            logger.warning("Decrypt cache reuse failed (%s) — falling back to fresh decrypt", e)
+            log_paths = []
+
+    if not reused_decrypt:
+        # Option A：解密是 subprocess + 大文件 IO 的同步阻塞调用，丢线程池避免冻结事件循环
+        for fp in downloaded_files:
+            log_path, incorrect, reason = await asyncio.to_thread(
+                process_log_file_for_platform, fp, processed_dir, platform,
+            )
+            if log_path:
+                log_paths.append(log_path)
+            if incorrect and reason:
+                log_parse_issues.append(reason)
+
+        # 解密成功 → 写 issue 级缓存供后续重试复用
+        if log_paths and processed_dir.exists():
+            try:
+                decrypt_cache_root.mkdir(parents=True, exist_ok=True)
+                if decrypt_cache_processed.exists():
+                    await asyncio.to_thread(shutil.rmtree, decrypt_cache_processed, True)
+                await asyncio.to_thread(
+                    shutil.copytree, processed_dir, decrypt_cache_processed, dirs_exist_ok=True
+                )
+                rel_paths = [str(p.relative_to(processed_dir)) for p in log_paths]
+                decrypt_manifest.write_text(
+                    json.dumps({"platform": platform, "log_paths": rel_paths}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                # 解密产物大（~146MB/份），缓存按 issue 数封顶清理，防止撑爆磁盘
+                _cleanup_decrypt_cache(Path(settings.storage.workspace_dir) / "_cache", max_issues=15)
+            except Exception as e:
+                logger.warning("Failed to write decrypt cache for issue %s (non-fatal): %s", issue_id, e)
 
     has_logs = len(log_paths) > 0
     # 区分两种 "no logs" 场景：
@@ -247,7 +301,7 @@ async def run_analysis_pipeline(
     # Extract log metadata (app version, OS, UID, device model, etc.)
     log_metadata: Dict[str, Any] = {}
     if has_logs:
-        log_metadata = extract_log_metadata(log_paths)
+        log_metadata = await asyncio.to_thread(extract_log_metadata, log_paths)
         logger.info("Extracted log metadata: %s", {k: v for k, v in log_metadata.items() if k != "file_ids"})
 
     if has_logs:
@@ -279,7 +333,9 @@ async def run_analysis_pipeline(
         if on_progress:
             await on_progress(50, "预提取关键日志...")
         problem_date = guess_problem_date(routing_text, issue.occurred_at)
-        extraction = extract_for_rules(rules, log_paths, problem_date=problem_date)
+        extraction = await asyncio.to_thread(
+            lambda: extract_for_rules(rules, log_paths, problem_date=problem_date)
+        )
     else:
         problem_date = guess_problem_date(routing_text, issue.occurred_at)
 
@@ -491,6 +547,31 @@ def _cleanup_log_cache(cache_root: Path, max_issues: int = 500):
         logger.warning("Log cache cleanup failed: %s", e)
 
 
+def _cleanup_decrypt_cache(cache_root: Path, max_issues: int = 15):
+    """只清解密产物缓存（_cache/<issue>/processed + manifest），保留 raw（raw 小、由
+    _cleanup_log_cache 管 500 份）。解密产物大（~146MB/份），只留最近 max_issues 个 issue。
+    """
+    if not cache_root.exists():
+        return
+    try:
+        entries = []
+        for d in cache_root.iterdir():
+            proc = d / "processed"
+            if d.is_dir() and proc.exists():
+                entries.append((proc, d / "decrypt_manifest.json", proc.stat().st_mtime))
+        entries.sort(key=lambda t: t[2], reverse=True)
+        for proc, manifest, _ in entries[max_issues:]:
+            shutil.rmtree(proc, ignore_errors=True)
+            try:
+                manifest.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if len(entries) > max_issues:
+            logger.info("Cleaned up decrypt cache: pruned %d old processed dirs", len(entries) - max_issues)
+    except Exception as e:
+        logger.warning("Decrypt cache cleanup failed: %s", e)
+
+
 def _cleanup_workspace_processed(workspace_root: Path, max_tasks: int = 50):
     """Delete processed/ and logs/ dirs from old task workspaces to save disk.
 
@@ -567,6 +648,16 @@ async def _run_context_condensation(
     except Exception as e:
         logger.warning("Failed to load condensation config from DB: %s", e)
 
+    # 无 ANTHROPIC_API_KEY 时（用户已删除）强制走 OAuth CLI 回退：清掉来自 config.yaml/DB 的
+    # 残留 api_key，否则 condenser 仍会拿失效 key 打 vertex/api 拿 401（实测 fb_17b4fa0293），
+    # 既慢又使 agent 退化为硬啃原始日志。context_condenser 在 provider=anthropic 且 api_key 为空
+    # 时自动用 claude CLI（OAuth，已验证可用）→ 压缩照常工作。
+    import os as _os
+    if cc.provider == "anthropic" and not _os.environ.get("ANTHROPIC_API_KEY"):
+        if cc.api_key:
+            logger.info("ANTHROPIC_API_KEY absent — clearing condenser api_key to use OAuth CLI fallback")
+        cc.api_key = ""
+
     # Check if any log file exceeds the size threshold
     threshold_bytes = int(cc.log_size_threshold_mb * 1024 * 1024)
     large_logs = [lp for lp in log_paths if lp.exists() and lp.stat().st_size > threshold_bytes]
@@ -617,7 +708,7 @@ async def _run_context_condensation(
     if center_time is None and log_paths:
         for lp in log_paths:
             if lp.exists() and lp.stat().st_size > threshold_bytes:
-                center_time = find_error_dense_window(lp)
+                center_time = await asyncio.to_thread(find_error_dense_window, lp)
                 if center_time:
                     logger.info("L1.5: center_time from error-dense window: %s", center_time)
                     break
@@ -629,13 +720,15 @@ async def _run_context_condensation(
     hours_before = cc.time_window_hours_before if not date_only else max(cc.time_window_hours_before, 14)
     hours_after = cc.time_window_hours_after if not date_only else max(cc.time_window_hours_after, 14)
 
-    windowed_paths, windowing_meta = window_log_files(
-        log_paths=log_paths,
-        output_dir=windowed_dir,
-        center_time=center_time,
-        hours_before=hours_before,
-        hours_after=hours_after,
-        size_threshold=threshold_bytes,
+    windowed_paths, windowing_meta = await asyncio.to_thread(
+        lambda: window_log_files(
+            log_paths=log_paths,
+            output_dir=windowed_dir,
+            center_time=center_time,
+            hours_before=hours_before,
+            hours_after=hours_after,
+            size_threshold=threshold_bytes,
+        )
     )
 
     # Log windowing results

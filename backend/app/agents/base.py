@@ -30,7 +30,10 @@ class AgentConfig:
     # RC2 CLI 单轮看门狗：result.json 首次落盘后，若其 mtime 连续 stall_timeout 秒未更新，
     # 判定为某一轮卡死（CLI 模式无 per_turn_timeout 兜底），主动 kill + salvage 已有部分结果。
     # 0 = 关闭看门狗。仅 claude_code CLI agent 使用。
-    stall_timeout: int = 240
+    # ⚠️ 阈值要够大：模型常先写一份占位 result.json 再做一轮长分析（grep+大上下文可 >4min），
+    # 240s 太激进会误杀正在干活的长轮次（实测 fb_17b4fa0293）。设 420s——只逮真·卡死
+    # （fb_b47f129711 实测卡死 420s），放过正常长轮次。
+    stall_timeout: int = 420
     max_turns: int = 25
     allowed_tools: List[str] = field(default_factory=list)
     approval_mode: str = "auto-edit"

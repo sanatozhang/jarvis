@@ -31,6 +31,25 @@ def _make_cli_env() -> dict:
     return {k: v for k, v in os.environ.items() if k not in _CLI_ENV_EXCLUDE}
 
 
+# 进行中/占位标记：模型常先写一份 "PRELIMINARY / 分析中" 的 checkpoint result.json 再继续。
+# salvage 路径必须用它把占位结果挡掉——否则被外部 kill（看门狗/超时）时，会把占位当成品
+# 标成 done（实测 fb_17b4fa0293：root_cause="PRELIMINARY - still investigating" 被标 done）。
+# 与 Stop hook 的 check_result.py 保持同一套标记。
+_PLACEHOLDER_MARKERS = (
+    "preliminary", "analysis in progress", "in progress", "pending further",
+    "pending grep", "still gathering", "still investigating", "to be analyzed",
+    "分析中", "正在分析", "正在调查", "待进一步", "仍在调查", "仍需进一步",
+)
+
+
+def _is_placeholder_result(root_cause: str) -> bool:
+    """root_cause 是否是"分析中"的占位 checkpoint（非终版）。"""
+    rc = (root_cause or "").strip().lower()
+    if len(rc) < 40:
+        return True
+    return any(m in rc for m in _PLACEHOLDER_MARKERS)
+
+
 class ClaudeCodeAgent(BaseAgent):
     """Agent that delegates to the Claude Code CLI."""
 
@@ -272,16 +291,21 @@ class ClaudeCodeAgent(BaseAgent):
             if result_file.exists():
                 try:
                     result = self.parse_result(workspace, stdout_dump)
-                    # Accept any result with non-empty root_cause that isn't the literal timeout marker.
-                    # A partial result (confidence=low, placeholder user_reply) is strictly better
-                    # than reporting 600s of work as a total failure.
+                    # 只 salvage 真·部分结果（有真实根因、低置信）；占位 checkpoint
+                    # （PRELIMINARY/分析中）一律不当成品——否则外部 kill 时会把占位标成 done。
                     if result.root_cause and result.root_cause not in ("分析超时", "Analysis Timeout"):
-                        logger.info(
-                            "Claude Code timed out but result.json exists — salvaging partial result (type=%s, confidence=%s)",
-                            result.problem_type, result.confidence,
-                        )
-                        result.agent_type = "claude_code"
-                        return result
+                        if _is_placeholder_result(result.root_cause):
+                            logger.warning(
+                                "Claude Code timed out and result.json is only a placeholder (type=%s) — NOT salvaging, reporting honest failure",
+                                result.problem_type,
+                            )
+                        else:
+                            logger.info(
+                                "Claude Code timed out but result.json exists — salvaging partial result (type=%s, confidence=%s)",
+                                result.problem_type, result.confidence,
+                            )
+                            result.agent_type = "claude_code"
+                            return result
                 except Exception as e:
                     logger.warning("Failed to parse result.json after timeout: %s", e)
 
@@ -290,7 +314,8 @@ class ClaudeCodeAgent(BaseAgent):
             if stdout_dump and "{" in stdout_dump:
                 try:
                     result = self.parse_result(workspace, stdout_dump)
-                    if result.root_cause and result.root_cause not in ("分析超时", "Analysis Timeout"):
+                    if (result.root_cause and result.root_cause not in ("分析超时", "Analysis Timeout")
+                            and not _is_placeholder_result(result.root_cause)):
                         logger.info(
                             "Claude Code timed out, salvaging from stdout (type=%s)",
                             result.problem_type,
