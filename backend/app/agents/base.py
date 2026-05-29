@@ -27,6 +27,10 @@ class AgentConfig:
     fallback_model: str = ""         # auto-fallback when primary overloaded
     betas: List[str] = field(default_factory=list)  # beta headers
     timeout: int = 300
+    # RC2 CLI 单轮看门狗：result.json 首次落盘后，若其 mtime 连续 stall_timeout 秒未更新，
+    # 判定为某一轮卡死（CLI 模式无 per_turn_timeout 兜底），主动 kill + salvage 已有部分结果。
+    # 0 = 关闭看门狗。仅 claude_code CLI agent 使用。
+    stall_timeout: int = 240
     max_turns: int = 25
     allowed_tools: List[str] = field(default_factory=list)
     approval_mode: str = "auto-edit"

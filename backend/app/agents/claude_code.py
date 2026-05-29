@@ -79,6 +79,7 @@ class ClaudeCodeAgent(BaseAgent):
 
         proc: Optional[asyncio.subprocess.Process] = None
         hb_task: Optional[asyncio.Task] = None
+        comm_task: Optional[asyncio.Task] = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -90,11 +91,46 @@ class ClaudeCodeAgent(BaseAgent):
             )
 
             hb_task = asyncio.create_task(_heartbeat())
+            # RC2 看门狗：不再用裸 wait_for，而是 poll 监控。两条退出线——
+            #   (1) 总超时 self.config.timeout（硬线，已由 RC1 设为 pipeline−margin）
+            #   (2) stall：result.json 首次落盘后 mtime 连续 stall_timeout 秒不动 → 某轮卡死
+            # 两者都抛 asyncio.TimeoutError，复用下方已有的 salvage 路径捞回部分结果。
+            comm_task = asyncio.create_task(
+                proc.communicate(input=prompt.encode("utf-8"))
+            )
+            result_json_path = workspace / "output" / "result.json"
+            stall_timeout = getattr(self.config, "stall_timeout", 0) or 0
+            _last_mtime: Optional[float] = None
+            _last_change_ts = _time.monotonic()
             try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(input=prompt.encode("utf-8")),
-                    timeout=self.config.timeout,
-                )
+                while True:
+                    done, _pending = await asyncio.wait({comm_task}, timeout=10)
+                    now = _time.monotonic()
+                    elapsed = int(now - _start_ts)
+                    if comm_task in done:
+                        stdout_bytes, stderr_bytes = comm_task.result()
+                        break
+                    if elapsed >= self.config.timeout:
+                        raise asyncio.TimeoutError()
+                    # stall 看门狗：仅在 result.json 已存在后生效（首轮长耗时是正常的）
+                    if stall_timeout > 0:
+                        try:
+                            if result_json_path.exists():
+                                m = result_json_path.stat().st_mtime
+                                if m != _last_mtime:
+                                    _last_mtime = m
+                                    _last_change_ts = now
+                                elif now - _last_change_ts >= stall_timeout:
+                                    logger.warning(
+                                        "Claude Code stalled: result.json unchanged for %ds (elapsed=%ds) — "
+                                        "likely a stuck turn (no CLI per-turn timeout); killing and salvaging",
+                                        int(now - _last_change_ts), elapsed,
+                                    )
+                                    raise asyncio.TimeoutError()
+                        except asyncio.TimeoutError:
+                            raise
+                        except Exception:
+                            pass
             finally:
                 if hb_task is not None and not hb_task.done():
                     hb_task.cancel()
@@ -191,23 +227,26 @@ class ClaudeCodeAgent(BaseAgent):
                         pass
                 except Exception as e:
                     logger.warning("Failed to kill subprocess on outer cancel: %s", e)
+            # comm_task 仍 own 着管道，cancel 它避免 "Task was destroyed but pending" 噪音
+            if comm_task is not None and not comm_task.done():
+                comm_task.cancel()
             raise
 
         except asyncio.TimeoutError:
             logger.error("Claude Code timed out after %ds", self.config.timeout)
 
-            # Kill the timed-out process and try to drain whatever stdout/stderr it produced
+            # Kill the timed-out process and drain whatever stdout/stderr it produced.
+            # 注意：管道归 comm_task 所有，必须 await 同一个 comm_task 取缓冲输出，
+            # 不能再调 proc.communicate()（会报 already-called / 拿不到数据）。
             stdout_dump = ""
             stderr_dump = ""
             try:
                 proc.kill()  # type: ignore[possibly-undefined]
-                # Best-effort drain — communicate() with short timeout to grab buffered output
                 try:
-                    drained_out, drained_err = await asyncio.wait_for(
-                        proc.communicate(), timeout=5,  # type: ignore[possibly-undefined]
-                    )
-                    stdout_dump = drained_out.decode("utf-8", errors="replace") if drained_out else ""
-                    stderr_dump = drained_err.decode("utf-8", errors="replace") if drained_err else ""
+                    if comm_task is not None:
+                        drained_out, drained_err = await asyncio.wait_for(comm_task, timeout=5)
+                        stdout_dump = drained_out.decode("utf-8", errors="replace") if drained_out else ""
+                        stderr_dump = drained_err.decode("utf-8", errors="replace") if drained_err else ""
                 except Exception:
                     pass
             except Exception:

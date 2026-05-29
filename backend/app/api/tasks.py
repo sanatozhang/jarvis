@@ -506,6 +506,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                     agent_override=agent_override,
                     on_progress=on_progress,
                     followup_question=followup_question,
+                    pipeline_timeout=_task_timeout,
                 ),
                 timeout=_task_timeout,
             )

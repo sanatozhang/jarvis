@@ -50,6 +50,7 @@ async def run_analysis_pipeline(
     agent_override: Optional[str] = None,
     on_progress: Optional[Callable[[int, str], Any]] = None,
     followup_question: str = "",
+    pipeline_timeout: Optional[int] = None,
 ) -> AnalysisResult:
     """
     Run the complete analysis pipeline for a single issue.
@@ -120,6 +121,7 @@ async def run_analysis_pipeline(
             agent_override=agent_override,
             followup_question=followup_question,
             on_progress=on_progress,
+            pipeline_timeout=pipeline_timeout,
         )
         if result is not None:
             result.task_id = task_id
@@ -336,6 +338,7 @@ async def run_analysis_pipeline(
         previous_analysis=previous_analysis,
         followup_question=followup_question,
         condensation_context=condensation_result.get("structured_context") if condensation_result else None,
+        pipeline_timeout=pipeline_timeout,
     )
 
     result.task_id = task_id
@@ -357,6 +360,7 @@ async def _try_followup_fast_path(
     agent_override: Optional[str],
     followup_question: str,
     on_progress: Optional[Callable[[int, str], Any]],
+    pipeline_timeout: Optional[int] = None,
 ) -> Optional[AnalysisResult]:
     """Attempt incremental follow-up: reuse previous workspace, skip heavy steps.
 
@@ -459,6 +463,7 @@ async def _try_followup_fast_path(
         on_progress=on_progress,
         previous_analysis=previous_analysis,
         followup_question=followup_question,
+        pipeline_timeout=pipeline_timeout,
     )
 
     return result

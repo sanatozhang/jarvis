@@ -189,6 +189,7 @@ class AgentOrchestrator:
         followup_question: str = "",
         condensation_context: Optional[Dict[str, Any]] = None,
         logs_corrupted: bool = False,
+        pipeline_timeout: Optional[int] = None,
     ) -> AnalysisResult:
         """
         Full analysis pipeline with automatic model fallback:
@@ -265,6 +266,21 @@ class AgentOrchestrator:
         # 现在 prompt 已 build，可以根据大小选 agent
         prompt_chars = int(prompt_meta.get("final_prompt_chars") or len(prompt))
         agent = self.select_agent(rule_type, override=agent_override, prompt_chars=prompt_chars)
+
+        # RC1/RC3 兜底合约：让 agent 自身超时严格小于外层 pipeline 硬墙（task_timeout）。
+        # 否则二者相等（都 600s）时外层 wait_for 先 cancel → agent 走 CancelledError 直接 raise，
+        # 已落盘的 result.json 被丢弃（fb_b47f129711 实测：10:44 已写部分结果，仍被当彻底失败）。
+        # 让 agent 早 salvage_margin 秒触发自己的 TimeoutError → 走 salvage → 在硬墙前正常 return。
+        # 同时让大日志档（pipeline=1200s）真正把额外时间给到 agent（agent=1140s），而非卡在静态 600s。
+        if pipeline_timeout and pipeline_timeout > 0:
+            margin = getattr(self._settings.concurrency, "salvage_margin", 60) or 60
+            new_timeout = max(60, pipeline_timeout - margin)
+            if new_timeout != agent.config.timeout:
+                logger.info(
+                    "Agent timeout coupled to pipeline: %ds → %ds (pipeline=%ds, margin=%ds)",
+                    agent.config.timeout, new_timeout, pipeline_timeout, margin,
+                )
+                agent.config.timeout = new_timeout
 
         result = await agent.analyze(
             workspace=workspace,

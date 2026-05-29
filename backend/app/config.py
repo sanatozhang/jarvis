@@ -184,10 +184,19 @@ class ConcurrencySettings(BaseSettings):
     max_agent_sessions: int = 3
     max_downloads: int = 5
     task_timeout: int = 600
-    # 长日志档（解密后单文件 > task_large_log_bytes）超时放宽到 task_timeout_large。
-    # 应对 fb_26d82348bf 类 case：533k 行 plaud.log 在 600s 内确定性超时 → 重试也超时。
+    # 长日志档超时放宽到 task_timeout_large。应对 fb_26d82348bf / fb_b47f129711 类 case：
+    # 50万+ 行 plaud.log 在 600s 内确定性超时 → 重试也超时。
+    #
+    # ⚠️ task_large_log_bytes 衡量的是 **解密前的原始 .plaud 文件**（_resolve_task_timeout 在
+    # 解密之前就要决定 pipeline 超时，看不到解密后的大小）。原始 .plaud 解密后会膨胀约 6x
+    # （实测 fb_b47f129711：23MB 原始 → 146MB / 533k 行解密）。所以阈值按原始大小设：
+    # 8MB 原始 ≈ 解密后 ~50MB / ~150k+ 行，已属重负载档。旧值 30MB 原始 → 解密后近 200MB
+    # 才触发，导致 23MB 原始这种重 case 溜过、确定性超时。
     task_timeout_large: int = 1200
-    task_large_log_bytes: int = 30 * 1024 * 1024  # 30MB raw / ~80k+ lines
+    task_large_log_bytes: int = 8 * 1024 * 1024  # 8MB raw .plaud ≈ ~50MB decrypted
+    # RC1 兜底：agent 自身超时 = pipeline 超时 − salvage_margin，保证 agent 先于 pipeline
+    # 硬墙触发自己的 TimeoutError，走 salvage 路径捞回部分 result.json（而非被外层 cancel 丢弃）。
+    salvage_margin: int = 60
 
 
 class JenkinsServerConfig(BaseSettings):
