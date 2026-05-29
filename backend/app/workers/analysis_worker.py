@@ -47,6 +47,175 @@ def _get_orchestrator() -> AgentOrchestrator:
     return _orchestrator
 
 
+# ====================== ① 日志时效性预检 ======================
+
+def _parse_problem_ref_time(problem_date: Optional[str], issue: Issue) -> Optional[datetime]:
+    """问题参考时间：优先 problem_date，回退 issue.occurred_at / created_at。"""
+    if problem_date:
+        s = problem_date.strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s[:len(fmt) + 2].strip(), fmt)
+            except ValueError:
+                continue
+    for attr in ("occurred_at", "created_at"):
+        val = getattr(issue, attr, None)
+        if isinstance(val, datetime):
+            return val
+    return None
+
+
+def _check_log_coverage(
+    log_paths: List[Path],
+    problem_date: Optional[str],
+    issue: Issue,
+    max_gap_days: int,
+) -> Optional[Dict[str, Any]]:
+    """判定上传日志是否覆盖问题时段。
+
+    返回 None 表示"覆盖正常 / 无法判定（缺时间戳或缺参考时间）→ 不拦截"；
+    返回 dict 表示"日志最新事件比问题时间早超过 max_gap_days 天 → 需用户重传"。
+    设计为保守：任何不确定都放行，只拦截铁证（如激活日旧日志 vs 4 个月后的问题）。
+    """
+    from app.services.log_windower import get_log_time_range
+
+    ref = _parse_problem_ref_time(problem_date, issue)
+    if ref is None:
+        return None
+
+    last_event: Optional[datetime] = None
+    first_event: Optional[datetime] = None
+    for lp in log_paths:
+        try:
+            f, l = get_log_time_range(Path(lp))
+        except Exception:
+            continue
+        if l and (last_event is None or l > last_event):
+            last_event = l
+        if f and (first_event is None or f < first_event):
+            first_event = f
+
+    if last_event is None:
+        return None  # 日志里没有可解析时间戳 → 不敢妄断，放行
+
+    gap_days = (ref - last_event).days
+    if gap_days > max_gap_days:
+        return {
+            "ref": ref,
+            "last_event": last_event,
+            "first_event": first_event,
+            "gap_days": gap_days,
+        }
+    return None
+
+
+def _build_stale_log_result(
+    issue: Issue,
+    task_id: str,
+    coverage: Dict[str, Any],
+    log_metadata: Dict[str, Any],
+) -> AnalysisResult:
+    """日志未覆盖问题时段 → 直接产出"需用户重传"结果，不跑 agent。"""
+    last = coverage["last_event"].strftime("%Y-%m-%d")
+    ref = coverage["ref"].strftime("%Y-%m-%d")
+    gap = coverage["gap_days"]
+
+    zh_reply = (
+        f"您好，我们排查发现：本次上传的日志最新记录截止到 {last}，而问题大约发生在 {ref}"
+        f"（相差约 {gap} 天）。日志没有覆盖到问题发生的时间段，因此暂时无法定位具体原因。\n\n"
+        "烦请在问题**复现后**，重新导出并上传**最新的设备日志**，我们会第一时间为您分析。"
+    )
+    en_reply = (
+        f"We found the uploaded log only covers up to {last}, while the issue occurred around {ref} "
+        f"(~{gap} days apart). The log does not cover the time window of the problem, so we cannot "
+        "pinpoint the cause yet.\n\nPlease reproduce the issue, then export and upload the latest "
+        "device log so we can analyze it right away."
+    )
+    rc = (
+        f"日志时段不匹配：上传日志最新事件为 {last}，而问题发生约在 {ref}，相差 {gap} 天，"
+        "日志未覆盖问题时间段，无法据此定位根因，需用户重传问题时段的日志。"
+    )
+    rc_en = (
+        f"Log time range mismatch: latest log event is {last}, but the issue occurred around {ref} "
+        f"({gap} days apart). The log does not cover the problem window, so the root cause cannot be "
+        "determined from it — the user needs to re-upload logs from the problem period."
+    )
+    result = AnalysisResult(
+        task_id=task_id,
+        issue_id=issue.id,
+        problem_type="日志时段不匹配",
+        problem_type_en="Log Time Range Mismatch",
+        root_cause=rc,
+        root_cause_en=rc_en,
+        confidence="low",
+        confidence_reason=f"日志最新事件 {last} 早于问题时间 {ref} 约 {gap} 天（阈值 precheck）",
+        key_evidence=[
+            f"log latest event: {last}",
+            f"problem time: {ref}",
+            f"gap: {gap} days (> threshold)",
+        ],
+        user_reply=zh_reply,
+        user_reply_en=en_reply,
+        needs_engineer=False,
+        system_failure=False,
+        needs_user_retry=True,  # ① 路由到"需用户重传"，不进 done/inaccurate 主流
+        fix_suggestion="",
+        agent_type="precheck",
+    )
+    result.issue = issue
+    result.log_metadata = log_metadata
+    return result
+
+
+# ====================== ④ 追问污染护栏 ======================
+
+_FOLLOWUP_NARRATIVE_MARKERS = (
+    "针对追问", "针对用户的追问", "针对用户追问", "针对您的追问",
+    "客服处理方案", "客服三步", "以下是针对", "的核心结论",
+)
+
+
+def _looks_like_followup_narrative(text: str) -> bool:
+    """root_cause 是否被追问的"处理方案/客服话术"叙述污染了。"""
+    head = (text or "").lstrip()
+    if head.startswith("---"):  # markdown 分隔符开头：典型 salvage 整段灌入
+        return True
+    head = head[:300]
+    return any(m in head for m in _FOLLOWUP_NARRATIVE_MARKERS)
+
+
+def _sanitize_followup_result(
+    result: AnalysisResult,
+    previous_analysis: Optional[Dict[str, Any]],
+    issue_id: str,
+) -> AnalysisResult:
+    """追问结果护栏：若 root_cause 被追问叙述污染、且上次有可用技术根因，则恢复之。
+
+    历史 bug：fb_48030779f7 的 root_cause 被写成"以下是针对追问…客服处理方案总结"，
+    技术根因丢失。这里把追问叙述挪到 user_reply（若 user_reply 为空），root_cause 恢复
+    为上次分析的技术根因。
+    """
+    if not previous_analysis:
+        return result
+    prev_rc = (previous_analysis.get("root_cause") or "").strip()
+    if not _looks_like_followup_narrative(result.root_cause) or len(prev_rc) <= 40:
+        return result
+
+    polluted = result.root_cause
+    # 追问的针对性回答属于 user_reply；若 user_reply 还空着，把叙述挪过去不丢信息
+    if not (result.user_reply or "").strip():
+        result.user_reply = polluted
+    result.root_cause = prev_rc
+    if previous_analysis.get("problem_type"):
+        result.problem_type = previous_analysis["problem_type"]
+    logger.warning(
+        "④ followup pollution guard: root_cause looked like a followup narrative — "
+        "restored technical root_cause from previous analysis for %s",
+        issue_id,
+    )
+    return result
+
+
 async def run_analysis_pipeline(
     issue_id: str,
     task_id: str,
@@ -327,17 +496,41 @@ async def run_analysis_pipeline(
 
     logger.info("Matched rules: %s (primary: %s), has_logs: %s", [r.meta.id for r in rules], rule_type, has_logs)
 
+    problem_date = guess_problem_date(routing_text, issue.occurred_at)
+
+    # --- Step 4.5: ① 日志时效性预检 ---
+    # 日志最新事件远早于问题时间（如设备激活日的旧日志 vs 4 个月后的问题）→ 日志没覆盖问题时段，
+    # 硬跑 agent 只会拿旧数据瞎猜根因、落进 inaccurate 桶。直接出"需用户重传"结果，省掉最贵的 agent。
+    if has_logs:
+        try:
+            _max_gap = getattr(settings.concurrency, "log_stale_gap_days", 30) or 30
+            coverage = await asyncio.to_thread(
+                _check_log_coverage, log_paths, problem_date, issue, _max_gap
+            )
+        except Exception as e:
+            logger.warning("Log coverage precheck failed (non-fatal), skipping: %s", e)
+            coverage = None
+        if coverage:
+            logger.warning(
+                "① log coverage precheck: STALE logs for %s — latest=%s, problem=%s, gap=%d days "
+                "(> %d). Short-circuit to needs_user_retry, skipping agent.",
+                issue_id,
+                coverage["last_event"].strftime("%Y-%m-%d"),
+                coverage["ref"].strftime("%Y-%m-%d"),
+                coverage["gap_days"], _max_gap,
+            )
+            if on_progress:
+                await on_progress(100, "日志未覆盖问题时段，需用户重传最新日志")
+            return _build_stale_log_result(issue, task_id, coverage, log_metadata)
+
     # --- Step 5: Pre-extract ---
     extraction = {}
     if has_logs:
         if on_progress:
             await on_progress(50, "预提取关键日志...")
-        problem_date = guess_problem_date(routing_text, issue.occurred_at)
         extraction = await asyncio.to_thread(
             lambda: extract_for_rules(rules, log_paths, problem_date=problem_date)
         )
-    else:
-        problem_date = guess_problem_date(routing_text, issue.occurred_at)
 
     # --- Step 5.5: L1.5 Context Condensation ---
     condensation_result = None
@@ -402,6 +595,7 @@ async def run_analysis_pipeline(
     result.log_metadata = log_metadata
     if followup_question:
         result.followup_question = followup_question
+        result = _sanitize_followup_result(result, previous_analysis, issue_id)  # ④
 
     if on_progress:
         await on_progress(100, "Analysis complete")
@@ -522,6 +716,7 @@ async def _try_followup_fast_path(
         pipeline_timeout=pipeline_timeout,
     )
 
+    result = _sanitize_followup_result(result, previous_analysis, issue_id)  # ④
     return result
 
 

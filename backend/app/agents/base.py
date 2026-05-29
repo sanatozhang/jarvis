@@ -351,7 +351,7 @@ output/       ← 请将 result.json 写入此目录
 
 1. **仔细阅读之前的分析结果**，理解已经做过的分析
 2. **针对用户的追问**，从日志/代码中寻找更多相关证据
-3. **如果之前的结论需要修正**，明确说明
+3. **root_cause / problem_type 保持"技术根因"语义不变**——除非有**新证据推翻**之前的技术根因，否则原样沿用之前的 root_cause / problem_type。追问里"怎么帮用户处理 / 客服怎么回复 / 下一步动作"这类问题，**答案写进 user_reply / user_reply_en，绝不要写进 root_cause**（root_cause 永远是"问题为什么发生"，不是"客服处理方案"）。
 4. **回复模板（user_reply / user_reply_en）必须直接回答用户的追问**，不要简单重复之前的回复
 5. 仍然按照上面要求的 JSON 格式输出到 output/result.json
 """
@@ -603,6 +603,12 @@ output/       ← 请将 result.json 写入此目录
                 translation_failures,
             )
 
+        # ② 置信一致性：系统失败（截断/重修/超时）就是不可信结果，禁止再标 medium/high。
+        # 历史 bug：fb_9f347bbc90 system_failure=1 却 confidence=high，看起来"高置信"实则半成品。
+        _confidence_value = data.get("confidence", "low")
+        if _system_failure:
+            _confidence_value = "low"
+
         return AnalysisResult(
             task_id="",
             issue_id="",
@@ -612,7 +618,7 @@ output/       ← 请将 result.json 写入此目录
             device_type=str(data.get("device_type", "")).strip(),
             root_cause=_clean_system_lines(_raw_rc_zh),
             root_cause_en=_clean_system_lines(_raw_rc_en),
-            confidence=_safe_confidence(data.get("confidence", "low")),
+            confidence=_safe_confidence(_confidence_value),
             confidence_reason=_confidence_reason,
             key_evidence=_safe_key_evidence(data.get("key_evidence", [])),
             user_reply=_raw_reply_zh,
@@ -777,11 +783,37 @@ _INVALID_PROBLEM_TYPES = {
     "问题定位完成", "分析结果", "completed", "done", "n/a",
 }
 
+# ③ Markdown 兜底解析里，章节标题（"Root Cause" / "根本原因" / "Summary" 等）是结构标签，
+# 不是问题分类。历史 bug：fb_df8889bcff 的 problem_type 被解析成了字面的 "Root Cause"——
+# 因为 heading 扫描把第一个非 _INVALID 的标题当成了 problem_type。这里把这些 section 名排除掉。
+_SECTION_HEADINGS = {
+    "root cause", "root cause analysis", "rootcause",
+    "根本原因", "根因", "根因分析", "原因分析", "问题根因",
+    "analysis", "分析", "分析结果", "问题分析", "summary", "总结", "概述", "overview",
+    "key evidence", "evidence", "关键证据", "证据", "日志证据",
+    "conclusion", "结论", "user reply", "用户回复", "回复", "回复模板", "建议回复",
+    "fix suggestion", "修复建议", "建议", "解决方案",
+    "problem type", "问题类型", "问题分类", "问题诊断",
+    "confidence", "置信度", "background", "背景",
+    "detail", "details", "详情", "细节",
+    "recommendation", "recommendations", "next steps", "后续步骤",
+    "客服处理方案总结", "处理方案", "客服处理方案",
+}
+
+
+# ③ 完成/过程短语：模型有时把"分析完成 / 追问分析完成 / 分析结束"这类**过程状态**写成
+# problem_type（实战样本 rec27apb5yapZ："追问分析完成"）。它们不是问题分类，统一判 "未知"。
+_COMPLETION_PHRASE_FRAGMENTS = ("分析完成", "分析结束", "完成分析", "分析总结", "analysis complete")
+
 
 def _clean_problem_type(value: str) -> str:
     """Return the value if it looks like a real problem category, else '未知'."""
     v = (value or "").strip()
-    if not v or v.lower() in _INVALID_PROBLEM_TYPES:
+    v_norm = v.lower()
+    if not v or v_norm in _INVALID_PROBLEM_TYPES or v_norm in _SECTION_HEADINGS:
+        return "未知"
+    # 完成/过程短语（含"追问分析完成"这种带前缀的）一律不是问题分类
+    if any(frag in v_norm for frag in _COMPLETION_PHRASE_FRAGMENTS):
         return "未知"
     return v
 
@@ -908,10 +940,14 @@ def _salvage_from_markdown(text: str) -> Dict:
         text, re.IGNORECASE,
     )
     if not type_match:
-        # Pattern 2: heading (skip generic headings like "分析完成")
+        # Pattern 2: heading (skip generic headings like "分析完成" AND section
+        # labels like "Root Cause" / "根本原因" — those are structure, not a category)
         for m in re.finditer(r"#{1,3}\s*(.+)", text):
-            heading = m.group(1).strip()
-            if heading.lower() not in _INVALID_PROBLEM_TYPES and len(heading) > 2:
+            heading = m.group(1).strip().strip("*：: ").strip()
+            h_norm = heading.lower()
+            if h_norm in _INVALID_PROBLEM_TYPES or h_norm in _SECTION_HEADINGS:
+                continue
+            if len(heading) > 2:
                 type_match = m
                 break
     if not type_match:

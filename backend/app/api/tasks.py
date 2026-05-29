@@ -393,6 +393,10 @@ async def fix_false_failures():
             if pt not in _system_failure_types and (has_substance or has_real_type):
                 is_fail = False
 
+            # ② 与运行时门禁对齐：system_failure 的任务保持失败，不被本维护函数误"修正"回 done。
+            if getattr(analysis, "system_failure", False):
+                is_fail = True
+
             if not is_fail:
                 # This task was wrongly marked as failed → fix it
                 task.status = "done"
@@ -577,6 +581,13 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
         if result.problem_type not in _system_failure_types:
             if has_substance or has_real_type:
                 is_real_failure = False
+
+        # ② 发布门禁：Agent 自报 system_failure（截断/重修/超时/额度/CLI不可用）一律判失败，
+        #   不被 has_substance 覆盖。历史 bug：fb_fb4107609a / fb_9f347bbc90 截断半成品带着
+        #   100+ 字 root_cause 通过了 has_substance，被当"已完成可信"发布 → 落进 inaccurate 桶。
+        #   system_failure 是权威信号：宁可标失败让 ops 重跑，也不发布不可信结论。
+        if getattr(result, "system_failure", False):
+            is_real_failure = True
 
         await db.save_analysis(result.model_dump())
 

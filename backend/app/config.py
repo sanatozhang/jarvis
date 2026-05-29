@@ -197,6 +197,10 @@ class ConcurrencySettings(BaseSettings):
     # RC1 兜底：agent 自身超时 = pipeline 超时 − salvage_margin，保证 agent 先于 pipeline
     # 硬墙触发自己的 TimeoutError，走 salvage 路径捞回部分 result.json（而非被外层 cancel 丢弃）。
     salvage_margin: int = 60
+    # ① 日志时效性预检：日志最新事件比问题发生时间早超过 N 天 → 判定"日志未覆盖问题时段"，
+    # 直接出"需用户重传"结果、不再硬跑 agent（避免拿设备激活日的旧日志瞎猜根因，污染 inaccurate 桶）。
+    # 阈值取保守值——正常日志离问题就几天，4 个月前激活日的旧日志才是要拦的（fb_f86c656539 类）。
+    log_stale_gap_days: int = 30
 
 
 class JenkinsServerConfig(BaseSettings):
