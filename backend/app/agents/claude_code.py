@@ -364,22 +364,91 @@ class ClaudeCodeAgent(BaseAgent):
     # ------------------------------------------------------------------
     # L3: 写 Stop hook，强制模型必须写出 result.json 才能退出
     # ------------------------------------------------------------------
+    # 校验脚本：不仅看 result.json 是否存在，还看是不是"分析中"的占位 checkpoint。
+    # 底层逻辑：旧 hook 只查存在性 → fb_b47f129711 那份 "Analysis in progress... pending
+    # further grep" 占位结果完全合规地通过了退出闸门，被当成品交付。这里升级为完成度校验。
+    # 关键约束（避免把模型困死）：
+    #   1. 只拦"进行中/占位"标记，不拦诚实的 low-confidence 终版（低置信≠没分析完）。
+    #   2. block 次数封顶 2 次（.stop_block_count），超过即放行 → 交给 salvage，不烧光 turn 预算。
+    #   3. 任何内部异常一律 fail-open（允许退出），绝不因校验脚本自身问题卡死模型。
+    _STOP_CHECK_SCRIPT = r'''import json, os, sys
+ws = os.getcwd()
+p = os.path.join(ws, "output", "result.json")
+counter = os.path.join(ws, ".claude", ".stop_block_count")
+
+def allow():
+    sys.exit(0)
+
+def block(reason):
+    try:
+        n = int(open(counter).read().strip()) if os.path.exists(counter) else 0
+    except Exception:
+        n = 0
+    if n >= 2:            # 已 block 2 次仍未 finalize → 放行，交给 salvage 兜底
+        allow()
+    try:
+        open(counter, "w").write(str(n + 1))
+    except Exception:
+        pass
+    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+    sys.exit(0)
+
+if not os.path.exists(p):
+    block("output/result.json 还没写！请立即用 Write 工具写入符合 schema 的 JSON，写完再尝试 stop。")
+
+try:
+    with open(p, encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    block("output/result.json 不是合法 JSON，请用 Write 重写为符合 schema 的 JSON 后再 stop。")
+
+rc = " ".join(str(data.get(k, "")) for k in ("root_cause", "root_cause_en", "root_cause_zh")).lower()
+reply = " ".join(str(data.get(k, "")) for k in ("user_reply", "user_reply_en", "user_reply_zh")).lower()
+
+inprogress = [
+    "analysis in progress", "in progress", "pending further", "pending grep",
+    "still gathering", "still investigating", "to be analyzed", "tbd",
+    "分析中", "正在分析", "正在调查",
+    "待进一步", "仍在调查", "仍需进一步",
+]
+reply_tpl = [
+    "we are currently reviewing", "will provide a detailed response",
+    "正在分析您", "稍后将为您提供", "稍后为您",
+]
+
+if any(m in rc for m in inprogress) or any(m in reply for m in reply_tpl):
+    block("当前 result.json 是分析中的 checkpoint 占位（含 in-progress/稍后回复 字样），不是终版。"
+          "请基于已积累证据 finalize：写出明确根因与完整客服回复，去掉占位话术，再 stop。")
+
+if len(rc.strip()) < 40:
+    block("root_cause 过短，分析尚未完成。请补足根因（含现象/根因/证据）后再 stop。")
+
+allow()
+'''
+
     @staticmethod
     def _write_stop_hook(workspace: Path) -> None:
         """在 workspace 内写 .claude/settings.json，注入 Stop hook。
 
-        Stop hook 在模型决定 stop 时触发：
-        - 如果 output/result.json 存在 → exit 0 → 允许 stop
-        - 如果不存在 → 输出 block decision → 强制 Claude 继续一轮
-
-        被 max_turns 卡死时仍会退出，所以不会无限循环。
+        Stop hook 在模型决定 stop 时触发，委托 .claude/check_result.py 校验：
+        - result.json 不存在 / 非法 JSON / 进行中占位 / root_cause 过短 → block，强制再来一轮
+        - 否则 → exit 0 → 允许 stop
+        block 封顶 2 次 + python3 不可用时回退到纯存在性检查，绝不无限循环或卡死模型。
         """
         try:
             settings_dir = workspace / ".claude"
             settings_dir.mkdir(parents=True, exist_ok=True)
+            # 落地校验脚本
+            (settings_dir / "check_result.py").write_text(
+                ClaudeCodeAgent._STOP_CHECK_SCRIPT, encoding="utf-8"
+            )
+            # hook：优先跑校验脚本；python3 缺失/异常退出码非 0 时回退到旧的存在性检查
             hook_cmd = (
+                "python3 \"$(pwd)/.claude/check_result.py\"; rc=$?; "
+                "if [ $rc -ne 0 ]; then "
                 "if [ -f \"$(pwd)/output/result.json\" ]; then exit 0; "
-                "else echo '{\"decision\":\"block\",\"reason\":\"output/result.json 还没写！请立即用 Write 工具写入符合 schema 的 JSON，写完再尝试 stop。\"}'; fi"
+                "else echo '{\"decision\":\"block\",\"reason\":\"output/result.json 还没写！请立即用 Write 工具写入符合 schema 的 JSON，写完再尝试 stop。\"}'; fi; "
+                "fi"
             )
             settings = {
                 "hooks": {
