@@ -1198,11 +1198,25 @@ def _issue_to_dict(
 ADMIN_USERNAME = "sanato"  # initial admin
 
 
+def _norm_username(username: str) -> str:
+    """Canonical username key: strip + lowercase.
+
+    Both login paths store usernames lowercase (users.py does `.strip().lower()`;
+    auth.py derives via derive_username_from_email which lowercases). Read/write
+    helpers must apply the same normalization so a display-case username
+    (e.g. "WM" from the escalate request) still resolves the stored "wm" row —
+    otherwise the creator's email never resolves and they get dropped from the
+    escalation group.
+    """
+    return (username or "").strip().lower()
+
+
 async def upsert_user(
     username: str,
     feishu_email: str = "",
     role: Optional[str] = None,
 ) -> Dict[str, Any]:
+    username = _norm_username(username)
     async with get_session() as session:
         resolved_role = role if role else (
             "admin" if username == ADMIN_USERNAME else "user"
@@ -1227,6 +1241,7 @@ async def update_user_feishu_email(username: str, feishu_email: str) -> Optional
     Used by the bind-callback flow where we want to attach an email to a legacy
     username without disturbing role or creating a new row.
     """
+    username = _norm_username(username)
     async with get_session() as session:
         record = await session.get(UserRecord, username)
         if not record:
@@ -1241,6 +1256,7 @@ async def update_user_feishu_email(username: str, feishu_email: str) -> Optional
 
 
 async def get_user(username: str) -> Optional[Dict[str, Any]]:
+    username = _norm_username(username)
     async with get_session() as session:
         from sqlalchemy import select
         record = await session.get(UserRecord, username)
@@ -1257,6 +1273,7 @@ async def get_or_create_user(username: str) -> Dict[str, Any]:
 
 
 async def touch_user_active(username: str):
+    username = _norm_username(username)
     if not username:
         return
     async with get_session() as session:
