@@ -460,7 +460,7 @@ metrics:
 
   - key: audio_upload_cloud_duration
     title: "Audio Upload Cloud Duration (s) - P50 / P75 / P95"
-    widget_id: 52
+    widget_id: 53          # v7 2026-06-05: 52→53（dashboard 改版漂移，52 变成"商业化购买成功率"带 group_by→报错）
     widget_type: timeseries
     tier: P1
     value_type: latency_pct
