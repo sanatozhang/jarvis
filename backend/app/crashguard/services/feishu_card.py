@@ -77,36 +77,56 @@ def _collapsible_panel(
 
 
 def _tldr_headline(tldr: Dict[str, Any]) -> str:
-    """从 tldr.platforms 拼一行平台状态——每平台一段 chip。"""
+    """从 tldr.platforms 拼一行平台状态——用户口径（方案 A）。
+
+    与头条同维度：每平台「受影响用户数 + 用户同比」，不再拼 events%，
+    杜绝"卡片头条事件维度、正文用户维度"两套口径并存。
+    老 payload（无 crash_users 字段）回落到事件维度并明确标 events。
+    """
     parts: List[str] = []
     for p in tldr.get("platforms", []) or []:
         label = p.get("platform_label") or "?"
         status = p.get("status") or "unknown"
-        delta = p.get("delta_pct")
         new_n = int(p.get("new_count") or 0)
-        if status == "red":
-            tag = "🔴"
-        elif status == "yellow":
-            tag = "🟡"
-        elif status == "green_improve":
-            tag = "✅"
-        elif status == "green":
-            tag = "✅"
-        else:
-            tag = "⚪"
-        # 文案：平台 fatal +N% / 持平 / 改善 / 无基线
-        if status in ("red", "yellow"):
-            delta_str = f"fatal +{delta:.0f}%" if delta is not None else "fatal 上涨"
+        crash_users = p.get("crash_users")
+        u_delta = p.get("user_delta_pct")
+        tag = {
+            "red": "🔴", "yellow": "🟡",
+            "green_improve": "✅", "green": "✅",
+        }.get(status, "⚪")
+        # 用户口径优先（与头条同维度）
+        if crash_users is not None and int(crash_users) > 0:
+            if u_delta is None:
+                d_str = "（上周无基线）"
+            else:
+                s = "+" if u_delta >= 0 else ""
+                d_str = f"（{s}{u_delta:.0f}% vs 上周）"
+            chip = f"{label} **{int(crash_users):,} 人**受影响{d_str}"
             if new_n > 0:
-                delta_str += f" · 🆕{new_n}"
-            parts.append(f"{label} {delta_str} {tag}")
-        elif status == "green_improve":
-            parts.append(f"{label} fatal {delta:.0f}% ✅")
-        elif status == "green":
-            parts.append(f"{label} 持平 {tag}")
+                chip += f" · 🆕{new_n}"
+            parts.append(f"{chip} {tag}")
+        elif crash_users is not None:
+            parts.append(f"{label} 0 人受影响 {tag}")
         else:
-            # unknown：无基线
-            parts.append(f"{label} —")
+            # 老 payload 无 user 字段 → 回落事件维度（明确标 events，不与 user 混展）
+            delta = p.get("delta_pct")
+            if status in ("red", "yellow"):
+                ds = (
+                    f"fatal events {'+' if (delta or 0) >= 0 else ''}{delta:.0f}%"
+                    if delta is not None else "fatal 上涨"
+                )
+                if new_n > 0:
+                    ds += f" · 🆕{new_n}"
+                parts.append(f"{label} {ds} {tag}")
+            elif status == "green_improve":
+                parts.append(
+                    f"{label} fatal events {delta:.0f}% ✅"
+                    if delta is not None else f"{label} 改善 ✅"
+                )
+            elif status == "green":
+                parts.append(f"{label} 持平 {tag}")
+            else:
+                parts.append(f"{label} —")
     return " · ".join(parts) if parts else "全平台无数据"
 
 

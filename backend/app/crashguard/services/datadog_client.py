@@ -906,36 +906,39 @@ class DatadogClient:
     _USER_TOTAL_FILTER = "@type:session @session.type:user"
 
     async def count_users_by_platform(
-        self, window_hours: int = 24,
+        self, window_hours: int = 24, offset_hours: int = 0,
     ) -> Dict[str, int]:
         """最近 N 小时内 distinct user 数，按平台分桶。
 
         口径：cardinality(@usr.id) WHERE @type:session @session.type:user
+        offset_hours：窗口整体往前平移的小时数；0=今日窗 [now-Nh, now]，
+        168=上周同 weekday 同段（SHoW，供日报用户同比用）。
         返回 {"android": int, "ios": int}；失败返回 {} 不致命。
         """
         try:
             return await asyncio.to_thread(
                 self._sync_user_cardinality_by_platform,
-                self._USER_TOTAL_FILTER, window_hours,
+                self._USER_TOTAL_FILTER, window_hours, offset_hours,
             )
         except Exception as exc:
             logger.warning("count_users_by_platform failed: %s", exc)
             return {}
 
     async def count_crash_users_by_platform(
-        self, window_hours: int = 24,
+        self, window_hours: int = 24, offset_hours: int = 0,
     ) -> Dict[str, int]:
         """最近 N 小时内 fatal-affected distinct user 数，按平台分桶。
 
         口径（与 sessions 系列对齐，含 ANR + App Hang）：
             cardinality(@usr.id) WHERE @type:error @session.type:user
                                   (is_crash OR ANR OR App Hang)
+        offset_hours：同 count_users_by_platform，168=SHoW 上周同段基线。
         返回 {"android": int, "ios": int}；失败返回 {} 不致命。
         """
         try:
             return await asyncio.to_thread(
                 self._sync_user_cardinality_by_platform,
-                self._USER_FATAL_FILTER, window_hours,
+                self._USER_FATAL_FILTER, window_hours, offset_hours,
             )
         except Exception as exc:
             logger.warning("count_crash_users_by_platform failed: %s", exc)
@@ -976,14 +979,19 @@ class DatadogClient:
             return {}
 
     def _sync_user_cardinality_by_platform(
-        self, filter_query: str, window_hours: int,
+        self, filter_query: str, window_hours: int, offset_hours: int = 0,
     ) -> Dict[str, int]:
-        """走 F&F scalar API，group_by @os.name，归并 ANDROID/IOS 桶。"""
+        """走 F&F scalar API，group_by @os.name，归并 ANDROID/IOS 桶。
+
+        offset_hours：窗口右端从 now 往前平移的小时数（168=上周同段 SHoW）。
+        窗口 = [end-Nh, end]，end = now-offset_hours。
+        """
         now_ms = int(time.time() * 1000)
-        start_ms = now_ms - max(1, int(window_hours)) * 3600 * 1000
+        end_ms = now_ms - max(0, int(offset_hours)) * 3600 * 1000
+        start_ms = end_ms - max(1, int(window_hours)) * 3600 * 1000
         rows = self._scalar_user_cardinality(
             filter_query=filter_query,
-            start_ms=start_ms, end_ms=now_ms,
+            start_ms=start_ms, end_ms=end_ms,
             group_by_facets=["@os.name"],
         )
         out: Dict[str, int] = {}

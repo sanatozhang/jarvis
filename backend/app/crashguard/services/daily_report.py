@@ -278,6 +278,9 @@ async def compose_report(
     # 与 sessions 同口径含 ANR + App Hang，走 Datadog F&F Scalar API
     total_users_by_plat: Dict[str, int] = {}
     crash_users_by_plat: Dict[str, int] = {}
+    # SHoW 基线用户数（上周同 weekday 同窗口）——headline 用户同比所需（方案 A）
+    base_total_users_by_plat: Dict[str, int] = {}
+    base_crash_users_by_plat: Dict[str, int] = {}
     top_ver_total_users: Dict[str, int] = {}
     top_ver_crash_users: Dict[str, int] = {}
     latest_ver_total_users: Dict[str, int] = {}
@@ -437,6 +440,20 @@ async def compose_report(
                 crash_users_by_plat = {
                     k.upper(): v for k, v in (raw_user_crash or {}).items()
                 }
+                # SHoW 基线（上周同 weekday 同窗口，offset 168h）——headline 用户同比 + crash-free pp
+                # 方案 A：headline 全程讲"用户"一件事，平台同比也用 user 维度，杜绝 events%/users 混拼。
+                raw_user_total_base = await client.count_users_by_platform(
+                    window_hours=data_window_hours, offset_hours=168
+                )
+                base_total_users_by_plat = {
+                    k.upper(): v for k, v in (raw_user_total_base or {}).items()
+                }
+                raw_user_crash_base = await client.count_crash_users_by_platform(
+                    window_hours=data_window_hours, offset_hours=168
+                )
+                base_crash_users_by_plat = {
+                    k.upper(): v for k, v in (raw_user_crash_base or {}).items()
+                }
             except Exception:
                 logger.exception("user-dimension all-version pull failed (non-fatal)")
 
@@ -530,13 +547,15 @@ async def compose_report(
         )
     elif is_evening:
         scope_banner = (
-            f"> 📊 **数据口径**：过去 **{data_window_hours}h**（日内增量） · "
-            f"基线：**上周同 weekday 同 {data_window_hours}h 段**（SHoW-{data_window_hours}h）"
+            f"> 📊 **数据口径**：截至发送时刻**往前滚动 {data_window_hours}h**（日内增量·非自然日） · "
+            f"基线：**上周同 weekday 同 {data_window_hours}h 段**（SHoW-{data_window_hours}h） · "
+            f"用户/会话均 Datadog RUM"
         )
     else:
         scope_banner = (
-            f"> 📊 **数据口径**：过去 **24h**（昨日总览） · "
-            f"基线：**上周同 weekday 同 24h 段**（SHoW-24h）"
+            f"> 📊 **数据口径**：截至发送时刻**往前滚动 24h**（非自然日，与 Datadog 自然日看板会有差） · "
+            f"基线：**上周同 weekday 同 24h 段**（SHoW-24h） · "
+            f"用户/会话均 Datadog RUM（crash-free 为 user 维度）"
         )
     window_caption = scope_banner
     lines: List[str] = [
@@ -1142,9 +1161,13 @@ async def compose_report(
             if attn_drop_n:
                 chips.append(f"📉 **{attn_drop_n}** 下降")
             attn_status = "🔴 " + " · ".join(chips)
-        top1_str = f" · Top1 占 **{int(plat_top1_share)}%**" if plat_top1_share is not None else ""
+        top1_str = (
+            f" · Top1 占该平台 fatal **{int(plat_top1_share)}%**"
+            if plat_top1_share is not None else ""
+        )
         lines.append(
-            f"> 💬 **{plat_label}**：{events_total:,} fatal events / {sessions_total:,} sessions{cf_str}"
+            f"> 💬 **{plat_label}**：{events_total:,} fatal events · "
+            f"受影响 {sessions_total:,} sessions{cf_str}"
             f" · 关注 {attn_status}{top1_str}"
         )
         lines.append("")
@@ -1354,9 +1377,12 @@ async def compose_report(
         }
 
     # ── 顶部摘要 + 关注点 ─────────────────────────────
+    # 口径统一：Σ 行全部是 **issue 计数**（不是 events/users），各项判定口径不同——
+    # 新增=新版本首现(无基线)；突增=≥+10% 且 events≥100 且基线≥500；下降=≤-10%；
+    # Top=按 crash-free 影响分排序(无阈值)。标清"issue 数"避免与影响用户数/事件量混读。
     sigma = (
-        f"> Σ 新增 **{total_new}** · 突增 **{total_surge}** · "
-        f"下降 **{total_drop}** · Top 总览 **{total_top}**"
+        f"> Σ **issue 数** · 🆕 新增 **{total_new}** · 📈 突增 **{total_surge}** · "
+        f"📉 下降 **{total_drop}** · 🔥 Top 总览 **{total_top}**"
     )
 
     # C 路线：日报只关注 fatal——non_fatal 量大噪音多，全量去首页大盘看
@@ -1510,15 +1536,25 @@ async def compose_report(
             return None
         return (t - b) / b * 100.0
 
-    def _status_from_pct(pct: Optional[float], has_new: bool) -> str:
+    def _status_from_pct(
+        pct: Optional[float],
+        has_new: bool,
+        today_fatal: int = 0,
+        base_fatal: int = 0,
+    ) -> str:
         # red: fatal ≥ +50% 或本平台有新增 issue
         # yellow: +10%~+50% 上涨
         # green_improve: ≤ -10% 改善
         # green: 持平
-        # unknown: 无基线
+        # unknown: 无基线 / 小基数（百分比不可信）
         if has_new:
             return "red"
         if pct is None:
+            return "unknown"
+        # 小基数防噪（对齐 surge 判定）：今日 events 不足 attention_min_events，
+        # 或上周基线不足 baseline_min_for_pct 时，百分比噪声过大（如基线 11→今日 67
+        # 就是 +509%，绝对增量才 56），不允许仅凭 % 飘红/黄，交给绝对量与新增 issue 判断。
+        if today_fatal < attention_min_events or base_fatal < _baseline_min_for_pct():
             return "unknown"
         if pct >= 50:
             return "red"
@@ -1547,7 +1583,10 @@ async def compose_report(
             "delta_pct": delta_pct,
             "new_count": new_count,
             "surge_count": surge_count,
-            "status": _status_from_pct(delta_pct, has_new=new_count > 0),
+            "status": _status_from_pct(
+                delta_pct, has_new=new_count > 0,
+                today_fatal=t_fatal, base_fatal=b_fatal,
+            ),
         })
 
     # 必看 issue：fatal_news 优先（新崩溃更紧急），其次 fatal_surges 按 events×|Δ| 排序
@@ -1597,9 +1636,35 @@ async def compose_report(
     else:
         tldr_severity = "green"
 
-    # User 维度合计（2026-05-21 主指标切换；优先 headline / TL;DR 用）
+    # User 维度合计（2026-05-21 主指标切换；headline / TL;DR 主指标）
     total_users_today = sum(int(v or 0) for v in total_users_by_plat.values())
     crashed_users_today = sum(int(v or 0) for v in crash_users_by_plat.values())
+    # SHoW 基线合计（上周同段）——crash-free pp 同比 + 平台用户同比
+    base_total_users = sum(int(v or 0) for v in base_total_users_by_plat.values())
+    base_crashed_users = sum(int(v or 0) for v in base_crash_users_by_plat.values())
+
+    # 方案 A：headline 全程"用户"单一主语——每平台受影响用户数 + 用户维度同比。
+    # 与 events%/issue 数彻底解耦，杜绝"三处口径拼一句"。同时把 user 字段并进
+    # tldr_platforms，让飞书卡片侧（_tldr_headline）也改用用户口径渲染。
+    user_plat_rows: List[Dict[str, Any]] = []
+    _tldr_by_key = {p.get("platform_key"): p for p in tldr_platforms}
+    for _pk, _plabel in PLATFORM_DISPLAY:
+        tc = int(crash_users_by_plat.get(_pk, 0) or 0)
+        tt = int(total_users_by_plat.get(_pk, 0) or 0)
+        bc = int(base_crash_users_by_plat.get(_pk, 0) or 0)
+        bt = int(base_total_users_by_plat.get(_pk, 0) or 0)
+        u_delta = ((tc - bc) / bc * 100.0) if bc > 0 else None
+        user_plat_rows.append({
+            "platform_key": _pk, "platform_label": _plabel,
+            "today_crash_users": tc, "today_total_users": tt,
+            "base_crash_users": bc, "base_total_users": bt,
+            "user_delta_pct": u_delta,
+        })
+        _p = _tldr_by_key.get(_pk)
+        if _p is not None:
+            _p["crash_users"] = tc
+            _p["total_users"] = tt
+            _p["user_delta_pct"] = u_delta
 
     payload["tldr"] = {
         "severity": tldr_severity,
@@ -1609,17 +1674,18 @@ async def compose_report(
         "anomaly_total": len(fatal_news) + len(fatal_surges) + len(fatal_drops),
         "fatal_today_total": today_fatal_total,
         "fatal_baseline_total": base_fatal_total,
-        # User 维度并存
+        # User 维度（主指标）+ SHoW 基线（同比 pp 用）
         "total_users": total_users_today,
         "crashed_users": crashed_users_today,
+        "base_total_users": base_total_users,
+        "base_crashed_users": base_crashed_users,
     }
 
-    # ── 顶部 Headline：一句话总结今日数据状态 ──────────────────────
-    # 用户诉求（2026-05-21）：早报最顶部一眼能看出"今天有没有事 / 要不要跟进"。
-    # User 维度主指标——影响 X 个用户比 X 个 event 更直觉。
-    headline = _compose_headline(
+    # ── 顶部 Headline（方案 A：用户中心单一叙事）──────────────────
+    # lead 单行（卡片 ## 标题 + markdown 引用），平台用户拆解 + 结构注脚走 breakdown。
+    headline, headline_breakdown = _compose_headline(
         severity=tldr_severity,
-        tldr_platforms=tldr_platforms,
+        user_plat_rows=user_plat_rows,
         new_count=len(fatal_news),
         surge_count=len(fatal_surges),
         drop_count=len(fatal_drops),
@@ -1627,13 +1693,16 @@ async def compose_report(
         base_fatal_total=base_fatal_total,
         total_users=total_users_today,
         crashed_users=crashed_users_today,
+        base_total_users=base_total_users,
+        base_crashed_users=base_crashed_users,
     )
     payload["headline"] = headline
-    # markdown 顶部插一行 headline（在标题 lines[0] 之后；Σ 摘要在 insert_at=2 已经插入，
-    # 此处再插一行不影响 attn_lines 顺序，因为我们插在 lines[1] 位置之前）
+    # markdown 顶部插：headline 单行 + 平台用户拆解块（在标题 lines[0] 之后）
     if headline:
-        lines.insert(1, f"> **{headline}**")
-        lines.insert(2, "")
+        block = [f"> **{headline}**"]
+        block.extend(headline_breakdown)  # 已带 "> " 前缀
+        block.append("")
+        lines[1:1] = block
 
     text = "\n".join(lines).rstrip() + "\n"
     return text, payload
@@ -1642,7 +1711,7 @@ async def compose_report(
 def _compose_headline(
     *,
     severity: str,
-    tldr_platforms: List[Dict[str, Any]],
+    user_plat_rows: List[Dict[str, Any]],
     new_count: int,
     surge_count: int,
     drop_count: int,
@@ -1650,87 +1719,100 @@ def _compose_headline(
     base_fatal_total: int,
     total_users: int = 0,
     crashed_users: int = 0,
-) -> str:
-    """生成一句话头条总结（user 维度主指标 + events 兜底）。
+    base_total_users: int = 0,
+    base_crashed_users: int = 0,
+) -> Tuple[str, List[str]]:
+    """生成头条：方案 A「用户中心」单一叙事。
 
-    优先级：
-    - red：红/黄平台 fatal +X% + "影响 X 用户"，要求立即跟进
-    - yellow：最高 +X% 平台 + "影响 X 用户"，建议跟进
-    - green + 改善 → "fatal 同比下降，改善"
-    - green + 持平 → "数据平稳，安全无虞"（含 crash-free user %）
-    - unknown：基线缺失，优先展示 X 用户受影响（不展示 events）
+    返回 (lead_line, breakdown_lines)：
+    - lead_line：单行（飞书卡片 `## ` 标题 + markdown 引用共用），全句只讲"用户"
+      一件事——受影响用户数 + crash-free% + 较上周 pp，绝不混 events%/issue 数。
+    - breakdown_lines：markdown `> ` 平台用户拆解 + 结构注脚（issue 数明确归到
+      "结构"，不混进影响数）。
 
-    抓手：自然语言 + 单行，工程师扫一眼就能判断"今天要不要点进卡片"。
+    数据一致性约束：lead + breakdown 全部 user 维度、全平台合计/单平台拆解同源、
+    同窗口（data_window_hours）、同比基线统一为 SHoW 上周同段。
+    user 数据缺失（Datadog user 拉取失败）时回落 events 单维度兜底（仍不混用户数）。
     """
+    sev_word = {
+        "red": "🔴 **紧急**",
+        "yellow": "🟡 **关注**",
+        "green": "✅ **平稳**",
+    }.get(severity, "⚪ **基线待核**")
+    cta = {
+        "red": "，请工程师立刻跟进",
+        "yellow": "，建议工程师跟进",
+        "green": "，安全无虞",
+    }.get(severity, "，请人工对照上周")
+
+    # ── 用户数据可用：用户中心叙事 ──
+    if total_users > 0:
+        rate = (1.0 - crashed_users / total_users) * 100.0
+        # crash-free 同比（pp）：今日 vs 上周同段（SHoW）
+        pp_str = ""
+        if base_total_users > 0:
+            base_rate = (1.0 - base_crashed_users / base_total_users) * 100.0
+            pp = rate - base_rate
+            sign = "+" if pp >= 0 else ""
+            pp_str = f"，较上周同期 {sign}{pp:.1f}pp"
+        if severity == "green" and crashed_users == 0:
+            lead = (
+                f"{sev_word} —— 全平台 fatal 零用户受影响"
+                f"（crash-free 100%{pp_str}），安全无虞"
+            )
+        else:
+            lead = (
+                f"{sev_word} —— 今日全平台 **{crashed_users:,} 用户**受 fatal 影响"
+                f"（crash-free {rate:.2f}%{pp_str}）{cta}"
+            )
+
+        breakdown: List[str] = []
+        # 平台用户拆解：仅展示今日有受影响用户的平台，按受影响数降序
+        active = [
+            r for r in (user_plat_rows or [])
+            if int(r.get("today_crash_users") or 0) > 0
+        ]
+        active.sort(key=lambda r: -int(r.get("today_crash_users") or 0))
+        for i, r in enumerate(active):
+            tree = "└" if i == len(active) - 1 else "├"
+            label = r.get("platform_label") or "?"
+            tc = int(r.get("today_crash_users") or 0)
+            ud = r.get("user_delta_pct")
+            if ud is None:
+                d_str = "（上周无基线）"
+            else:
+                s = "+" if ud >= 0 else ""
+                d_str = f"（{s}{ud:.0f}% vs 上周）"
+            breakdown.append(f"> {tree} {label} **{tc:,} 人**{d_str}")
+        # 结构注脚：issue 数明确标"结构"，与影响用户数解耦
+        struct_parts: List[str] = []
+        if new_count > 0:
+            struct_parts.append(f"新增 **{new_count}** issue")
+        if surge_count > 0:
+            struct_parts.append(f"突增 **{surge_count}** issue")
+        if drop_count > 0:
+            struct_parts.append(f"下降 **{drop_count}** issue")
+        if struct_parts:
+            breakdown.append(f"> 结构： {' · '.join(struct_parts)}")
+        return lead, breakdown
+
+    # ── 用户数据缺失：events 单维度兜底（不混用户数，保持一致性）──
     def _fmt_delta(t: int, b: int) -> Optional[float]:
         if b == 0:
             return None
         return (t - b) / b * 100.0
-
-    plat_chips: List[str] = []
-    for p in tldr_platforms or []:
-        label = p.get("platform_label") or "?"
-        status = p.get("status") or "unknown"
-        delta = p.get("delta_pct")
-        if status not in ("red", "yellow", "green_improve"):
-            continue
-        if delta is None:
-            continue
-        sign = "+" if delta >= 0 else ""
-        plat_chips.append(f"{label} fatal {sign}{delta:.0f}%")
-
-    anomaly_tail_parts: List[str] = []
-    if new_count > 0:
-        anomaly_tail_parts.append(f"🆕 {new_count} 新增")
-    if surge_count > 0:
-        anomaly_tail_parts.append(f"📈 {surge_count} 突增")
-    anomaly_tail = "（" + " / ".join(anomaly_tail_parts) + "）" if anomaly_tail_parts else ""
-
-    # User 维度后缀：影响 X 用户（仅在 user 数据可用时附加）
-    user_impact_tail = ""
-    if crashed_users > 0 and total_users > 0:
-        rate = (1.0 - crashed_users / total_users) * 100.0
-        user_impact_tail = f"，影响 **{crashed_users:,} 用户**（crash-free {rate:.2f}%）"
-    elif crashed_users > 0:
-        user_impact_tail = f"，影响 **{crashed_users:,} 用户**"
-
-    if severity == "red":
-        lead = "🔴 **紧急** —— " + ("；".join(plat_chips) if plat_chips else "出现新增 fatal issue")
-        return f"{lead}{anomaly_tail}{user_impact_tail}，请工程师立刻跟进"
-    if severity == "yellow":
-        lead = "🟡 **关注** —— " + ("；".join(plat_chips) if plat_chips else "fatal 上涨")
-        return f"{lead}{anomaly_tail}{user_impact_tail}，建议工程师跟进"
-    if severity == "green":
-        # 改善优先（有平台 green_improve），否则平稳
-        improves = [c for c in plat_chips if "-" in c]
-        if improves:
-            tail = f"，{drop_count} 项 fatal 下降" if drop_count > 0 else ""
-            return f"✅ **平稳** —— {'；'.join(improves)}，整体改善{tail}{user_impact_tail}"
-        # 完全持平：优先展示 user 维度 crash-free 率
-        if total_users > 0:
-            rate = (1.0 - crashed_users / total_users) * 100.0
-            return (
-                f"✅ **平稳** —— 全平台 fatal 同期持平，"
-                f"**crash-free user {rate:.2f}%**（{total_users:,} 用户），安全无虞"
-            )
-        return "✅ **平稳** —— 全平台 fatal 同期持平，无新增 / 突增 issue，安全无虞"
-    # unknown：基线为 0 或缺失——优先展示 user 数（events 太抽象）
-    if total_users > 0:
-        rate = (1.0 - crashed_users / total_users) * 100.0
-        return (
-            f"⚪ **基线待核** —— 今日 **{total_users:,} 用户**，"
-            f"crash-free {rate:.2f}%（影响 {crashed_users:,} 用户），请人工对照上周"
-        )
     delta_pct = _fmt_delta(today_fatal_total, base_fatal_total)
     if delta_pct is None:
         return (
             f"⚪ **基线缺失** —— 今日 {today_fatal_total:,} fatal events，"
-            f"上周同段无数据，请人工对照"
+            f"上周同段无数据，请人工对照",
+            [],
         )
     sign = "+" if delta_pct >= 0 else ""
     return (
-        f"⚪ **数据待核** —— 今日 {today_fatal_total:,} fatal events "
-        f"（{sign}{delta_pct:.0f}% vs 上周）"
+        f"{sev_word} —— 今日 {today_fatal_total:,} fatal events"
+        f"（{sign}{delta_pct:.0f}% vs 上周同期）{cta}",
+        [],
     )
 
 
