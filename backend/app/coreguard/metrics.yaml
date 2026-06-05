@@ -8,6 +8,14 @@ defaults:
   consecutive_breach: 2      # 连续 N 个小时窗口超阈才告警
   direction: worse_only      # 仅恶化方向触发
   dedup_window_hours: 6
+  # ── 预测带引擎（design 2026-06-05，回验通过）─────────────────────────
+  # 自 2026-06-05 起，非 absolute_threshold 指标改走"预测带"：
+  #   带 = median(同 2h-of-day 近 N 天) ± k×(1.4826·MAD)，方向感知穿带 → 告警。
+  # ⚠️ 各指标的 `threshold:` 魔法数对 band 指标已废弃（引擎不读），仅 absolute_threshold
+  #    （hang_rate 红线）仍用 threshold.red。引擎参数（k/window/baseline_days/floor）在
+  #    app/coreguard/config.py，可经 COREGUARD_BAND_* env 覆盖；回验确定 k=3。
+  # ⚠️ direction 现由 dashboard widget 的 comparison.directionality 在加载期交叉校验，
+  #    冲突自动以 Datadog 为准并 log error（结构性防"方向写反"）。
 
 dashboard:
   id: "4h8-qff-zra"
@@ -306,10 +314,15 @@ metrics:
     title: "wifi同步文件速度P75"
     widget_id: 28
     widget_type: query_value
+    # ⚠️ 吞吐量指标（pc75 of @context.avg_speed_kbps，单位 KB/s），越高越好。
+    # Datadog widget 自身声明 directionality=increase_better，红/黄/绿线 <300红/<400黄/>400绿。
+    # value_type 沿用 latency_pct（仅表示"按相对 % 对比 SHoW"，与方向无关）。
     tier: P1
     value_type: latency_pct
-    direction: up_is_bad
-    threshold: { pct: 0.15 }   # v5 2026-05-28: 0.20 → 0.15（30d 实测 max=0.32, breach 3 次但未告警）
+    # v6 2026-06-05: up_is_bad → down_is_bad（修方向配反 bug）。
+    # 原配置把吞吐当延迟，速度上涨(+37.71%)被误报 P1 异常；改为仅在「变慢」时告警。
+    direction: down_is_bad
+    threshold: { pct: 0.15 }   # 速度跌 ≥15% vs 上周同段 才告警
     alert_enabled: true
 
   - key: share_export_success_rate

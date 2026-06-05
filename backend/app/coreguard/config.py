@@ -54,6 +54,19 @@ class CoreguardSettings(BaseSettings):
     # 上一个窗口的 breached 状态从 CoreguardMetricSnapshot 历史快照读
     p1_consecutive_breach: int = 2
 
+    # ── 预测带引擎（design 2026-06-05；回验确定 k=3）──────────────────
+    # 带 = median(同时段近 N 天) ± k × (1.4826·MAD)，方向感知穿带 → 告警
+    band_enabled: bool = True              # False → 回退旧单点 SHoW + 固定阈值
+    band_k: float = 3.0                    # 全局 k（回验 §6.3：4.6/周 @k=3）
+    band_window_hours: int = 3             # 滚动评估窗口（样本量 ×3，比单小时稳）
+    band_baseline_days: int = 14           # 方案 B：同时段近 N 天（RUM 仅留 ~30 天）
+    band_min_points: int = 3               # 有效历史点 < N → 不报、只记录
+    # 带宽地板（防零宽带）：百分比类用绝对 pp；其余用相对 μ 比例
+    band_sigma_floor_pp: float = 0.05
+    band_sigma_floor_rel: float = 0.005
+    # 防抖：连续 N 个窗口同向穿带才入飞书卡（统一所有 tier，design §5.2）
+    band_consecutive: int = 2
+
     model_config = {
         "env_prefix": "COREGUARD_",
         # 用绝对路径（同 crashguard 模式），避免 cwd 在 backend/ 时找不到根目录 .env

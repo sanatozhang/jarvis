@@ -68,6 +68,20 @@ def _bad_emoji(direction: str, change: Optional[float]) -> str:
     return ""
 
 
+def _is_band(r: Dict[str, Any]) -> bool:
+    return (r.get("baseline_mode") == "band") and r.get("band_lower") is not None
+
+
+def _sigma_level(dist: Optional[float]) -> tuple[str, str]:
+    """穿出 σ 数 → (emoji, 级别词)。design §5.1。"""
+    d = abs(dist or 0)
+    if d >= 6:
+        return "🔴", "紧急"
+    if d >= 4:
+        return "🟠", "警告"
+    return "🟡", "关注"
+
+
 # ---------------------------------------------------------------------------
 # Headline (一句话总结)
 # ---------------------------------------------------------------------------
@@ -88,8 +102,6 @@ def _headline(breached: List[Dict[str, Any]]) -> str:
         return abs(c)
 
     worst = max(breached, key=_severity)
-    direction_word = _direction_word(worst["direction"], worst["change"])
-    change_str = _fmt_change(worst["value_type"], worst["change"])
 
     parts = []
     if p0:
@@ -98,6 +110,15 @@ def _headline(breached: List[Dict[str, Any]]) -> str:
         parts.append(f"{len(p1)} 项 P1 性能指标异常")
     summary = "、".join(parts)
 
+    if _is_band(worst):
+        emoji, level = _sigma_level(worst.get("change"))
+        return (
+            f"{summary}：{emoji} **{worst['title']}** 偏离预测带 "
+            f"`{abs(worst.get('change') or 0):.1f}σ`（{level}，基线=近期同时段），需立即跟进。"
+        )
+    # 旧/absolute 口径
+    direction_word = _direction_word(worst["direction"], worst["change"])
+    change_str = _fmt_change(worst["value_type"], worst["change"])
     return (
         f"{summary}：**{worst['title']}** {direction_word} `{change_str}` "
         f"（vs 上周同时段），需立即跟进。"
@@ -132,18 +153,32 @@ def _breached_block(
     """单条异常的展示块（lark_md）— 当前值 / 上周值各挂一条 Datadog 深链。"""
     tier = r["tier"]
     title = r["title"]
-    cur = _fmt_value(r["value_type"], r["current_value"])
-    base = _fmt_value(r["value_type"], r["baseline_value"])
-    chg = _fmt_change(r["value_type"], r["change"])
-    th = _fmt_threshold(r["value_type"], r["threshold"])
-    direction_word = _direction_word(r["direction"], r["change"])
-    emoji = _bad_emoji(r["direction"], r["change"])
-
+    vt = r["value_type"]
+    cur = _fmt_value(vt, r["current_value"])
     widget_id = r.get("datadog_widget_id")
     cur_url = _build_dashboard_url(dashboard_id, datadog_site, cur_start_ms, cur_end_ms, widget_id)
-    base_url = _build_dashboard_url(dashboard_id, datadog_site, base_start_ms, base_end_ms, widget_id)
 
-    # lark_md `[text](url)` 把 cur/base 都做成可点超链，不暴露原始 URL
+    # 带引擎：展示 穿出σ + 预测μ + 正常带
+    if _is_band(r):
+        emoji, level = _sigma_level(r.get("change"))
+        mu = _fmt_value(vt, r.get("baseline_value"))
+        lo = _fmt_value(vt, r.get("band_lower"))
+        hi = _fmt_value(vt, r.get("band_upper"))
+        n = r.get("baseline_n")
+        return (
+            f"**[{tier}] {title}** {emoji}\n"
+            f"　偏离预测带 `{abs(r.get('change') or 0):.1f}σ`（{level}）\n"
+            f"　当前 [`{cur}`]({cur_url}) · 预测 μ`{mu}` · 正常带 `[{lo}, {hi}]`"
+            f"{f'（基线 {n} 点）' if n else ''}"
+        )
+
+    # 旧/absolute 口径：上周同时段 + 阈值
+    base = _fmt_value(vt, r["baseline_value"])
+    chg = _fmt_change(vt, r["change"])
+    th = _fmt_threshold(vt, r["threshold"]) if r.get("threshold") else "—"
+    direction_word = _direction_word(r["direction"], r["change"])
+    emoji = _bad_emoji(r["direction"], r["change"])
+    base_url = _build_dashboard_url(dashboard_id, datadog_site, base_start_ms, base_end_ms, widget_id)
     return (
         f"**[{tier}] {title}** {emoji}\n"
         f"　{direction_word} `{chg}` (阈值 {th})\n"
@@ -199,13 +234,14 @@ def build_summary_card(
         f"https://app.{datadog_site}/dashboard/{dashboard_id}"
         f"?from_ts={cur_start_ms}&to_ts={cur_end_ms}&live=false"
     )
+    _baseline_days = max((cur_start - base_start).days, 1)
     elements.append({
         "tag": "note",
         "elements": [{
             "tag": "lark_md",
             "content": (
-                f"当前 {cur_start.strftime('%m-%d %H:%M')} ~ {cur_end.strftime('%H:%M')} UTC"
-                f"  ·  上周 {base_start.strftime('%m-%d %H:%M')} ~ {base_end.strftime('%H:%M')} UTC"
+                f"当前窗口 {cur_start.strftime('%m-%d %H:%M')} ~ {cur_end.strftime('%H:%M')} UTC"
+                f"  ·  基线 近 {_baseline_days} 天同时段（预测带 median±k·MAD）"
                 f"  ·  共评估 {total} 项 (异常 {n_breach}{('，缺数据 '+str(n_err)) if n_err else ''})"
             ),
         }],

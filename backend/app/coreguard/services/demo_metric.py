@@ -71,10 +71,35 @@ def current_window(now: datetime) -> tuple[datetime, datetime]:
 
 
 def show_baseline_window(current_start: datetime) -> tuple[datetime, datetime]:
-    """上周同 weekday 同小时。"""
+    """[旧机制] 上周同 weekday 同小时。新带引擎用 rolling_window + same_slot_history_windows。"""
     start = current_start - timedelta(days=7)
     end = start + timedelta(hours=1)
     return start, end
+
+
+def rolling_window(now: datetime, hours: int = 3) -> tuple[datetime, datetime]:
+    """滚动评估窗口 [now_floored_to_hour - Nh, now_floored_to_hour)。
+
+    比单自然小时样本量大 N 倍 → 当前值更稳，带更紧。预测带设计 §2.1。
+    """
+    end = floor_to_hour(now)
+    start = end - timedelta(hours=max(1, int(hours)))
+    return start, end
+
+
+def same_slot_history_windows(
+    cur_start: datetime, cur_end: datetime, days_back: int
+) -> list[tuple[datetime, datetime]]:
+    """方案 B：同 2h-of-day × 近 N 天 → 返回 [(start, end)] 各历史同时段窗口。
+
+    offset = 1d, 2d, ..., days_back 天前的同一时段（与当前窗口同样的 time-of-day）。
+    预测带设计 §2.2；RUM 仅保留 ~30 天，days_back 应 ≤ 可用天数。
+    """
+    out: list[tuple[datetime, datetime]] = []
+    for d in range(1, max(1, int(days_back)) + 1):
+        delta = timedelta(days=d)
+        out.append((cur_start - delta, cur_end - delta))
+    return out
 
 
 def to_ms(dt: datetime) -> int:

@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
@@ -42,10 +42,16 @@ class MetricResult:
     direction: str
     threshold: Dict[str, float]
     current_value: Optional[float]
-    baseline_value: Optional[float]
-    change: Optional[float]              # pp 或 pct（按 value_type）
+    baseline_value: Optional[float]     # 带引擎：预测 μ（旧机制：上周同时段单点）
+    change: Optional[float]              # 带引擎：穿出 σ 数（旧机制：pp/pct 变化）
     sessions_count: Optional[int]
     breached: bool                       # 原始判定（仅看本时段阈值，进 DB 快照）
+    # 带引擎额外字段（design 2026-06-05）
+    band_lower: Optional[float] = None
+    band_upper: Optional[float] = None
+    band_sigma: Optional[float] = None
+    baseline_n: Optional[int] = None
+    baseline_mode: str = "band"          # band / absolute / show（旧）
     alertable: bool = False              # 通过 min_users / N=2 防抖 后才入飞书卡
     skip_reason: Optional[str] = None    # 被 gate 拦下时记原因（如 min_users 兜底 / 防抖等下次）
     datadog_widget_id: Optional[int] = None  # Datadog widget 真实 id（fullscreen 深链用）
@@ -93,6 +99,62 @@ def _judge(cfg: MetricConfig, cur: Optional[float], base: Optional[float]) -> tu
     if cfg.direction == "up_is_bad":
         return change >= thresh, change
     return abs(change) >= thresh, change
+
+
+# ── 预测带引擎（design 2026-06-05，回验通过）────────────────────────────
+import statistics
+
+
+def _median(xs: List[float]) -> float:
+    return statistics.median(xs)
+
+
+def _mad(xs: List[float], med: float) -> float:
+    """中位数绝对偏差（抗离群点，比标准差稳）。"""
+    return statistics.median([abs(x - med) for x in xs])
+
+
+def _sigma_floor(value_type: str, mu: float, floor_pp: float, floor_rel: float) -> float:
+    """带宽地板，防零宽带：百分比类用绝对 pp；其余用相对 μ 比例。"""
+    if value_type == "percent_pp":
+        return float(floor_pp)
+    return float(floor_rel) * abs(mu)
+
+
+def band_stats(baseline: List[float], value_type: str, k: float,
+               floor_pp: float, floor_rel: float):
+    """从历史同时段序列算预测带。返回 (mu, sigma, lower, upper)。
+
+    mu = median（单次毛刺不污染）；sigma = max(1.4826·MAD, floor)。
+    """
+    mu = _median(baseline)
+    sigma = max(1.4826 * _mad(baseline, mu), _sigma_floor(value_type, mu, floor_pp, floor_rel))
+    return mu, sigma, mu - k * sigma, mu + k * sigma
+
+
+def judge_band(cfg: MetricConfig, cur: Optional[float], baseline: List[float],
+               k: float, floor_pp: float, floor_rel: float):
+    """方向感知穿带判定。
+
+    返回 dict: {breached, sigma_dist, mu, sigma, lower, upper, n} 或 None（数据不足/无当前值）。
+    - down_is_bad：只看穿下带（穿上带=异常地好，静默）
+    - up_is_bad  ：只看穿上带
+    - both       ：两侧
+    """
+    if cur is None or not baseline:
+        return None
+    mu, sigma, lower, upper = band_stats(baseline, cfg.value_type, k, floor_pp, floor_rel)
+    breached = False
+    dist = 0.0
+    direction = cfg.direction
+    if direction in ("down_is_bad", "both") and cur < lower:
+        breached = True
+        dist = (lower - cur) / sigma if sigma > 0 else 0.0
+    if direction in ("up_is_bad", "both") and cur > upper:
+        breached = True
+        dist = max(dist, (cur - upper) / sigma if sigma > 0 else 0.0)
+    return {"breached": breached, "sigma_dist": round(dist, 2),
+            "mu": mu, "sigma": sigma, "lower": lower, "upper": upper, "n": len(baseline)}
 
 
 async def _scalar_safe(queries, formula, s_ms, e_ms) -> Optional[float]:
@@ -190,31 +252,77 @@ async def _was_breached_in_prev_window(metric_key: str, cur_start: datetime) -> 
         return bool(row)
 
 
-async def evaluate_one(cfg: MetricConfig, cur_start, cur_end, base_start, base_end) -> MetricResult:
-    """单指标评估：拉 current + baseline → judge."""
-    if not cfg.queries or not cfg.formula:
+async def evaluate_one(cfg: MetricConfig, cur_start, cur_end, settings=None) -> MetricResult:
+    """单指标评估：拉 current（滚动窗）+ 同时段历史序列 → 预测带判定。
+
+    - absolute_threshold（hang_rate 红线）或 band_enabled=False：走旧单点 SHoW + 固定阈值。
+    - 其余：方案 B 预测带（median ± k·MAD，方向感知穿带）。
+    """
+    s = settings or get_coreguard_settings()
+
+    def _err(msg):
         return MetricResult(
             key=cfg.key, title=cfg.title, tier=cfg.tier, value_type=cfg.value_type,
             direction=cfg.direction, threshold=cfg.threshold,
             current_value=None, baseline_value=None, change=None, sessions_count=None,
-            breached=False,
-            datadog_widget_id=cfg.datadog_widget_id,
-            error="missing queries/formula",
+            breached=False, datadog_widget_id=cfg.datadog_widget_id, error=msg,
         )
-    # 并发拉 current + baseline 节省时间
-    cur_val, base_val = await asyncio.gather(
-        _scalar_safe(cfg.queries, cfg.formula, dm.to_ms(cur_start), dm.to_ms(cur_end)),
-        _scalar_safe(cfg.queries, cfg.formula, dm.to_ms(base_start), dm.to_ms(base_end)),
-    )
-    breached, change = _judge(cfg, cur_val, base_val)
+
+    if not cfg.queries or not cfg.formula:
+        return _err("missing queries/formula")
+
+    use_band = bool(getattr(s, "band_enabled", True)) and cfg.value_type != "absolute_threshold"
+
+    # ── 旧路径：absolute_threshold 或 band 关闭 ──
+    if not use_band:
+        base_start = cur_start - timedelta(days=7)
+        base_end = cur_end - timedelta(days=7)
+        cur_val, base_val = await asyncio.gather(
+            _scalar_safe(cfg.queries, cfg.formula, dm.to_ms(cur_start), dm.to_ms(cur_end)),
+            _scalar_safe(cfg.queries, cfg.formula, dm.to_ms(base_start), dm.to_ms(base_end)),
+        )
+        breached, change = _judge(cfg, cur_val, base_val)
+        return MetricResult(
+            key=cfg.key, title=cfg.title, tier=cfg.tier, value_type=cfg.value_type,
+            direction=cfg.direction, threshold=cfg.threshold,
+            current_value=cur_val, baseline_value=base_val, change=change,
+            sessions_count=None, breached=breached,
+            baseline_mode=("absolute" if cfg.value_type == "absolute_threshold" else "show"),
+            datadog_widget_id=cfg.datadog_widget_id, error=None,
+        )
+
+    # ── 带路径：current + 同时段近 N 天 ──
+    hist_windows = dm.same_slot_history_windows(cur_start, cur_end, int(s.band_baseline_days))
+    cur_task = _scalar_safe(cfg.queries, cfg.formula, dm.to_ms(cur_start), dm.to_ms(cur_end))
+    hist_tasks = [_scalar_safe(cfg.queries, cfg.formula, dm.to_ms(hs), dm.to_ms(he))
+                  for hs, he in hist_windows]
+    cur_val, *hist_vals = await asyncio.gather(cur_task, *hist_tasks)
+    baseline = [v for v in hist_vals if v is not None]
+
+    if cur_val is None:
+        return _err("no current value")
+    if len(baseline) < int(s.band_min_points):
+        # 数据不足：不判 breach，只记录（run_all 里会标 skip_reason）
+        return MetricResult(
+            key=cfg.key, title=cfg.title, tier=cfg.tier, value_type=cfg.value_type,
+            direction=cfg.direction, threshold=cfg.threshold,
+            current_value=cur_val, baseline_value=None, change=None,
+            sessions_count=None, breached=False, baseline_n=len(baseline),
+            baseline_mode="band",
+            datadog_widget_id=cfg.datadog_widget_id,
+            error=f"insufficient baseline ({len(baseline)} < {s.band_min_points})",
+        )
+
+    j = judge_band(cfg, cur_val, baseline, float(s.band_k),
+                   float(s.band_sigma_floor_pp), float(s.band_sigma_floor_rel))
     return MetricResult(
         key=cfg.key, title=cfg.title, tier=cfg.tier, value_type=cfg.value_type,
         direction=cfg.direction, threshold=cfg.threshold,
-        current_value=cur_val, baseline_value=base_val, change=change,
-        sessions_count=None,  # 全量循环跑暂不拉 sessions（量太大），后续可按需补
-        breached=breached,
-        datadog_widget_id=cfg.datadog_widget_id,
-        error=None,
+        current_value=cur_val, baseline_value=round(j["mu"], 4), change=j["sigma_dist"],
+        sessions_count=None, breached=j["breached"],
+        band_lower=round(j["lower"], 4), band_upper=round(j["upper"], 4),
+        band_sigma=round(j["sigma"], 4), baseline_n=j["n"], baseline_mode="band",
+        datadog_widget_id=cfg.datadog_widget_id, error=None,
     )
 
 
@@ -226,7 +334,16 @@ async def _persist_snapshot(r: MetricResult, cur_start) -> None:
                 CoreguardMetricSnapshot.window_start == cur_start,
             )
         )).scalar_one_or_none()
-        baseline_source = "show" if r.baseline_value is not None else ("error" if r.error else "none")
+        baseline_source = (r.baseline_mode if r.baseline_value is not None
+                           else ("error" if r.error else "none"))
+        extra = json.dumps({
+            "direction": r.direction, "error": r.error,
+            "alertable": r.alertable, "skip_reason": r.skip_reason,
+            # 带引擎审计字段（无独立列，存 extra 避免迁移）
+            "band_lower": r.band_lower, "band_upper": r.band_upper,
+            "band_sigma": r.band_sigma, "baseline_n": r.baseline_n,
+            "sigma_dist": r.change if r.baseline_mode == "band" else None,
+        }, ensure_ascii=False)
         if existing:
             existing.value = r.current_value
             existing.baseline_value = r.baseline_value
@@ -236,10 +353,7 @@ async def _persist_snapshot(r: MetricResult, cur_start) -> None:
             existing.breached = r.breached
             existing.tier = r.tier
             existing.value_type = r.value_type
-            existing.extra = json.dumps({
-                "direction": r.direction, "error": r.error,
-                "alertable": r.alertable, "skip_reason": r.skip_reason,
-            }, ensure_ascii=False)
+            existing.extra = extra
         else:
             session.add(CoreguardMetricSnapshot(
                 metric_key=r.key,
@@ -253,10 +367,7 @@ async def _persist_snapshot(r: MetricResult, cur_start) -> None:
                 tier=r.tier,
                 value_type=r.value_type,
                 alert_sent=False,
-                extra=json.dumps({
-                    "direction": r.direction, "error": r.error,
-                    "alertable": r.alertable, "skip_reason": r.skip_reason,
-                }, ensure_ascii=False),
+                extra=extra,
             ))
         await session.commit()
 
@@ -270,16 +381,20 @@ async def run_all(dry_run: bool = False, now: Optional[datetime] = None,
         force_alert: True → 即便没有指标超阈也发一张"全绿"卡片，看效果。
     """
     now = now or datetime.utcnow()
-    cur_start, cur_end = dm.current_window(now)
-    base_start, base_end = dm.show_baseline_window(cur_start)
-
     cfg = await get_metrics_config(force_reload=False)
     targets = cfg.alertable()
     settings = get_coreguard_settings()
     min_users = int(getattr(settings, "min_users", 300) or 0)
-    p1_n = int(getattr(settings, "p1_consecutive_breach", 2) or 1)
-    logger.info("metric_watcher.run_all: total=%d targets=%d dry_run=%s force=%s",
-                len(cfg.metrics), len(targets), dry_run, force_alert)
+    band_n = int(getattr(settings, "band_consecutive", 2) or 1)
+
+    # 滚动评估窗口（design §2.1）；baseline 窗仅用于卡片展示其跨度
+    win_h = int(getattr(settings, "band_window_hours", 3) or 1)
+    cur_start, cur_end = dm.rolling_window(now, win_h)
+    base_start = cur_start - timedelta(days=int(getattr(settings, "band_baseline_days", 14)))
+    base_end = cur_end - timedelta(days=1)
+    logger.info("metric_watcher.run_all: total=%d targets=%d dry_run=%s force=%s band=%s",
+                len(cfg.metrics), len(targets), dry_run, force_alert,
+                getattr(settings, "band_enabled", True))
 
     s_ms, e_ms = dm.to_ms(cur_start), dm.to_ms(cur_end)
     # 全局 session 用户数：metrics-type 指标（ANR/Hang/Memory/Refresh）回落用
@@ -289,10 +404,10 @@ async def run_all(dry_run: bool = False, now: Optional[datetime] = None,
     # per-metric user_count 缓存（同窗口内同 filter 复用，避免 N+1）
     user_count_cache: Dict[str, int] = {_GLOBAL_SESSION_FILTER: global_user_count}
 
-    # 串行跑（避免一次性并发 22 个 datadog 请求被限流；可后续调成 gather 分批）
+    # 串行跑指标（每指标内部 current+N 历史窗已并发 gather，16 指标约 ~16s，可接受）
     results: List[MetricResult] = []
     for c in targets:
-        r = await evaluate_one(c, cur_start, cur_end, base_start, base_end)
+        r = await evaluate_one(c, cur_start, cur_end, settings)
         # per-metric user_count（rum）or 回落到全局（metrics 类型）
         muc = await _metric_user_count(c, s_ms, e_ms, user_count_cache)
         if muc is None:
@@ -304,12 +419,12 @@ async def run_all(dry_run: bool = False, now: Optional[datetime] = None,
         if r.breached and muc < effective_min:
             r.alertable = False
             r.skip_reason = f"min_users 兜底 ({muc} < {effective_min}, metric 口径)"
-        # Gate B: P1 N=2 防抖（P0 不走防抖立即报）
-        elif r.breached and r.tier == "P1" and p1_n >= 2:
+        # Gate B: 统一 N=2 防抖（design §5.2：所有穿带都要上一窗口也穿带）
+        elif r.breached and band_n >= 2:
             prev_breached = await _was_breached_in_prev_window(r.key, cur_start)
             if not prev_breached:
                 r.alertable = False
-                r.skip_reason = f"N={p1_n} 防抖：上窗口未 breach，本次仅记录"
+                r.skip_reason = f"N={band_n} 防抖：上窗口未 breach，本次仅记录"
             else:
                 r.alertable = True
         else:

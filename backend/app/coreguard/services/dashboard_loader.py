@@ -46,6 +46,8 @@ class MetricConfig:
     formula: Optional[str] = None
     # Datadog 真实 widget id（用于 fullscreen_widget 深链 — 让飞书卡片点开后直接定位 tile）
     datadog_widget_id: Optional[int] = None
+    # Datadog widget 自带方向声明（requests[0].comparison.directionality）— 方向真相源
+    dd_directionality: Optional[str] = None
 
 
 @dataclass
@@ -97,6 +99,40 @@ async def _fetch_dashboard(dashboard_id: str) -> Optional[dict]:
         return None
 
 
+# Datadog directionality → coreguard direction（方向真相映射）
+_DIRECTIONALITY_MAP = {
+    "increase_better": "down_is_bad",   # 越高越好 → 变低才坏
+    "decrease_better": "up_is_bad",     # 越低越好 → 变高才坏
+    "no_better": "both",
+    "neutral": "both",
+}
+
+
+def _reconcile_direction(m: "MetricConfig", req0: dict) -> int:
+    """用 widget 的 comparison.directionality 校验/纠正 yaml 方向。
+
+    返回 1 表示发生了纠正（方向与 yaml 冲突，已以 Datadog 为准）。
+    结构性消灭"人在 yaml 把方向写反"的 bug（如 wifi 速度事故）。
+    """
+    comp = (req0 or {}).get("comparison") or {}
+    dd_dir = comp.get("directionality")
+    m.dd_directionality = dd_dir
+    if not dd_dir:
+        return 0
+    expected = _DIRECTIONALITY_MAP.get(dd_dir)
+    if not expected or expected == "both":
+        return 0  # neutral / 未知不强制
+    if m.direction != expected:
+        logger.error(
+            "metric %s: 方向与 Datadog 冲突！yaml=%r 但 widget directionality=%r → 应为 %r，"
+            "已以 Datadog 为准自动纠正（请同步修 metrics.yaml）",
+            m.key, m.direction, dd_dir, expected,
+        )
+        m.direction = expected
+        return 1
+    return 0
+
+
 def _index_widgets(dashboard_json: dict) -> Dict[int, dict]:
     """按顺序 index → widget；保留 Datadog 真实 id 用于 fullscreen 深链。"""
     out: Dict[int, dict] = {}
@@ -141,6 +177,7 @@ async def load_metrics_config() -> MetricsConfig:
     widget_idx = _index_widgets(dj)
 
     mismatch = 0
+    dir_fixed = 0
     for m in cfg.metrics:
         defi = widget_idx.get(m.widget_id)
         if not defi:
@@ -160,9 +197,11 @@ async def load_metrics_config() -> MetricsConfig:
         formulas = r0.get("formulas") or []
         if formulas:
             m.formula = formulas[0].get("formula", "")
+        # 方向真相校验（结构性防"方向写反"bug）
+        dir_fixed += _reconcile_direction(m, r0)
 
-    logger.info("metrics loaded: total=%d alertable=%d mismatches=%d",
-                len(cfg.metrics), len(cfg.alertable()), mismatch)
+    logger.info("metrics loaded: total=%d alertable=%d mismatches=%d direction_corrected=%d",
+                len(cfg.metrics), len(cfg.alertable()), mismatch, dir_fixed)
     return cfg
 
 
