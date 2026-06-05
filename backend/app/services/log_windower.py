@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -17,6 +18,28 @@ logger = logging.getLogger("jarvis.log_windower")
 
 # Matches both iOS ("2026-02-01 03:52:53689") and Android ("INFO: 2026-03-13 18:14:24.926329:")
 _TS_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})")
+
+# Default cap on how many times a single normalized line-template may be kept
+# within one windowed log. Mass-repeated structural noise (e.g. a pretty-printed
+# transcript JSON payload boxed in ║...║ frames) otherwise consumes the entire
+# output-line budget and truncates away distinct, later events. 0 disables.
+DEFAULT_MAX_PER_TEMPLATE = 200
+
+_HEX_PATTERN = re.compile(r"0x[0-9a-fA-F]+")
+_DIGIT_PATTERN = re.compile(r"\d+")
+
+
+def normalize_line_template(line: str) -> str:
+    """Collapse a log line to a structural template for dedup.
+
+    Strips the leading timestamp and collapses hex/decimal numbers so that lines
+    that differ only by varying values (timestamps, ids, offsets, array indices)
+    map to the same template.
+    """
+    s = _TS_PATTERN.sub("", line)
+    s = _HEX_PATTERN.sub("0xHEX", s)
+    s = _DIGIT_PATTERN.sub("N", s)
+    return s.strip()
 
 # Minimum log size (in bytes) before windowing kicks in.
 # Smaller logs are fast to grep — no need to window them.
@@ -85,6 +108,7 @@ def window_log_file(
     hours_after: int = 2,
     size_threshold: int = DEFAULT_SIZE_THRESHOLD,
     max_output_lines: int = 200_000,
+    max_per_template: int = DEFAULT_MAX_PER_TEMPLATE,
 ) -> Tuple[Path, dict]:
     """
     Extract lines from a log file within a time window.
@@ -98,6 +122,10 @@ def window_log_file(
         hours_after: Hours after center_time to include.
         size_threshold: Only window files larger than this (bytes).
         max_output_lines: Safety cap on output lines.
+        max_per_template: Cap on kept occurrences of any one normalized
+            line-template. Beyond the cap the line is suppressed (with a single
+            marker per template) so mass-repeated noise cannot crowd distinct
+            events out of the output-line budget. 0 disables collapsing.
 
     Returns:
         (path_to_windowed_log, metadata_dict)
@@ -139,9 +167,12 @@ def window_log_file(
 
     kept_lines = 0
     total_lines = 0
+    collapsed_lines = 0
     last_known_ts: Optional[datetime] = None
     # Lines without timestamps are included if the previous timestamped line was in-window
     in_window = False
+    # Per-template kept counts; only mass-repeated templates ever hit the cap.
+    template_counts: dict[str, int] = defaultdict(int)
 
     try:
         with open(log_path, "r", errors="replace") as fin, \
@@ -155,14 +186,31 @@ def window_log_file(
                     last_known_ts = ts
                     in_window = window_start <= ts <= window_end
 
-                if in_window:
-                    fout.write(line)
-                    kept_lines += 1
-                    if kept_lines >= max_output_lines:
-                        fout.write(
-                            f"\n... [log_windower: truncated at {max_output_lines} lines] ...\n"
-                        )
-                        break
+                if not in_window:
+                    continue
+
+                # Collapse mass-repeated line-templates so a single noisy burst
+                # (e.g. a pretty-printed payload dump) cannot exhaust the budget.
+                if max_per_template > 0:
+                    tmpl = normalize_line_template(line)
+                    template_counts[tmpl] += 1
+                    count = template_counts[tmpl]
+                    if count > max_per_template:
+                        collapsed_lines += 1
+                        if count == max_per_template + 1:
+                            fout.write(
+                                f"... [log_windower: further repeats of similar line suppressed] ...\n"
+                            )
+                            kept_lines += 1
+                        continue
+
+                fout.write(line)
+                kept_lines += 1
+                if kept_lines >= max_output_lines:
+                    fout.write(
+                        f"\n... [log_windower: truncated at {max_output_lines} lines] ...\n"
+                    )
+                    break
 
     except Exception as e:
         logger.error("Failed to window %s: %s", log_path.name, e)
@@ -172,6 +220,7 @@ def window_log_file(
     metadata["windowed"] = True
     metadata["total_lines"] = total_lines
     metadata["kept_lines"] = kept_lines
+    metadata["collapsed_lines"] = collapsed_lines
     metadata["reduction_pct"] = round((1 - kept_lines / max(total_lines, 1)) * 100, 1)
     metadata["output_size_bytes"] = output_path.stat().st_size
 
