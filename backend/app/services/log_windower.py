@@ -135,6 +135,10 @@ def window_log_file(
     metadata = {
         "original_path": str(log_path),
         "original_size_bytes": file_size,
+        # complete=True means the returned artifact gives full coverage of the
+        # relevant span (a non-truncated window, or the full original log).
+        # Set False only when windowing truncated and we fell back to the original.
+        "complete": True,
         "windowed": False,
     }
 
@@ -168,6 +172,7 @@ def window_log_file(
     kept_lines = 0
     total_lines = 0
     collapsed_lines = 0
+    truncated = False
     last_known_ts: Optional[datetime] = None
     # Lines without timestamps are included if the previous timestamped line was in-window
     in_window = False
@@ -207,9 +212,7 @@ def window_log_file(
                 fout.write(line)
                 kept_lines += 1
                 if kept_lines >= max_output_lines:
-                    fout.write(
-                        f"\n... [log_windower: truncated at {max_output_lines} lines] ...\n"
-                    )
+                    truncated = True
                     break
 
     except Exception as e:
@@ -233,6 +236,22 @@ def window_log_file(
         _fmt_size(file_size),
         _fmt_size(metadata["output_size_bytes"]),
     )
+
+    # Completeness guard: if the line budget was exhausted even after folding,
+    # the window is missing its tail (the fb_56427d576f failure mode). A provably
+    # incomplete window is worse than the full log — fall back to the original so
+    # the agent can grep everything, and flag it so the gap is visible.
+    if truncated:
+        logger.warning(
+            "Windowing of %s hit the %d-line budget even after folding — window is "
+            "incomplete, using full original log instead",
+            log_path.name, max_output_lines,
+        )
+        output_path.unlink(missing_ok=True)
+        metadata["windowed"] = False
+        metadata["complete"] = False
+        metadata["reason"] = "incomplete_after_folding"
+        return log_path, metadata
 
     # If windowed output is empty or reduction < 20%, return original
     if kept_lines == 0:
@@ -278,6 +297,36 @@ def window_log_files(
         all_metadata.append(meta)
 
     return windowed_paths, all_metadata
+
+
+def signal_lines_from_extraction(extraction: dict) -> List[str]:
+    """Collect the L1 grep-matched lines (the rule-matched high-signal evidence).
+
+    These are the lines the rules deemed relevant; the windowed output should
+    retain them. If most are missing, the window covered the wrong time region.
+    """
+    lines: List[str] = []
+    patterns = (extraction or {}).get("patterns", {})
+    for value in patterns.values():
+        if isinstance(value, dict):
+            for match_line in value.get("matches", []):
+                s = str(match_line).strip()
+                if s:
+                    lines.append(s)
+    return lines
+
+
+def window_coverage_ratio(windowed_text: str, signal_lines: List[str]) -> float:
+    """Fraction of L1 signal lines whose template is present in the windowed text.
+
+    Compared by normalized template so timestamp/id differences don't cause false
+    misses. Returns 1.0 when there are no signal lines (nothing to verify).
+    """
+    if not signal_lines:
+        return 1.0
+    win_templates = {normalize_line_template(l) for l in windowed_text.splitlines()}
+    present = sum(1 for s in signal_lines if normalize_line_template(s) in win_templates)
+    return present / len(signal_lines)
 
 
 def infer_center_time_from_extraction(extraction: dict) -> Optional[datetime]:

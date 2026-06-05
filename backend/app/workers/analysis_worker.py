@@ -873,6 +873,8 @@ async def _run_context_condensation(
         window_log_files,
         infer_center_time_from_extraction,
         find_error_dense_window,
+        signal_lines_from_extraction,
+        window_coverage_ratio,
     )
 
     center_time = None
@@ -936,6 +938,33 @@ async def _run_context_condensation(
                 meta.get("total_lines", 0),
                 meta.get("reduction_pct", 0),
             )
+
+    # Completeness cross-check (orthogonal to truncation): did the window keep the
+    # L1 high-signal lines? If center_time/window bounds are wrong, the decisive
+    # region is excluded entirely — folding/sampling can't recover what time-
+    # windowing left out. Low coverage → fall back to the full logs.
+    signal_lines = signal_lines_from_extraction(extraction or {})
+    if signal_lines and any(m.get("windowed") for m in windowing_meta):
+        def _coverage() -> float:
+            text = ""
+            for wp in windowed_paths:
+                try:
+                    text += wp.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+            return window_coverage_ratio(text, signal_lines)
+
+        coverage = await asyncio.to_thread(_coverage)
+        if coverage < 0.5:
+            logger.warning(
+                "L1.5 window retained only %.0f%% of %d L1 high-signal lines — window "
+                "likely missed the relevant region; falling back to full logs",
+                coverage * 100, len(signal_lines),
+            )
+            windowed_paths = log_paths
+            for m in windowing_meta:
+                m["complete"] = False
+                m["reason"] = "low_l1_coverage_fellback"
 
     # --- Step B: LLM context extraction (optional, costs money) ---
     # anthropic provider falls back to Claude CLI (OAuth, no api_key required);

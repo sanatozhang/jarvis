@@ -15,15 +15,30 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.services.log_windower import normalize_line_template, signal_lines_from_extraction
+
 logger = logging.getLogger("jarvis.context_condenser")
+
+# When the (already windowed) log still exceeds the model's input budget, fold any
+# line-template that repeats more than this many times before sampling. Keeps a few
+# samples of each repeated pattern while dropping the bulk of a logging storm.
+_CONDENSER_PER_TEMPLATE_CAP = 8
+
+# L1 already grepped the high-signal lines; inject them verbatim so they're guaranteed
+# in the prompt rather than relying on the budget sample to happen to include them.
+# Cap by distinct template and by char share so the block can't crowd out context.
+_SIG_INJECT_MAX_TEMPLATES = 400
+_SIG_INJECT_BUDGET_FRAC = 0.55
 
 # Max chars to send to the LLM per chunk (~800K tokens for Gemini Flash)
 _DEFAULT_MAX_INPUT_CHARS = 2_800_000
@@ -78,6 +93,73 @@ _API_URLS = {
 }
 
 
+def _build_signal_block(l1_extraction: Optional[Dict[str, Any]], budget: int) -> str:
+    """Deduped block of the L1 high-signal lines, capped by template count and chars.
+
+    These lines are guaranteed to reach the prompt regardless of sampling, because
+    L1 already identified them as relevant — far more reliable than hoping a uniform
+    sample of a multi-MB log lands on a sparse single line.
+    """
+    sigs = signal_lines_from_extraction(l1_extraction or {})
+    if not sigs:
+        return ""
+    seen = set()
+    kept: List[str] = []
+    used = 0
+    for s in sigs:
+        tmpl = normalize_line_template(s)
+        if tmpl in seen:
+            continue
+        seen.add(tmpl)
+        if len(kept) >= _SIG_INJECT_MAX_TEMPLATES or used + len(s) + 1 > budget:
+            continue
+        kept.append(s)
+        used += len(s) + 1
+    if not kept:
+        return ""
+    return "=== L1 high-signal lines (rule matches, guaranteed) ===\n" + "\n".join(kept) + "\n"
+
+
+def _reduce_to_budget(content: str, budget: int) -> str:
+    """Reduce log text to fit `budget` chars without cutting by file position.
+
+    1. Fold mass-repeated line-templates — drops the bulk of a logging storm while
+       keeping a few samples of each pattern.
+    2. If still over budget, sample lines uniformly across the whole span so that
+       late-window events are represented as well as early ones. Reading the head
+       (`content[:budget]`) would silently discard everything after the first
+       dense minutes — exactly how L1.5 missed the 11:08 connection on fb_56427d576f.
+    """
+    if len(content) <= budget:
+        return content
+
+    lines = content.splitlines(keepends=True)
+
+    # 1. Fold repeated templates.
+    counts: Dict[str, int] = defaultdict(int)
+    folded: List[str] = []
+    for ln in lines:
+        tmpl = normalize_line_template(ln)
+        counts[tmpl] += 1
+        if counts[tmpl] > _CONDENSER_PER_TEMPLATE_CAP:
+            continue
+        folded.append(ln)
+
+    # 2. If folding alone is not enough, sample uniformly across the full span.
+    if sum(len(l) for l in folded) > budget:
+        stride = max(2, math.ceil(sum(len(l) for l in folded) / budget))
+        kept = folded[::stride]
+        while sum(len(l) for l in kept) > budget and stride < len(folded):
+            stride += 1
+            kept = folded[::stride]
+        folded = kept
+        note = "\n... [condenser: log sampled uniformly across the time window to fit context] ...\n"
+    else:
+        note = "\n... [condenser: repeated lines collapsed to fit context] ...\n"
+
+    return "".join(folded) + note
+
+
 class ContextCondenser:
     """L1.5 layer: extract structured context from logs using a large-context LLM."""
 
@@ -116,7 +198,7 @@ class ContextCondenser:
         # anthropic provider without API key → will fall through to CLI mode
 
         # Read log content
-        log_content = self._read_logs(log_paths)
+        log_content = self._read_logs(log_paths, l1_extraction=l1_extraction)
         if not log_content.strip():
             return CondensationResult(error="no_log_content")
 
@@ -163,8 +245,15 @@ class ContextCondenser:
 
         return result
 
-    def _read_logs(self, log_paths: List[Path]) -> str:
-        """Read log files into a single string, respecting max input size."""
+    def _read_logs(
+        self, log_paths: List[Path], l1_extraction: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Read log files into a single string, respecting max input size.
+
+        L1-matched high-signal lines (if provided) are injected verbatim up front so
+        they cannot be lost to budget sampling — the sampled log body then supplies
+        surrounding timeline context.
+        """
         # P1 #4: cap input to model's actual context window.
         # Haiku 4.5 has 200K tokens (~600K chars); Gemini Flash has 1M (~2.8M chars).
         # Use the smaller of (configured, provider-cap) so a generous config doesn't
@@ -177,23 +266,31 @@ class ContextCondenser:
         # Reserve ~30% for prompt structure, L1 extraction, etc.
         max_log_chars = int(max_chars * 0.70)
 
-        parts = []
+        # Guaranteed high-signal block first; the rest of the budget goes to context.
+        signal_block = _build_signal_block(
+            l1_extraction, int(max_log_chars * _SIG_INJECT_BUDGET_FRAC)
+        )
+        parts: List[str] = []
         total = 0
+        if signal_block:
+            parts.append(signal_block)
+            total += len(signal_block)
         for lp in log_paths:
             if not lp.exists():
                 continue
             try:
                 content = lp.read_text(encoding="utf-8", errors="replace")
-                if total + len(content) > max_log_chars:
-                    remaining = max_log_chars - total
-                    if remaining > 10000:
-                        content = content[:remaining] + "\n... [truncated for context limit] ...\n"
-                    else:
-                        break
-                parts.append(f"=== {lp.name} ({len(content)} chars) ===\n{content}")
-                total += len(content)
             except Exception as e:
                 logger.warning("Failed to read %s: %s", lp, e)
+                continue
+            remaining = max_log_chars - total
+            if remaining <= 10000:
+                break
+            # Reduce by redundancy + uniform sampling — never by file position, so a
+            # dense early burst can't hide later events (regression: fb_56427d576f).
+            content = _reduce_to_budget(content, remaining)
+            parts.append(f"=== {lp.name} ({len(content)} chars) ===\n{content}")
+            total += len(content)
         return "\n".join(parts)
 
     def _build_prompt(
