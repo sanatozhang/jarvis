@@ -38,7 +38,9 @@ def sync_def(client, path: Path, dry_run: bool = False) -> Dict[str, Any]:
         logger.info("updated monitor %s (%s)", existing_id, path.name)
     else:
         result = client.create(payload)
-        new_id = result["id"]
+        new_id = result.get("id")
+        if not new_id:
+            raise RuntimeError(f"create response missing 'id': {result}")
         _write_id_back(path, new_id)
         logger.info("created monitor %s (%s)", new_id, path.name)
     return payload
