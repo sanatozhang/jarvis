@@ -37,6 +37,12 @@ class ReviewerResolution:
     line_counts: Dict[str, int] = field(default_factory=dict)
     # ok / pr_url_missing / diff_empty / blame_empty / repo_missing / bot_only
     reason: str = ""
+    # GitHub add-reviewer 候选：blame 作者经 blocked + top_n 过滤但**不过**
+    # @plaud.ai 域名白名单。域名白名单只约束「飞书按邮箱直发」（emails 字段），
+    # 而 GitHub 指派走 commit email→GH login，与邮箱域名无关，所以单列一份。
+    # 个人/构建机邮箱（492934747@qq.com / root@kaaaaai.cn）仍能进这里 → 经
+    # commits search 反查到真人 login → add-reviewer；查不到 login 的自然落空。
+    github_candidate_emails: List[str] = field(default_factory=list)
 
 
 # ============================================================
@@ -199,20 +205,31 @@ def resolve_reviewers_by_blame(
             if email:
                 counter[email] += 1
 
+    blocked = list(settings.pr_reviewer_blocked_authors or [])
+    top_n = int(settings.pr_reviewer_top_n or 2)
+    min_pct = float(settings.pr_reviewer_min_lines_pct or 0.20)
+
+    # GitHub 候选：只过 blocked + top_n，不过域名白名单（add-reviewer 走 GH login）
+    gh_filtered = _filter_authors(counter, blocked, top_n, min_pct, allowed_domains=None)
+    github_candidate_emails = [e for e, _ in gh_filtered]
+
+    # 飞书候选：额外叠加域名白名单（按邮箱直发，必须能对接飞书账号）
     filtered = _filter_authors(
-        counter,
-        list(settings.pr_reviewer_blocked_authors or []),
-        int(settings.pr_reviewer_top_n or 2),
-        float(settings.pr_reviewer_min_lines_pct or 0.20),
+        counter, blocked, top_n, min_pct,
         allowed_domains=list(getattr(settings, "pr_reviewer_allowed_email_domains", []) or []),
     )
     if not filtered:
-        return ReviewerResolution(reason="bot_only")
+        # 飞书无可发对象，但 GitHub 仍可凭真实作者 login 指派 → 候选单独带出
+        return ReviewerResolution(
+            reason="bot_only",
+            github_candidate_emails=github_candidate_emails,
+        )
 
     return ReviewerResolution(
         emails=[e for e, _ in filtered],
         line_counts={e: n for e, n in filtered},
         reason="ok",
+        github_candidate_emails=github_candidate_emails,
     )
 
 
@@ -746,11 +763,18 @@ async def resolve_and_notify(pr_id: int, skip_fallback: bool = False) -> Dict:
         # - reviewer 在 GH 主页 /pulls 看到该 PR
         # - 在 PR 上有"Awaiting requested review"提示
         # 失败（非 collaborator / author 自己 / 已是 reviewer）graceful 静默。
+        #
+        # 用 github_candidate_emails（未过域名白名单）而非飞书 `sent`：很多真实
+        # 作者用个人/构建机 commit 邮箱（@qq.com / kaaaaai.cn），被 @plaud.ai
+        # 白名单削光后 sent 为空，过去导致 GitHub 也整批不指派（48 条 PR 里 16 条
+        # bot_only 的根因）。GitHub 指派靠 commit email→GH login，与域名无关，
+        # 故与飞书路径解耦：候选非空就同步，查不到 GH login 的邮箱自然落空。
         gh_synced_logins: List[str] = []
-        if getattr(s, "pr_reviewer_github_sync_enabled", True) and sent:
+        gh_candidate_emails = list(resolution.github_candidate_emails or [])
+        if getattr(s, "pr_reviewer_github_sync_enabled", True) and gh_candidate_emails:
             try:
                 resolved, added, gh_failed = sync_github_reviewers_for_emails(
-                    pr.pr_url or "", sent,
+                    pr.pr_url or "", gh_candidate_emails,
                 )
                 gh_synced_logins = added
                 if gh_failed:

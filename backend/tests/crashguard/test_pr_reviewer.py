@@ -1216,3 +1216,153 @@ def test_sync_github_reviewers_no_login_resolved_skips_add(monkeypatch):
     assert resolved == [] and added == []
     assert failed == ["ghost@x.com"]
     assert called["add"] is False
+
+
+# ============================================================
+# 方案 A: GitHub 指派与 @plaud.ai 域名白名单解耦
+#
+# 抓手：48 条自动 PR 里 16 条 reason=bot_only —— blame 出来的真实作者用
+# 个人/构建机 commit 邮箱（492934747@qq.com / root@kaaaaai.cn），被
+# pr_reviewer_allowed_email_domains=["plaud.ai"] 全削光 → 既不发飞书也不
+# 指派 GitHub reviewer。域名白名单本是「飞书按邮箱直发」的路由约束，不该
+# 连带掐死「GitHub add-reviewer」（后者用 commit email→GH login，与域名无关）。
+# ============================================================
+
+def _blame_run_factory(diff, email_by_line):
+    """构造 subprocess.run 替身：gh 返回 diff，blame 按 -L 行号返回对应 author。"""
+    def fake_run(cmd, **kw):
+        if cmd[0] == "gh":
+            return _fake_run(stdout=diff)
+        if "blame" in cmd:
+            # cmd: git blame -L {ln},{ln} --porcelain HEAD -- file
+            spec = cmd[cmd.index("-L") + 1]
+            ln = int(spec.split(",")[0])
+            em = email_by_line.get(ln, "")
+            if not em:
+                return _fake_run(returncode=1)
+            porc = (
+                f"abc 1 1 1\nauthor X\nauthor-mail <{em}>\n"
+                "summary s\n\tcode\n"
+            )
+            return _fake_run(stdout=porc)
+        return _fake_run(returncode=1)
+    return fake_run
+
+
+def test_resolve_reviewers_github_candidates_ignore_domain_whitelist(tmp_path):
+    """ok 路径：feishu emails 受域名白名单约束，github_candidate_emails 不受。"""
+    from app.crashguard.services.pr_reviewer import resolve_reviewers_by_blame
+    settings = MagicMock()
+    settings.pr_reviewer_blocked_authors = []
+    settings.pr_reviewer_top_n = 5
+    settings.pr_reviewer_min_lines_pct = 0.0
+    settings.pr_reviewer_allowed_email_domains = ["plaud.ai"]
+
+    # 3 个改动行：1 个 plaud 作者 + 1 个 qq 作者
+    diff = (
+        "--- a/x.dart\n+++ b/x.dart\n"
+        "@@ -1,2 +1,2 @@\n-l1\n-l2\n+n1\n+n2\n"
+    )
+    email_by_line = {1: "alice@plaud.ai", 2: "727732656@qq.com"}
+
+    with patch("subprocess.run", side_effect=_blame_run_factory(diff, email_by_line)):
+        r = resolve_reviewers_by_blame("https://github.com/x/y/pull/1",
+                                        str(tmp_path), settings)
+
+    assert r.reason == "ok"
+    assert r.emails == ["alice@plaud.ai"]                 # 飞书路径：白名单生效
+    assert set(r.github_candidate_emails) == {            # GH 路径：不过白名单
+        "alice@plaud.ai", "727732656@qq.com",
+    }
+
+
+def test_resolve_reviewers_bot_only_still_yields_github_candidates(tmp_path):
+    """bot_only：白名单削光飞书 emails，但 github_candidate_emails 仍保留真实作者。"""
+    from app.crashguard.services.pr_reviewer import resolve_reviewers_by_blame
+    settings = MagicMock()
+    settings.pr_reviewer_blocked_authors = ["crashguard-bot@plaud.ai"]
+    settings.pr_reviewer_top_n = 2
+    settings.pr_reviewer_min_lines_pct = 0.0
+    settings.pr_reviewer_allowed_email_domains = ["plaud.ai"]
+
+    diff = (
+        "--- a/x.dart\n+++ b/x.dart\n"
+        "@@ -1,2 +1,2 @@\n-l1\n-l2\n+n1\n+n2\n"
+    )
+    email_by_line = {1: "492934747@qq.com", 2: "root@kaaaaai.cn"}
+
+    with patch("subprocess.run", side_effect=_blame_run_factory(diff, email_by_line)):
+        r = resolve_reviewers_by_blame("https://github.com/x/y/pull/1",
+                                        str(tmp_path), settings)
+
+    assert r.reason == "bot_only"     # 飞书路径：无可发对象
+    assert r.emails == []
+    assert set(r.github_candidate_emails) == {"492934747@qq.com", "root@kaaaaai.cn"}
+
+
+def test_resolve_reviewers_github_candidates_still_respect_blocklist(tmp_path):
+    """blocked authors（bot 自身）仍要从 github_candidate_emails 里剔除。"""
+    from app.crashguard.services.pr_reviewer import resolve_reviewers_by_blame
+    settings = MagicMock()
+    settings.pr_reviewer_blocked_authors = ["crashguard-bot@plaud.ai"]
+    settings.pr_reviewer_top_n = 5
+    settings.pr_reviewer_min_lines_pct = 0.0
+    settings.pr_reviewer_allowed_email_domains = ["plaud.ai"]
+
+    diff = (
+        "--- a/x.dart\n+++ b/x.dart\n"
+        "@@ -1,2 +1,2 @@\n-l1\n-l2\n+n1\n+n2\n"
+    )
+    email_by_line = {1: "crashguard-bot@plaud.ai", 2: "727732656@qq.com"}
+
+    with patch("subprocess.run", side_effect=_blame_run_factory(diff, email_by_line)):
+        r = resolve_reviewers_by_blame("https://github.com/x/y/pull/1",
+                                        str(tmp_path), settings)
+
+    # bot 被 block；qq 真实作者保留为 GH 候选
+    assert r.github_candidate_emails == ["727732656@qq.com"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_notify_github_sync_decoupled_from_feishu(patched_session):
+    """核心修复：bot_only（飞书 emails 空）时，GitHub add-reviewer 仍按
+    github_candidate_emails 执行，不再被 `sent` 为空掐死。"""
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.services.pr_reviewer import ReviewerResolution
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=77, datadog_issue_id="botonly",
+            repo="plaud-android",
+            pr_url="https://github.com/Plaud-AI/plaud-android/pull/262",
+            pr_number=262, pr_status="open",
+        )
+        s.add(pr)
+        await s.commit()
+        pid = pr.id
+
+    # blame 全是非 plaud 作者 → 飞书 emails 空、reason=bot_only，但 GH 候选有人
+    res = ReviewerResolution(
+        emails=[], line_counts={}, reason="bot_only",
+        github_candidate_emails=["492934747@qq.com"],
+    )
+
+    sync_calls = []
+
+    def fake_sync(pr_url, emails):
+        sync_calls.append((pr_url, list(emails)))
+        return (["realDevLogin"], ["realDevLogin"], [])
+
+    with patch.object(pr_reviewer, "resolve_reviewers_by_blame", return_value=res), \
+         patch.object(pr_reviewer, "sync_github_reviewers_for_emails",
+                      side_effect=fake_sync), \
+         patch("app.services.feishu_cli.send_interactive_card", return_value=True):
+        await pr_reviewer.resolve_and_notify(pid, skip_fallback=True)
+
+    # 关键断言：即便飞书没发出任何卡，GitHub 指派仍按 GH 候选触发
+    assert sync_calls == [(
+        "https://github.com/Plaud-AI/plaud-android/pull/262",
+        ["492934747@qq.com"],
+    )]
