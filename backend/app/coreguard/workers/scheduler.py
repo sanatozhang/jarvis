@@ -83,8 +83,12 @@ async def _run_hourly_watch_once() -> None:
     summary: dict = {}
     try:
         from app.coreguard.services.metric_watcher import run_all
-        # cron 模式：dry_run=False（真发飞书），force_alert=False（无异常不打扰）
-        result = await run_all(dry_run=False, force_alert=False)
+        # cron 模式：force_alert=False（无异常不打扰）。
+        # alert_enabled=False（报警暂停）→ dry_run=True：仍评估 + 写快照（喂早报），
+        # 但不发飞书实时告警。alert_enabled=True → 正常发卡。
+        s = get_coreguard_settings()
+        dry_run = not getattr(s, "alert_enabled", True)
+        result = await run_all(dry_run=dry_run, force_alert=False)
         summary = {
             "evaluated": result.get("evaluated"),
             "breached": result.get("breached"),

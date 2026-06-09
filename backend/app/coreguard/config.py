@@ -16,6 +16,10 @@ from app.config import PROJECT_ROOT
 class CoreguardSettings(BaseSettings):
     enabled: bool = True
     feishu_enabled: bool = True
+    # 报警分发开关（与 enabled 解耦）：False → hourly_watch 仍跑、仍写快照
+    # （喂 crashguard 早报里的 coreguard 板块），但不发飞书实时告警。
+    # 即「暂停报警、保留早报」。经 COREGUARD_ALERT_ENABLED 覆盖。
+    alert_enabled: bool = True
 
     # Datadog（demo 默认复用 crashguard 同一对 key）
     datadog_api_key: str = ""
