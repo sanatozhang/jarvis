@@ -749,6 +749,44 @@ async def test_resolve_and_notify_fallback_path_writes_reason(patched_session):
 
 
 @pytest.mark.asyncio
+async def test_resolve_and_notify_falls_back_to_configured_github_reviewers(patched_session):
+    """blame 找不到 owner → 兜底把 pr_reviewer_fallback_github_emails 加为 GH reviewer。"""
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.services.pr_reviewer import ReviewerResolution
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        pr = CrashPullRequest(
+            analysis_id=42, datadog_issue_id="nopo",
+            repo="plaud-flutter-common",
+            pr_url="https://github.com/Plaud-AI/plaud-flutter-common/pull/1225",
+            pr_number=1225, pr_status="draft",
+        )
+        s.add(pr)
+        await s.commit()
+        pid = pr.id
+
+    calls = []
+
+    def fake_sync(pr_url, emails):
+        calls.append(list(emails))
+        # 模拟 gavin 加成功、sanato（author）422 失败
+        return (["GavinDong-plaud"], ["GavinDong-plaud"], ["sanato.zhang@plaud.ai"])
+
+    with patch.object(pr_reviewer, "resolve_reviewers_by_blame",
+                      return_value=ReviewerResolution(reason="blame_empty")), \
+         patch.object(pr_reviewer, "sync_github_reviewers_for_emails",
+                      side_effect=fake_sync), \
+         patch("app.services.feishu_cli.send_interactive_card", return_value=True):
+        await pr_reviewer.resolve_and_notify(pid)
+
+    # 主路径（blame 空）不会调用 sync；只有 2.6 兜底调用一次，且用 fallback 邮箱
+    assert len(calls) == 1
+    assert calls[0] == ["gavin.dong@plaud.ai", "sanato.zhang@plaud.ai"]
+
+
+@pytest.mark.asyncio
 async def test_resolve_and_notify_skips_already_reviewed(patched_session):
     from app.crashguard.services import pr_reviewer
     from app.crashguard.models import CrashPullRequest

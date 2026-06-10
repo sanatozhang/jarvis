@@ -228,6 +228,13 @@ class CrashguardSettings(BaseSettings):
     pr_reviewer_daily_cron: str = "0 9 * * *"
     # 找不到 owner 时的兜底接收人 email（飞书直发）
     pr_reviewer_fallback_email: str = "sanato.zhang@plaud.ai"
+    # 找不到任何可指派 reviewer（blame 空 / 反查不到 GH login / 作者非 collaborator）时，
+    # 兜底把这些人加为 GitHub reviewer，避免 PR 无人 review 悬空。
+    # 注：sanato 是多数 crashguard PR 的 author，在自己 PR 上会被 GitHub 422
+    # （_add_github_reviewers 静默跳过），gavin 正常生效。
+    pr_reviewer_fallback_github_emails: List[str] = Field(
+        default_factory=lambda: ["gavin.dong@plaud.ai", "sanato.zhang@plaud.ai"]
+    )
     # PR 创建模式：False=直接 ready（默认，治本：draft PR 不会被 reviewer 自动通知/触发 Copilot review）
     # True=保留 --draft（旧行为，需要工程师手动 ready）
     pr_create_as_draft: bool = False
