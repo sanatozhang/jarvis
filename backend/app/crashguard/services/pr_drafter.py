@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -430,6 +431,54 @@ def _safe_branch_name(issue_id: str, platform: str) -> str:
     short = re.sub(r"[^a-zA-Z0-9]", "", issue_id)[:8] or "noid"
     ts = datetime.utcnow().strftime("%Y%m%d%H%M")
     return f"crashguard/{platform.lower()}/{short}-{ts}"
+
+
+def _github_slug(repo_path: str) -> str:
+    """从本地 repo 的主远端 URL 解析 owner/repo（GitHub slug），失败返回 ''。"""
+    remote = _resolve_remote_name(repo_path)
+    rc, out, _ = _run_git(["git", "remote", "get-url", remote], repo_path, timeout=10)
+    if rc != 0:
+        return ""
+    m = re.search(r"github\.com[:/]([^/]+/[^/.\s]+)", (out or "").strip())
+    return m.group(1) if m else ""
+
+
+def _github_open_crashguard_pr(repo_path: str, issue_id: str) -> Optional[str]:
+    """跨实例去重：查 GitHub 上该仓库是否已有同 issue 的 open crashguard PR。
+
+    命中返回已存在 PR 的 URL，否则 None。这是本地 DB 去重之外的**权威兜底**——
+    多机/多实例各用独立 SQLite，本地 `CrashPullRequest` 看不到别处开的 PR，
+    GitHub 才是唯一全局真相源。按分支名 `crashguard/<任意平台段>/<短issue id>-`
+    匹配（与 _safe_branch_name 同口径，平台段历史上恒为 flutter，这里宽松匹配兜底）。
+
+    查询失败一律返回 None（fail-open）：GitHub 抖动不该把自动化卡死，
+    最坏退回到本地 DB 去重 + 同 fingerprint 的 pr_dedup_days 窗口。
+    """
+    slug = _github_slug(repo_path)
+    if not slug:
+        return None
+    short = re.sub(r"[^a-zA-Z0-9]", "", issue_id)[:8] or "noid"
+    pat = re.compile(rf"^crashguard/[^/]+/{re.escape(short)}-")
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "list", "--repo", slug, "--state", "open", "--limit", "200",
+             "--json", "headRefName,url"],
+            cwd=repo_path, capture_output=True, text=True, timeout=20,
+        )
+        if r.returncode != 0:
+            logger.warning("github dedup query failed slug=%s: %s", slug, (r.stderr or "")[:160])
+            return None
+        for pr in json.loads(r.stdout or "[]"):
+            if pat.search(pr.get("headRefName") or ""):
+                return pr.get("url") or ""
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ValueError) as e:
+        logger.warning("github dedup query exception slug=%s: %s", slug, e)
+        return None
+    return None
+
+
+# auto-PR 入口的 approver（非人工）。非指派实例上这些入口应被 scheduler_enabled 闸拦截。
+_AUTO_PR_APPROVERS = frozenset({"auto", "auto_retry", "top_auto"})
 
 
 def _run_git(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str]:
@@ -1527,6 +1576,10 @@ async def draft_pr_for_analysis(
     s = get_crashguard_settings()
     if not s.pr_enabled:
         return {"ok": False, "error": "pr_disabled"}
+    # 实例闸：非指派实例（scheduler_enabled=false）不自动开 PR。
+    # 防多机/多实例各自跑 warmup+pipeline 重复开 PR（人工 approve 不受此限）。
+    if approver in _AUTO_PR_APPROVERS and not getattr(s, "scheduler_enabled", True):
+        return {"ok": False, "error": "auto_pr_skipped_non_scheduler_instance"}
 
     async with get_session() as session:
         ana = (await session.execute(
@@ -1573,6 +1626,22 @@ async def draft_pr_for_analysis(
         repo_path = _platform_repo_path(platform)
     if not repo_path or not Path(repo_path).exists():
         return {"ok": False, "error": f"repo_path not configured/found for platform={platform} repo={repo_logical}"}
+
+    # === 跨实例去重（GitHub 权威）===
+    # 本地 DB 去重（上方 pr_dedup_days 窗口）只看本实例 SQLite；多机/多实例
+    # 各自独立 DB，看不到彼此开的 PR → 同 issue 重复开。开 PR 前直接问 GitHub。
+    if not dry_run:
+        gh_existing = _github_open_crashguard_pr(repo_path, ana.datadog_issue_id)
+        if gh_existing:
+            logger.info(
+                "github dedup hit issue=%s repo=%s existing=%s",
+                ana.datadog_issue_id, repo_logical, gh_existing,
+            )
+            return {
+                "ok": False,
+                "error": "dup_on_github",
+                "existing_pr_url": gh_existing,
+            }
 
     # === Gate#3：confidence / feasibility 准入门槛 ===
     from app.crashguard.services.pr_quality_gates import (
@@ -2236,6 +2305,12 @@ async def draft_prs_multi(
 
     返回：{ok, prs: [...], total: N, succeeded: N, failed: N}
     """
+    # 实例闸（早返回）：非指派实例不自动开 PR，省去候选探测开销。
+    # 权威校验仍在 draft_pr_for_analysis 内（人工 approve 不受限）。
+    _s_inst = get_crashguard_settings()
+    if approver in _AUTO_PR_APPROVERS and not getattr(_s_inst, "scheduler_enabled", True):
+        return {"ok": False, "error": "auto_pr_skipped_non_scheduler_instance", "prs": []}
+
     async with get_session() as session:
         ana = (await session.execute(
             select(CrashAnalysis).where(CrashAnalysis.id == analysis_id)

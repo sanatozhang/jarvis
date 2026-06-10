@@ -787,6 +787,31 @@ async def resolve_and_notify(pr_id: int, skip_fallback: bool = False) -> Dict:
                     "gh reviewer sync exception pr=%s: %s", pr.pr_url, e,
                 )
 
+        # 2.6 兜底 GitHub reviewer：上面一个都没加上（blame 空 / 反查不到 login /
+        # 作者非 collaborator）→ 把配置的兜底人加为 reviewer，避免 PR 无人 review 悬空。
+        if getattr(s, "pr_reviewer_github_sync_enabled", True) and not gh_synced_logins:
+            fb_emails = list(getattr(s, "pr_reviewer_fallback_github_emails", []) or [])
+            if fb_emails:
+                try:
+                    _, fb_added, fb_failed = sync_github_reviewers_for_emails(
+                        pr.pr_url or "", fb_emails,
+                    )
+                    if fb_added:
+                        gh_synced_logins = fb_added
+                        logger.info(
+                            "gh reviewer fallback pr=%s added=%s (no blame owner)",
+                            pr.pr_url, fb_added,
+                        )
+                    elif fb_failed:
+                        logger.info(
+                            "gh reviewer fallback all-failed pr=%s failed=%s",
+                            pr.pr_url, fb_failed,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "gh reviewer fallback exception pr=%s: %s", pr.pr_url, e,
+                    )
+
         # 3. 写回 DB
         now = datetime.utcnow()
         pr.reviewer_emails = json.dumps(resolution.emails, ensure_ascii=False)
