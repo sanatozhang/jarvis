@@ -293,6 +293,29 @@ def window_log_files(
             hours_after=hours_after,
             size_threshold=size_threshold,
         )
+
+        # Recent fallback: an explicit (problem_date) center that landed on an empty
+        # window must NOT dump the full multi-month log on the agent (the
+        # rec27zFZSkfFpN timeout: 42MB / 6 months → agent grinds from the oldest line
+        # and times out). Re-window around the log's most recent activity instead —
+        # users report a problem after it happens, so the tail is the meaningful slice.
+        if center_time is not None and meta.get("reason") == "no_lines_in_window":
+            recent_path, recent_meta = window_log_file(
+                lp, output_dir,
+                center_time=None,            # → window_log_file anchors on the log tail
+                hours_before=hours_before,
+                hours_after=hours_after,
+                size_threshold=size_threshold,
+            )
+            if recent_meta.get("windowed"):
+                recent_meta["recent_fallback"] = True
+                recent_meta["recent_fallback_from"] = center_time.isoformat()
+                path, meta = recent_path, recent_meta
+                logger.info(
+                    "%s: empty window around %s → fell back to most-recent slice (%d lines)",
+                    lp.name, center_time.isoformat(), recent_meta.get("kept_lines", 0),
+                )
+
         windowed_paths.append(path)
         all_metadata.append(meta)
 

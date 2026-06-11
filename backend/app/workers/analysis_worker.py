@@ -871,8 +871,6 @@ async def _run_context_condensation(
     # --- Step A: Time-window extraction (always, free) ---
     from app.services.log_windower import (
         window_log_files,
-        infer_center_time_from_extraction,
-        find_error_dense_window,
         signal_lines_from_extraction,
         window_coverage_ratio,
     )
@@ -895,22 +893,16 @@ async def _run_context_condensation(
         except Exception:
             pass
 
-    # Priority 2: infer from L1 extraction timestamps
-    if center_time is None and extraction:
-        center_time = infer_center_time_from_extraction(extraction)
-        if center_time:
-            logger.info("L1.5: center_time inferred from L1 extraction: %s", center_time)
+    # No problem_date → anchor on the most recent logs (center_time stays None →
+    # window_log_file uses the log tail). Rationale: users report a problem after it
+    # happens, so the latest activity is the meaningful slice. We deliberately do NOT
+    # infer a center from L1-extraction timestamps or the error-dense hour here —
+    # those guesses can anchor on stale/old regions of a multi-month log; "recent" is
+    # the robust default when the user gave us no date.
+    # (infer_center_time_from_extraction / find_error_dense_window are retained for
+    #  callers/tests but no longer drive the default windowing path.)
 
-    # Priority 3: find the most error-dense hour in the log
-    if center_time is None and log_paths:
-        for lp in log_paths:
-            if lp.exists() and lp.stat().st_size > threshold_bytes:
-                center_time = await asyncio.to_thread(find_error_dense_window, lp)
-                if center_time:
-                    logger.info("L1.5: center_time from error-dense window: %s", center_time)
-                    break
-
-    # Priority 4: fallback to None → windower uses last N hours of log
+    # Fallback: center_time None → windower uses last N hours of log (most recent)
 
     windowed_dir = workspace / "windowed"
     # If only a date was provided (no time), use wider window to cover the full day

@@ -73,3 +73,39 @@ def test_complete_window_is_flagged_complete(tmp_path: Path):
 
     assert meta["windowed"] is True
     assert meta["complete"] is True
+
+
+def test_empty_window_falls_back_to_recent_not_full_log(tmp_path: Path):
+    """problem_date 窗口为空时，回退到「最近」的有界切片，而不是把全量长日志丢回 agent。
+
+    复现 ① rec27zFZSkfFpN：半年长日志 + problem_date 落在空洞 → no_lines_in_window
+    → 旧逻辑返回全量 42MB → agent 超时。新逻辑应锚到日志末尾(最近)重切。
+    """
+    from app.services.log_windower import window_log_files
+
+    log = tmp_path / "plaud.log"
+    lines = []
+    # 半年前的老日志（窗口外，更不该被全量带出来）
+    for i in range(50):
+        lines.append(f"INFO: 2025-12-15 10:00:{i % 60:02d}.000000: old event {_w(i)}")
+    # 最近一段（日志末尾）；problem center 落不到这里
+    for i in range(40):
+        lines.append(f"INFO: 2026-06-09 22:10:{i % 60:02d}.000000: recent event {_w(i + 500)}")
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    paths, metas = window_log_files(
+        [log],
+        tmp_path / "windowed",
+        center_time=datetime(2026, 6, 6, 12, 0),  # 落在 Dec 与 June 之间的空洞
+        hours_before=4,
+        hours_after=2,
+        size_threshold=0,
+    )
+    path, meta = paths[0], metas[0]
+
+    assert path != log, "empty window must NOT return the full original log"
+    assert meta["windowed"] is True
+    assert meta.get("recent_fallback") or meta.get("center_time_source") == "log_tail"
+    text = path.read_text(encoding="utf-8")
+    assert "recent event" in text      # 最近的留下
+    assert "old event" not in text     # 半年前的没被带出
