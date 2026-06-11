@@ -256,6 +256,53 @@ async def test_sync_pr_draft_to_merged_writes_back(patched_session):
         assert row.last_synced_at is not None
 
 
+def test_extract_reviewer_logins_users_teams_dedup():
+    from app.crashguard.services.pr_sync import _extract_reviewer_logins
+    assert _extract_reviewer_logins(
+        {"reviewRequests": [{"login": "GavinDong-plaud"}, {"login": "chance-gc"}]}
+    ) == ["GavinDong-plaud", "chance-gc"]
+    # 团队走 slug/name；重复去重
+    assert _extract_reviewer_logins(
+        {"reviewRequests": [{"slug": "mobile"}, {"login": "a"}, {"login": "a"}]}
+    ) == ["mobile", "a"]
+    assert _extract_reviewer_logins({}) == []
+    assert _extract_reviewer_logins({"reviewRequests": None}) == []
+
+
+@pytest.mark.asyncio
+async def test_sync_pr_writes_back_github_reviewers(patched_session):
+    """pr_sync 应把 GitHub reviewRequests 回写到 gh_reviewers（日报真相源）。"""
+    from app.crashguard.services.pr_sync import sync_pr
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+    from sqlalchemy import select
+    import json as _json
+
+    async with get_session() as session:
+        row = CrashPullRequest(
+            analysis_id=77, datadog_issue_id="rev1", repo="flutter",
+            branch_name="x", pr_url="https://github.com/o/r/pull/77",
+            pr_number=77, pr_status="open",
+        )
+        session.add(row)
+        await session.commit()
+        pid = row.id
+
+    fake_payload = {
+        "state": "OPEN", "isDraft": False,
+        "reviewRequests": [{"login": "GavinDong-plaud"}],
+    }
+    with patch("app.crashguard.services.pr_sync._gh_view",
+               return_value=(True, fake_payload, "")):
+        await sync_pr(pid)
+
+    async with get_session() as session:
+        row = (await session.execute(
+            select(CrashPullRequest).where(CrashPullRequest.id == pid)
+        )).scalar_one()
+        assert _json.loads(row.gh_reviewers) == ["GavinDong-plaud"]
+
+
 @pytest.mark.asyncio
 async def test_sync_pr_gh_failure_records_synced_at_but_returns_error(patched_session):
     """gh 命令失败时，仍要更新 last_synced_at（避免空转），但返回 ok=False。"""

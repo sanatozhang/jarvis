@@ -188,6 +188,10 @@ class CrashPullRequest(Base):
     review_decision = Column(String(32), default="")
     # 兜底原因：ok / blame_empty / pr_url_missing / diff_empty / repo_missing / bot_only / all_unresolved
     reviewer_fallback_reason = Column(String(64), default="")
+    # GitHub 上实际被指派的 reviewer（login 列表 JSON），由 pr_sync 从 reviewRequests 回写。
+    # 与 reviewer_emails（app blame 流程写的 email）解耦：无论手动 gh / 自动 / 兜底加的
+    # reviewer 都会出现在这里，是日报「谁负责 review」的 GitHub 真相源。
+    gh_reviewers = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

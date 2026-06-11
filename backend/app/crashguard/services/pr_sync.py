@@ -34,7 +34,7 @@ _TERMINAL_STATUSES = {"merged", "closed"}
 # - reviewDecision：APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED 总决定
 _GH_FIELDS = (
     "state,isDraft,mergedAt,closedAt,statusCheckRollup,headRefName,createdAt,files,"
-    "reviews,comments,reviewDecision"
+    "reviews,comments,reviewDecision,reviewRequests"
 )
 
 # 污染文件名 / glob — 出现在 PR diff 里即视为 stale-base 或 build artifact 泄漏
@@ -51,6 +51,22 @@ def _parse_repo_slug(pr_url: str) -> Optional[str]:
         return None
     m = re.match(r"https?://github\.com/([^/]+/[^/]+)/pull/\d+", pr_url.strip())
     return m.group(1) if m else None
+
+
+def _extract_reviewer_logins(payload: Dict[str, Any]) -> List[str]:
+    """从 gh reviewRequests 解析被指派的 reviewer（用户 login / 团队 slug）。
+
+    无论 reviewer 是手动 gh / app 自动 / 兜底加的，GitHub reviewRequests 都是
+    唯一真相源。日报据此显示「谁负责 review」，不再依赖 app blame 流程是否写过。
+    """
+    out: List[str] = []
+    for rr in (payload.get("reviewRequests") or []):
+        if not isinstance(rr, dict):
+            continue
+        who = rr.get("login") or rr.get("slug") or rr.get("name") or ""
+        if who and who not in out:
+            out.append(who)
+    return out
 
 
 def _parse_iso_dt(value: Any) -> Optional[datetime]:
@@ -460,6 +476,8 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
             row.closed_at = closed_at
         # 持久化 reviewDecision — 日报需识别 "已 approve 待 merge" 卡最后一公里状态
         row.review_decision = review_decision
+        # 回写 GitHub 实际 reviewer（日报「谁负责 review」的真相源，覆盖手动/自动/兜底）
+        row.gh_reviewers = json.dumps(_extract_reviewer_logins(payload), ensure_ascii=False)
         row.last_synced_at = datetime.utcnow()
         await session.commit()
 

@@ -374,10 +374,18 @@ async def run_pending_review_alert() -> Dict:
         }
 
     def _row_to_dict(r) -> Dict:
+        # 优先用 GitHub 实际 reviewer（pr_sync 回写的 gh_reviewers），它覆盖手动/自动/
+        # 兜底加的所有 reviewer；为空再退回 app blame 流程写的 reviewer_emails。
+        revs = []
         try:
-            revs = json.loads(r.reviewer_emails or "[]")
+            revs = json.loads(getattr(r, "gh_reviewers", None) or "[]")
         except (json.JSONDecodeError, TypeError):
             revs = []
+        if not revs:
+            try:
+                revs = json.loads(r.reviewer_emails or "[]")
+            except (json.JSONDecodeError, TypeError):
+                revs = []
         return {
             "pr_url": r.pr_url or "",
             "pr_number": r.pr_number,

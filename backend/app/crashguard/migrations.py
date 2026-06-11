@@ -43,6 +43,8 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_pull_requests", "reviewer_fallback_reason", "VARCHAR(64)", "''"),
     # PR reviewDecision 字段 (2026-05-28)：APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED / ""
     ("crash_pull_requests", "review_decision", "VARCHAR(32)", "''"),
+    # GitHub reviewRequests 回写 (2026-06-11)：日报显示真实被指派的 reviewer
+    ("crash_pull_requests", "gh_reviewers", "TEXT", "'[]'"),
     ("crash_issues", "top_os", "VARCHAR(256)", "''"),
     ("crash_issues", "top_device", "VARCHAR(256)", "''"),
     ("crash_issues", "top_app_version", "VARCHAR(128)", "''"),
