@@ -513,7 +513,9 @@ export default function HomePage() {
   const handleMarkComplete = async (issueId: string) => {
     try {
       const res = await markComplete(issueId, username || "");
-      const msg = res.feishu_synced ? t("已标记完成（飞书已同步）") : t("已标记完成");
+      const msg = res.feishu_notified
+        ? t("工单已标记完成，已通知飞书群")
+        : res.feishu_synced ? t("已标记完成（飞书已同步）") : t("已标记完成");
       setToast(msg);
       closeDetail();
       loadDone(donePage);

@@ -493,7 +493,7 @@ async def mark_complete(issue_id: str, body: MarkCompleteRequest):
     await db.update_issue_status(issue_id, "done")
     await db.log_event("mark_complete", issue_id=issue_id, username=body.username)
 
-    # Sync to Feishu: only set 确认提交=true (don't touch other fields)
+    # Sync to Feishu bitable: only set 确认提交=true (don't touch other fields)
     feishu_synced = False
     if is_feishu_source(issue_id):
         try:
@@ -503,4 +503,14 @@ async def mark_complete(issue_id: str, body: MarkCompleteRequest):
         except Exception as e:
             logger.error("Failed to sync completion to Feishu for %s: %s", issue_id, e)
 
-    return {"status": "done", "issue_id": issue_id, "feishu_synced": feishu_synced}
+    # 若该工单已 escalate（建过飞书群），同步 resolve + 在群里发完成通知。
+    # 复用 oncall resolve 同一条逻辑，避免两套实现漂移（详情页按钮历史上完全漏掉了这步）。
+    from app.services.feishu_cli import resolve_escalation_and_notify
+    esc = await resolve_escalation_and_notify(issue_id)
+
+    return {
+        "status": "done",
+        "issue_id": issue_id,
+        "feishu_synced": feishu_synced,
+        "feishu_notified": esc["feishu_notified"],
+    }

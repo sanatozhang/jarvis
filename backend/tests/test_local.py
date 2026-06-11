@@ -90,6 +90,59 @@ async def test_soft_delete_not_found(client):
     assert resp.status_code == 404
 
 
+async def test_mark_complete_resolves_and_notifies_escalation_group(client, db_session, monkeypatch):
+    """标记完成：已 escalate 的工单应同时 resolve + 通知飞书群（接线缺口回归测试）。"""
+    from datetime import datetime
+    import app.services.feishu_cli as feishu_cli
+    from app.db.database import IssueRecord
+
+    sent: list[dict] = []
+
+    async def _fake_send_message(chat_id="", email="", text="", markdown=""):
+        sent.append({"chat_id": chat_id, "text": text})
+        return True
+
+    monkeypatch.setattr(feishu_cli, "send_message", _fake_send_message)
+
+    await seed_issue(
+        db_session, "fb_esc_done", source="local", status="done",
+        escalated_at=datetime.utcnow(), escalation_chat_id="oc_chat_123",
+        escalation_status="in_progress",
+    )
+
+    resp = await client.post("/api/local/fb_esc_done/complete", json={"username": "tester"})
+    assert resp.status_code == 200
+    assert resp.json()["feishu_notified"] is True
+
+    # 群里收到了完成通知
+    assert any(m["chat_id"] == "oc_chat_123" for m in sent), f"未通知飞书群: {sent}"
+
+    # escalation_status 落库为 resolved
+    async with db_session() as s:
+        issue = await s.get(IssueRecord, "fb_esc_done")
+        assert issue.escalation_status == "resolved"
+
+
+async def test_mark_complete_non_escalated_no_notify(client, db_session, monkeypatch):
+    """非 escalate 工单：标记完成不应触发群通知，feishu_notified=False。"""
+    import app.services.feishu_cli as feishu_cli
+
+    sent: list[dict] = []
+
+    async def _fake_send_message(chat_id="", email="", text="", markdown=""):
+        sent.append({"chat_id": chat_id})
+        return True
+
+    monkeypatch.setattr(feishu_cli, "send_message", _fake_send_message)
+
+    await seed_issue(db_session, "fb_plain_done", source="local", status="done")
+
+    resp = await client.post("/api/local/fb_plain_done/complete", json={"username": "tester"})
+    assert resp.status_code == 200
+    assert resp.json()["feishu_notified"] is False
+    assert sent == []
+
+
 # ---- download-logs three-tier fallback ----
 
 def _patch_endpoint_settings(monkeypatch, workspace_dir):

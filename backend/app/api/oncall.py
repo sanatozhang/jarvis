@@ -181,29 +181,10 @@ async def resolve_ticket(issue_id: str):
     if not issue or not issue.escalated_at:
         raise HTTPException(status_code=404, detail="Escalated issue not found")
 
-    chat_id = issue.escalation_chat_id or ""
-    description = issue.description or issue_id
-
-    problem_type = ""
-    analysis = await db.get_analysis_by_issue(issue_id)
-    if analysis:
-        problem_type = analysis.problem_type or ""
-
-    ok = await db.resolve_escalation(issue_id)
-    if not ok:
+    # resolve + 群通知统一走 feishu_cli 的共享逻辑（详情页 mark_complete 也调它）
+    from app.services.feishu_cli import resolve_escalation_and_notify
+    esc = await resolve_escalation_and_notify(issue_id)
+    if not esc["resolved"]:
         raise HTTPException(status_code=404, detail="Failed to resolve")
 
-    feishu_notified = False
-    if chat_id:
-        try:
-            from app.services.feishu_cli import send_message
-            msg = f"✅ 工单已标记完成\n问题: {description[:200]}"
-            if problem_type:
-                msg += f"\n分类: {problem_type}"
-            await send_message(chat_id=chat_id, text=msg)
-            feishu_notified = True
-            logger.info("Sent resolve notification to group %s for issue %s", chat_id, issue_id)
-        except Exception as e:
-            logger.warning("Failed to send resolve notification to group: %s", e)
-
-    return {"status": "resolved", "issue_id": issue_id, "feishu_notified": feishu_notified}
+    return {"status": "resolved", "issue_id": issue_id, "feishu_notified": esc["feishu_notified"]}

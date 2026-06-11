@@ -698,6 +698,54 @@ async def send_message(
         return False
 
 
+async def resolve_escalation_and_notify(issue_id: str) -> Dict[str, bool]:
+    """把一个已 escalate 的工单标记为 resolved，并往它的飞书群发完成通知。
+
+    这是「标记完成 / resolve」的唯一真相源——oncall 的 resolve 接口和工单详情页的
+    mark_complete 都调它，避免两套实现再次漂移（历史 bug：详情页按钮接到的 mark_complete
+    完全没有群通知逻辑，escalate 的工单点了也不 resolve、群里也收不到消息）。
+
+    幂等：未 escalate / 已经是 resolved 的工单直接跳过，不重复发通知。
+
+    Returns {"resolved": bool, "feishu_notified": bool}。
+    """
+    from app.db import database as db_mod
+
+    async with db_mod.get_session() as session:
+        issue = await session.get(db_mod.IssueRecord, issue_id)
+        if not issue or not issue.escalated_at:
+            return {"resolved": False, "feishu_notified": False}
+        already_resolved = issue.escalation_status == "resolved"
+        chat_id = issue.escalation_chat_id or ""
+        description = issue.description or issue_id
+
+    if already_resolved:
+        return {"resolved": True, "feishu_notified": False}
+
+    problem_type = ""
+    analysis = await db_mod.get_analysis_by_issue(issue_id)
+    if analysis:
+        problem_type = analysis.problem_type or ""
+
+    resolved = await db_mod.resolve_escalation(issue_id)
+    if not resolved:
+        return {"resolved": False, "feishu_notified": False}
+
+    feishu_notified = False
+    if chat_id:
+        try:
+            msg = f"✅ 工单已标记完成\n问题: {description[:200]}"
+            if problem_type:
+                msg += f"\n分类: {problem_type}"
+            feishu_notified = await send_message(chat_id=chat_id, text=msg)
+            if feishu_notified:
+                logger.info("Sent resolve notification to group %s for issue %s", chat_id, issue_id)
+        except Exception as e:
+            logger.warning("Failed to send resolve notification to group %s: %s", chat_id, e)
+
+    return {"resolved": resolved, "feishu_notified": feishu_notified}
+
+
 async def _emails_to_open_ids(emails: List[str]) -> List[str]:
     """Convert a list of emails to Feishu open_ids.
 

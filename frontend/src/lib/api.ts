@@ -692,7 +692,7 @@ export const markInaccurate = (issueId: string) =>
   request<{ status: string }>(`/local/${issueId}/inaccurate`, { method: "POST" });
 
 export const markComplete = (issueId: string, username: string = "") =>
-  request<{ status: string; feishu_synced: boolean }>(`/local/${issueId}/complete`, {
+  request<{ status: string; feishu_synced: boolean; feishu_notified: boolean }>(`/local/${issueId}/complete`, {
     method: "POST",
     body: JSON.stringify({ username }),
   });
