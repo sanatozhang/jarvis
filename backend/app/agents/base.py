@@ -37,6 +37,7 @@ class AgentConfig:
     max_turns: int = 25
     allowed_tools: List[str] = field(default_factory=list)
     approval_mode: str = "auto-edit"
+    log_read_cap: Optional[int] = None  # deep 模式：日志读取次数上限（PreToolUse hook 执行）
     # ── claude_api specific ──
     base_url: str = ""               # e.g. http://34.216.169.232:30001/vertex
     api_key: str = ""                # ANTHROPIC_API_KEY (filled by orchestrator from env)

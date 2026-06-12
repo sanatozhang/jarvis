@@ -58,6 +58,7 @@ class AgentOrchestrator:
         rule_type: str,
         override: Optional[str] = None,
         prompt_chars: Optional[int] = None,
+        deep_analysis: bool = False,
     ) -> BaseAgent:
         """
         Select the agent to use based on:
@@ -124,7 +125,7 @@ class AgentOrchestrator:
             fallback_model=provider.fallback_model,
             betas=provider.betas,
             timeout=provider.timeout or agent_cfg.timeout,
-            max_turns=agent_cfg.max_turns,
+            max_turns=40 if deep_analysis else agent_cfg.max_turns,
             allowed_tools=provider.allowed_tools,
             approval_mode=provider.approval_mode,
             base_url=provider.base_url,
@@ -132,6 +133,7 @@ class AgentOrchestrator:
             max_tokens=provider.max_tokens,
             enable_cache=provider.enable_cache,
             api_key=os.environ.get("ANTHROPIC_API_KEY", "") if agent_name == "claude_api" else "",
+            log_read_cap=30 if deep_analysis else None,
         )
 
         # Instantiate
@@ -146,7 +148,7 @@ class AgentOrchestrator:
                     agent_name, config.model, agent_cfg.call_mode, rule_type)
         return agent_cls(config)
 
-    def _try_create_agent(self, agent_name: str) -> Optional[BaseAgent]:
+    def _try_create_agent(self, agent_name: str, deep_analysis: bool = False) -> Optional[BaseAgent]:
         """Try to create an agent by name. Returns None if unavailable."""
         agent_cfg = self._settings.agent
         provider = agent_cfg.providers.get(agent_name)
@@ -162,7 +164,7 @@ class AgentOrchestrator:
             fallback_model=provider.fallback_model,
             betas=provider.betas,
             timeout=provider.timeout or agent_cfg.timeout,
-            max_turns=agent_cfg.max_turns,
+            max_turns=40 if deep_analysis else agent_cfg.max_turns,
             allowed_tools=provider.allowed_tools,
             approval_mode=provider.approval_mode,
             base_url=provider.base_url,
@@ -170,6 +172,7 @@ class AgentOrchestrator:
             max_tokens=provider.max_tokens,
             enable_cache=provider.enable_cache,
             api_key=os.environ.get("ANTHROPIC_API_KEY", "") if agent_name == "claude_api" else "",
+            log_read_cap=30 if deep_analysis else None,
         )
         return agent_cls(config)
 
@@ -190,6 +193,7 @@ class AgentOrchestrator:
         condensation_context: Optional[Dict[str, Any]] = None,
         logs_corrupted: bool = False,
         pipeline_timeout: Optional[int] = None,
+        deep_analysis: bool = False,
     ) -> AnalysisResult:
         """
         Full analysis pipeline with automatic model fallback:
@@ -265,7 +269,7 @@ class AgentOrchestrator:
 
         # 现在 prompt 已 build，可以根据大小选 agent
         prompt_chars = int(prompt_meta.get("final_prompt_chars") or len(prompt))
-        agent = self.select_agent(rule_type, override=agent_override, prompt_chars=prompt_chars)
+        agent = self.select_agent(rule_type, override=agent_override, prompt_chars=prompt_chars, deep_analysis=deep_analysis)
 
         # RC1/RC3 兜底合约：让 agent 自身超时严格小于外层 pipeline 硬墙（task_timeout）。
         # 否则二者相等（都 600s）时外层 wait_for 先 cancel → agent 走 CancelledError 直接 raise，
@@ -294,7 +298,7 @@ class AgentOrchestrator:
             fallback_name = _FALLBACK_MAP.get(primary_name)
 
             if fallback_name:
-                fallback_agent = self._try_create_agent(fallback_name)
+                fallback_agent = self._try_create_agent(fallback_name, deep_analysis=deep_analysis)
                 if fallback_agent:
                     logger.warning(
                         "Agent %s quota exhausted, falling back to %s",

@@ -18,3 +18,13 @@ def test_pipeline_and_condensation_accept_deep_flag():
         analysis_worker.run_analysis_pipeline).parameters
     assert "deep_analysis" in inspect.signature(
         analysis_worker._run_context_condensation).parameters
+
+
+from app.agents.base import AgentConfig
+
+
+def test_agentconfig_has_log_read_cap():
+    cfg = AgentConfig(agent_type="claude_code")
+    assert cfg.log_read_cap is None
+    cfg2 = AgentConfig(agent_type="claude_code", log_read_cap=30)
+    assert cfg2.log_read_cap == 30

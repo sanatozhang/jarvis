@@ -590,6 +590,7 @@ async def run_analysis_pipeline(
         followup_question=followup_question,
         condensation_context=condensation_result.get("structured_context") if condensation_result else None,
         pipeline_timeout=pipeline_timeout,
+        deep_analysis=deep_analysis,
     )
 
     result.task_id = task_id
