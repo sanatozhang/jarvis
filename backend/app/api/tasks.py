@@ -115,6 +115,7 @@ async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
         agent_override=agent_type_str or None,
         username=req.username or "",
         followup_question=req.followup_question or "",
+        deep_analysis=req.deep_analysis,
     )
 
     return progress
@@ -460,7 +461,7 @@ def _resolve_task_timeout(issue_id: str, concurrency_settings) -> int:
         return base
 
 
-async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None, username: str = "", followup_question: str = ""):
+async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None, username: str = "", followup_question: str = "", deep_analysis: bool = False):
     """Run the full analysis pipeline as a background task."""
     import time as _time
     _start_time = _time.monotonic()
@@ -502,6 +503,10 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
         from app.config import get_settings as _get_settings
         _cc = _get_settings().concurrency
         _task_timeout = _resolve_task_timeout(issue_id, _cc)
+        if deep_analysis:
+            # 完整日志 + 自由探索需要更多时间；强制走支持 hook 的 claude_code
+            _task_timeout = max(_task_timeout, getattr(_cc, "task_timeout_large", 1200) or 1200)
+            agent_override = "claude_code"
         try:
             result = await asyncio.wait_for(
                 run_analysis_pipeline(
@@ -511,6 +516,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                     on_progress=on_progress,
                     followup_question=followup_question,
                     pipeline_timeout=_task_timeout,
+                    deep_analysis=deep_analysis,  # deep_analysis 透传见 Task 2
                 ),
                 timeout=_task_timeout,
             )

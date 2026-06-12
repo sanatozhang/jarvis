@@ -88,6 +88,7 @@ class TaskCreate(BaseModel):
     agent_type: Optional[AgentType] = None  # Override agent selection
     username: str = ""          # Who triggered this analysis
     followup_question: str = "" # Follow-up question for re-analysis
+    deep_analysis: bool = False # 深度分析：跳过窗口给全量日志 + 读取上限
 
 
 class TaskProgress(BaseModel):
