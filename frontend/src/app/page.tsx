@@ -74,7 +74,12 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
   const t = useT();
   const task = item.task;
   const analysis = item.analysis;
-  if (task && !["done", "failed"].includes(task.status)) {
+  // Only show the live task-derived badge (downloading/analyzing/…) when the issue itself is
+  // NOT in a terminal state. A done/failed/inaccurate issue that happens to carry a still-running
+  // latest task (a re-analysis in flight) must never render a contradictory "Analyzing" badge in
+  // the Completed tab — it shows its terminal result instead. See the Completed-tab filter above.
+  const terminal = ["done", "failed", "inaccurate"].includes(item.local_status);
+  if (task && !terminal && !["done", "failed"].includes(task.status)) {
     const labels: Record<string, string> = {
       queued: t("排队中"), downloading: t("下载中"),
       decrypting: t("解密中"), extracting: t("提取中"), analyzing: t("分析中"),
@@ -1010,10 +1015,15 @@ export default function HomePage() {
         {/* ── IN_PROGRESS / DONE / INACCURATE TABS ── */}
         {(tab === "in_progress" || tab === "done" || tab === "inaccurate") && (() => {
           const data = tab === "in_progress" ? ipData : tab === "inaccurate" ? inaccurateData : doneData;
-          // Filter out items that have an active task (retry in progress) from the done/inaccurate tabs
+          // Filter out items whose analysis is still running (a retry / deep-analysis of an
+          // already done/failed ticket) from the done/inaccurate tabs. We consult BOTH the
+          // current session's activeTasks AND the backend's latest task (item.task), because
+          // activeTasks is empty on a fresh load / different browser / after SSE ends — relying
+          // on it alone left re-analyzing tickets stuck in "Completed" with an "Analyzing" badge.
+          const isTaskRunning = (s?: string) => !!s && !["done", "failed"].includes(s);
           const rawItems = data?.issues || [];
           const items = (tab === "done" || tab === "inaccurate")
-            ? rawItems.filter(item => !activeTasks[item.record_id] || ["done", "failed"].includes(activeTasks[item.record_id]?.status))
+            ? rawItems.filter(item => !isTaskRunning(activeTasks[item.record_id]?.status) && !isTaskRunning(item.task?.status))
             : rawItems;
           const currentPage = tab === "in_progress" ? ipPage : tab === "inaccurate" ? inaccuratePage : donePage;
           const onPageChange = tab === "in_progress" ? onIpPage : tab === "inaccurate" ? onInaccuratePage : onDonePage;
