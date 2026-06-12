@@ -419,9 +419,9 @@ export default function HomePage() {
   const onDonePage = (p: number) => { setDonePage(p); loadDone(p); };
   const onInaccuratePage = (p: number) => { setInaccuratePage(p); loadInaccurate(p); };
 
-  const startAnalysis = async (issueId: string, isRetry = false) => {
+  const startAnalysis = async (issueId: string, isRetry = false, deepAnalysis = false) => {
     try {
-      const task = await createTask(issueId, undefined, isRetry ? "" : (username || ""));
+      const task = await createTask(issueId, undefined, isRetry ? "" : (username || ""), undefined, deepAnalysis);
       setActiveTasks((p) => ({ ...p, [issueId]: task }));
       // Remove from pending list (new analysis)
       setPendingData((prev) => {
@@ -1077,6 +1077,13 @@ export default function HomePage() {
                                 className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
                                 style={{ background: S.accent, color: "#0A0B0E" }}>
                                 {t("重试")}
+                              </button>
+                            )}
+                            {item.local_status === "failed" && (
+                              <button onClick={() => { startAnalysis(item.record_id, true, true); setToast(t("深度分析已启动")); }}
+                                className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
+                                style={{ background: "rgba(99,102,241,0.15)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.3)" }}>
+                                {t("深度分析")}
                               </button>
                             )}
                             {item.analysis?.user_reply && (

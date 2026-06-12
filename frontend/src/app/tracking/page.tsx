@@ -294,6 +294,21 @@ export default function TrackingPage() {
       setToast(t("已重新触发分析")); setTimeout(() => load(page), 2000);
     } catch (e: any) { setToast(`${t("重试失败")}: ${e.message}`); }
   };
+  const handleDeepAnalysis = async (issueId: string) => {
+    try {
+      const task = await createTask(issueId, undefined, username || "", undefined, true);
+      setActiveTasks((p) => ({ ...p, [issueId]: task }));
+      setToast(t("深度分析已启动"));
+      subscribeTaskProgress(task.task_id, (progress) => {
+        setActiveTasks((p) => ({ ...p, [issueId]: progress }));
+        if (progress.status === "done") { setTimeout(() => load(page), 500); }
+        if (progress.status === "failed") {
+          setToast(`${t("分析失败")}: ${progress.error || t("未知错误")}`);
+          setTimeout(() => load(page), 500);
+        }
+      });
+    } catch (e: any) { setToast(`${t("重试失败")}: ${e.message}`); }
+  };
   const handleMarkInaccurate = async (issueId: string) => {
     try { await markInaccurate(issueId); setToast(t("已标记为不准确")); setTimeout(() => load(page), 500); }
     catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
@@ -545,6 +560,13 @@ export default function TrackingPage() {
                           className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
                           style={{ background: "#F8F9FA", color: S.accent, border: `1px solid rgba(184,146,46,0.3)` }}>
                           {t("重试")}
+                        </button>
+                      )}
+                      {item.local_status === "failed" && (
+                        <button onClick={() => handleDeepAnalysis(item.record_id)}
+                          className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
+                          style={{ background: "rgba(99,102,241,0.15)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.3)" }}>
+                          {t("深度分析")}
                         </button>
                       )}
                       {(item.analysis?.user_reply || item.analysis?.user_reply_en) && (

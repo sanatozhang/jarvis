@@ -368,7 +368,7 @@ export const importIssueById = (recordId: string) =>
 // Tasks
 // ============================================================
 
-export const createTask = (issueId: string, agentType?: string, username?: string, followupQuestion?: string) =>
+export const createTask = (issueId: string, agentType?: string, username?: string, followupQuestion?: string, deepAnalysis?: boolean) =>
   request<TaskProgress>("/tasks", {
     method: "POST",
     body: JSON.stringify({
@@ -376,6 +376,7 @@ export const createTask = (issueId: string, agentType?: string, username?: strin
       agent_type: agentType || null,
       username: username || "",
       followup_question: followupQuestion || "",
+      deep_analysis: deepAnalysis ?? false,
     }),
   });
 
