@@ -34,3 +34,11 @@ def test_build_prompt_accepts_deep_analysis():
     import inspect
     from app.agents.base import BaseAgent
     assert "deep_analysis" in inspect.signature(BaseAgent.build_prompt).parameters
+
+
+def test_tag_deep_agent_type():
+    from app.services.agent_orchestrator import tag_deep_agent_type
+    assert tag_deep_agent_type("claude_code", deep=True) == "claude_code_deep"
+    assert tag_deep_agent_type("claude_code", deep=False) == "claude_code"
+    assert tag_deep_agent_type("claude_code_deep", deep=True) == "claude_code_deep"  # 幂等
+    assert tag_deep_agent_type("", deep=True) == ""  # 空不加后缀

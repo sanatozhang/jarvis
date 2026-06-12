@@ -47,6 +47,13 @@ _FALLBACK_MAP: Dict[str, str] = {
 }
 
 
+def tag_deep_agent_type(agent_type: str, deep: bool) -> str:
+    """深度分析结果的 agent_type 加 _deep 后缀，便于与普通结果区分（幂等）。"""
+    if deep and agent_type and not agent_type.endswith("_deep"):
+        return f"{agent_type}_deep"
+    return agent_type
+
+
 class AgentOrchestrator:
     """Select and invoke the right agent for a given analysis."""
 
@@ -351,6 +358,11 @@ class AgentOrchestrator:
             result = await apply_adjudication(result)
         except Exception as e:
             logger.warning("Adjudicator unexpected error (保持原判): %s", e)
+
+        # 深度分析结果打 _deep 后缀，便于详情页区分（仅对真实分析结果，不对 quota 占位）
+        if deep_analysis and result.problem_type not in _QUOTA_EXHAUSTED_TYPES and result.problem_type != "All Model Quotas Exhausted":
+            if getattr(result, "agent_type", None):
+                result.agent_type = tag_deep_agent_type(result.agent_type, True)
 
         return result
 
