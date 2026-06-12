@@ -223,6 +223,7 @@ async def run_analysis_pipeline(
     on_progress: Optional[Callable[[int, str], Any]] = None,
     followup_question: str = "",
     pipeline_timeout: Optional[int] = None,
+    deep_analysis: bool = False,
 ) -> AnalysisResult:
     """
     Run the complete analysis pipeline for a single issue.
@@ -545,6 +546,7 @@ async def run_analysis_pipeline(
             rules=rules,
             problem_date=problem_date,
             on_progress=on_progress,
+            deep_analysis=deep_analysis,
         )
         if condensation_result is not None:
             workspace_log_paths = condensation_result["log_paths"]
@@ -811,6 +813,7 @@ async def _run_context_condensation(
     rules: list,
     problem_date: Optional[str],
     on_progress: Optional[Callable[[int, str], Any]],
+    deep_analysis: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Run L1.5 context condensation: time-window + optional LLM extraction.
 
@@ -852,6 +855,15 @@ async def _run_context_condensation(
         if cc.api_key:
             logger.info("ANTHROPIC_API_KEY absent — clearing condenser api_key to use OAuth CLI fallback")
         cc.api_key = ""
+
+    # 深度分析：跳过 windowing，把完整原始日志交给 agent 自由探索
+    if deep_analysis:
+        logger.info("Deep analysis: skipping windowing, using full raw logs")
+        return {
+            "log_paths": log_paths,
+            "structured_context": None,
+            "windowing_metadata": [{"deep_mode": True, "windowed": False}],
+        }
 
     # Check if any log file exceeds the size threshold
     threshold_bytes = int(cc.log_size_threshold_mb * 1024 * 1024)

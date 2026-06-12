@@ -7,3 +7,14 @@ def test_taskcreate_has_deep_analysis_default_false():
     assert tc.deep_analysis is False
     tc2 = TaskCreate(issue_id="fb_x", deep_analysis=True)
     assert tc2.deep_analysis is True
+
+
+import inspect
+from app.workers import analysis_worker
+
+
+def test_pipeline_and_condensation_accept_deep_flag():
+    assert "deep_analysis" in inspect.signature(
+        analysis_worker.run_analysis_pipeline).parameters
+    assert "deep_analysis" in inspect.signature(
+        analysis_worker._run_context_condensation).parameters
