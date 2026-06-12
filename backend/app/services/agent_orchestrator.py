@@ -255,6 +255,7 @@ class AgentOrchestrator:
             context_files=context_files,
             condensation_context=condensation_context,
             logs_corrupted=logs_corrupted,
+            deep_analysis=deep_analysis,
         )
         _write_prompt_meta(workspace, prompt_meta)
         logger.info(

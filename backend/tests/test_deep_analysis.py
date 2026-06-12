@@ -28,3 +28,9 @@ def test_agentconfig_has_log_read_cap():
     assert cfg.log_read_cap is None
     cfg2 = AgentConfig(agent_type="claude_code", log_read_cap=30)
     assert cfg2.log_read_cap == 30
+
+
+def test_build_prompt_accepts_deep_analysis():
+    import inspect
+    from app.agents.base import BaseAgent
+    assert "deep_analysis" in inspect.signature(BaseAgent.build_prompt).parameters

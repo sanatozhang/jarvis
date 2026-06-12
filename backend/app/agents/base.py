@@ -89,6 +89,7 @@ class BaseAgent(ABC):
         context_files: Optional[Dict[str, str]] = None,
         condensation_context: Optional[Dict[str, Any]] = None,
         logs_corrupted: bool = False,
+        deep_analysis: bool = False,
     ) -> str:
         prompt, _meta = BaseAgent.build_prompt_with_meta(
             issue=issue,
@@ -103,6 +104,7 @@ class BaseAgent(ABC):
             context_files=context_files,
             condensation_context=condensation_context,
             logs_corrupted=logs_corrupted,
+            deep_analysis=deep_analysis,
         )
         return prompt
 
@@ -120,6 +122,7 @@ class BaseAgent(ABC):
         context_files: Optional[Dict[str, str]] = None,
         condensation_context: Optional[Dict[str, Any]] = None,
         logs_corrupted: bool = False,
+        deep_analysis: bool = False,
     ) -> tuple[str, Dict[str, Any]]:
         """Build the master prompt for the agent.
 
@@ -141,7 +144,29 @@ class BaseAgent(ABC):
         condensation_context_ref = context_files.get("condensation", "context/llm_extraction.json")
         has_condensation = condensation_context is not None
 
-        if has_logs and has_condensation:
+        if has_logs and deep_analysis:
+            # ── Deep mode: full untruncated logs + 30-read budget ──
+            role_and_principles = """你是 Plaud 设备日志分析专家。**深度分析模式**。
+
+你拿到的是**完整、未截断的原始日志**（logs/），不是时间窗口切片。请自由 grep 定位根因。
+
+**读取预算**：你最多可读取日志 30 次（Grep/Read/Bash on logs/）。超出会被系统强制阻止。
+因此：先用宽 grep 锁定可疑时间段/关键字，再聚焦细看，**尽快收敛**，不要漫无目的地翻。
+
+分析流程：宽 grep 定位 → 聚焦细看 → 交叉印证 → **必须**写 output/result.json（含中英双语字段）。
+证据不足就如实给 low confidence + needs_engineer，禁止编造。"""
+            workspace_section = """## 工作空间结构
+
+```
+logs/         ← 完整原始日志（未截断），可直接 grep；读取次数有上限（30）
+images/       ← 用户截图（如有）
+rules/        ← 规则文件
+code/         ← 代码仓库（如有）
+output/       ← 把 result.json 写到这里
+```"""
+            extraction_section = "## 说明\n\n深度模式不提供预提取窗口，请自行从完整日志定位证据。"
+
+        elif has_logs and has_condensation:
             # ── L1.5 mode: LLM has already extracted key context ──
             condensation_json = json.dumps(
                 _trim_json_like(condensation_context, max_string_chars=2000),
