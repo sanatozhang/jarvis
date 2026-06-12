@@ -71,6 +71,10 @@ class ClaudeCodeAgent(BaseAgent):
         # 平台级合约，不靠 prompt 自觉。
         self._write_stop_hook(workspace)
 
+        # 深度模式：注入 PreToolUse hook 限制 logs/ 读取次数（MERGE 进已有 settings.json）
+        if getattr(self.config, "log_read_cap", None):
+            self._write_log_read_cap_hook(workspace, int(self.config.log_read_cap))
+
         cmd = self._build_command()
         logger.info("Running Claude Code in %s (prompt: %d chars, piped via stdin)", workspace, len(prompt))
 
@@ -494,6 +498,77 @@ allow()
             logger.debug("Wrote Stop hook to %s/.claude/settings.json", workspace)
         except Exception as e:
             logger.warning("Failed to write stop hook (non-fatal): %s", e)
+
+    # ------------------------------------------------------------------
+    # 深度模式 PreToolUse hook：限制 logs/ 读取次数，防止 agent 无限 grep
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_log_read_cap_hook(workspace: Path, cap: int) -> None:
+        """在 workspace 内注入 PreToolUse hook，限制 logs/ 读取次数。
+
+        必须在 _write_stop_hook 之后调用，以便 MERGE 进已有的 settings.json，
+        而不是覆盖 Stop hook。
+
+        设计：
+        - backend_root 在写入时烘焙进脚本，本地/Docker 均可 import app.agents.log_read_cap
+        - 超过 cap 次后 deny，返回 permissionDecision: deny（PreToolUse 合约）
+        - 任何内部异常 fail-open（sys.exit(0)），绝不卡死 agent
+        """
+        try:
+            settings_dir = workspace / ".claude"
+            settings_dir.mkdir(parents=True, exist_ok=True)
+
+            # 写入计数 + deny 脚本
+            # backend/ = claude_code.py 的 parents[2]
+            backend_root = str(Path(__file__).resolve().parents[2])
+            script = (
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "try:\n"
+                f"    sys.path.insert(0, {backend_root!r})\n"
+                "    from app.agents.log_read_cap import classify_and_count\n"
+                "    event = json.load(sys.stdin)\n"
+                "    counter = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.log_read_count'))\n"
+                "    cap = int(os.environ.get('LOG_READ_CAP', '30'))\n"
+                "    d = classify_and_count(event, counter=counter, cap=cap)\n"
+                "    if not d['allow']:\n"
+                "        print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': d['reason']}}, ensure_ascii=False))\n"
+                "    sys.exit(0)\n"
+                "except Exception:\n"
+                "    sys.exit(0)\n"
+            )
+            (settings_dir / "check_log_read.py").write_text(script, encoding="utf-8")
+
+            # MERGE PreToolUse hook into existing settings.json (preserve Stop hook)
+            settings_file = settings_dir / "settings.json"
+            if settings_file.exists():
+                try:
+                    settings = json.loads(settings_file.read_text(encoding="utf-8"))
+                except Exception:
+                    settings = {}
+            else:
+                settings = {}
+
+            hooks = settings.setdefault("hooks", {})
+            hook_cmd = f'LOG_READ_CAP={cap} python3 "$(pwd)/.claude/check_log_read.py"'
+            hooks["PreToolUse"] = [
+                {
+                    "matcher": "Read|Grep|Bash",
+                    "hooks": [{"type": "command", "command": hook_cmd}],
+                }
+            ]
+
+            settings_file.write_text(
+                json.dumps(settings, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.debug(
+                "Merged PreToolUse log-read-cap hook (cap=%d) into %s/.claude/settings.json",
+                cap, workspace,
+            )
+        except Exception as e:
+            logger.warning("Failed to write log-read-cap hook (non-fatal): %s", e)
 
     # ------------------------------------------------------------------
     # L2: 格式补救轮（廉价子任务，把已有 Markdown 转写成 result.json）
