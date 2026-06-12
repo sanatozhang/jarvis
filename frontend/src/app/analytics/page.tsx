@@ -215,6 +215,7 @@ export default function AnalyticsPage() {
           <div className="grid grid-cols-3 gap-3">
             <StatCard label={t("平均分析耗时")} value={`${data.avg_analysis_duration_min} ${t("分钟")}`} sub={`${data.avg_analysis_duration_ms}ms`} />
             <StatCard label={t("工单转工程师")} value={data.escalations} color={S.accent} />
+            <StatCard label={t("深度分析")} value={data.event_counts.deep_analysis || 0} color="#6366F1" />
             <StatCard label={t("页面访问")} value={data.event_counts.page_visit || 0} />
           </div>
 

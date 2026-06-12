@@ -6,6 +6,7 @@ import MarkdownText from "@/components/MarkdownText";
 import { Toast } from "@/components/Toast";
 import { AgentTraceBlock } from "@/components/AgentTraceBlock";
 import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
+import { trackEvent } from "@/lib/track";
 import { fetchTracking, markInaccurate, markComplete, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
 // 每条同时带 key（稳定英文标识，新工单 issues.category 存的就是它）+ 长中文 label
@@ -104,6 +105,8 @@ export default function TrackingPage() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
   const [detailItem, setDetailItem] = useState<LocalIssueItem | null>(null);
+  // Deep-analysis confirmation: holds the issue id pending confirmation, or null
+  const [deepConfirmId, setDeepConfirmId] = useState<string | null>(null);
 
   // Escalation state
   const [showEscalateDialog, setShowEscalateDialog] = useState(false);
@@ -308,6 +311,14 @@ export default function TrackingPage() {
         }
       });
     } catch (e: any) { setToast(`${t("重试失败")}: ${e.message}`); }
+  };
+  // Deep analysis is gated behind a confirmation dialog (high token cost / long runtime).
+  const confirmDeepAnalysis = () => {
+    const id = deepConfirmId;
+    if (!id) return;
+    setDeepConfirmId(null);
+    trackEvent("deep_analysis", { issue_id: id });
+    handleDeepAnalysis(id);
   };
   const handleMarkInaccurate = async (issueId: string) => {
     try { await markInaccurate(issueId); setToast(t("已标记为不准确")); setTimeout(() => load(page), 500); }
@@ -563,7 +574,7 @@ export default function TrackingPage() {
                         </button>
                       )}
                       {item.local_status === "failed" && (
-                        <button onClick={() => handleDeepAnalysis(item.record_id)}
+                        <button onClick={() => setDeepConfirmId(item.record_id)}
                           className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
                           style={{ background: "rgba(99,102,241,0.15)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.3)" }}>
                           {t("深度分析")}
@@ -903,6 +914,31 @@ export default function TrackingPage() {
                       );
                     })}
 
+                    {/* Deep-analysis CTA — nudges when latest confidence is low; available for all analyzed tickets */}
+                    {(() => {
+                      const isLow = (analyses[0]?.confidence || "").toLowerCase() === "low";
+                      return (
+                        <section className="rounded-lg p-3 space-y-2"
+                          style={isLow
+                            ? { background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.25)" }
+                            : { background: S.overlay, border: `1px solid ${S.border}` }}>
+                          {isLow && (
+                            <div className="flex items-start gap-2">
+                              <svg className="h-4 w-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="#6366F1" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                              </svg>
+                              <p className="text-xs leading-relaxed" style={{ color: "#6366F1" }}>{t("分析可信度较低提示")}</p>
+                            </div>
+                          )}
+                          <button onClick={() => setDeepConfirmId(detailItem.record_id)}
+                            className="w-full rounded-lg py-2 text-sm font-semibold"
+                            style={{ background: "rgba(99,102,241,0.15)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.3)" }}>
+                            {t("深度分析")}
+                          </button>
+                        </section>
+                      );
+                    })()}
+
                     {/* Follow-up progress — above input */}
                     {(() => {
                       const activeTask = activeTasks[detailItem.record_id];
@@ -1074,11 +1110,18 @@ export default function TrackingPage() {
                   )
                 )}
                 {detailItem.local_status === "failed" && (
-                  <button onClick={() => { handleRetry(detailItem.record_id); closeDetail(); }}
-                    className="w-full rounded-lg py-2.5 text-sm font-semibold"
-                    style={{ background: S.accent, color: "#0A0B0E" }}>
-                    {t("重新分析")}
-                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={() => { handleRetry(detailItem.record_id); closeDetail(); }}
+                      className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
+                      style={{ background: S.accent, color: "#0A0B0E" }}>
+                      {t("重新分析")}
+                    </button>
+                    <button onClick={() => setDeepConfirmId(detailItem.record_id)}
+                      className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
+                      style={{ background: "rgba(99,102,241,0.15)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.3)" }}>
+                      {t("深度分析")}
+                    </button>
+                  </div>
                 )}
                 {detailItem.local_status === "done" && (
                   <div className="space-y-2">
@@ -1144,6 +1187,37 @@ export default function TrackingPage() {
                   )
                 )}
               </section>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Deep-analysis confirmation dialog */}
+      {deepConfirmId && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setDeepConfirmId(null)}>
+          <div className="w-full max-w-md rounded-xl p-5" style={{ background: "#FFFFFF", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(99,102,241,0.12)" }}>
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="#6366F1" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("确认开始深度分析")}</h3>
+                <p className="mt-2 text-xs leading-relaxed" style={{ color: S.text2 }}>{t("深度分析风险提示")}</p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setDeepConfirmId(null)}
+                className="rounded-lg px-4 py-2 text-sm font-medium"
+                style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
+                {t("取消")}
+              </button>
+              <button onClick={confirmDeepAnalysis}
+                className="rounded-lg px-4 py-2 text-sm font-semibold"
+                style={{ background: "#6366F1", color: "#FFFFFF" }}>
+                {t("确定开始")}
+              </button>
             </div>
           </div>
         </div>
