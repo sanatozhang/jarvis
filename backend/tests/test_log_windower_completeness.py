@@ -109,3 +109,39 @@ def test_empty_window_falls_back_to_recent_not_full_log(tmp_path: Path):
     text = path.read_text(encoding="utf-8")
     assert "recent event" in text      # 最近的留下
     assert "old event" not in text     # 半年前的没被带出
+
+
+def test_low_coverage_rewindow_centers_on_signal_not_full_log(tmp_path: Path):
+    """覆盖率<0.5 的二次切窗：围绕 L1 信号行时间戳重切有界窗口，绝不回退全量日志。
+
+    复现 coverage<0.5 路径：信号证据在 3 月，problem_date 窗口选偏。旧逻辑 windowed_paths=log_paths
+    把跨月全量丢给 agent（超时风险）；新逻辑应锚到信号行时间戳(3月)、包住证据、排除 12 月老噪音。
+    """
+    from app.services.log_windower import rewindow_on_signal_lines
+
+    log = tmp_path / "plaud.log"
+    lines = []
+    for i in range(50):  # 半年前老噪音（窗口外，更不该被全量带出）
+        lines.append(f"INFO: 2025-12-15 10:00:{i % 60:02d}.000000: noise {_w(i)}")
+    for i in range(40):  # 信号区：关键证据（L1 命中的就是这些行）
+        lines.append(f"ERROR: 2026-03-20 14:30:{i % 60:02d}.000000: BLE disconnect {_w(i + 200)}")
+    for i in range(50):  # 最近噪音
+        lines.append(f"INFO: 2026-06-09 22:00:{i % 60:02d}.000000: recent {_w(i + 400)}")
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    extraction = {"patterns": {"bluetooth": {"matches": [
+        "ERROR: 2026-03-20 14:30:05.000000: BLE disconnect xyz",
+    ]}}}
+
+    paths, metas = rewindow_on_signal_lines(
+        [log], tmp_path / "windowed", extraction,
+        hours_before=4, hours_after=2, size_threshold=0,
+    )
+    path, meta = paths[0], metas[0]
+
+    assert path != log, "low-coverage rewindow must NOT return the full original log"
+    assert meta["windowed"] is True
+    assert meta.get("recentered_on_signal")  # 标记已重切
+    text = path.read_text(encoding="utf-8")
+    assert "BLE disconnect" in text   # 信号区被包住
+    assert "noise" not in text        # 12 月老噪音没被带出

@@ -322,6 +322,37 @@ def window_log_files(
     return windowed_paths, all_metadata
 
 
+def rewindow_on_signal_lines(
+    log_paths: List[Path],
+    output_dir: Path,
+    extraction: dict,
+    hours_before: int = 4,
+    hours_after: int = 2,
+    size_threshold: int = DEFAULT_SIZE_THRESHOLD,
+) -> Tuple[List[Path], List[dict]]:
+    """低覆盖二次切窗：当首切窗口漏掉了 L1 高信号行时调用。
+
+    围绕信号行实际所在的时间戳（中位数）重切一个【有界】窗口，把证据包进来。
+    与「裸退全量日志」相对——后者会把跨月超大日志原样丢给 agent 导致超时
+    （rec27zFZSkfFpN 的病）。信号行无可解析时间戳时 center=None → 锚日志末尾（最近），
+    且 window_log_files 的空窗口兜底也只给有界最近切片，**绝不回退全量**。
+
+    返回 (windowed_paths, metadata_list)，每条 metadata 带 recentered_on_signal 标记。
+    """
+    center = infer_center_time_from_extraction(extraction or {})
+    paths, metas = window_log_files(
+        log_paths=log_paths,
+        output_dir=output_dir,
+        center_time=center,
+        hours_before=hours_before,
+        hours_after=hours_after,
+        size_threshold=size_threshold,
+    )
+    for m in metas:
+        m["recentered_on_signal"] = center.isoformat() if center else "recent"
+    return paths, metas
+
+
 def signal_lines_from_extraction(extraction: dict) -> List[str]:
     """Collect the L1 grep-matched lines (the rule-matched high-signal evidence).
 

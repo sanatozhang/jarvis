@@ -884,6 +884,7 @@ async def _run_context_condensation(
     # --- Step A: Time-window extraction (always, free) ---
     from app.services.log_windower import (
         window_log_files,
+        rewindow_on_signal_lines,
         signal_lines_from_extraction,
         window_coverage_ratio,
     )
@@ -961,15 +962,26 @@ async def _run_context_condensation(
 
         coverage = await asyncio.to_thread(_coverage)
         if coverage < 0.5:
+            # 窗口漏了 L1 高信号行 → 决定性证据不在当前窗口内（problem_date 多半选偏了）。
+            # 不再裸退「全量日志」——跨月超大日志原样丢给 agent 会超时（rec27zFZSkfFpN 的病）。
+            # 改为围绕信号行实际时间戳重切一个有界窗口把证据包回来；无可解析时间戳则锚最近。
             logger.warning(
-                "L1.5 window retained only %.0f%% of %d L1 high-signal lines — window "
-                "likely missed the relevant region; falling back to full logs",
+                "L1.5 window retained only %.0f%% of %d L1 high-signal lines — "
+                "re-centering on signal-line timestamps (bounded) instead of dumping full logs",
                 coverage * 100, len(signal_lines),
             )
-            windowed_paths = log_paths
+            windowed_paths, windowing_meta = await asyncio.to_thread(
+                lambda: rewindow_on_signal_lines(
+                    log_paths=log_paths,
+                    output_dir=windowed_dir,
+                    extraction=extraction or {},
+                    hours_before=hours_before,
+                    hours_after=hours_after,
+                    size_threshold=threshold_bytes,
+                )
+            )
             for m in windowing_meta:
-                m["complete"] = False
-                m["reason"] = "low_l1_coverage_fellback"
+                m["reason"] = "low_l1_coverage_recentered"
 
     # --- Step B: LLM context extraction (optional, costs money) ---
     # anthropic provider falls back to Claude CLI (OAuth, no api_key required);
