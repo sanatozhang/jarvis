@@ -64,7 +64,12 @@ async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
 
         # ── Timeout cooldown：同 prompt 同日志刚超时失败，立刻重跑大概率再超时
         # 并且会把孤儿子进程问题放大。给 10min 冷却，让用户/工程师介入。──
-        recent_timeout = await db.get_recent_timeout_task_for_issue(req.issue_id, within_minutes=10)
+        # 深度分析例外：它把 timeout 放宽到 1200s 且跳过窗口换策略，"确定性再超时"前提不成立，
+        # 而刚超时的工单正是深度分析的头号场景 → 允许直接深度重跑。
+        recent_timeout = (
+            None if req.deep_analysis
+            else await db.get_recent_timeout_task_for_issue(req.issue_id, within_minutes=10)
+        )
         if recent_timeout:
             logger.warning(
                 "Timeout cooldown: issue %s recently failed (task=%s) with %s — "

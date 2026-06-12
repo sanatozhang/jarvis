@@ -323,6 +323,7 @@ output/       ← 请将 result.json 写入此目录
             extraction_section=extraction_section,
             workspace_section=workspace_section,
             language=language,
+            deep_analysis=deep_analysis,
         )
         prompt_meta: Dict[str, Any] = {
             "budget_chars": _MAX_PROMPT_CHARS,
@@ -404,6 +405,7 @@ output/       ← 请将 result.json 写入此目录
                 extraction_section=compact_extraction_section,
                 workspace_section=workspace_section,
                 language=language,
+                deep_analysis=deep_analysis,
                 )
             prompt_meta["sections"]["compact_rules_section_chars"] = len(compact_rules)
             prompt_meta["sections"]["compact_extraction_json_chars"] = len(compact_extraction)
@@ -681,10 +683,24 @@ def _compose_prompt(
     extraction_section: str,
     workspace_section: str,
     language: str,
+    deep_analysis: bool = False,
 ) -> str:
-    return f"""{role_and_principles}
+    if deep_analysis:
+        anti_timeout_block = """## ⚡ 深度分析预算提示
 
-## ⚡ Anti-Timeout 协议（必读，违反会因超时白干）
+你有充足的轮数与时间预算。**核心约束是最多 30 次日志读取**（Grep/Read/Bash on logs/），超出会被系统强制阻止。
+
+**高效策略**：
+1. 先用宽 grep 锁定可疑时间段/关键字，再聚焦细看，尽快收敛。
+2. 每次有阶段性发现就用 Write **覆盖更新 result.json**（confidence 随证据递增）。
+3. 读取次数充裕但有上限，**不要漫无目的地翻日志**。
+4. 证据不足时如实给 low confidence + needs_engineer，禁止编造。
+
+**铁律**：
+- ❌ **严禁**因为"证据不充分"就拒绝写 result.json——partial result（confidence=low）永远比空结果有价值
+- ✅ 把 Write 看作 checkpoint：每次 Write 都是"如果现在被中断也能交差"的快照"""
+    else:
+        anti_timeout_block = """## ⚡ Anti-Timeout 协议（必读，违反会因超时白干）
 
 本次分析有 30 轮交互上限和 600 秒墙钟超时。**严格遵守以下"防御式输出"流程**：
 
@@ -697,7 +713,10 @@ def _compose_prompt(
 - ❌ **严禁**连续 5 个 turn 不写 result.json
 - ❌ **严禁**第 8 个 grep 之后还没写出任何 result.json
 - ❌ **严禁**因为"证据不充分"就拒绝写 result.json——partial result（confidence=low）永远比超时空结果有价值
-- ✅ 把 Write 看作 checkpoint：每次 Write 都是"如果现在被 kill 也能交差"的快照
+- ✅ 把 Write 看作 checkpoint：每次 Write 都是"如果现在被 kill 也能交差"的快照"""
+    return f"""{role_and_principles}
+
+{anti_timeout_block}
 
 ## 工单信息
 
