@@ -19,13 +19,13 @@ interface Props {
 }
 
 const DEFAULT_PALETTE = {
-  surface: "#F8F9FA",
+  surface: "#F1F4F3",
   overlay: "#FFFFFF",
   border: "rgba(0,0,0,0.08)",
-  text1: "#111827",
-  text2: "#6B7280",
+  text1: "#15181E",
+  text2: "#5B6470",
   text3: "#9CA3AF",
-  accent: "#B8922E",
+  accent: "#0E7C86",
 };
 
 function fmtTokens(n: number | undefined): string {

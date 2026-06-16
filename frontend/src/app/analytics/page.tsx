@@ -31,9 +31,9 @@ interface Analytics {
 }
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
-  border: "rgba(0,0,0,0.08)", accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
+  border: "rgba(0,0,0,0.08)", accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
 };
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -142,7 +142,7 @@ export default function AnalyticsPage() {
               {customDays && (
                 <button type="submit"
                   className="rounded-lg px-2 py-1.5 text-sm font-medium"
-                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
+                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)" }}>
                   ↵
                 </button>
               )}
@@ -163,13 +163,13 @@ export default function AnalyticsPage() {
 
           {/* Value metrics hero */}
           <section className="rounded-2xl p-6 relative overflow-hidden"
-            style={{ background: "linear-gradient(135deg, #FFFFFF 0%, #F8F9FA 60%, rgba(184,146,46,0.06) 100%)", border: `1px solid ${S.border}` }}>
+            style={{ background: "linear-gradient(135deg, #FFFFFF 0%, #F1F4F3 60%, rgba(14,124,134,0.06) 100%)", border: `1px solid ${S.border}` }}>
             {/* Decorative accent */}
             <div className="absolute top-0 right-0 h-32 w-32 rounded-full opacity-10 blur-3xl"
               style={{ background: S.accent }} />
             <div className="flex items-center gap-2 mb-4">
               <span className="rounded-lg px-2 py-0.5 text-[11px] font-semibold"
-                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }}>
+                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
                 {t("项目价值")}
               </span>
               <span className="text-xs" style={{ color: S.text3 }}>{t("过去")} {days} {t("天")}</span>
@@ -255,7 +255,7 @@ export default function AnalyticsPage() {
             const top10 = ptStats.top10;
             const maxCount = top10[0]?.count || 1;
             const trendDates = Object.keys(ptStats.trend).sort();
-            const COLORS = ["#B8922E","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C","#0891B2","#DB2777","#4F46E5","#65A30D"];
+            const COLORS = ["#0E7C86","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C","#0891B2","#DB2777","#4F46E5","#65A30D"];
             return (
               <div className="grid grid-cols-2 gap-4">
                 {/* Top 10 bar chart */}
@@ -413,7 +413,7 @@ export default function AnalyticsPage() {
           {/* Classification: Pie chart + Device breakdown */}
           {clsStats && clsStats.category_distribution.length > 0 && (() => {
             const PIE_COLORS = [
-              "#B8922E","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C",
+              "#0E7C86","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C",
               "#0891B2","#DB2777","#4F46E5","#65A30D","#D97706","#059669",
               "#6366F1","#E11D48","#0284C7","#7C2D12","#4338CA","#BE185D",
             ];
@@ -481,7 +481,7 @@ export default function AnalyticsPage() {
                         }}
                         disabled={backfilling}
                         className="rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all"
-                        style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)", opacity: backfilling ? 0.5 : 1 }}>
+                        style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)", opacity: backfilling ? 0.5 : 1 }}>
                         {backfilling ? t("回溯中...") : t("回溯分类")}
                       </button>
                     )}

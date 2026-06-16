@@ -4,7 +4,7 @@ import { useEffect } from "react";
 
 const S = {
   overlay: "#FFFFFF",
-  text1: "#111827",
+  text1: "#15181E",
   border: "rgba(0,0,0,0.08)",
 };
 

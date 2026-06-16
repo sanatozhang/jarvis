@@ -10,9 +10,9 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
-  border: "rgba(0,0,0,0.08)", accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
+  border: "rgba(0,0,0,0.08)", accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
 };
 
 const inputStyle = { background: S.overlay, border: `1px solid ${S.border}`, color: S.text1, outline: "none" };
@@ -186,7 +186,7 @@ export default function OncallPage() {
             <div className="flex items-center gap-2">
               <button onClick={save} disabled={saving}
                 className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50"
-                style={{ background: S.accent, color: "#0A0B0E" }}>
+                style={{ background: S.accent, color: "#FFFFFF" }}>
                 {saving ? t("保存中...") : t("保存")}
               </button>
               <button onClick={() => { setEditing(false); load(); }}
@@ -205,7 +205,7 @@ export default function OncallPage() {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("值班分组")}</h2>
               <button onClick={addGroup} className="rounded-lg px-3 py-1 text-xs font-medium"
-                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }}>
+                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
                 {t("添加分组")}</button>
             </div>
             <div className="space-y-3">

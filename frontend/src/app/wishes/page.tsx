@@ -14,10 +14,10 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
   border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
   danger: "#DC2626", dangerBg: "rgba(220,38,38,0.06)",
 };
 
@@ -25,7 +25,7 @@ const STATUS_STYLES: Record<string, { bg: string; color: string; border: string 
   pending: { bg: "rgba(251,146,60,0.12)", color: "#EA580C", border: "rgba(251,146,60,0.25)" },
   accepted: { bg: "rgba(59,130,246,0.12)", color: "#2563EB", border: "rgba(59,130,246,0.25)" },
   done: { bg: "rgba(34,197,94,0.12)", color: "#16A34A", border: "rgba(34,197,94,0.25)" },
-  rejected: { bg: "rgba(107,114,128,0.12)", color: "#6B7280", border: "rgba(107,114,128,0.25)" },
+  rejected: { bg: "rgba(107,114,128,0.12)", color: "#5B6470", border: "rgba(107,114,128,0.25)" },
 };
 
 function StatusBadge({ status, t }: { status: string; t: (k: string) => string }) {
@@ -154,7 +154,7 @@ export default function WishesPage() {
 
         {/* New wish form */}
         {showForm && (
-          <div className="rounded-xl p-5 space-y-3" style={{ background: S.overlay, border: `1px solid ${S.accent}`, boxShadow: "0 4px 24px rgba(184,146,46,0.08)" }}>
+          <div className="rounded-xl p-5 space-y-3" style={{ background: S.overlay, border: `1px solid ${S.accent}`, boxShadow: "0 4px 24px rgba(14,124,134,0.08)" }}>
             <input
               value={title}
               onChange={e => setTitle(e.target.value)}

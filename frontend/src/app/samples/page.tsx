@@ -13,9 +13,9 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
-  border: "rgba(0,0,0,0.08)", accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
+  border: "rgba(0,0,0,0.08)", accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
 };
 
 function ConfBadge({ c }: { c: string }) {
@@ -141,7 +141,7 @@ export default function SamplesPage() {
             <section key={rule}>
               <h2 className="mb-3 flex items-center gap-2">
                 <span className="rounded-lg px-2.5 py-1 text-xs font-semibold"
-                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }}>
+                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
                   {rule}
                 </span>
                 <span className="text-xs" style={{ color: S.text3 }}>{items.length} {t("个")}</span>
@@ -181,7 +181,7 @@ function SampleCard({ sample: s, onDelete, t }: { sample: GoldenSample; onDelete
             <ConfBadge c={s.confidence} />
             {s.rule_type && (
               <span className="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }}>
+                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
                 {s.rule_type}
               </span>
             )}

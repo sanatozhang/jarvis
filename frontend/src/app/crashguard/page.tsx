@@ -43,16 +43,16 @@ import { getBatchTopN } from "@/lib/crashguard-prefs";
 
 // jarvis 主站浅色金调（Firebase-style 布局 + 主题对齐）
 const D = {
-  bg: "#F8F9FA",
+  bg: "#F1F4F3",
   surface: "#FFFFFF",
-  surfaceAlt: "#F8F9FA",
+  surfaceAlt: "#F1F4F3",
   border: "rgba(0,0,0,0.08)",
   borderStrong: "rgba(0,0,0,0.14)",
-  text1: "#111827",
-  text2: "#6B7280",
+  text1: "#15181E",
+  text2: "#5B6470",
   text3: "#9CA3AF",
-  accent: "#B8922E",                       // jarvis gold
-  accentBg: "rgba(184,146,46,0.08)",
+  accent: "#0E7C86",                       // jarvis gold
+  accentBg: "rgba(14,124,134,0.08)",
   ok: "#16A34A",
   warn: "#D97706",
   warnBg: "rgba(217,119,6,0.10)",
@@ -60,7 +60,7 @@ const D = {
   dangerBg: "rgba(220,38,38,0.08)",
   p0: "#DC2626",
   p1: "#2563EB",
-  hover: "#EEF0F2",
+  hover: "#E8ECEA",
 };
 
 const STATUS_OPTIONS: { value: CrashStatus; label: string }[] = [
@@ -75,8 +75,8 @@ const STATUS_COLORS: Record<CrashStatus, { fg: string; bg: string }> = {
   open: { fg: "#DC2626", bg: "rgba(220,38,38,0.08)" },
   investigating: { fg: "#D97706", bg: "rgba(217,119,6,0.10)" },
   resolved_by_pr: { fg: "#16A34A", bg: "rgba(22,163,74,0.10)" },
-  ignored: { fg: "#6B7280", bg: "rgba(107,114,128,0.10)" },
-  wontfix: { fg: "#6B7280", bg: "rgba(107,114,128,0.10)" },
+  ignored: { fg: "#5B6470", bg: "rgba(107,114,128,0.10)" },
+  wontfix: { fg: "#5B6470", bg: "rgba(107,114,128,0.10)" },
 };
 
 const PLATFORM_ALIASES: Record<string, string> = {
@@ -124,7 +124,7 @@ function timeAgo(iso?: string): string {
 
 export default function CrashguardPage() {
   return (
-    <Suspense fallback={<div style={{ padding: 32, color: "#6B7280" }}>加载中...</div>}>
+    <Suspense fallback={<div style={{ padding: 32, color: "#5B6470" }}>加载中...</div>}>
       <CrashguardPageInner />
     </Suspense>
   );
@@ -1352,11 +1352,11 @@ function CrashguardPageInner() {
                               return <span style={{ color: D.text3, fontSize: 11 }}>—</span>;
                             }
                             const colorMap: Record<string, { fg: string; bg: string; border: string }> = {
-                              no_analysis:       { fg: "#6B7280", bg: "rgba(0,0,0,0.05)",     border: "#9CA3AF" },
+                              no_analysis:       { fg: "#5B6470", bg: "rgba(0,0,0,0.05)",     border: "#9CA3AF" },
                               low_feasibility:   { fg: "#D97706", bg: "rgba(217,119,6,0.10)", border: "#D97706" },
                               low_confidence:    { fg: "#D97706", bg: "rgba(217,119,6,0.10)", border: "#D97706" },
                               gate_check_failed: { fg: "#DC2626", bg: "rgba(220,38,38,0.10)", border: "#DC2626" },
-                              has_closed_pr:     { fg: "#6B7280", bg: "rgba(0,0,0,0.05)",     border: "#9CA3AF" },
+                              has_closed_pr:     { fg: "#5B6470", bg: "rgba(0,0,0,0.05)",     border: "#9CA3AF" },
                             };
                             const c = colorMap[blocker.reason] || { fg: D.text3, bg: "transparent", border: D.border };
                             return (
@@ -2309,7 +2309,7 @@ function DetailDrawer({
                           const conf = (c.confidence || "").toLowerCase();
                           const isHigh = conf === "high";
                           const isMid = conf === "medium";
-                          const accentColor = isHigh ? "#DC2626" : isMid ? "#D97706" : "#6B7280";
+                          const accentColor = isHigh ? "#DC2626" : isMid ? "#D97706" : "#5B6470";
                           const tintBg = isHigh
                             ? "linear-gradient(135deg, rgba(239,68,68,0.06), rgba(239,68,68,0.02))"
                             : isMid
@@ -2503,7 +2503,7 @@ function DetailDrawer({
                   {[...analyses].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")).map((a) => {
                     const hasPrompt = Boolean((a.followup_question || "").trim());
                     const isFollowup = Boolean(a.is_followup);
-                    const headerBg = hasPrompt ? "rgba(167,139,250,0.08)" : "rgba(184,146,46,0.06)";
+                    const headerBg = hasPrompt ? "rgba(167,139,250,0.08)" : "rgba(14,124,134,0.06)";
                     const headerColor = hasPrompt ? "#7C3AED" : D.accent;
                     const headerIcon = hasPrompt ? "💬" : "🔍";
                     const headerLabel = hasPrompt
@@ -2634,11 +2634,11 @@ function DetailDrawer({
                     启动（15-30 分钟）
                   </button>
                 )}
-                {diagLoading && <span style={{ fontSize: 12, color: "#6B7280" }}>启动中…</span>}
+                {diagLoading && <span style={{ fontSize: 12, color: "#5B6470" }}>启动中…</span>}
               </div>
 
               {diagStatus && (diagStatus.status === "pending" || diagStatus.status === "running") && (
-                <div style={{ fontSize: 12, color: "#6B7280" }}>
+                <div style={{ fontSize: 12, color: "#5B6470" }}>
                   ⏳ AI 正在调查中… 每 8 秒自动刷新
                   {(diagStatus.investigation_log?.length ?? 0) > 0 && (
                     <details style={{ marginTop: 6 }}>
@@ -2655,7 +2655,7 @@ function DetailDrawer({
 
               {diagStatus?.status === "success" && (
                 <div>
-                  <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, color: "#5B6470", marginBottom: 8 }}>
                     总体置信度: {((diagStatus.overall_confidence ?? 0) * 100).toFixed(0)}% · 类型: {diagStatus.crash_type}
                   </div>
                   {diagStatus.hypotheses.map((h) => (
@@ -2677,9 +2677,9 @@ function DetailDrawer({
                             }}>推荐</span>
                           )}
                         </div>
-                        <span style={{ fontSize: 12, color: "#6B7280" }}>{((h.confidence ?? 0) * 100).toFixed(0)}%</span>
+                        <span style={{ fontSize: 12, color: "#5B6470" }}>{((h.confidence ?? 0) * 100).toFixed(0)}%</span>
                       </div>
-                      <div style={{ fontSize: 11, color: "#6B7280", margin: "4px 0" }}>
+                      <div style={{ fontSize: 11, color: "#5B6470", margin: "4px 0" }}>
                         {h.fix_direction}
                       </div>
                       <div style={{ fontSize: 11, color: "#374151", marginBottom: 6 }}>
@@ -2708,7 +2708,7 @@ function DetailDrawer({
                         <div key={i} style={{ fontSize: 11, marginTop: 4 }}>
                           <div>• {gap.description}</div>
                           {gap.collection_method && (
-                            <div style={{ color: "#6B7280" }}>采集方式：{gap.collection_method}</div>
+                            <div style={{ color: "#5B6470" }}>采集方式：{gap.collection_method}</div>
                           )}
                         </div>
                       ))}
@@ -2741,7 +2741,7 @@ function parseDistribution(text: string): { label: string; pct: number }[] {
   return out;
 }
 
-const PIE_PALETTE = ["#B8922E", "#7C3AED", "#16A34A", "#DC2626", "#2563EB", "#D97706", "#9CA3AF"];
+const PIE_PALETTE = ["#0E7C86", "#7C3AED", "#16A34A", "#DC2626", "#2563EB", "#D97706", "#9CA3AF"];
 
 function PieChart({ title, slices }: { title: string; slices: { label: string; pct: number }[] }) {
   const size = 120;
@@ -2801,7 +2801,7 @@ function PieChart({ title, slices }: { title: string; slices: { label: string; p
   );
 }
 
-const VERSION_PIE_PALETTE = ["#2563EB", "#16A34A", "#B8922E", "#7C3AED", "#DC2626", "#D97706", "#9CA3AF", "#0891B2", "#DB2777", "#65A30D"];
+const VERSION_PIE_PALETTE = ["#2563EB", "#16A34A", "#0E7C86", "#7C3AED", "#DC2626", "#D97706", "#9CA3AF", "#0891B2", "#DB2777", "#65A30D"];
 
 function VersionPieCard({
   title,

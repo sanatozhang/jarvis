@@ -13,9 +13,9 @@ function getBackendUrl(): string {
 const BACKEND_URL = getBackendUrl();
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
-  border: "rgba(0,0,0,0.08)", accent: "#B8922E",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
+  border: "rgba(0,0,0,0.08)", accent: "#0E7C86",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
 };
 
 const inputCls = "w-full rounded-lg px-3 py-2.5 text-sm font-sans outline-none transition-colors";
@@ -287,7 +287,7 @@ export default function FeedbackPage() {
               className="flex cursor-pointer flex-col items-center justify-center rounded-xl px-6 py-10 transition-all"
               style={{
                 border: `2px dashed ${isDragOver ? S.accent : "rgba(0,0,0,0.10)"}`,
-                background: isDragOver ? "rgba(184,146,46,0.05)" : "rgba(0,0,0,0.02)",
+                background: isDragOver ? "rgba(14,124,134,0.05)" : "rgba(0,0,0,0.02)",
               }}>
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl"
                 style={{ background: "rgba(0,0,0,0.03)", border: `1px solid ${S.border}` }}>
@@ -338,7 +338,7 @@ export default function FeedbackPage() {
           {/* Submit */}
           <button onClick={() => submit()} disabled={submitting}
             className="w-full rounded-xl py-3 text-sm font-semibold transition-colors disabled:opacity-50"
-            style={{ background: S.accent, color: "#0A0B0E" }}>
+            style={{ background: S.accent, color: "#FFFFFF" }}>
             {submitting ? (
               <span className="flex flex-col items-center gap-1">
                 <span className="flex items-center gap-2">
@@ -366,7 +366,7 @@ export default function FeedbackPage() {
           <div className="w-full max-w-md rounded-2xl p-6" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
             <div className="mb-4 flex items-start gap-3">
               <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl"
-                style={{ background: "rgba(184,146,46,0.15)", border: "1px solid rgba(184,146,46,0.3)" }}>
+                style={{ background: "rgba(14,124,134,0.15)", border: "1px solid rgba(14,124,134,0.3)" }}>
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: S.accent }}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
                 </svg>
@@ -389,7 +389,7 @@ export default function FeedbackPage() {
               </button>
               <button onClick={() => { setShowNoLogConfirm(false); submit(true); }}
                 className="rounded-lg px-4 py-2 text-sm font-semibold"
-                style={{ background: S.accent, color: "#0A0B0E" }}>
+                style={{ background: S.accent, color: "#FFFFFF" }}>
                 {t("继续提交")}
               </button>
             </div>

@@ -7,12 +7,12 @@ import { fetchCrashHourlyAlertDetail } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 const D = {
-  bg: "#F8F9FA",
+  bg: "#F1F4F3",
   surface: "#FFFFFF",
   border: "rgba(0,0,0,0.08)",
-  text1: "#111827",
-  text2: "#6B7280",
-  accent: "#B8922E",
+  text1: "#15181E",
+  text2: "#5B6470",
+  accent: "#0E7C86",
   danger: "#DC2626",
   dangerBg: "rgba(220,38,38,0.08)",
 } as const;

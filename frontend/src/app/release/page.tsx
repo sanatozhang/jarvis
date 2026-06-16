@@ -14,14 +14,14 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F8F9FA",
+  surface: "#F1F4F3",
   overlay: "#FFFFFF",
-  hover: "#EEF0F2",
+  hover: "#E8ECEA",
   border: "rgba(0,0,0,0.08)",
-  accent: "#B8922E",
-  accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827",
-  text2: "#6B7280",
+  accent: "#0E7C86",
+  accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E",
+  text2: "#5B6470",
   text3: "#9CA3AF",
 };
 

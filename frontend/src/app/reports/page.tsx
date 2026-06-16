@@ -7,10 +7,10 @@ import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api"
 import MarkdownText from "@/components/MarkdownText";
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
   border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
 };
 
 
@@ -139,7 +139,7 @@ export default function ReportsPage() {
                       <ConfBadge conf={a.confidence} />
                       {a.needs_engineer && (
                         <span className="rounded-md px-2 py-0.5 text-[10px] font-semibold"
-                          style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }}>
+                          style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
                           {t("需工程师")}
                         </span>
                       )}

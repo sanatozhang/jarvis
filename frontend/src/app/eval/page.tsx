@@ -10,9 +10,9 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
-  border: "rgba(0,0,0,0.08)", accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
+  border: "rgba(0,0,0,0.08)", accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
 };
 
 
@@ -104,7 +104,7 @@ export default function EvalPage() {
             {tab === "datasets" && (
               <button onClick={() => setShowCreate(true)}
                 className="rounded-lg px-3 py-1.5 text-sm font-semibold"
-                style={{ background: S.accent, color: "#0A0B0E" }}>
+                style={{ background: S.accent, color: "#FFFFFF" }}>
                 + {t("创建数据集")}
               </button>
             )}
@@ -135,7 +135,7 @@ export default function EvalPage() {
                   </div>
                   <button onClick={() => handleStartEval(ds.id)}
                     className="rounded-lg px-4 py-2 text-sm font-semibold"
-                    style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
+                    style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)" }}>
                     {t("开始评测")}
                   </button>
                 </div>
@@ -344,7 +344,7 @@ function CreateDatasetDialog({ t, onClose, onCreated }: { t: (k: string) => stri
           <button onClick={handleCreate}
             disabled={!name.trim() || selectedIds.size === 0}
             className="rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-40"
-            style={{ background: S.accent, color: "#0A0B0E" }}>
+            style={{ background: S.accent, color: "#FFFFFF" }}>
             {t("创建")}
           </button>
         </div>

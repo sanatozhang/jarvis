@@ -56,7 +56,7 @@ function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }
       </span>
       {ruleMatched && (
         <span className="inline-flex rounded-full px-1.5 py-0.5 text-[9px] font-bold"
-          style={{ background: "rgba(184,146,46,0.15)", color: S.accent, border: "1px solid rgba(184,146,46,0.3)" }}>
+          style={{ background: "rgba(14,124,134,0.15)", color: S.accent, border: "1px solid rgba(14,124,134,0.3)" }}>
           100%
         </span>
       )}
@@ -390,7 +390,7 @@ export default function TrackingPage() {
             <button onClick={() => setShowFilters(!showFilters)}
               className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
               style={showFilters || activeFilterCount > 0
-                ? { background: S.accent, color: "#0A0B0E" }
+                ? { background: S.accent, color: "#FFFFFF" }
                 : { border: `1px solid ${S.border}`, color: S.text2 }}>
               {t("筛选")}{activeFilterCount > 0 && ` (${activeFilterCount})`}
             </button>
@@ -569,7 +569,7 @@ export default function TrackingPage() {
                       {item.local_status === "failed" && (
                         <button onClick={() => handleRetry(item.record_id)}
                           className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
-                          style={{ background: "#F8F9FA", color: S.accent, border: `1px solid rgba(184,146,46,0.3)` }}>
+                          style={{ background: "#F1F4F3", color: S.accent, border: `1px solid rgba(14,124,134,0.3)` }}>
                           {t("重试")}
                         </button>
                       )}
@@ -811,7 +811,7 @@ export default function TrackingPage() {
                               <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
                                 style={isFollowup
                                   ? { background: "rgba(167,139,250,0.12)", color: "#7C3AED", border: "1px solid rgba(167,139,250,0.25)" }
-                                  : { background: "rgba(184,146,46,0.08)", color: S.accent, border: "1px solid rgba(184,146,46,0.2)" }
+                                  : { background: "rgba(14,124,134,0.08)", color: S.accent, border: "1px solid rgba(14,124,134,0.2)" }
                                 }>
                                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714a2.25 2.25 0 0 0 .659 1.591L19 14.5M14.25 3.104c.251.023.501.05.75.082M19 14.5l-2.47 2.47a2.25 2.25 0 0 1-1.591.659H9.061a2.25 2.25 0 0 1-1.591-.659L5 14.5m14 0H5" />
@@ -982,7 +982,7 @@ export default function TrackingPage() {
                               onClick={() => startFollowup(detailItem.record_id, followupText)}
                               disabled={!followupText.trim() || disabled}
                               className="flex-shrink-0 rounded-xl p-2 transition-colors disabled:opacity-30"
-                              style={{ background: S.accent, color: "#0A0B0E" }}>
+                              style={{ background: S.accent, color: "#FFFFFF" }}>
                               {disabled && followupSubmitting ? (
                                 <div className="h-4 w-4 animate-spin rounded-full border-2"
                                   style={{ borderColor: "rgba(0,0,0,0.2)", borderTopColor: "#0A0B0E" }} />
@@ -1113,7 +1113,7 @@ export default function TrackingPage() {
                   <div className="flex gap-2">
                     <button onClick={() => { handleRetry(detailItem.record_id); closeDetail(); }}
                       className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
-                      style={{ background: S.accent, color: "#0A0B0E" }}>
+                      style={{ background: S.accent, color: "#FFFFFF" }}>
                       {t("重新分析")}
                     </button>
                     <button onClick={() => setDeepConfirmId(detailItem.record_id)}
@@ -1142,7 +1142,7 @@ export default function TrackingPage() {
                         </svg>
                         <div>
                           <p className="text-sm font-medium" style={{ color: "#1D4ED8" }}>{t("建议使用群聊跟进")}</p>
-                          <p className="mt-1 text-xs" style={{ color: "#6B7280" }}>
+                          <p className="mt-1 text-xs" style={{ color: "#5B6470" }}>
                             {t("飞书工单即将停用，建议直接点击「转交工程师」创建群聊跟进，更高效便捷。")}
                           </p>
                         </div>

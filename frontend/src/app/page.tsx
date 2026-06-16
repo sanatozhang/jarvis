@@ -105,7 +105,7 @@ function LocalStatusBadge({ item }: { item: LocalIssueItem }) {
         </span>
         {ruleMatched && (
           <span className="inline-flex rounded-full px-1.5 py-0.5 text-[9px] font-bold"
-            style={{ background: "rgba(184,146,46,0.15)", color: "#B8922E", border: "1px solid rgba(184,146,46,0.3)" }}>
+            style={{ background: "rgba(14,124,134,0.15)", color: "#0E7C86", border: "1px solid rgba(14,124,134,0.3)" }}>
             100%
           </span>
         )}
@@ -645,7 +645,10 @@ export default function HomePage() {
         style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div className="flex items-center gap-4">
-            <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("工单分析")}</h1>
+            <div>
+              <div className="font-mono text-[9px] uppercase tracking-[0.18em]" style={{ color: S.text3 }}>// Triage</div>
+              <h1 className="font-display text-lg font-bold leading-tight" style={{ color: S.text1 }}>{t("工单分析")}</h1>
+            </div>
             {/* Assignee filter */}
             <div className="flex items-center gap-1.5">
               {!showAssigneeEdit ? (
@@ -667,7 +670,7 @@ export default function HomePage() {
                     className="w-28 rounded-lg px-2.5 py-1 text-xs outline-none font-sans"
                     style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }} />
                   <button onClick={applyAssignee} className="rounded-lg px-2 py-1 text-[11px] font-semibold"
-                    style={{ background: S.accent, color: "#0A0B0E" }}>{t("确定")}</button>
+                    style={{ background: S.accent, color: "#FFFFFF" }}>{t("确定")}</button>
                   {assignee && <button onClick={clearAssignee} className="rounded-lg px-2 py-1 text-[11px]"
                     style={{ border: `1px solid ${S.border}`, color: S.text2 }}>{t("清除")}</button>}
                   <button onClick={() => setShowAssigneeEdit(false)} className="text-[11px]" style={{ color: S.text3 }}>{t("取消")}</button>
@@ -678,7 +681,7 @@ export default function HomePage() {
           <div className="flex items-center gap-2">
             {selected.size > 0 && (
               <button onClick={batchStart} className={`${btnPrimary}`}
-                style={{ background: S.accent, color: "#0A0B0E" }}>
+                style={{ background: S.accent, color: "#FFFFFF" }}>
                 {t("批量分析")} ({selected.size})
               </button>
             )}
@@ -700,7 +703,7 @@ export default function HomePage() {
                 <button onClick={() => { setShowUsernameEdit(true); setUsernameInput(username || ""); }}
                   className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors">
                   <span className="flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold"
-                    style={{ background: S.accent, color: "#0A0B0E" }}>
+                    style={{ background: S.accent, color: "#FFFFFF" }}>
                     {username ? username[0].toUpperCase() : "?"}
                   </span>
                   <span className="font-medium" style={{ color: S.text2 }}>
@@ -715,7 +718,7 @@ export default function HomePage() {
                     className="w-24 rounded-lg px-2.5 py-1 text-xs outline-none font-sans"
                     style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }} />
                   <button onClick={() => saveUsername(usernameInput)} className="rounded-lg px-2 py-1 text-[11px] font-semibold"
-                    style={{ background: S.accent, color: "#0A0B0E" }}>{t("保存")}</button>
+                    style={{ background: S.accent, color: "#FFFFFF" }}>{t("保存")}</button>
                   <button onClick={() => setShowUsernameEdit(false)} className="text-[11px]" style={{ color: S.text3 }}>{t("取消")}</button>
                 </div>
               )}
@@ -750,10 +753,10 @@ export default function HomePage() {
               { label: t("进行中"), value: counts.in_progress, color: "#2563EB" },
               { label: t("已完成"), value: counts.done, color: "#16A34A" },
               { label: t("分析不准确"), value: counts.inaccurate, color: "#DC2626" },
-            ].map((s) => (
-              <div key={s.label} className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
-                <p className="text-xs" style={{ color: S.text3 }}>{s.label}</p>
-                <p className="mt-1 text-xl font-bold tabular-nums" style={{ color: s.color }}>{s.value}</p>
+            ].map((s, i) => (
+              <div key={s.label} className="j-card j-rise rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: `${i * 0.06}s` }}>
+                <p className="font-mono text-[10px] uppercase tracking-wider" style={{ color: S.text3 }}>{s.label}</p>
+                <p className="mt-1 font-display text-2xl font-bold tabular-nums" style={{ color: s.color }}>{s.value}</p>
               </div>
             ))
           )}
@@ -803,7 +806,7 @@ export default function HomePage() {
                 style={{ background: S.surface, border: `1px solid ${S.border}`, color: S.text1 }} />
               <button onClick={handleImportSearch} disabled={importLoading || !importQuery.trim()}
                 className="rounded-lg px-5 py-2.5 text-sm font-semibold disabled:opacity-50 shrink-0"
-                style={{ background: S.accent, color: "#0A0B0E" }}>
+                style={{ background: S.accent, color: "#FFFFFF" }}>
                 {importLoading ? t("搜索中...") : t("搜索")}
               </button>
             </div>
@@ -861,14 +864,14 @@ export default function HomePage() {
                                 ? { background: "rgba(96,165,250,0.12)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }
                                 : issue.feishu_status === "done"
                                   ? { background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }
-                                  : { background: "rgba(0,0,0,0.04)", color: "#6B7280", border: "1px solid rgba(0,0,0,0.08)" }}>
+                                  : { background: "rgba(0,0,0,0.04)", color: "#5B6470", border: "1px solid rgba(0,0,0,0.08)" }}>
                               {issue.feishu_status === "in_progress" ? t("处理中") : issue.feishu_status === "done" ? t("已完成") : t("未处理")}
                             </span>
                           </td>
                           <td className={`${tdBase} text-right`} style={{ width: "110px" }}>
                             <button onClick={() => handleImportSelect(issue)} disabled={importLoading}
                               className="rounded-lg px-3 py-1 text-xs font-semibold transition-colors disabled:opacity-50"
-                              style={{ background: S.accent, color: "#0A0B0E" }}>
+                              style={{ background: S.accent, color: "#FFFFFF" }}>
                               {t("导入并分析")}
                             </button>
                           </td>
@@ -907,7 +910,7 @@ export default function HomePage() {
             {/* Batch action toolbar */}
             {!!pendingData?.issues.length && (
               <div className="mb-3 flex items-center gap-3 rounded-xl px-4 py-2.5"
-                style={{ background: selected.size > 0 ? "rgba(184,146,46,0.08)" : S.surface, border: `1px solid ${selected.size > 0 ? "rgba(184,146,46,0.25)" : S.border}`, transition: "all 0.2s" }}>
+                style={{ background: selected.size > 0 ? "rgba(14,124,134,0.08)" : S.surface, border: `1px solid ${selected.size > 0 ? "rgba(14,124,134,0.25)" : S.border}`, transition: "all 0.2s" }}>
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <IndeterminateCheckbox
                     checked={selected.size > 0 && selected.size === (pendingData?.issues || []).length}
@@ -923,7 +926,7 @@ export default function HomePage() {
                     </span>
                     <button onClick={batchStart}
                       className="rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors"
-                      style={{ background: S.accent, color: "#0A0B0E" }}>
+                      style={{ background: S.accent, color: "#FFFFFF" }}>
                       {t("批量分析")} ({selected.size})
                     </button>
                     <button onClick={() => setSelected(new Set())}
@@ -972,7 +975,7 @@ export default function HomePage() {
                           <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
                             style={issue.feishu_status === "in_progress"
                               ? { background: "rgba(96,165,250,0.12)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }
-                              : { background: "rgba(0,0,0,0.04)", color: "#6B7280", border: "1px solid rgba(0,0,0,0.08)" }}>
+                              : { background: "rgba(0,0,0,0.04)", color: "#5B6470", border: "1px solid rgba(0,0,0,0.08)" }}>
                             {issue.feishu_status === "in_progress" ? t("处理中") : t("未处理")}
                           </span>
                         </td>
@@ -999,7 +1002,7 @@ export default function HomePage() {
                       <td className={`${tdBase} text-right`} style={{ width: "96px" }} onClick={(e) => e.stopPropagation()}>
                         <button onClick={() => startAnalysis(issue.record_id)}
                           className="rounded-lg px-3 py-1 text-xs font-semibold transition-colors"
-                          style={{ background: S.accent, color: "#0A0B0E" }}>
+                          style={{ background: S.accent, color: "#FFFFFF" }}>
                           {t("分析")}
                         </button>
                       </td>
@@ -1098,7 +1101,7 @@ export default function HomePage() {
                             {item.local_status === "failed" && (
                               <button onClick={() => startAnalysis(item.record_id, true)}
                                 className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
-                                style={{ background: S.accent, color: "#0A0B0E" }}>
+                                style={{ background: S.accent, color: "#FFFFFF" }}>
                                 {t("重试")}
                               </button>
                             )}
@@ -1151,8 +1154,8 @@ export default function HomePage() {
       {/* ── Detail panel ── */}
       {detailId && detailData && (
         <div className="fixed inset-0 z-50 flex">
-          <div className="flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={closeDetail} />
-          <div className="w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}` }}>
+          <div className="j-fade flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={closeDetail} />
+          <div className="j-slide-in w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}` }}>
             {/* Panel header */}
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3"
               style={{ background: "#FFFFFF", borderBottom: `1px solid ${S.border}` }}>
@@ -1306,7 +1309,7 @@ export default function HomePage() {
               {detailTab === "pending" && !detailData.task && !detailData.result && (
                 <button onClick={() => { startAnalysis(detailId!); closeDetail(); }}
                   className="w-full rounded-lg py-2.5 text-sm font-semibold transition-colors"
-                  style={{ background: S.accent, color: "#0A0B0E" }}>
+                  style={{ background: S.accent, color: "#FFFFFF" }}>
                   {t("开始 AI 分析")}
                 </button>
               )}
@@ -1319,7 +1322,7 @@ export default function HomePage() {
                     <span>{detailData.task.message}</span>
                     <span className="tabular-nums">{detailData.task.progress}%</span>
                   </div>
-                  <div className="h-1.5 rounded-full overflow-hidden" style={{ background: S.hover }}>
+                  <div className="j-scan h-1.5 rounded-full overflow-hidden" style={{ background: S.hover }}>
                     <div className="h-full rounded-full transition-all duration-700"
                       style={{ width: `${detailData.task.progress}%`, background: S.accent }} />
                   </div>
@@ -1336,7 +1339,7 @@ export default function HomePage() {
                   <div className="flex gap-2">
                     <button onClick={() => { startAnalysis(detailId!, true); closeDetail(); }}
                       className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
-                      style={{ background: S.accent, color: "#0A0B0E" }}>
+                      style={{ background: S.accent, color: "#FFFFFF" }}>
                       {t("重新分析")}
                     </button>
                     <button onClick={() => setDeepConfirmId(detailId!)}
@@ -1429,7 +1432,7 @@ export default function HomePage() {
                               <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
                                 style={isFollowup
                                   ? { background: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "1px solid rgba(167,139,250,0.25)" }
-                                  : { background: "rgba(184,146,46,0.08)", color: S.accent, border: "1px solid rgba(184,146,46,0.2)" }
+                                  : { background: "rgba(14,124,134,0.08)", color: S.accent, border: "1px solid rgba(14,124,134,0.2)" }
                                 }>
                                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714a2.25 2.25 0 0 0 .659 1.591L19 14.5M14.25 3.104c.251.023.501.05.75.082M19 14.5l-2.47 2.47a2.25 2.25 0 0 1-1.591.659H9.061a2.25 2.25 0 0 1-1.591-.659L5 14.5m14 0H5" />
@@ -1469,11 +1472,11 @@ export default function HomePage() {
                                 //   反馈 false → 灰色「AI 标：需工程师（客服已纠偏）」
                                 //   反馈 true  → 绿色「AI 标：需工程师 ✅ 客服已确认」
                                 const fb = r.engineer_label_feedback;
-                                let bg = S.accentBg, color = S.accent, border = "rgba(184,146,46,0.25)";
+                                let bg = S.accentBg, color = S.accent, border = "rgba(14,124,134,0.25)";
                                 let text = lang === "cn" ? "🤖 AI 标：需工程师" : "🤖 AI: Engineer needed";
                                 let suffix = "";
                                 if (fb === false) {
-                                  bg = "rgba(107,114,128,0.08)"; color = "#6B7280"; border = "rgba(107,114,128,0.25)";
+                                  bg = "rgba(107,114,128,0.08)"; color = "#5B6470"; border = "rgba(107,114,128,0.25)";
                                   suffix = lang === "cn" ? "（客服已纠偏）" : "(CS overrode)";
                                 } else if (fb === true) {
                                   bg = "rgba(34,197,94,0.10)"; color = "#16A34A"; border = "rgba(34,197,94,0.30)";
@@ -1669,7 +1672,7 @@ export default function HomePage() {
                           <span>{activeTasks[detailId!].message}</span>
                           <span className="tabular-nums">{activeTasks[detailId!].progress}%</span>
                         </div>
-                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: S.hover }}>
+                        <div className="j-scan h-1.5 rounded-full overflow-hidden" style={{ background: S.hover }}>
                           <div className="h-full rounded-full transition-all duration-700"
                             style={{ width: `${activeTasks[detailId!].progress}%`, background: S.accent }} />
                         </div>
@@ -1693,7 +1696,7 @@ export default function HomePage() {
                           onClick={() => startFollowup(detailId!, followupText)}
                           disabled={!followupText.trim() || followupSubmitting}
                           className="flex-shrink-0 rounded-xl p-2 transition-colors disabled:opacity-30"
-                          style={{ background: S.accent, color: "#0A0B0E" }}>
+                          style={{ background: S.accent, color: "#FFFFFF" }}>
                           {followupSubmitting ? (
                             <div className="h-4 w-4 animate-spin rounded-full border-2"
                               style={{ borderColor: "rgba(0,0,0,0.2)", borderTopColor: "#0A0B0E" }} />
@@ -1797,7 +1800,7 @@ export default function HomePage() {
                   <div className="flex gap-2">
                     <button onClick={() => { startAnalysis(detailId!, true); closeDetail(); }}
                       className="flex-1 rounded-lg py-2.5 text-sm font-semibold"
-                      style={{ background: S.accent, color: "#0A0B0E" }}>
+                      style={{ background: S.accent, color: "#FFFFFF" }}>
                       {t("重新分析")}
                     </button>
                     <button onClick={() => setDeepConfirmId(detailId!)}
@@ -1827,7 +1830,7 @@ export default function HomePage() {
                         </svg>
                         <div>
                           <p className="text-sm font-medium" style={{ color: "#1D4ED8" }}>{t("建议使用群聊跟进")}</p>
-                          <p className="mt-1 text-xs" style={{ color: "#6B7280" }}>
+                          <p className="mt-1 text-xs" style={{ color: "#5B6470" }}>
                             {t("飞书工单即将停用，建议直接点击「转交工程师」创建群聊跟进，更高效便捷。")}
                           </p>
                         </div>
@@ -1928,7 +1931,7 @@ export default function HomePage() {
               onClick={() => saveUsername(usernameInput, emailInput)}
               disabled={!usernameInput.trim() || !emailInput.trim()}
               className="w-full rounded-lg py-2.5 text-sm font-semibold transition-colors disabled:opacity-30"
-              style={{ background: S.accent, color: "#0A0B0E" }}>
+              style={{ background: S.accent, color: "#FFFFFF" }}>
               {t("开始使用")}
             </button>
           </div>
@@ -1937,8 +1940,8 @@ export default function HomePage() {
 
       {/* Deep-analysis confirmation dialog */}
       {deepConfirmId && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setDeepConfirmId(null)}>
-          <div className="w-full max-w-md rounded-xl p-5" style={{ background: "#FFFFFF", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
+        <div className="j-fade fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setDeepConfirmId(null)}>
+          <div className="j-pop w-full max-w-md rounded-xl p-5" style={{ background: "#FFFFFF", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start gap-3">
               <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(99,102,241,0.12)" }}>
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="#6366F1" strokeWidth={2}>

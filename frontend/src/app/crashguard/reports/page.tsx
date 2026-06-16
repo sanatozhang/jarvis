@@ -16,14 +16,14 @@ import {
 import { useT } from "@/lib/i18n";
 
 const D = {
-  bg: "#F8F9FA",
+  bg: "#F1F4F3",
   surface: "#FFFFFF",
-  surfaceAlt: "#F8F9FA",
+  surfaceAlt: "#F1F4F3",
   border: "rgba(0,0,0,0.08)",
-  text1: "#111827",
-  text2: "#6B7280",
+  text1: "#15181E",
+  text2: "#5B6470",
   text3: "#9CA3AF",
-  accent: "#B8922E",
+  accent: "#0E7C86",
   ok: "#16A34A",
   warn: "#D97706",
   warnBg: "rgba(217,119,6,0.10)",

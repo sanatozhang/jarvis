@@ -6,10 +6,10 @@ import { Toast } from "@/components/Toast";
 import { fetchRules, reloadRules, updateRule, createRule, deleteRule, type Rule, type RuleMeta } from "@/lib/api";
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
   border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
   danger: "#DC2626", dangerBg: "rgba(220,38,38,0.06)",
 };
 
@@ -198,7 +198,7 @@ function CreateRuleModal({ onClose, onCreated }: { onClose: () => void; onCreate
           style={{ border: `1px solid ${S.border}`, color: S.text2 }}>{t("取消")}</button>
         <button onClick={handleSubmit} disabled={saving || !form.id.trim() || !form.name.trim()}
           className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-40"
-          style={{ background: S.accent, color: "#0A0B0E" }}>
+          style={{ background: S.accent, color: "#FFFFFF" }}>
           {saving ? t("加载中...") : t("创建")}
         </button>
       </div>
@@ -422,7 +422,7 @@ export default function RulesPage() {
             </button>
             <button onClick={() => setShowCreate(true)}
               className="rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors"
-              style={{ background: S.accent, color: "#0A0B0E" }}>
+              style={{ background: S.accent, color: "#FFFFFF" }}>
               + {t("新建规则")}
             </button>
           </div>
@@ -491,7 +491,7 @@ export default function RulesPage() {
                 <div className="flex items-center gap-2">
                   <button onClick={handleSave}
                     className="rounded-lg px-3 py-1.5 text-xs font-semibold"
-                    style={{ background: S.accent, color: "#0A0B0E" }}>
+                    style={{ background: S.accent, color: "#FFFFFF" }}>
                     {t("保存")}
                   </button>
                   <button onClick={() => setEditing(false)}

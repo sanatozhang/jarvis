@@ -10,10 +10,10 @@ interface EnvField { key: string; label: string; value: string; has_value: boole
 interface EnvGroup { key: string; label: string; fields: EnvField[]; }
 
 const S = {
-  surface: "#F8F9FA", overlay: "#FFFFFF", hover: "#EEF0F2",
+  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
   border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#B8922E", accentBg: "rgba(184,146,46,0.06)",
-  text1: "#111827", text2: "#6B7280", text3: "#9CA3AF",
+  accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
+  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
 };
 
 const inputStyle = {
@@ -185,7 +185,7 @@ function UserList() {
               <td className="py-2.5 pr-4">
                 <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
                   style={u.role === "admin"
-                    ? { background: S.accentBg, color: S.accent, border: "1px solid rgba(184,146,46,0.25)" }
+                    ? { background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }
                     : { background: S.overlay, color: S.text3, border: `1px solid ${S.border}` }}>
                   {u.role === "admin" ? t("管理员") : t("用户")}
                 </span>
@@ -327,7 +327,7 @@ export default function SettingsPage() {
           </div>
           <button onClick={saveAgentConfig} disabled={saving}
             className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50 transition-opacity"
-            style={{ background: S.accent, color: "#0A0B0E" }}>
+            style={{ background: S.accent, color: "#FFFFFF" }}>
             {saving ? t("保存中...") : t("保存 Agent 配置")}
           </button>
         </div>
@@ -398,7 +398,7 @@ export default function SettingsPage() {
 
         {!isAdmin && (
           <div className="rounded-xl p-4 text-sm"
-            style={{ background: S.accentBg, border: "1px solid rgba(184,146,46,0.2)", color: S.text2 }}>
+            style={{ background: S.accentBg, border: "1px solid rgba(14,124,134,0.2)", color: S.text2 }}>
             {t("环境配置仅管理员可见")}。{t("当前用户")}: <span style={{ color: S.text1 }}>{username || t("未登录")}</span>
           </div>
         )}
@@ -674,7 +674,7 @@ export default function SettingsPage() {
               </div>
 
               {/* Info box */}
-              <div className="rounded-lg p-3 text-xs" style={{ background: S.accentBg, border: `1px solid rgba(184,146,46,0.15)` }}>
+              <div className="rounded-lg p-3 text-xs" style={{ background: S.accentBg, border: `1px solid rgba(14,124,134,0.15)` }}>
                 <p style={{ color: S.accent }}><strong>L1.5 {t("工作原理")}:</strong></p>
                 <p className="mt-1" style={{ color: S.text2 }}>
                   {t("① 时间窗口切割（自动，免费）：大日志按问题日期裁剪，通常减少 80-95% 体积")}

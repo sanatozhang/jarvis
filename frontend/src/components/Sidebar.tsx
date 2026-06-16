@@ -83,42 +83,48 @@ export default function Sidebar() {
   return (
     <aside
       className="flex w-[216px] flex-shrink-0 flex-col"
-      style={{ background: "#F8F9FA", borderRight: "1px solid rgba(0,0,0,0.08)" }}
+      style={{ background: "#F1F4F3", borderRight: "1px solid rgba(0,0,0,0.08)" }}
     >
-      {/* Logo */}
-      <div
-        className="flex h-[52px] items-center gap-3 px-5"
-        style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}
-      >
-        <div
-          className="flex h-7 w-7 items-center justify-center rounded-lg"
-          style={{ background: "#B8922E" }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <circle cx="10.5" cy="10.5" r="6" stroke="#FFFFFF" strokeWidth="2.5" />
-            <path d="M15 15L20.5 20.5" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" />
-            <path d="M10.5 7V8.5M10.5 12.5V14M8 10.5H6.5M14.5 10.5H13" stroke="#FFFFFF" strokeWidth="1.5" strokeLinecap="round" />
-            <circle cx="10.5" cy="10.5" r="1.2" fill="#FFFFFF" />
-          </svg>
+      {/* Brand — instrument plate + signal baseline signature */}
+      <div style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+        <div className="flex items-center gap-2.5 px-5 pt-4 pb-3">
+          <div
+            className="flex h-8 w-8 items-center justify-center rounded-[8px]"
+            style={{ background: "#0E7C86", boxShadow: "0 1px 2px rgba(14,124,134,0.35)" }}
+          >
+            {/* Instrument mark — a scope reading a signal */}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M3 12h3l2.5-6 4 13 2.5-7h6" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div className="leading-none">
+            <div className="flex items-center gap-1.5">
+              <span className="font-display text-[15px] font-bold tracking-tight" style={{ color: "#15181E" }}>
+                Apollo
+              </span>
+              <span
+                className="rounded-[4px] font-mono text-[9px] font-medium px-1 py-0.5 tracking-wider"
+                style={{ background: "rgba(14,124,134,0.10)", color: "#0E7C86" }}
+              >
+                AI
+              </span>
+            </div>
+            <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.18em]" style={{ color: "#9AA3AF" }}>
+              Signal Desk
+            </div>
+          </div>
         </div>
-        <div>
-          <span
-            className="text-sm font-semibold tracking-tight"
-            style={{ color: "#111827" }}
-          >
-            Apollo
-          </span>
-          <span
-            className="ml-1.5 rounded text-[9px] font-medium px-1 py-0.5"
-            style={{ background: "rgba(184,146,46,0.10)", color: "#B8922E" }}
-          >
-            AI
-          </span>
+        {/* Signature: live oscilloscope baseline */}
+        <div className="px-5 pb-3">
+          <div className="j-signal-line" />
         </div>
       </div>
 
       {/* Nav */}
       <nav className="flex-1 space-y-px px-2.5 py-3">
+        <div className="px-3 pb-2 font-mono text-[9px] uppercase tracking-[0.18em]" style={{ color: "#9AA3AF" }}>
+          // Console
+        </div>
         {NAV_ITEMS.filter((item) => {
           // crashguardEnabled === false 时隐藏；null（加载中）和 true 都显示，避免闪烁
           if (item.href === "/crashguard" && crashguardEnabled === false) return false;
@@ -131,20 +137,20 @@ export default function Sidebar() {
               href={item.href}
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150"
               style={{
-                color: active ? "#111827" : "#6B7280",
-                background: active ? "rgba(184,146,46,0.08)" : "transparent",
-                borderLeft: active ? "2px solid #B8922E" : "2px solid transparent",
+                color: active ? "#15181E" : "#5B6470",
+                background: active ? "rgba(14,124,134,0.08)" : "transparent",
+                borderLeft: active ? "2px solid #0E7C86" : "2px solid transparent",
               }}
               onMouseEnter={(e) => {
                 if (!active) {
-                  (e.currentTarget as HTMLElement).style.color = "#374151";
+                  (e.currentTarget as HTMLElement).style.color = "#15181E";
                   (e.currentTarget as HTMLElement).style.background =
                     "rgba(0,0,0,0.03)";
                 }
               }}
               onMouseLeave={(e) => {
                 if (!active) {
-                  (e.currentTarget as HTMLElement).style.color = "#6B7280";
+                  (e.currentTarget as HTMLElement).style.color = "#5B6470";
                   (e.currentTarget as HTMLElement).style.background = "transparent";
                 }
               }}
@@ -161,10 +167,12 @@ export default function Sidebar() {
               </svg>
               <span className="flex-1 truncate">{t(item.label)}</span>
               {active && (
-                <span
-                  className="h-1.5 w-1.5 rounded-full flex-shrink-0"
-                  style={{ background: "#B8922E" }}
-                />
+                /* live level-meter — bars breathe like a VU meter reading signal */
+                <span className="j-meter flex items-end gap-[2px] flex-shrink-0" style={{ height: 10 }}>
+                  <i style={{ display: "block", width: 2, height: 4, background: "#0E7C86", borderRadius: 1 }} />
+                  <i style={{ display: "block", width: 2, height: 9, background: "#0E7C86", borderRadius: 1 }} />
+                  <i style={{ display: "block", width: 2, height: 6, background: "#0E7C86", borderRadius: 1 }} />
+                </span>
               )}
             </a>
           );
@@ -179,10 +187,10 @@ export default function Sidebar() {
         {/* Current user + logout */}
         {me && (
           <div className="mb-2 px-3 pb-2" style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-            <div className="text-sm font-medium truncate" style={{ color: "#111827" }}>
+            <div className="text-sm font-medium truncate" style={{ color: "#15181E" }}>
               {me.username}
             </div>
-            <div className="text-xs truncate" style={{ color: "#6B7280" }}>
+            <div className="text-xs truncate" style={{ color: "#5B6470" }}>
               {me.email || me.feishu_email}
             </div>
             <button
@@ -193,13 +201,13 @@ export default function Sidebar() {
                 window.location.href = "/login";
               }}
               className="mt-2 flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-medium transition-colors"
-              style={{ color: "#6B7280" }}
+              style={{ color: "#5B6470" }}
               onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.color = "#111827";
+                (e.currentTarget as HTMLElement).style.color = "#15181E";
                 (e.currentTarget as HTMLElement).style.background = "rgba(0,0,0,0.03)";
               }}
               onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.color = "#6B7280";
+                (e.currentTarget as HTMLElement).style.color = "#5B6470";
                 (e.currentTarget as HTMLElement).style.background = "transparent";
               }}
             >
@@ -221,13 +229,13 @@ export default function Sidebar() {
         <a
           href="/settings"
           className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
-          style={{ color: "#6B7280" }}
+          style={{ color: "#5B6470" }}
           onMouseEnter={(e) => {
             (e.currentTarget as HTMLElement).style.color = "#374151";
             (e.currentTarget as HTMLElement).style.background = "rgba(0,0,0,0.03)";
           }}
           onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "#6B7280";
+            (e.currentTarget as HTMLElement).style.color = "#5B6470";
             (e.currentTarget as HTMLElement).style.background = "transparent";
           }}
         >
@@ -252,13 +260,13 @@ export default function Sidebar() {
         <button
           onClick={toggleLang}
           className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
-          style={{ color: "#6B7280" }}
+          style={{ color: "#5B6470" }}
           onMouseEnter={(e) => {
             (e.currentTarget as HTMLElement).style.color = "#374151";
             (e.currentTarget as HTMLElement).style.background = "rgba(0,0,0,0.03)";
           }}
           onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "#6B7280";
+            (e.currentTarget as HTMLElement).style.color = "#5B6470";
             (e.currentTarget as HTMLElement).style.background = "transparent";
           }}
         >
@@ -280,7 +288,7 @@ export default function Sidebar() {
             className="rounded px-1.5 py-0.5 text-[10px] font-semibold"
             style={{
               background: "rgba(0,0,0,0.05)",
-              color: "#6B7280",
+              color: "#5B6470",
             }}
           >
             {lang === "cn" ? "CN" : "EN"}
