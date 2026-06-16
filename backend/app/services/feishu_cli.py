@@ -411,6 +411,14 @@ class FeishuCLI:
         result_summary = self._get_text(fields.get("处理结果", ""))
         root_cause_summary = self._get_text(fields.get("一句话归因", ""))
 
+        assignee_names = []
+        for a in (fields.get("问题指派人") or []):
+            if isinstance(a, dict):
+                name = a.get("name") or a.get("en_name") or ""
+                if name:
+                    assignee_names.append(name)
+        assignee = ", ".join(assignee_names)
+
         created_at_ms = 0
         raw_ts = fields.get("创建日期")
         if isinstance(raw_ts, (int, float)) and raw_ts > 0:
@@ -423,6 +431,7 @@ class FeishuCLI:
             firmware=self._get_text(fields.get("固件版本号", "")),
             app_version=self._get_text(fields.get("APP 版本", "")),
             priority=self._get_text(fields.get("问题等级", "")),
+            assignee=assignee,
             zendesk=zendesk_url,
             zendesk_id=zendesk_id,
             feishu_link=self.get_feishu_link(record_id),
@@ -440,6 +449,30 @@ class FeishuCLI:
     @staticmethod
     def is_unfinished(record: Dict) -> bool:
         return not record.get("fields", {}).get("确认提交", False)
+
+    def filter_by_assignee_emails(self, records: List[Dict], emails: List[str]) -> List[Dict]:
+        """Keep records whose 问题指派人 list CONTAINS any of the given emails.
+
+        指派人 is a multi-person list (usually 2 people), each with an `email`.
+        We match by membership (email in the assignee list), NOT equality of the
+        whole field — so a ticket assigned to oncall + someone else still matches.
+        """
+        if not emails:
+            return records
+        wanted = {e.strip().lower() for e in emails if e and e.strip()}
+        if not wanted:
+            return records
+        result = []
+        for record in records:
+            fields = record.get("fields", {})
+            for a in (fields.get("问题指派人") or []):
+                if not isinstance(a, dict):
+                    continue
+                email = (a.get("email", "") or "").strip().lower()
+                if email and email in wanted:
+                    result.append(record)
+                    break
+        return result
 
     def filter_by_assignee(self, records: List[Dict], assignee: str) -> List[Dict]:
         if not assignee:
@@ -481,10 +514,13 @@ class FeishuCLI:
 
     async def list_issues_by_status(
         self, status: str, assignee: str = "", limit: int = 30,
+        assignee_emails: Optional[List[str]] = None,
     ) -> List[Issue]:
         records = await self.list_records()
         if assignee:
             records = self.filter_by_assignee(records, assignee)
+        if assignee_emails:
+            records = self.filter_by_assignee_emails(records, assignee_emails)
         all_issues = [self.parse_record(r) for r in records]
 
         if status == "pending":
