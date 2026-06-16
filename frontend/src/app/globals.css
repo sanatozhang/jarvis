@@ -1,17 +1,19 @@
 @import "tailwindcss";
 
 @theme {
-  /* ── Signal Desk palette (refined light "instrument enclosure") ── */
-  --color-j-base:      #FFFFFF;   /* panels */
-  --color-j-surface:   #F1F4F3;   /* app background — cool off-white, not cream */
-  --color-j-overlay:   #FFFFFF;
-  --color-j-hover:     #E8ECEA;
-  --color-j-accent:    #0E7C86;   /* signal teal */
-  --color-j-accent-hi: #0A5C64;
+  /* ── Signal Desk palette — Tailwind utilities (bg-j-*, text-j-*) resolve
+     through the runtime --j-* vars below, so bg-j-base / text-j-fg flip in
+     dark mode too. ── */
+  --color-j-base:      var(--j-panel);
+  --color-j-surface:   var(--j-surface);
+  --color-j-overlay:   var(--j-panel);
+  --color-j-hover:     var(--j-hover);
+  --color-j-accent:    var(--j-accent);
+  --color-j-accent-hi: var(--j-accent-hi);
   --color-j-live:      #E8950C;   /* record amber — live/processing only */
-  --color-j-fg:        #15181E;   /* ink */
-  --color-j-muted:     #5B6470;   /* graphite */
-  --color-j-dim:       #9AA3AF;   /* faint */
+  --color-j-fg:        var(--j-ink);
+  --color-j-muted:     var(--j-graphite);
+  --color-j-dim:       var(--j-faint);
 
   /* ── Typography ── */
   --font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
@@ -174,6 +176,77 @@ button:not(:disabled):active,
   }
   .j-rise { opacity: 1; }
 }
+
+/* ════════════════════════════════════════════════════════════════
+   Semantic theme tokens — drive light + dark "console mode".
+   Components reference these via var(--j-*) (through their S/D token
+   objects), so flipping html.dark recolors the whole surface at once.
+   ════════════════════════════════════════════════════════════════ */
+:root {
+  --j-surface:    #F1F4F3;
+  --j-panel:      #FFFFFF;
+  --j-hover:      #E8ECEA;
+  --j-border:     rgba(21,24,30,0.09);
+  --j-border-sm:  rgba(21,24,30,0.05);
+  --j-accent:     #0E7C86;
+  --j-accent-hi:  #0A5C64;
+  --j-accent-soft: rgba(14,124,134,0.07);
+  --j-ink:        #15181E;
+  --j-graphite:   #5B6470;
+  --j-faint:      #9AA3AF;
+  --j-header:     rgba(255,255,255,0.92);
+  color-scheme: light;
+}
+html.dark {
+  --j-surface:    #121A1E;
+  --j-panel:      #18232A;
+  --j-hover:      #20303A;
+  --j-border:     rgba(255,255,255,0.10);
+  --j-border-sm:  rgba(255,255,255,0.06);
+  --j-accent:     #2BB6C4;
+  --j-accent-hi:  #67D6E2;
+  --j-accent-soft: rgba(43,182,196,0.12);
+  --j-ink:        #E7EEEB;
+  --j-graphite:   #9EAFAB;
+  --j-faint:      #66807C;
+  --j-header:     rgba(13,19,22,0.88);
+  color-scheme: dark;
+}
+html.dark body { background: #0D1316; }
+/* Theme crossfade */
+html.theme-anim, html.theme-anim * {
+  transition: background-color 0.28s ease, border-color 0.28s ease, color 0.22s ease !important;
+}
+
+/* (8) Skeleton — signal-scan shimmer instead of a flat pulse */
+@keyframes j-skel-sweep { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.j-skel {
+  background: linear-gradient(90deg,
+    var(--j-hover) 25%,
+    color-mix(in srgb, var(--j-accent) 18%, var(--j-hover)) 50%,
+    var(--j-hover) 75%);
+  background-size: 200% 100%;
+  animation: j-skel-sweep 1.4s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+/* (9) Table-row entrance + hover signal bar — a teal level-tick slides in
+   from the left edge on hover, echoing the nav meter. */
+.j-row { position: relative; }
+.j-row::before {
+  content: ""; position: absolute; left: 0; top: 50%;
+  height: 0; width: 2px; transform: translateY(-50%);
+  background: var(--j-accent); border-radius: 0 2px 2px 0;
+  transition: height 0.2s cubic-bezier(0.22,1,0.36,1);
+}
+.j-row:hover::before { height: 62%; }
+
+/* (10) Count-up / number flips read as tabular instrument digits */
+.j-digits { font-variant-numeric: tabular-nums; font-family: var(--font-display); }
+
+/* (11) Animated check — copy/confirm success draws a tick */
+@keyframes j-check { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+.j-check path { stroke-dasharray: 24; animation: j-check 0.4s ease forwards; }
 
 /* Crashguard markdown content (AI 分析卡片) */
 .crashguard-md pre {

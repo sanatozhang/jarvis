@@ -10,9 +10,9 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)", accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
+  surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
+  border: "var(--j-border)", accent: "var(--j-accent)", accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
 };
 
 const inputStyle = { background: S.overlay, border: `1px solid ${S.border}`, color: S.text1, outline: "none" };
@@ -176,8 +176,8 @@ export default function OncallPage() {
   if (editing) {
     return (
       <div className="min-h-full">
-        <header className="sticky top-0 z-10 backdrop-blur-md"
-          style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        <header className="sticky top-0 z-10 backdrop-blur-md j-rise"
+          style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
           <div className="flex items-center justify-between px-6 py-3">
             <div>
               <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("值班管理")}</h1>
@@ -243,8 +243,8 @@ export default function OncallPage() {
   // =========================================================================
   return (
     <div className="min-h-full">
-      <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+      <header className="sticky top-0 z-10 backdrop-blur-md j-rise"
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div className="flex items-center gap-4">
             <div>

@@ -14,15 +14,15 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F1F4F3",
-  overlay: "#FFFFFF",
-  hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)",
-  accent: "#0E7C86",
-  accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E",
-  text2: "#5B6470",
-  text3: "#9CA3AF",
+  surface: "var(--j-surface)",
+  overlay: "var(--j-panel)",
+  hover: "var(--j-hover)",
+  border: "var(--j-border)",
+  accent: "var(--j-accent)",
+  accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)",
+  text2: "var(--j-graphite)",
+  text3: "var(--j-faint)",
 };
 
 const inputStyle = {
@@ -216,7 +216,7 @@ export default function ReleasePage() {
       )}
 
       <div className="mx-auto max-w-6xl space-y-6">
-        <div>
+        <div className="j-rise">
           <h1 className="text-xl font-semibold" style={{ color: S.text1 }}>
             Release 自动化
           </h1>
@@ -227,8 +227,8 @@ export default function ReleasePage() {
 
         {/* ─── 1. 创建 release 分支 ────────────────────────────────── */}
         <section
-          className="rounded-lg p-5"
-          style={{ background: S.overlay, border: `1px solid ${S.border}` }}
+          className="rounded-lg p-5 j-rise"
+          style={{ ["--d" as string]: "0.06s", background: S.overlay, border: `1px solid ${S.border}` }}
         >
           <h2 className="text-base font-semibold" style={{ color: S.text1 }}>
             ① 创建 release 分支
@@ -323,8 +323,8 @@ export default function ReleasePage() {
 
         {/* ─── 2. 触发构建 ─────────────────────────────────────────── */}
         <section
-          className="rounded-lg p-5"
-          style={{ background: S.overlay, border: `1px solid ${S.border}` }}
+          className="rounded-lg p-5 j-rise"
+          style={{ ["--d" as string]: "0.12s", background: S.overlay, border: `1px solid ${S.border}` }}
         >
           <h2 className="text-base font-semibold" style={{ color: S.text1 }}>
             ② 触发构建

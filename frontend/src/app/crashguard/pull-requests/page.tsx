@@ -14,13 +14,13 @@ import {
 import { useT } from "@/lib/i18n";
 
 const D = {
-  bg: "#F1F4F3",
-  surface: "#FFFFFF",
-  border: "rgba(0,0,0,0.08)",
-  text1: "#15181E",
-  text2: "#5B6470",
-  text3: "#9CA3AF",
-  accent: "#0E7C86",
+  bg: "var(--j-surface)",
+  surface: "var(--j-panel)",
+  border: "var(--j-border)",
+  text1: "var(--j-ink)",
+  text2: "var(--j-graphite)",
+  text3: "var(--j-faint)",
+  accent: "var(--j-accent)",
   ok: "#16A34A",
   okBg: "rgba(22,163,74,0.10)",
   warn: "#D97706",
@@ -37,9 +37,12 @@ const STATUS_COLOR: Record<string, { fg: string; bg: string }> = {
   closed: { fg: D.text3, bg: "rgba(0,0,0,0.05)" },
 };
 
-function StatCard({ label, value, fg, bg }: { label: string; value: number; fg: string; bg: string }) {
+function StatCard({ label, value, fg, bg, index = 0 }: { label: string; value: number; fg: string; bg: string; index?: number }) {
   return (
-    <div style={{ background: bg, border: `1px solid ${fg}33`, borderRadius: 6, padding: "10px 12px" }}>
+    <div
+      className="j-card j-rise"
+      style={{ background: bg, border: `1px solid ${fg}33`, borderRadius: 6, padding: "10px 12px", ["--d" as string]: `${index * 0.06}s` }}
+    >
       <div style={{ fontSize: 11, color: fg, fontWeight: 600 }}>{label}</div>
       <div style={{ fontSize: 22, color: fg, fontWeight: 700, marginTop: 2 }}>{value}</div>
     </div>
@@ -174,7 +177,7 @@ export default function CrashPullRequestsPage() {
   return (
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text1 }}>
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 32px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <div className="j-rise" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0 }}>🔧 自动 PR 列表</h1>
             <p style={{ color: D.text2, fontSize: 13, marginTop: 4 }}>
@@ -237,10 +240,10 @@ export default function CrashPullRequestsPage() {
               </button>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-              <StatCard label={t("待生成")} value={queue.summary.pending} fg={D.warn} bg={D.warnBg} />
-              <StatCard label={t("分析中")} value={queue.summary.running} fg={D.info} bg={D.infoBg} />
-              <StatCard label={t("近期 PR")} value={queue.summary.recent_prs} fg={D.ok} bg={D.okBg} />
-              <StatCard label={t("近期失败")} value={queue.summary.recent_failures} fg={D.danger} bg="rgba(220,38,38,0.10)" />
+              <StatCard index={0} label={t("待生成")} value={queue.summary.pending} fg={D.warn} bg={D.warnBg} />
+              <StatCard index={1} label={t("分析中")} value={queue.summary.running} fg={D.info} bg={D.infoBg} />
+              <StatCard index={2} label={t("近期 PR")} value={queue.summary.recent_prs} fg={D.ok} bg={D.okBg} />
+              <StatCard index={3} label={t("近期失败")} value={queue.summary.recent_failures} fg={D.danger} bg="rgba(220,38,38,0.10)" />
             </div>
             {backfillMsg && (
               <div style={{ marginTop: 10, padding: "6px 10px", background: D.infoBg, borderRadius: 6, fontSize: 12, color: D.text1 }}>

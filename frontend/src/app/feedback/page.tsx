@@ -13,9 +13,9 @@ function getBackendUrl(): string {
 const BACKEND_URL = getBackendUrl();
 
 const S = {
-  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)", accent: "#0E7C86",
-  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
+  surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
+  border: "var(--j-border)", accent: "var(--j-accent)",
+  text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
 };
 
 const inputCls = "w-full rounded-lg px-3 py-2.5 text-sm font-sans outline-none transition-colors";
@@ -153,8 +153,8 @@ export default function FeedbackPage() {
   return (
     <div className="min-h-full">
       {/* Header */}
-      <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+      <header className="sticky top-0 z-10 backdrop-blur-md j-rise"
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="px-6 py-3">
           <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("提交反馈")}</h1>
           <p className="text-xs mt-0.5" style={{ color: S.text3 }}>{t("手动上传用户问题和日志文件")}</p>
@@ -162,7 +162,7 @@ export default function FeedbackPage() {
       </header>
 
       <div className="mx-auto max-w-2xl px-6 py-6">
-        <div className="space-y-5">
+        <div className="space-y-5 j-rise" style={{ ["--d" as string]: "0.06s" }}>
 
           {/* Description */}
           <div>

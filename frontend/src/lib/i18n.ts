@@ -37,6 +37,8 @@ const EN: Record<string, string> = {
   "值班报告": "Reports",
   "系统设置": "Settings",
   "系统状态": "Status",
+  "暗色模式": "Dark mode",
+  "亮色模式": "Light mode",
   "工具箱": "Tools",
 
   // Crashguard

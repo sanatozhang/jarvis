@@ -5,15 +5,15 @@ import { analyzeLostFile, LostFileFinderResult } from "@/lib/api";
 import { useT, useLang } from "@/lib/i18n";
 
 const S = {
-  surface: "#F1F4F3",
-  overlay: "#FFFFFF",
-  hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)",
-  accent: "#0E7C86",
-  accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E",
-  text2: "#5B6470",
-  text3: "#9CA3AF",
+  surface: "var(--j-surface)",
+  overlay: "var(--j-panel)",
+  hover: "var(--j-hover)",
+  border: "var(--j-border)",
+  accent: "var(--j-accent)",
+  accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)",
+  text2: "var(--j-graphite)",
+  text3: "var(--j-faint)",
 };
 
 const TIMEZONES = [
@@ -104,7 +104,7 @@ export default function ToolsPage() {
     <div className="flex h-full flex-col overflow-hidden" style={{ background: S.surface }}>
       {/* Header */}
       <div
-        className="flex h-[52px] flex-shrink-0 items-center justify-between px-6"
+        className="flex h-[52px] flex-shrink-0 items-center justify-between px-6 j-rise"
         style={{ background: S.overlay, borderBottom: `1px solid ${S.border}` }}
       >
         <div className="flex items-center gap-2">
@@ -143,7 +143,7 @@ export default function ToolsPage() {
         {/* Main panel */}
         <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
           {/* Tool card */}
-          <div className="rounded-xl p-5 space-y-4" style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+          <div className="rounded-xl p-5 space-y-4 j-rise" style={{ ["--d" as string]: "0.06s", background: S.overlay, border: `1px solid ${S.border}` }}>
             <div>
               <h2 className="text-base font-semibold" style={{ color: S.text1 }}>
                 {t("录音丢失排查助手")}

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { useT } from "@/lib/i18n";
 import { Toast } from "@/components/Toast";
 import MarkdownText from "@/components/MarkdownText";
+import { CountUp } from "@/components/CountUp";
 import {
   fetchCrashTop,
   fetchCrashIssue,
@@ -43,16 +44,16 @@ import { getBatchTopN } from "@/lib/crashguard-prefs";
 
 // jarvis 主站浅色金调（Firebase-style 布局 + 主题对齐）
 const D = {
-  bg: "#F1F4F3",
-  surface: "#FFFFFF",
-  surfaceAlt: "#F1F4F3",
-  border: "rgba(0,0,0,0.08)",
-  borderStrong: "rgba(0,0,0,0.14)",
-  text1: "#15181E",
-  text2: "#5B6470",
-  text3: "#9CA3AF",
-  accent: "#0E7C86",                       // jarvis gold
-  accentBg: "rgba(14,124,134,0.08)",
+  bg: "var(--j-surface)",
+  surface: "var(--j-panel)",
+  surfaceAlt: "var(--j-surface)",
+  border: "var(--j-border)",
+  borderStrong: "var(--j-border)",
+  text1: "var(--j-ink)",
+  text2: "var(--j-graphite)",
+  text3: "var(--j-faint)",
+  accent: "var(--j-accent)",                       // jarvis teal
+  accentBg: "var(--j-accent-soft)",
   ok: "#16A34A",
   warn: "#D97706",
   warnBg: "rgba(217,119,6,0.10)",
@@ -60,7 +61,7 @@ const D = {
   dangerBg: "rgba(220,38,38,0.08)",
   p0: "#DC2626",
   p1: "#2563EB",
-  hover: "#E8ECEA",
+  hover: "var(--j-hover)",
 };
 
 const STATUS_OPTIONS: { value: CrashStatus; label: string }[] = [
@@ -819,7 +820,7 @@ function CrashguardPageInner() {
       <div className="flex-1 flex flex-col min-w-0 overflow-auto">
         {/* Top filter bar (Firebase style) — 三行合一：筛选 + 时间窗口 + 操作按钮 */}
         <div
-          className="flex items-center justify-between gap-3 px-6 py-3 flex-wrap"
+          className="j-rise flex items-center justify-between gap-3 px-6 py-3 flex-wrap"
           style={{ background: D.bg, borderBottom: `1px solid ${D.border}` }}
         >
           {/* Left: 筛选 pills + 时间窗口 pills */}
@@ -885,7 +886,7 @@ function CrashguardPageInner() {
                 onClick={() => setWindowHours(w)}
                 className="rounded px-2 py-0.5 text-xs"
                 style={{
-                  background: windowHours === w ? D.accent + "33" : "transparent",
+                  background: windowHours === w ? D.accentBg : "transparent",
                   border: `1px solid ${windowHours === w ? D.accent : D.border}`,
                   color: windowHours === w ? D.text1 : D.text2,
                 }}
@@ -1050,30 +1051,37 @@ function CrashguardPageInner() {
             return (
               <>
                 <KpiStripCell
+                  index={0}
                   label={primaryLabel}
                   value={primaryPct != null ? `${primaryPct.toFixed(2)}%` : "—"}
                   hint={primaryHint}
                   accent={D.ok}
                 />
                 <KpiStripCell
+                  index={1}
                   label={t("严重崩溃")}
                   value={fatalEvents.toLocaleString()}
+                  numericValue={fatalEvents}
                   hint={`${fatalCount} issue · native + ANR + Hang`}
                   accent={D.danger}
                   active={fatalityFilter === "fatal"}
                   onClick={() => setFatalityFilter(fatalityFilter === "fatal" ? "all" : "fatal")}
                 />
                 <KpiStripCell
+                  index={2}
                   label={t("业务异常")}
                   value={nonFatalEvents.toLocaleString()}
+                  numericValue={nonFatalEvents}
                   hint={`${nonFatalCount} issue · addError / zone guard`}
                   accent={D.warn}
                   active={fatalityFilter === "non_fatal"}
                   onClick={() => setFatalityFilter(fatalityFilter === "non_fatal" ? "all" : "non_fatal")}
                 />
                 <KpiStripCell
+                  index={3}
                   label={t("Active Issues")}
                   value={totalIssueCount.toString()}
+                  numericValue={totalIssueCount}
                   hint={`P0 ${p0} · ${t("飙升")} ${surge}`}
                   accent={D.accent}
                 />
@@ -1128,7 +1136,7 @@ function CrashguardPageInner() {
           </div>
 
           <div
-            className="rounded-lg overflow-hidden"
+            className="j-rise rounded-lg overflow-hidden"
             style={{ background: D.surface, border: `1px solid ${D.border}` }}
           >
             <table className="w-full text-sm">
@@ -1555,7 +1563,7 @@ function CrashguardPageInner() {
               className="flex items-center justify-between px-5 py-3"
               style={{
                 borderBottom: `1px solid ${D.border}`,
-                background: "linear-gradient(135deg, #F5F3FF 0%, #FFFFFF 100%)",
+                background: "linear-gradient(135deg, var(--j-accent-soft) 0%, var(--j-panel) 100%)",
               }}
             >
               <div className="flex items-center gap-2">
@@ -1653,7 +1661,7 @@ function CrashguardPageInner() {
               className="flex items-center justify-between px-5 py-3"
               style={{
                 borderBottom: `1px solid ${D.border}`,
-                background: "linear-gradient(135deg, #FFFAF0 0%, #FFFFFF 100%)",
+                background: "linear-gradient(135deg, rgba(217,119,6,0.08) 0%, var(--j-panel) 100%)",
               }}
             >
               <div className="flex items-center gap-2">
@@ -2966,6 +2974,9 @@ function KpiStripCell({
   accent,
   active,
   onClick,
+  index = 0,
+  numericValue,
+  valueSuffix,
 }: {
   label: string;
   value: string;
@@ -2973,25 +2984,37 @@ function KpiStripCell({
   accent: string;
   active?: boolean;
   onClick?: () => void;
+  index?: number;
+  numericValue?: number;
+  valueSuffix?: string;
 }) {
   const interactive = !!onClick;
+  const useCountUp = typeof numericValue === "number" && Number.isFinite(numericValue);
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={!interactive}
-      className={`text-left rounded-lg px-3 py-2.5 transition ${interactive ? "cursor-pointer" : "cursor-default"}`}
+      className={`j-card j-rise text-left rounded-lg px-3 py-2.5 transition ${interactive ? "cursor-pointer" : "cursor-default"}`}
       style={{
         background: D.surface,
         border: `1px solid ${active ? accent : D.border}`,
-        boxShadow: active ? `0 0 0 2px ${accent}33` : "none",
+        boxShadow: active ? `0 0 0 2px color-mix(in srgb, ${accent} 25%, transparent)` : "none",
+        ["--d" as string]: `${index * 0.06}s`,
       }}
     >
       <div className="text-[10px] uppercase tracking-wider" style={{ color: D.text3 }}>
         {label}
       </div>
       <div className="text-xl font-bold mt-0.5" style={{ color: accent }}>
-        {value}
+        {useCountUp ? (
+          <>
+            <CountUp value={numericValue as number} />
+            {valueSuffix || ""}
+          </>
+        ) : (
+          value
+        )}
       </div>
       <div className="text-[10px] mt-0.5 truncate" style={{ color: D.text2 }}>
         {hint}
@@ -3100,7 +3123,7 @@ function PlatformOverviewCard({
       ].filter(Boolean).join(" · ")
     : "";
   return (
-    <div className="rounded-lg p-4" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
+    <div className="j-rise rounded-lg p-4" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
       {/* Header: platform + main version + 绝对数兜底（让 86.1% 不再误导） */}
       <div className="flex items-baseline justify-between mb-3 gap-2 flex-wrap">
         <div className="flex items-baseline gap-2 min-w-0 flex-wrap">

@@ -14,10 +14,10 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
+  surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
+  border: "var(--j-border)", borderSm: "var(--j-border-sm)",
+  accent: "var(--j-accent)", accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
   danger: "#DC2626", dangerBg: "rgba(220,38,38,0.06)",
 };
 
@@ -110,8 +110,8 @@ export default function WishesPage() {
   return (
     <div className="min-h-full">
       {/* Header */}
-      <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+      <header className="sticky top-0 z-10 backdrop-blur-md j-rise"
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("许愿池")}</h1>
@@ -138,14 +138,14 @@ export default function WishesPage() {
 
       <div className="mx-auto max-w-3xl px-6 py-6 space-y-5">
         {/* Stats */}
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-4 gap-3 j-rise">
           {[
             { label: t("全部"), value: stats.total, color: S.text1 },
             { label: t("待评估"), value: stats.pending, color: "#EA580C" },
             { label: t("已采纳"), value: stats.accepted, color: "#2563EB" },
             { label: t("已实现"), value: stats.done, color: "#16A34A" },
           ].map(s => (
-            <div key={s.label} className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <div key={s.label} className="rounded-xl px-4 py-3 j-card" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
               <p className="text-xs" style={{ color: S.text3 }}>{s.label}</p>
               <p className="mt-1 text-2xl font-bold tabular-nums" style={{ color: s.color }}>{s.value}</p>
             </div>

@@ -10,9 +10,9 @@ import {
 } from "@/lib/api";
 
 const S = {
-  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)", accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
+  surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
+  border: "var(--j-border)", accent: "var(--j-accent)", accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
 };
 
 
@@ -84,8 +84,8 @@ export default function EvalPage() {
 
   return (
     <div className="min-h-full">
-      <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+      <header className="sticky top-0 z-10 backdrop-blur-md j-rise"
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("评测中心")}</h1>
@@ -123,7 +123,7 @@ export default function EvalPage() {
             <p className="py-24 text-center text-sm" style={{ color: S.text3 }}>{t("暂无评测数据集")}</p>
           ) : (
             datasets.map((ds) => (
-              <div key={ds.id} className="rounded-xl px-5 py-4"
+              <div key={ds.id} className="rounded-xl px-5 py-4 j-rise"
                 style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
                 <div className="flex items-center justify-between">
                   <div>
@@ -147,7 +147,7 @@ export default function EvalPage() {
             <p className="py-24 text-center text-sm" style={{ color: S.text3 }}>{t("暂无评测记录")}</p>
           ) : (
             runs.map((run) => (
-              <div key={run.id} className="rounded-xl px-5 py-4 cursor-pointer transition-colors"
+              <div key={run.id} className="rounded-xl px-5 py-4 cursor-pointer transition-colors j-rise"
                 style={{ background: S.overlay, border: `1px solid ${S.border}` }}
                 onClick={() => viewRunDetail(run.id)}
                 onMouseEnter={(e) => (e.currentTarget.style.background = S.surface)}
@@ -187,9 +187,9 @@ export default function EvalPage() {
       {detailRun && (
         <div className="fixed inset-0 z-50 flex">
           <div className="flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={() => setDetailRun(null)} />
-          <div className="w-[560px] flex-shrink-0 overflow-y-auto" style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}` }}>
+          <div className="w-[560px] flex-shrink-0 overflow-y-auto" style={{ background: "var(--j-panel)", borderLeft: `1px solid ${S.border}` }}>
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3"
-              style={{ background: "#FFFFFF", borderBottom: `1px solid ${S.border}` }}>
+              style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
               <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("评测详情")} — Run #{detailRun.id}</h2>
               <button onClick={() => setDetailRun(null)} className="rounded-lg p-1.5" style={{ color: S.text3 }}>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -289,7 +289,7 @@ function CreateDatasetDialog({ t, onClose, onCreated }: { t: (k: string) => stri
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.5)" }}>
       <div className="w-[560px] max-h-[80vh] overflow-y-auto rounded-2xl p-6"
-        style={{ background: "#FFFFFF", border: `1px solid ${S.border}` }}>
+        style={{ background: "var(--j-panel)", border: `1px solid ${S.border}` }}>
         <h2 className="text-base font-semibold mb-4" style={{ color: S.text1 }}>{t("创建数据集")}</h2>
 
         <div className="space-y-3 mb-4">

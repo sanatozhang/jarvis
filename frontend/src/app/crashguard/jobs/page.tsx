@@ -21,13 +21,13 @@ const _isCoreguard = (it: { module?: string } | undefined) => it?.module === "co
 import { useT } from "@/lib/i18n";
 
 const D = {
-  bg: "#F1F4F3",
-  surface: "#FFFFFF",
-  border: "rgba(0,0,0,0.08)",
-  text1: "#15181E",
-  text2: "#5B6470",
-  text3: "#9CA3AF",
-  accent: "#0E7C86",
+  bg: "var(--j-surface)",
+  surface: "var(--j-panel)",
+  border: "var(--j-border)",
+  text1: "var(--j-ink)",
+  text2: "var(--j-graphite)",
+  text3: "var(--j-faint)",
+  accent: "var(--j-accent)",
   ok: "#16A34A",
   warn: "#D97706",
   danger: "#DC2626",
@@ -187,7 +187,7 @@ export default function CrashguardJobsPage() {
   return (
     <div style={{ background: D.bg, minHeight: "100vh", padding: 24 }}>
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div className="j-rise" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 600 }}>📊 {t("定时任务监控")}</h1>
             <p style={{ fontSize: 13, color: D.text2, marginTop: 4 }}>
@@ -398,7 +398,7 @@ export default function CrashguardJobsPage() {
                           fontSize: 11,
                           border: `1px solid ${D.accent}`,
                           borderRadius: 4,
-                          background: D.accent + "1A",
+                          background: "var(--j-accent-soft)",
                           color: D.accent,
                           cursor: running[it.name] ? "wait" : "pointer",
                           opacity: running[it.name] ? 0.6 : 1,

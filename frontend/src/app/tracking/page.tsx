@@ -5,6 +5,7 @@ import { useT, useLang } from "@/lib/i18n";
 import MarkdownText from "@/components/MarkdownText";
 import { Toast } from "@/components/Toast";
 import { AgentTraceBlock } from "@/components/AgentTraceBlock";
+import { CountUp } from "@/components/CountUp";
 import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
 import { trackEvent } from "@/lib/track";
 import { fetchTracking, markInaccurate, markComplete, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
@@ -46,7 +47,7 @@ function StatusBadge({ status, ruleType }: { status: string; ruleType?: string }
     failed:     { bg: "rgba(239,68,68,0.12)",   color: "#DC2626", border: "rgba(239,68,68,0.25)",   label: t("失败") },
     escalated:  { bg: S.orangeBg,  color: S.orange, border: S.orangeBorder,  label: t("已转交") },
   };
-  const s = cfg[status] || { bg: "rgba(0,0,0,0.04)", color: S.text3, border: S.border, label: status };
+  const s = cfg[status] || { bg: "var(--j-accent-soft)", color: S.text3, border: S.border, label: status };
   const ruleMatched = status === "done" && ruleType && ruleType !== "general";
   return (
     <span className="inline-flex items-center gap-1">
@@ -371,7 +372,7 @@ export default function TrackingPage() {
     <div className="min-h-full">
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("工单跟踪")}</h1>
           <div className="flex items-center gap-2">
@@ -399,7 +400,7 @@ export default function TrackingPage() {
 
         {/* Filter bar */}
         {showFilters && (
-          <div className="px-6 py-3" style={{ borderTop: `1px solid ${S.border}`, background: "rgba(248,249,250,0.95)" }}>
+          <div className="px-6 py-3" style={{ borderTop: `1px solid ${S.border}`, background: "var(--j-surface)" }}>
             <div className="flex flex-wrap items-end gap-3">
               <div className="w-32">
                 <label style={labelStyle}>{t("提交人")}</label>
@@ -475,7 +476,7 @@ export default function TrackingPage() {
       <div className="px-6 py-5">
         {data && (
           <p className="mb-3 text-xs" style={{ color: S.text3 }}>
-            {t("共")} {data.total} {t("个工单")}
+            {t("共")} <CountUp value={Number(data.total)} /> {t("个工单")}
             {activeFilterCount > 0 && (
               <span className="ml-2 space-x-1">
                 {filters.created_by && <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: S.overlay, color: S.text2 }}>{t("提交人")}: {filters.created_by}</span>}
@@ -505,10 +506,10 @@ export default function TrackingPage() {
                 <tr><td colSpan={9} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("暂无工单")}</td></tr>
               ) : data.issues.map((item, idx) => (
                 <tr key={item.record_id}
-                  className="cursor-pointer transition-colors"
-                  style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}
+                  className="j-row j-rise cursor-pointer transition-colors"
+                  style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)", ["--d" as string]: `${Math.min(idx, 12) * 0.03}s` }}
                   onClick={() => openDetail(item)}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = S.hover + "60")}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = S.hover)}
                   onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)")}>
                   <td className={tdBase} style={{ width: "56px" }}><PriorityBadge p={item.priority} /></td>
                   <td className="px-3 py-3 max-w-md">
@@ -569,7 +570,7 @@ export default function TrackingPage() {
                       {item.local_status === "failed" && (
                         <button onClick={() => handleRetry(item.record_id)}
                           className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
-                          style={{ background: "#F1F4F3", color: S.accent, border: `1px solid rgba(14,124,134,0.3)` }}>
+                          style={{ background: "var(--j-surface)", color: S.accent, border: `1px solid rgba(14,124,134,0.3)` }}>
                           {t("重试")}
                         </button>
                       )}
@@ -607,10 +608,10 @@ export default function TrackingPage() {
       {/* Detail panel */}
       {detailItem && (
         <div className="fixed inset-0 z-50 flex">
-          <div className="flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={closeDetail} />
-          <div className="w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}` }}>
+          <div className="j-fade flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={closeDetail} />
+          <div className="j-slide-in w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "var(--j-panel)", borderLeft: `1px solid ${S.border}` }}>
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3"
-              style={{ background: "#FFFFFF", borderBottom: `1px solid ${S.border}` }}>
+              style={{ background: "var(--j-panel)", borderBottom: `1px solid ${S.border}` }}>
               <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("工单详情")}</h2>
               <button onClick={closeDetail} className="rounded-lg p-1.5" style={{ color: S.text3 }}>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -952,7 +953,7 @@ export default function TrackingPage() {
                             <span className="text-xs" style={{ color: S.text2 }}>{activeTask.message}</span>
                             <span className="ml-auto text-xs tabular-nums font-mono" style={{ color: "#2563EB" }}>{activeTask.progress}%</span>
                           </div>
-                          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(96,165,250,0.15)" }}>
+                          <div className="j-scan h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(96,165,250,0.15)" }}>
                             <div className="h-full rounded-full transition-all duration-700"
                               style={{ width: `${activeTask.progress}%`, background: "#2563EB" }} />
                           </div>
@@ -1194,8 +1195,8 @@ export default function TrackingPage() {
 
       {/* Deep-analysis confirmation dialog */}
       {deepConfirmId && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setDeepConfirmId(null)}>
-          <div className="w-full max-w-md rounded-xl p-5" style={{ background: "#FFFFFF", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
+        <div className="j-fade fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setDeepConfirmId(null)}>
+          <div className="j-pop w-full max-w-md rounded-xl p-5" style={{ background: "var(--j-panel)", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start gap-3">
               <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(99,102,241,0.12)" }}>
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="#6366F1" strokeWidth={2}>

@@ -10,17 +10,18 @@
 import { useT } from "@/lib/i18n";
 
 // ── Shared design tokens ─────────────────────────────────────
+// Theme-aware tokens — resolve to light or dark "console mode" via CSS vars (globals.css)
 export const S = {
-  surface: "#F1F4F3",
-  overlay: "#FFFFFF",
-  hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)",
-  borderSm: "rgba(0,0,0,0.04)",
-  accent: "#0E7C86",
-  accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E",
-  text2: "#5B6470",
-  text3: "#9CA3AF",
+  surface: "var(--j-surface)",
+  overlay: "var(--j-panel)",
+  hover: "var(--j-hover)",
+  border: "var(--j-border)",
+  borderSm: "var(--j-border-sm)",
+  accent: "var(--j-accent)",
+  accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)",
+  text2: "var(--j-graphite)",
+  text3: "var(--j-faint)",
   orange: "#EA580C",
   orangeBg: "rgba(234,88,12,0.08)",
   orangeBorder: "rgba(234,88,12,0.25)",

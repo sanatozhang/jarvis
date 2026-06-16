@@ -41,6 +41,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        {/* Apply saved theme before paint to avoid a flash of the wrong mode. */}
+        <Script id="theme-init" strategy="beforeInteractive">{`
+try {
+  var p = new URLSearchParams(location.search).get('theme');
+  if (p === 'dark' || p === 'light') localStorage.setItem('apollo_theme', p);
+  if ((p || localStorage.getItem('apollo_theme')) === 'dark') document.documentElement.classList.add('dark');
+} catch (e) {}
+        `}</Script>
         {/*
           浏览器翻译插件（Google/Chrome 翻译）会把文本节点用 <font> 重新包裹/移位，
           React 重渲染时 insertBefore/removeChild 的参照节点父级已被改 → 抛

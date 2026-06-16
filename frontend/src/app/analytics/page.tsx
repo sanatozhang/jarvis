@@ -1,6 +1,7 @@
 "use client";
 
 import { useT } from "@/lib/i18n";
+import { CountUp } from "@/components/CountUp";
 import { useEffect, useState, useCallback } from "react";
 import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem } from "@/lib/api";
 
@@ -31,16 +32,19 @@ interface Analytics {
 }
 
 const S = {
-  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)", accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
+  surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
+  border: "var(--j-border)", accent: "var(--j-accent)", accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
 };
 
-function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
+function StatCard({ label, value, sub, color, index = 0 }: { label: string; value: string | number; sub?: string; color?: string; index?: number }) {
+  const numeric = typeof value === "number" && Number.isFinite(value);
   return (
-    <div className="rounded-xl px-4 py-4" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+    <div className="rounded-xl px-4 py-4 j-card j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: `${index * 0.06}s` }}>
       <p className="text-xs" style={{ color: S.text3 }}>{label}</p>
-      <p className="mt-1 text-2xl font-bold tabular-nums" style={{ color: color || S.text1 }}>{value}</p>
+      <p className="mt-1 text-2xl font-bold tabular-nums j-digits" style={{ color: color || S.text1 }}>
+        {numeric ? <CountUp value={value} /> : value}
+      </p>
       {sub && <p className="mt-0.5 text-[11px] font-mono" style={{ color: S.text3 }}>{sub}</p>}
     </div>
   );
@@ -108,7 +112,7 @@ export default function AnalyticsPage() {
   return (
     <div className="min-h-full">
       <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("数据看板")}</h1>
@@ -154,7 +158,7 @@ export default function AnalyticsPage() {
       {loading && !data ? (
         <div className="flex items-center justify-center py-24">
           <div className="h-8 w-8 animate-spin rounded-full border-4"
-            style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
+            style={{ borderColor: "var(--j-border)", borderTopColor: S.accent }} />
         </div>
       ) : !data ? (
         <p className="py-24 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>
@@ -162,8 +166,8 @@ export default function AnalyticsPage() {
         <div className="mx-auto max-w-4xl px-6 py-6 space-y-5">
 
           {/* Value metrics hero */}
-          <section className="rounded-2xl p-6 relative overflow-hidden"
-            style={{ background: "linear-gradient(135deg, #FFFFFF 0%, #F1F4F3 60%, rgba(14,124,134,0.06) 100%)", border: `1px solid ${S.border}` }}>
+          <section className="rounded-2xl p-6 relative overflow-hidden j-rise"
+            style={{ background: "linear-gradient(135deg, var(--j-panel) 0%, var(--j-surface) 60%, var(--j-accent-soft) 100%)", border: `1px solid ${S.border}` }}>
             {/* Decorative accent */}
             <div className="absolute top-0 right-0 h-32 w-32 rounded-full opacity-10 blur-3xl"
               style={{ background: S.accent }} />
@@ -176,22 +180,22 @@ export default function AnalyticsPage() {
             </div>
             <div className="grid grid-cols-3 gap-6 relative">
               <div>
-                <p className="text-4xl font-bold tabular-nums" style={{ color: S.text1 }}>
-                  {data.value_metrics.time_saved_hours}
+                <p className="text-4xl font-bold tabular-nums j-digits" style={{ color: S.text1 }}>
+                  <CountUp value={data.value_metrics.time_saved_hours} />
                   <span className="text-xl font-normal ml-1" style={{ color: S.text3 }}>{t("小时")}</span>
                 </p>
                 <p className="mt-1.5 text-xs" style={{ color: S.text3 }}>{t("预估节省工时")}</p>
               </div>
               <div>
-                <p className="text-4xl font-bold tabular-nums" style={{ color: S.accent }}>
-                  {data.value_metrics.time_saved_per_ticket_min}
+                <p className="text-4xl font-bold tabular-nums j-digits" style={{ color: S.accent }}>
+                  <CountUp value={data.value_metrics.time_saved_per_ticket_min} />
                   <span className="text-xl font-normal ml-1" style={{ color: S.text3 }}>{t("分钟/单")}</span>
                 </p>
                 <p className="mt-1.5 text-xs" style={{ color: S.text3 }}>{t("每单节省时间")}</p>
               </div>
               <div>
-                <p className="text-4xl font-bold tabular-nums" style={{ color: "#16A34A" }}>
-                  {data.value_metrics.success_rate}
+                <p className="text-4xl font-bold tabular-nums j-digits" style={{ color: "#16A34A" }}>
+                  <CountUp value={data.value_metrics.success_rate} />
                   <span className="text-xl font-normal ml-0.5" style={{ color: S.text3 }}>%</span>
                 </p>
                 <p className="mt-1.5 text-xs" style={{ color: S.text3 }}>{t("分析成功率")}</p>
@@ -204,23 +208,23 @@ export default function AnalyticsPage() {
 
           {/* Key metrics */}
           <div className="grid grid-cols-6 gap-3">
-            <StatCard label={t("总分析次数")} value={data.total_analyses} />
-            <StatCard label={t("分析成功")} value={data.successful_analyses} color="#16A34A" />
-            <StatCard label={t("分析失败")} value={data.failed_analyses} color="#DC2626" />
-            <StatCard label={t("外部因素")} value={data.external_failures || 0} sub={t("额度/磁盘等")} color="#F59E0B" />
-            <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="#2563EB" />
-            <StatCard label={t("活跃用户")} value={data.unique_users} color="#7C3AED" />
+            <StatCard label={t("总分析次数")} value={data.total_analyses} index={0} />
+            <StatCard label={t("分析成功")} value={data.successful_analyses} color="#16A34A" index={1} />
+            <StatCard label={t("分析失败")} value={data.failed_analyses} color="#DC2626" index={2} />
+            <StatCard label={t("外部因素")} value={data.external_failures || 0} sub={t("额度/磁盘等")} color="#F59E0B" index={3} />
+            <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="#2563EB" index={4} />
+            <StatCard label={t("活跃用户")} value={data.unique_users} color="#7C3AED" index={5} />
           </div>
 
           <div className="grid grid-cols-3 gap-3">
-            <StatCard label={t("平均分析耗时")} value={`${data.avg_analysis_duration_min} ${t("分钟")}`} sub={`${data.avg_analysis_duration_ms}ms`} />
-            <StatCard label={t("工单转工程师")} value={data.escalations} color={S.accent} />
-            <StatCard label={t("深度分析")} value={data.event_counts.deep_analysis || 0} color="#6366F1" />
-            <StatCard label={t("页面访问")} value={data.event_counts.page_visit || 0} />
+            <StatCard label={t("平均分析耗时")} value={`${data.avg_analysis_duration_min} ${t("分钟")}`} sub={`${data.avg_analysis_duration_ms}ms`} index={0} />
+            <StatCard label={t("工单转工程师")} value={data.escalations} color={S.accent} index={1} />
+            <StatCard label={t("深度分析")} value={data.event_counts.deep_analysis || 0} color="#6366F1" index={2} />
+            <StatCard label={t("页面访问")} value={data.event_counts.page_visit || 0} index={3} />
           </div>
 
           {/* Daily trend */}
-          <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+          <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.08s" }}>
             <h2 className="mb-4 text-sm font-semibold" style={{ color: S.text1 }}>{t("每日趋势")}</h2>
             {dailyDates.length === 0 ? (
               <p className="py-8 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>
@@ -257,7 +261,7 @@ export default function AnalyticsPage() {
             const trendDates = Object.keys(ptStats.trend).sort();
             const COLORS = ["#0E7C86","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C","#0891B2","#DB2777","#4F46E5","#65A30D"];
             return (
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4 j-rise" style={{ ["--d" as string]: "0.12s" }}>
                 {/* Top 10 bar chart */}
                 <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
                   <div className="flex items-center justify-between mb-4">
@@ -458,7 +462,7 @@ export default function AnalyticsPage() {
             const filteredTotal = filteredCats.reduce((s, c) => s + c.count, 0);
 
             return (
-              <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.16s" }}>
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
                     <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("问题分类分布")}</h2>
@@ -517,7 +521,7 @@ export default function AnalyticsPage() {
                         </path>
                       ))}
                       {/* Center hole for donut */}
-                      <circle cx={cx} cy={cy} r={50} fill="white" />
+                      <circle cx={cx} cy={cy} r={50} fill="var(--j-surface)" />
                       <text x={cx} y={cy - 6} textAnchor="middle" style={{ fontSize: 18, fontWeight: 700, fill: S.text1 }}>
                         {filteredTotal}
                       </text>
@@ -560,7 +564,7 @@ export default function AnalyticsPage() {
                             <div className="ml-6 mt-0.5 mb-1 space-y-0.5">
                               {subcats.map((sc) => (
                                 <div key={sc.subcategory} className="flex items-center justify-between px-2 py-1 rounded"
-                                  style={{ background: "rgba(0,0,0,0.02)" }}>
+                                  style={{ background: "var(--j-hover)" }}>
                                   <span className="text-[11px]" style={{ color: S.text3 }}>{sc.subcategory}</span>
                                   <span className="text-[11px] font-mono tabular-nums" style={{ color: S.text2 }}>{sc.count}</span>
                                 </div>
@@ -601,7 +605,7 @@ export default function AnalyticsPage() {
           })()}
 
           {/* Top users + fail reasons */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4 j-rise" style={{ ["--d" as string]: "0.2s" }}>
             <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
               <h2 className="mb-3 text-sm font-semibold" style={{ color: S.text1 }}>{t("活跃用户 Top 10")}</h2>
               {data.top_users.length === 0 ? (
@@ -738,12 +742,12 @@ export default function AnalyticsPage() {
 
           {/* Rule accuracy */}
           {ruleAccuracy.length > 0 && (
-            <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.24s" }}>
               <h2 className="mb-4 text-sm font-semibold" style={{ color: S.text1 }}>{t("规则准确率")}</h2>
               <div className="overflow-hidden rounded-lg" style={{ border: `1px solid ${S.border}` }}>
                 <table className="min-w-full">
                   <thead>
-                    <tr style={{ background: "rgba(0,0,0,0.02)" }}>
+                    <tr style={{ background: "var(--j-hover)" }}>
                       {[t("关联规则"), t("分析量"), t("成功"), t("不准确"), t("准确率"), t("平均置信度")].map((h) => (
                         <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{h}</th>
                       ))}

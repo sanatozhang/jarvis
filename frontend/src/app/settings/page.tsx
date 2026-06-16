@@ -10,10 +10,10 @@ interface EnvField { key: string; label: string; value: string; has_value: boole
 interface EnvGroup { key: string; label: string; fields: EnvField[]; }
 
 const S = {
-  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
+  surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
+  border: "var(--j-border)", borderSm: "var(--j-border-sm)",
+  accent: "var(--j-accent)", accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
 };
 
 const inputStyle = {
@@ -179,7 +179,7 @@ function UserList() {
           {users.map((u) => (
             <tr key={u.username}
               style={{ borderBottom: `1px solid ${S.borderSm}` }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = S.hover + "60")}
+              onMouseEnter={(e) => (e.currentTarget.style.background = S.hover)}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
               <td className="py-2.5 pr-4 font-medium" style={{ color: S.text1 }}>{u.username}</td>
               <td className="py-2.5 pr-4">
@@ -318,8 +318,8 @@ export default function SettingsPage() {
   return (
     <div className="min-h-full">
       {/* Header */}
-      <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+      <header className="sticky top-0 z-10 backdrop-blur-md j-rise"
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("系统设置")}</h1>
@@ -333,7 +333,7 @@ export default function SettingsPage() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-3xl px-6 py-6 space-y-5">
+      <div className="mx-auto max-w-3xl px-6 py-6 space-y-5 j-rise" style={{ ["--d" as string]: "0.06s" }}>
 
         {/* ENV SETTINGS (Admin only) */}
         {isAdmin && envGroups.length > 0 && (
@@ -471,7 +471,7 @@ export default function SettingsPage() {
                 <span className="text-sm font-medium" style={{ color: S.text1 }}>{t("API 流量比例")}</span>
                 <div className="flex items-center gap-2">
                   <span className="text-xs px-2 py-0.5 rounded font-mono"
-                    style={{ background: S.accentBg, color: S.accent, border: `1px solid ${S.accent}33` }}>
+                    style={{ background: S.accentBg, color: S.accent, border: `1px solid color-mix(in srgb, ${S.accent} 30%, transparent)` }}>
                     API {Math.round((config.api_traffic_ratio ?? 0) * 100)}%
                   </span>
                   <span className="text-xs" style={{ color: S.text3 }}>

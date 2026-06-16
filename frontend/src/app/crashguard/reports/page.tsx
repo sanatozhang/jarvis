@@ -16,14 +16,14 @@ import {
 import { useT } from "@/lib/i18n";
 
 const D = {
-  bg: "#F1F4F3",
-  surface: "#FFFFFF",
-  surfaceAlt: "#F1F4F3",
-  border: "rgba(0,0,0,0.08)",
-  text1: "#15181E",
-  text2: "#5B6470",
-  text3: "#9CA3AF",
-  accent: "#0E7C86",
+  bg: "var(--j-surface)",
+  surface: "var(--j-panel)",
+  surfaceAlt: "var(--j-surface)",
+  border: "var(--j-border)",
+  text1: "var(--j-ink)",
+  text2: "var(--j-graphite)",
+  text3: "var(--j-faint)",
+  accent: "var(--j-accent)",
   ok: "#16A34A",
   warn: "#D97706",
   warnBg: "rgba(217,119,6,0.10)",
@@ -293,6 +293,7 @@ function CrashReportsHistoryInner() {
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text1 }}>
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 32px" }}>
         <div
+          className="j-rise"
           style={{
             display: "flex",
             alignItems: "center",
@@ -517,7 +518,7 @@ function CrashReportsHistoryInner() {
                         padding: "2px 8px",
                         borderRadius: 4,
                         border: `1px solid ${detailWindow === w ? D.accent : D.border}`,
-                        background: detailWindow === w ? D.accent + "22" : "transparent",
+                        background: detailWindow === w ? "var(--j-accent-soft)" : "transparent",
                         color: detailWindow === w ? D.text1 : D.text2,
                         fontSize: 11,
                         cursor: "pointer",

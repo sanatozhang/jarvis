@@ -3,9 +3,9 @@
 import { useEffect } from "react";
 
 const S = {
-  overlay: "#FFFFFF",
-  text1: "#15181E",
-  border: "rgba(0,0,0,0.08)",
+  overlay: "var(--j-panel)",
+  text1: "var(--j-ink)",
+  border: "var(--j-border)",
 };
 
 export function Toast({
@@ -43,10 +43,15 @@ export function Toast({
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center pointer-events-none">
       <div
-        className="pointer-events-auto rounded-2xl px-8 py-5 text-sm font-medium shadow-2xl max-w-md text-center"
+        className="j-pop pointer-events-auto flex items-center gap-2.5 rounded-2xl px-8 py-5 text-sm font-medium shadow-2xl max-w-md text-center"
         style={{ background: bg, color, border, backdropFilter: "blur(8px)" }}
       >
-        {msg}
+        {isSuccess && (
+          <svg className="j-check h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        )}
+        <span>{msg}</span>
       </div>
     </div>
   );

@@ -7,10 +7,10 @@ import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api"
 import MarkdownText from "@/components/MarkdownText";
 
 const S = {
-  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
+  surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
+  border: "var(--j-border)", borderSm: "var(--j-border-sm)",
+  accent: "var(--j-accent)", accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
 };
 
 
@@ -62,8 +62,8 @@ export default function ReportsPage() {
   return (
     <div className="min-h-full">
       {/* Header */}
-      <header className="sticky top-0 z-10 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+      <header className="sticky top-0 z-10 backdrop-blur-md j-rise"
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <div>
             <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("值班报告")}</h1>
@@ -112,13 +112,13 @@ export default function ReportsPage() {
         ) : (
           <div className="mx-auto max-w-3xl space-y-5">
             {/* Summary cards */}
-            <div className="grid grid-cols-4 gap-3">
-              <div className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <div className="grid grid-cols-4 gap-3 j-rise">
+              <div className="rounded-xl px-4 py-3 j-card" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
                 <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>{t("总工单数")}</p>
                 <p className="mt-1 text-2xl font-bold tabular-nums" style={{ color: S.text1 }}>{report.total_issues}</p>
               </div>
               {Object.entries(report.category_stats).slice(0, 3).map(([cat, count]) => (
-                <div key={cat} className="rounded-xl px-4 py-3" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                <div key={cat} className="rounded-xl px-4 py-3 j-card" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
                   <p className="text-[10px] font-semibold uppercase tracking-wider truncate" style={{ color: S.text3 }}>{cat}</p>
                   <p className="mt-1 text-2xl font-bold tabular-nums" style={{ color: S.accent }}>{count as number}</p>
                 </div>

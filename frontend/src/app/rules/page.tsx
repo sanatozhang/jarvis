@@ -6,10 +6,10 @@ import { Toast } from "@/components/Toast";
 import { fetchRules, reloadRules, updateRule, createRule, deleteRule, type Rule, type RuleMeta } from "@/lib/api";
 
 const S = {
-  surface: "#F1F4F3", overlay: "#FFFFFF", hover: "#E8ECEA",
-  border: "rgba(0,0,0,0.08)", borderSm: "rgba(0,0,0,0.04)",
-  accent: "#0E7C86", accentBg: "rgba(14,124,134,0.06)",
-  text1: "#15181E", text2: "#5B6470", text3: "#9CA3AF",
+  surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
+  border: "var(--j-border)", borderSm: "var(--j-border-sm)",
+  accent: "var(--j-accent)", accentBg: "var(--j-accent-soft)",
+  text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
   danger: "#DC2626", dangerBg: "rgba(220,38,38,0.06)",
 };
 
@@ -405,8 +405,8 @@ export default function RulesPage() {
   return (
     <div className="min-h-full flex flex-col">
       {/* Header */}
-      <header className="sticky top-0 z-10 flex-shrink-0 backdrop-blur-md"
-        style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
+      <header className="sticky top-0 z-10 flex-shrink-0 backdrop-blur-md j-rise"
+        style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
         <div className="flex items-center justify-between px-6 py-3">
           <h1 className="text-base font-semibold" style={{ color: S.text1 }}>{t("分析规则")}</h1>
           <div className="flex items-center gap-2">
@@ -447,7 +447,7 @@ export default function RulesPage() {
                     style={selected?.meta.id === rule.meta.id
                       ? { background: S.accentBg, borderLeft: `2px solid ${S.accent}` }
                       : { borderLeft: "2px solid transparent" }}
-                    onMouseEnter={(e) => { if (selected?.meta.id !== rule.meta.id) (e.currentTarget as HTMLElement).style.background = S.hover + "40"; }}
+                    onMouseEnter={(e) => { if (selected?.meta.id !== rule.meta.id) (e.currentTarget as HTMLElement).style.background = S.hover; }}
                     onMouseLeave={(e) => { if (selected?.meta.id !== rule.meta.id) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium" style={{ color: selected?.meta.id === rule.meta.id ? S.text1 : S.text2 }}>

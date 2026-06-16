@@ -7,12 +7,12 @@ import { fetchCrashHourlyAlertDetail } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 const D = {
-  bg: "#F1F4F3",
-  surface: "#FFFFFF",
-  border: "rgba(0,0,0,0.08)",
-  text1: "#15181E",
-  text2: "#5B6470",
-  accent: "#0E7C86",
+  bg: "var(--j-surface)",
+  surface: "var(--j-panel)",
+  border: "var(--j-border)",
+  text1: "var(--j-ink)",
+  text2: "var(--j-graphite)",
+  accent: "var(--j-accent)",
   danger: "#DC2626",
   dangerBg: "rgba(220,38,38,0.08)",
 } as const;
@@ -109,6 +109,7 @@ export default function HourlyAlertDetailPage({
         </div>
 
         <div
+          className="j-rise"
           style={{
             background: D.surface,
             border: `1px solid ${D.border}`,
