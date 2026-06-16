@@ -155,6 +155,17 @@ async def get_feishu_tickets(
     }
 
 
+@router.put("/feishu-tickets/{record_id}/resolve")
+async def resolve_feishu_ticket(record_id: str):
+    """Mark a Feishu ticket as done (sets 确认提交=true on the bitable)."""
+    from app.services.feishu import FeishuClient
+
+    ok = await FeishuClient().mark_completed(record_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to mark Feishu ticket complete")
+    return {"status": "resolved", "record_id": record_id}
+
+
 @router.get("/stats")
 async def get_oncall_stats():
     """Per-week oncall workload statistics."""

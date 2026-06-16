@@ -670,6 +670,12 @@ export const getOncallFeishuTickets = (status: string = "open", oncallOnly: bool
     `/oncall/feishu-tickets?status=${encodeURIComponent(status)}&oncall_only=${oncallOnly}`
   );
 
+// Mark a Feishu ticket done (确认提交=true on the bitable)
+export const resolveFeishuTicket = (recordId: string) =>
+  request<{ status: string; record_id: string }>(
+    `/oncall/feishu-tickets/${recordId}/resolve`, { method: "PUT" }
+  );
+
 export interface OncallWeekStat {
   week_num: number;
   group_index: number;

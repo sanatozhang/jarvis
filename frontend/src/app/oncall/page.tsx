@@ -1,11 +1,11 @@
 "use client";
 
 import { useT } from "@/lib/i18n";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Toast } from "@/components/Toast";
 import {
   getOncallSchedule, getOncallCurrent, updateOncallSchedule,
-  getOncallTickets, resolveOncallTicket, getOncallStats, getOncallFeishuTickets,
+  getOncallTickets, resolveOncallTicket, getOncallStats, getOncallFeishuTickets, resolveFeishuTicket,
   type EscalatedTicket, type OncallWeekStat, type Issue,
 } from "@/lib/api";
 
@@ -86,6 +86,8 @@ export default function OncallPage() {
   // Feishu tickets (handled directly in Feishu) for ALL assignees — filtered per group client-side
   const [feishuTickets, setFeishuTickets] = useState<Issue[]>([]);
   const [feishuLoading, setFeishuLoading] = useState(false);
+  const [resolvingFeishu, setResolvingFeishu] = useState<string | null>(null);
+  const didInitWeek = useRef(false);
 
   const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   const isAdmin = username === "sanato";
@@ -97,6 +99,12 @@ export default function OncallPage() {
     const weeks = Math.floor((today.getTime() - start.getTime()) / (7 * 86400000));
     return weeks % groups.length;
   })();
+
+  // Most recent week_num for a group (for the current group this is the current week)
+  const latestWeekForGroup = (gi: number): number | null => {
+    const ws = weekStats.filter((w) => w.group_index === gi).map((w) => w.week_num);
+    return ws.length ? Math.max(...ws) : null;
+  };
 
   const load = async () => {
     try {
@@ -141,6 +149,14 @@ export default function OncallPage() {
   useEffect(() => {
     if (groups.length > 0) loadTickets();
   }, [groups.length]);
+  // Default the week filter to the selected group's current/most-recent week (not "All")
+  useEffect(() => {
+    if (!didInitWeek.current && selectedGroup >= 0 && weekStats.length > 0) {
+      const lw = latestWeekForGroup(selectedGroup);
+      if (lw !== null) { setSelectedWeek(lw); didInitWeek.current = true; }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroup, weekStats.length]);
 
   // Filter tickets based on selection
   const filteredTickets = allTickets.filter((tk) => {
@@ -189,6 +205,17 @@ export default function OncallPage() {
     finally { setResolving(null); }
   };
 
+  const handleResolveFeishu = async (recordId: string) => {
+    setResolvingFeishu(recordId);
+    try {
+      await resolveFeishuTicket(recordId);
+      // We only show open tickets → drop it from the list once marked done
+      setFeishuTickets((prev) => prev.filter((tk) => tk.record_id !== recordId));
+      setToast({ msg: t("工单已标记完成"), type: "success" });
+    } catch (e: any) { setToast({ msg: e.message, type: "error" }); }
+    finally { setResolvingFeishu(null); }
+  };
+
   // Editing helpers
   const addGroup = () => setGroups((p) => [...p, [""]]);
   const removeGroup = (idx: number) => setGroups((p) => p.filter((_, i) => i !== idx));
@@ -212,11 +239,18 @@ export default function OncallPage() {
     finally { setSaving(false); }
   };
 
-  const groupTicketCount = (gi: number) =>
-    allTickets.filter((tk) =>
+  // Escalated (in-progress) + Feishu (open) workload for a group → shown next to the group
+  const groupTicketCount = (gi: number) => {
+    const escalated = allTickets.filter((tk) =>
       weekGroupIndex(tk.escalated_at, startDate, groups.length) === gi
       && tk.escalation_status !== "resolved"
     ).length;
+    const groupEmails = new Set((groups[gi] || []).map((e) => e.toLowerCase()));
+    const feishu = feishuTickets.filter((tk) =>
+      (tk.assignee_emails || []).some((e) => groupEmails.has(e))
+    ).length;
+    return escalated + feishu;
+  };
 
   // Click a week in stats → switch to tickets tab filtered to that week
   const selectWeekFromStats = (ws: OncallWeekStat) => {
@@ -407,7 +441,7 @@ export default function OncallPage() {
               const count = groupTicketCount(gi);
               return (
                 <button key={gi}
-                  onClick={() => { setSelectedGroup(gi); setSelectedWeek(null); }}
+                  onClick={() => { setSelectedGroup(gi); setSelectedWeek(latestWeekForGroup(gi)); }}
                   className="w-full rounded-lg px-3 py-2.5 text-left transition-all"
                   style={{
                     background: isSelected ? (isCurrent ? "rgba(34,197,94,0.12)" : S.overlay) : "transparent",
@@ -519,7 +553,10 @@ export default function OncallPage() {
                   ))}
                 </div>
 
-                {/* ===== Section: Escalated tickets ===== */}
+                {/* ===== Two columns: Escalated | Feishu ===== */}
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+                  {/* Column 1: Escalated tickets */}
+                  <div>
                 <h3 className="text-xs font-semibold mb-2 flex items-center gap-2" style={{ color: S.text2 }}>
                   {t("升级工单")}
                   <span className="text-[10px] font-normal" style={{ color: S.text3 }}>{visibleEscalated.length}</span>
@@ -614,8 +651,9 @@ export default function OncallPage() {
                     })}
                   </div>
                 )}
-
-                {/* ===== Section: Feishu in-progress (this group's assignees) ===== */}
+                  </div>{/* /Column 1: Escalated */}
+                  {/* Column 2: Feishu in-progress (this group's assignees) */}
+                  <div>
                 <h3 className="text-xs font-semibold mb-2 flex items-center gap-2" style={{ color: S.text2 }}>
                   {t("飞书在处理")}
                   <span className="text-[10px] font-normal" style={{ color: S.text3 }}>{groupFeishuTickets.length}</span>
@@ -663,19 +701,27 @@ export default function OncallPage() {
                           {tk.created_at_ms > 0 && <span>{formatTime(new Date(tk.created_at_ms).toISOString())}</span>}
                         </div>
 
-                        {tk.feishu_link && (
-                          <div className="flex items-center gap-2 pt-2" style={{ borderTop: `1px solid ${S.border}` }}>
+                        <div className="flex items-center gap-2 pt-2" style={{ borderTop: `1px solid ${S.border}` }}>
+                          {tk.feishu_link && (
                             <a href={tk.feishu_link} target="_blank" rel="noreferrer"
                               className="rounded-lg px-3 py-1.5 text-[11px] font-medium"
                               style={{ color: "#2563EB", background: "rgba(37,99,235,0.06)", border: "1px solid rgba(37,99,235,0.15)" }}>
                               {t("去飞书")}
                             </a>
-                          </div>
-                        )}
+                          )}
+                          <button onClick={() => handleResolveFeishu(tk.record_id)}
+                            disabled={resolvingFeishu === tk.record_id}
+                            className="rounded-lg px-3 py-1.5 text-[11px] font-medium disabled:opacity-50"
+                            style={{ background: "rgba(34,197,94,0.1)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
+                            {resolvingFeishu === tk.record_id ? t("处理中...") : t("标记完成")}
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
+                  </div>{/* /Column 2: Feishu */}
+                </div>{/* /two-column grid */}
               </>
             )}
           </main>
