@@ -230,16 +230,16 @@ html.theme-anim, html.theme-anim * {
   border-radius: 4px;
 }
 
-/* (9) Table-row entrance + hover signal bar — a teal level-tick slides in
-   from the left edge on hover, echoing the nav meter. */
-.j-row { position: relative; }
-.j-row::before {
-  content: ""; position: absolute; left: 0; top: 50%;
-  height: 0; width: 2px; transform: translateY(-50%);
-  background: var(--j-accent); border-radius: 0 2px 2px 0;
-  transition: height 0.2s cubic-bezier(0.22,1,0.36,1);
+/* (9) Table-row hover signal bar — a teal level-tick on the left edge, drawn
+   with an inset box-shadow on the first cell so the <tr> itself stays
+   unpositioned (position:relative on a <tr> desyncs thead/tbody column widths). */
+.j-row > td:first-child {
+  box-shadow: inset 0 0 0 0 var(--j-accent);
+  transition: box-shadow 0.2s cubic-bezier(0.22,1,0.36,1);
 }
-.j-row:hover::before { height: 62%; }
+.j-row:hover > td:first-child {
+  box-shadow: inset 2px 0 0 0 var(--j-accent);
+}
 
 /* (10) Count-up / number flips read as tabular instrument digits */
 .j-digits { font-variant-numeric: tabular-nums; font-family: var(--font-display); }

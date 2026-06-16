@@ -646,10 +646,16 @@ export default function HomePage() {
   const thStyle = { color: S.text3, fontSize: "10px", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.08em", padding: "10px 12px", textAlign: "left" as const };
   const tdBase = "px-3 py-3 align-top";
 
-  const TableHeader = ({ cols }: { cols: React.ReactNode[] }) => (
+  // widths: optional per-column px width. Must mirror the body <td> widths so
+  // header and body columns stay aligned under table-auto (a column with both
+  // a sized <td> and an unsized <th> drifts). undefined = the flexible column.
+  const TableHeader = ({ cols, widths }: { cols: React.ReactNode[]; widths?: (number | undefined)[] }) => (
     <thead>
       <tr style={{ borderBottom: `1px solid ${S.border}`, background: "rgba(0,0,0,0.02)" }}>
-        {cols.map((col, i) => <th key={i} style={thStyle}>{col}</th>)}
+        {cols.map((col, i) => {
+          const w = widths?.[i];
+          return <th key={i} style={w != null ? { ...thStyle, width: w } : thStyle}>{col}</th>;
+        })}
       </tr>
     </thead>
   );
@@ -1053,9 +1059,10 @@ export default function HomePage() {
             <>
               <div className="overflow-hidden rounded-xl" style={{ border: `1px solid ${S.border}`, background: S.surface }}>
                 <table className="min-w-full">
-                  <TableHeader cols={[
-                    t("级别"), t("来源"), t("问题描述"), t("提交人"), t("创建时间"), "Zendesk", t("状态"), t("操作")
-                  ]} />
+                  <TableHeader
+                    cols={[t("级别"), t("来源"), t("问题描述"), t("提交人"), t("创建时间"), "Zendesk", t("状态"), t("操作")]}
+                    widths={[56, 64, undefined, 80, 112, 80, 112, 160]}
+                  />
                   <tbody>
                     {loading && !data ? (
                       <tr><td colSpan={8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("加载中...")}</td></tr>
