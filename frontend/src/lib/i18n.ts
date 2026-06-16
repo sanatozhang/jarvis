@@ -192,6 +192,16 @@ const EN: Record<string, string> = {
   "进行中": "In Progress",
   "已完成": "Completed",
   "高优先级": "High Priority",
+  "升级工单": "Escalated",
+  "工单总览": "All Tickets",
+  "飞书在处理": "In Feishu",
+  "升级": "Escalated",
+  "显示已完成": "Show completed",
+  "开始处理": "Start",
+  "已开始处理，AI 分析中": "Started — AI analyzing",
+  "去飞书": "Open in Feishu",
+  "本地表单": "Local form",
+  "暂无飞书工单": "No Feishu tickets in progress",
 
   // Table headers
   "级别": "Priority",

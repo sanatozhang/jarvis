@@ -58,6 +58,8 @@ class Issue(BaseModel):
     firmware: str = ""
     app_version: str = ""
     priority: str = ""          # "H" or "L"
+    assignee: str = ""          # 问题指派人 (display names, comma-joined)
+    assignee_emails: List[str] = Field(default_factory=list)  # 问题指派人 emails (lowercased)
     zendesk: str = ""
     zendesk_id: str = ""        # Extracted ticket number e.g. "#378794"
     platform: str = ""          # "app" | "web" | "desktop" (empty = app default)

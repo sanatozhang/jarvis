@@ -143,6 +143,8 @@ export interface Issue {
   firmware: string;
   app_version: string;
   priority: string;
+  assignee?: string;
+  assignee_emails?: string[];
   zendesk: string;
   zendesk_id: string;
   source?: string;
@@ -659,6 +661,20 @@ export const getOncallTickets = (status?: string, weeks?: number) => {
 
 export const resolveOncallTicket = (issueId: string) =>
   request<{ status: string; issue_id: string; feishu_notified: boolean }>(`/oncall/tickets/${issueId}/resolve`, { method: "PUT" });
+
+// Feishu tickets handled directly in Feishu (not escalated through the site).
+// status: "open" (pending+in_progress, default) | "done" | "all"
+// oncallOnly=false → all assignees' tickets (each carries assignee_emails for client-side grouping)
+export const getOncallFeishuTickets = (status: string = "open", oncallOnly: boolean = true) =>
+  request<{ tickets: Issue[]; count: number; status: string }>(
+    `/oncall/feishu-tickets?status=${encodeURIComponent(status)}&oncall_only=${oncallOnly}`
+  );
+
+// Mark a Feishu ticket done (确认提交=true on the bitable)
+export const resolveFeishuTicket = (recordId: string) =>
+  request<{ status: string; record_id: string }>(
+    `/oncall/feishu-tickets/${recordId}/resolve`, { method: "PUT" }
+  );
 
 export interface OncallWeekStat {
   week_num: number;

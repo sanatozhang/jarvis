@@ -117,6 +117,55 @@ async def get_escalated_tickets(
     }
 
 
+@router.get("/feishu-tickets")
+async def get_feishu_tickets(
+    status: str = Query("open", description="open = pending+in_progress / done / all"),
+    limit: int = Query(200, ge=1, le=500),
+    oncall_only: bool = Query(True, description="Only tickets assigned to the current oncall members"),
+):
+    """List tickets being handled directly in Feishu (read-only, no DB write).
+
+    `open` (default) returns pending + in_progress. When `oncall_only` is true
+    (default), only tickets whose 问题指派人 list CONTAINS a current oncall member
+    (matched by email) are returned — the assignee list usually has 2 people, so
+    matching is membership, not equality.
+    """
+    from app.services.feishu import FeishuClient
+
+    emails = await db.get_current_oncall() if oncall_only else []
+
+    client = FeishuClient()
+    if status == "open":
+        pending = await client.list_issues_by_status("pending", limit=limit, assignee_emails=emails)
+        in_progress = await client.list_issues_by_status("in_progress", limit=limit, assignee_emails=emails)
+        issues = in_progress + pending
+    else:
+        issues = await client.list_issues_by_status(status, limit=limit, assignee_emails=emails)
+
+    # Many tickets → default sort by creation time, newest first.
+    issues.sort(key=lambda i: i.created_at_ms, reverse=True)
+
+    tickets = [i.model_dump(mode="json") for i in issues]
+    return {
+        "tickets": tickets,
+        "count": len(tickets),
+        "status": status,
+        "oncall_only": oncall_only,
+        "oncall_members": emails,
+    }
+
+
+@router.put("/feishu-tickets/{record_id}/resolve")
+async def resolve_feishu_ticket(record_id: str):
+    """Mark a Feishu ticket as done (sets 确认提交=true on the bitable)."""
+    from app.services.feishu import FeishuClient
+
+    ok = await FeishuClient().mark_completed(record_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to mark Feishu ticket complete")
+    return {"status": "resolved", "record_id": record_id}
+
+
 @router.get("/stats")
 async def get_oncall_stats():
     """Per-week oncall workload statistics."""
