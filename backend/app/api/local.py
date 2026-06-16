@@ -8,6 +8,7 @@ API routes for locally-tracked issues (analyzed by Jarvis).
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -25,6 +26,18 @@ from app.services.feishu_cli import FeishuCLI, add_members_to_chat, create_escal
 
 logger = logging.getLogger("jarvis.api.local")
 router = APIRouter()
+
+# Per-issue locks to serialize escalation: prevents a double-click / concurrent
+# escalate from creating two Feishu groups (TOCTOU on escalation_chat_id).
+_escalate_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_escalate_lock(issue_id: str) -> asyncio.Lock:
+    lock = _escalate_locks.get(issue_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _escalate_locks[issue_id] = lock
+    return lock
 
 
 def _handle_exceptions(label: str):
@@ -368,99 +381,108 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
     user = await db.get_user(body.escalated_by) if body.escalated_by else None
     user_email = (body.escalated_by_email or "").strip() or (user or {}).get("feishu_email", "")
 
-    # Short-circuit: already escalated with an active group → return existing info
-    if issue_rec.escalated_at and issue_rec.escalation_chat_id:
-        # 群已存在：把当前点击的人也拉进群（"点击即加入"），非致命
-        if user_email:
-            try:
-                await add_members_to_chat(issue_rec.escalation_chat_id, [user_email])
-            except Exception as e:
-                logger.warning("Failed to add clicker %s to existing group: %s", user_email, e)
-        return {
-            "status": "escalated",
-            "issue_id": issue_id,
-            "chat_id": issue_rec.escalation_chat_id or "",
-            "share_link": issue_rec.escalation_share_link or "",
-            "group_exists": True,
-        }
+    # Serialize per-issue so a double-click / concurrent escalate can't create two
+    # Feishu groups: re-read state INSIDE the lock and short-circuit if a group
+    # already exists (the racing request that lost will see the winner's chat_id).
+    async with _get_escalate_lock(issue_id):
+        async with db.get_session() as session:
+            issue_rec = await session.get(db.IssueRecord, issue_id)
+        if not issue_rec:
+            raise HTTPException(status_code=404, detail="Issue not found")
 
-    description = issue_rec.description or issue_id
-    problem_type = ""
-    analysis = await db.get_analysis_by_issue(issue_id)
-    if analysis:
-        # 优先用英文字段；中文 fallback 通过映射表翻译
-        _pt_en = (analysis.problem_type_en or "").strip()
-        _pt_zh = (analysis.problem_type or "").strip()
-        _ZH_TO_EN = {
-            "未知": "Unknown", "蓝牙连接": "Bluetooth Connection",
-            "固件升级": "Firmware Upgrade", "时间戳问题": "Timestamp Issue",
-            "录音问题": "Recording Issue", "设备故障": "Device Failure",
-            "文件传输": "File Transfer", "云同步": "Cloud Sync",
-            "转写问题": "Transcription Issue", "软件bug": "Software Bug",
-            "用户操作": "User Operation", "会员与支付": "Membership & Payment",
-            "其他": "Other",
-        }
-        problem_type = _pt_en or _ZH_TO_EN.get(_pt_zh, _pt_zh)
+        # Short-circuit: already escalated with an active group → return existing info
+        if issue_rec.escalated_at and issue_rec.escalation_chat_id:
+            # 群已存在：把当前点击的人也拉进群（"点击即加入"），非致命
+            if user_email:
+                try:
+                    await add_members_to_chat(issue_rec.escalation_chat_id, [user_email])
+                except Exception as e:
+                    logger.warning("Failed to add clicker %s to existing group: %s", user_email, e)
+            return {
+                "status": "escalated",
+                "issue_id": issue_id,
+                "chat_id": issue_rec.escalation_chat_id or "",
+                "share_link": issue_rec.escalation_share_link or "",
+                "group_exists": True,
+            }
 
-    issue_link = ""
-    if is_feishu_source(issue_id):
-        issue_link = FeishuCLI().get_feishu_link(issue_id)
+        description = issue_rec.description or issue_id
+        problem_type = ""
+        analysis = await db.get_analysis_by_issue(issue_id)
+        if analysis:
+            # 优先用英文字段；中文 fallback 通过映射表翻译
+            _pt_en = (analysis.problem_type_en or "").strip()
+            _pt_zh = (analysis.problem_type or "").strip()
+            _ZH_TO_EN = {
+                "未知": "Unknown", "蓝牙连接": "Bluetooth Connection",
+                "固件升级": "Firmware Upgrade", "时间戳问题": "Timestamp Issue",
+                "录音问题": "Recording Issue", "设备故障": "Device Failure",
+                "文件传输": "File Transfer", "云同步": "Cloud Sync",
+                "转写问题": "Transcription Issue", "软件bug": "Software Bug",
+                "用户操作": "User Operation", "会员与支付": "Membership & Payment",
+                "其他": "Other",
+            }
+            problem_type = _pt_en or _ZH_TO_EN.get(_pt_zh, _pt_zh)
 
-    appllo_url = body.appllo_url or ""
+        issue_link = ""
+        if is_feishu_source(issue_id):
+            issue_link = FeishuCLI().get_feishu_link(issue_id)
 
-    # user_email 已在上方解析（优先前端直传 plaud 邮箱）
+        appllo_url = body.appllo_url or ""
 
-    chat_result = None
+        # user_email 已在上方解析（优先前端直传 plaud 邮箱）
 
-    # Create Feishu escalation group + add members + notify
-    try:
-        chat_result = await create_escalation_group(
-            user_email=user_email,
-            issue_id=issue_id,
-            description=description,
-            problem_type=problem_type,
-            issue_link=issue_link,
-            zendesk_id=issue_rec.zendesk_id or "",
-            appllo_url=appllo_url,
+        chat_result = None
+
+        # Create Feishu escalation group + add members + notify
+        try:
+            chat_result = await create_escalation_group(
+                user_email=user_email,
+                issue_id=issue_id,
+                description=description,
+                problem_type=problem_type,
+                issue_link=issue_link,
+                zendesk_id=issue_rec.zendesk_id or "",
+                appllo_url=appllo_url,
+            )
+            logger.info("Escalation completed: %s", chat_result)
+        except Exception as e:
+            logger.error("Failed to create escalation group: %s", e)
+            # Fallback DM gated by ENABLE_ONCALL_NOTIFY (default off)
+            import os
+            if os.environ.get("ENABLE_ONCALL_NOTIFY", "false").lower() == "true":
+                try:
+                    from app.services.notify import notify_oncall
+                    await notify_oncall(
+                        issue_id=issue_id,
+                        description=description,
+                        reason=f"工单转交工程师: {problem_type}" if problem_type else "工单转交工程师",
+                        link=issue_link,
+                    )
+                except Exception as ne:
+                    logger.error("Fallback notify_oncall also failed: %s", ne)
+
+        # Save escalation metadata (including chat_id + share_link for later notifications and "join group" button)
+        escalation_chat_id = chat_result.get("chat_id", "") if chat_result else ""
+        escalation_share_link = chat_result.get("share_link", "") if chat_result else ""
+        ok = await db.escalate_issue(
+            issue_id,
+            escalated_by=body.escalated_by,
+            note=body.note,
+            chat_id=escalation_chat_id,
+            share_link=escalation_share_link,
         )
-        logger.info("Escalation completed: %s", chat_result)
-    except Exception as e:
-        logger.error("Failed to create escalation group: %s", e)
-        # Fallback DM gated by ENABLE_ONCALL_NOTIFY (default off)
-        import os
-        if os.environ.get("ENABLE_ONCALL_NOTIFY", "false").lower() == "true":
-            try:
-                from app.services.notify import notify_oncall
-                await notify_oncall(
-                    issue_id=issue_id,
-                    description=description,
-                    reason=f"工单转交工程师: {problem_type}" if problem_type else "工单转交工程师",
-                    link=issue_link,
-                )
-            except Exception as ne:
-                logger.error("Fallback notify_oncall also failed: %s", ne)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        await db.log_event("escalate", issue_id=issue_id, username=body.escalated_by,
+                           detail={"note": body.note, "chat_id": escalation_chat_id})
 
-    # Save escalation metadata (including chat_id + share_link for later notifications and "join group" button)
-    escalation_chat_id = chat_result.get("chat_id", "") if chat_result else ""
-    escalation_share_link = chat_result.get("share_link", "") if chat_result else ""
-    ok = await db.escalate_issue(
-        issue_id,
-        escalated_by=body.escalated_by,
-        note=body.note,
-        chat_id=escalation_chat_id,
-        share_link=escalation_share_link,
-    )
-    if not ok:
-        raise HTTPException(status_code=404, detail="Issue not found")
-    await db.log_event("escalate", issue_id=issue_id, username=body.escalated_by,
-                       detail={"note": body.note, "chat_id": escalation_chat_id})
-
-    result = {"status": "escalated", "issue_id": issue_id}
-    if chat_result:
-        result["chat_id"] = chat_result.get("chat_id", "")
-        result["group_name"] = chat_result.get("group_name", "")
-        result["share_link"] = chat_result.get("share_link", "")
-    return result
+        result = {"status": "escalated", "issue_id": issue_id}
+        if chat_result:
+            result["chat_id"] = chat_result.get("chat_id", "")
+            result["group_name"] = chat_result.get("group_name", "")
+            result["share_link"] = chat_result.get("share_link", "")
+        return result
 
 
 @router.post("/{issue_id}/inaccurate")
