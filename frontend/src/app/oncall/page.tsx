@@ -78,15 +78,14 @@ export default function OncallPage() {
 
   // Stats
   const [weekStats, setWeekStats] = useState<OncallWeekStat[]>([]);
-  const [tab, setTab] = useState<"tickets" | "feishu" | "stats">("tickets");
+  const [tab, setTab] = useState<"tickets" | "stats">("tickets");
 
   // Show resolved/done tickets (off by default → only pending + in_progress shown)
   const [showResolved, setShowResolved] = useState(false);
 
-  // Feishu tickets (handled directly in Feishu, not escalated through the site)
+  // Feishu tickets (handled directly in Feishu) for ALL assignees — filtered per group client-side
   const [feishuTickets, setFeishuTickets] = useState<Issue[]>([]);
   const [feishuLoading, setFeishuLoading] = useState(false);
-  const [feishuFilter, setFeishuFilter] = useState<"all" | "pending" | "in_progress">("all");
 
   const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   const isAdmin = username === "sanato";
@@ -124,8 +123,8 @@ export default function OncallPage() {
   const loadFeishu = async () => {
     setFeishuLoading(true);
     try {
-      // showResolved → fetch "all" (incl. done); otherwise only pending + in_progress
-      const res = await getOncallFeishuTickets(showResolved ? "all" : "open");
+      // All assignees' open (pending+in_progress) tickets; grouped per oncall group client-side
+      const res = await getOncallFeishuTickets("open", false);
       setFeishuTickets(res.tickets);
     } catch (e: any) { setToast({ msg: e.message, type: "error" }); }
     finally { setFeishuLoading(false); }
@@ -133,9 +132,9 @@ export default function OncallPage() {
 
   useEffect(() => { load(); }, []);
   useEffect(() => {
-    if (tab === "feishu") loadFeishu();
+    if (groups.length > 0) loadFeishu();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, showResolved]);
+  }, [groups.length]);
   useEffect(() => {
     if (currentGroupIdx >= 0 && selectedGroup === -1) setSelectedGroup(currentGroupIdx);
   }, [currentGroupIdx, selectedGroup]);
@@ -158,9 +157,20 @@ export default function OncallPage() {
   // Default: only show in-progress; resolved shown when toggle is on (resolved appended at bottom)
   const visibleEscalated = showResolved ? [...inProgressTickets, ...resolvedTickets] : inProgressTickets;
 
-  const filteredFeishu = feishuTickets.filter((tk) =>
-    feishuFilter === "all" ? true : tk.feishu_status === feishuFilter
-  );
+  // Feishu tickets assigned to the selected group's members (membership match on email),
+  // optionally narrowed to the selected week by creation date (oncall is week-based).
+  const groupFeishuTickets = (() => {
+    if (selectedGroup < 0) return [];
+    const groupEmails = new Set((groups[selectedGroup] || []).map((e) => e.toLowerCase()));
+    return feishuTickets.filter((tk) => {
+      if (!(tk.assignee_emails || []).some((e) => groupEmails.has(e))) return false;
+      if (selectedWeek !== null) {
+        if (!tk.created_at_ms) return false;
+        if (weekNum(new Date(tk.created_at_ms).toISOString(), startDate) !== selectedWeek) return false;
+      }
+      return true;
+    });
+  })();
 
   const handleResolve = async (issueId: string) => {
     setResolving(issueId);
@@ -298,13 +308,13 @@ export default function OncallPage() {
             </div>
             {/* Tab switcher */}
             <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${S.border}` }}>
-              {(["tickets", "feishu", "stats"] as const).map((k) => (
+              {(["tickets", "stats"] as const).map((k) => (
                 <button key={k} onClick={() => setTab(k)}
                   className="px-3 py-1 text-xs font-medium transition-colors"
                   style={tab === k
                     ? { background: S.text1, color: "#fff" }
                     : { background: "transparent", color: S.text2 }}>
-                  {k === "tickets" ? t("升级工单") : k === "feishu" ? t("飞书工单") : t("周报")}
+                  {k === "tickets" ? t("工单") : t("周报")}
                 </button>
               ))}
             </div>
@@ -448,7 +458,7 @@ export default function OncallPage() {
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-3">
                     <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>
-                      {t("第")} {selectedGroup + 1} {t("组")} — {t("转交工单")}
+                      {t("第")} {selectedGroup + 1} {t("组")} — {t("工单总览")}
                     </h2>
                     {selectedGroup === currentGroupIdx && (
                       <span className="rounded-full px-2 py-0.5 text-[9px] font-bold"
@@ -456,8 +466,8 @@ export default function OncallPage() {
                     )}
                   </div>
                   <div className="flex items-center gap-3 text-xs">
-                    <span style={{ color: "#B45309" }}>{inProgressTickets.length} {t("进行中")}</span>
-                    <span style={{ color: "#16A34A" }}>{resolvedTickets.length} {t("已完成")}</span>
+                    <span style={{ color: "#2563EB" }}>{t("升级")} {inProgressTickets.length}</span>
+                    <span style={{ color: "#B45309" }}>{t("飞书")} {groupFeishuTickets.length}</span>
                     <button onClick={() => setShowResolved((v) => !v)}
                       className="rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors"
                       style={showResolved
@@ -509,15 +519,19 @@ export default function OncallPage() {
                   ))}
                 </div>
 
-                {/* Ticket list */}
+                {/* ===== Section: Escalated tickets ===== */}
+                <h3 className="text-xs font-semibold mb-2 flex items-center gap-2" style={{ color: S.text2 }}>
+                  {t("升级工单")}
+                  <span className="text-[10px] font-normal" style={{ color: S.text3 }}>{visibleEscalated.length}</span>
+                </h3>
                 {ticketsLoading ? (
-                  <p className="py-12 text-center text-xs" style={{ color: S.text3 }}>{t("加载中...")}</p>
+                  <p className="py-8 text-center text-xs" style={{ color: S.text3 }}>{t("加载中...")}</p>
                 ) : visibleEscalated.length === 0 ? (
-                  <div className="rounded-xl py-16 text-center" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
-                    <p className="text-sm" style={{ color: S.text3 }}>{t("暂无转交工单")}</p>
+                  <div className="rounded-xl py-8 text-center mb-6" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                    <p className="text-xs" style={{ color: S.text3 }}>{t("暂无转交工单")}</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="space-y-3 mb-6">
                     {visibleEscalated.map((tk) => {
                       const isResolved = tk.escalation_status === "resolved";
                       return (
@@ -600,98 +614,71 @@ export default function OncallPage() {
                     })}
                   </div>
                 )}
+
+                {/* ===== Section: Feishu in-progress (this group's assignees) ===== */}
+                <h3 className="text-xs font-semibold mb-2 flex items-center gap-2" style={{ color: S.text2 }}>
+                  {t("飞书在处理")}
+                  <span className="text-[10px] font-normal" style={{ color: S.text3 }}>{groupFeishuTickets.length}</span>
+                </h3>
+                {feishuLoading ? (
+                  <p className="py-8 text-center text-xs" style={{ color: S.text3 }}>{t("加载中...")}</p>
+                ) : groupFeishuTickets.length === 0 ? (
+                  <div className="rounded-xl py-8 text-center" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                    <p className="text-xs" style={{ color: S.text3 }}>{t("暂无飞书工单")}</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {groupFeishuTickets.map((tk) => (
+                      <div key={tk.record_id} className="rounded-xl p-4"
+                        style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <SourceBadge source={tk.source} t={t} />
+                            {tk.priority && (
+                              <span className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                                style={tk.priority === "H"
+                                  ? { background: "rgba(239,68,68,0.1)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.2)" }
+                                  : { background: S.surface, color: S.text2, border: `1px solid ${S.border}` }}>
+                                {tk.priority === "H" ? t("高优先级") : tk.priority}
+                              </span>
+                            )}
+                            {tk.zendesk_id && (
+                              <span className="text-[10px] font-mono" style={{ color: S.text3 }}>#{tk.zendesk_id}</span>
+                            )}
+                          </div>
+                          <span className="rounded-full px-2 py-0.5 text-[10px]"
+                            style={tk.feishu_status === "in_progress"
+                              ? { background: "rgba(234,179,8,0.12)", color: "#B45309", border: "1px solid rgba(234,179,8,0.25)", fontWeight: 500 }
+                              : { background: S.surface, color: S.text2, border: `1px solid ${S.border}`, fontWeight: 500 }}>
+                            {tk.feishu_status === "in_progress" ? t("处理中") : t("待处理")}
+                          </span>
+                        </div>
+
+                        <p className="text-xs leading-relaxed mb-2" style={{ color: S.text1 }}>
+                          {truncate(tk.description, 150)}
+                        </p>
+
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] mb-2" style={{ color: S.text3 }}>
+                          {tk.assignee && <span>{t("指派人")}: {tk.assignee}</span>}
+                          {tk.created_at_ms > 0 && <span>{formatTime(new Date(tk.created_at_ms).toISOString())}</span>}
+                        </div>
+
+                        {tk.feishu_link && (
+                          <div className="flex items-center gap-2 pt-2" style={{ borderTop: `1px solid ${S.border}` }}>
+                            <a href={tk.feishu_link} target="_blank" rel="noreferrer"
+                              className="rounded-lg px-3 py-1.5 text-[11px] font-medium"
+                              style={{ color: "#2563EB", background: "rgba(37,99,235,0.06)", border: "1px solid rgba(37,99,235,0.15)" }}>
+                              {t("去飞书")}
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             )}
           </main>
-        </div>
-      )}
-
-      {/* ================= FEISHU TICKETS TAB ================= */}
-      {tab === "feishu" && (
-        <div className="mx-auto max-w-5xl px-6 py-6">
-          {/* Header: filter chips + show-completed toggle */}
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-1.5">
-              {(["all", "pending", "in_progress"] as const).map((f) => (
-                <button key={f} onClick={() => setFeishuFilter(f)}
-                  className="rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors"
-                  style={feishuFilter === f
-                    ? { background: S.text1, color: "#fff" }
-                    : { background: S.surface, color: S.text2, border: `1px solid ${S.border}` }}>
-                  {f === "all" ? t("全部") : f === "pending" ? t("待处理") : t("处理中")}
-                </button>
-              ))}
-            </div>
-            <button onClick={() => setShowResolved((v) => !v)}
-              className="rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors"
-              style={showResolved
-                ? { background: S.text1, color: "#fff" }
-                : { background: S.surface, color: S.text2, border: `1px solid ${S.border}` }}>
-              {t("显示已完成")}
-            </button>
-          </div>
-
-          {feishuLoading ? (
-            <p className="py-12 text-center text-xs" style={{ color: S.text3 }}>{t("加载中...")}</p>
-          ) : filteredFeishu.length === 0 ? (
-            <div className="rounded-xl py-16 text-center" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
-              <p className="text-sm" style={{ color: S.text3 }}>{t("暂无飞书工单")}</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {filteredFeishu.map((tk) => {
-                const isDone = tk.feishu_status === "done";
-                return (
-                  <div key={tk.record_id} className="rounded-xl p-4"
-                    style={{ background: S.overlay, border: `1px solid ${S.border}`, opacity: isDone ? 0.6 : 1 }}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <SourceBadge source={tk.source} t={t} />
-                        {tk.priority && (
-                          <span className="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                            style={tk.priority === "H"
-                              ? { background: "rgba(239,68,68,0.1)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.2)" }
-                              : { background: S.surface, color: S.text2, border: `1px solid ${S.border}` }}>
-                            {tk.priority === "H" ? t("高优先级") : tk.priority}
-                          </span>
-                        )}
-                        {tk.zendesk_id && (
-                          <span className="text-[10px] font-mono" style={{ color: S.text3 }}>#{tk.zendesk_id}</span>
-                        )}
-                      </div>
-                      <span className="rounded-full px-2 py-0.5 text-[10px]"
-                        style={isDone
-                          ? { background: "rgba(34,197,94,0.18)", color: "#15803D", border: "1px solid rgba(34,197,94,0.4)", fontWeight: 700 }
-                          : tk.feishu_status === "in_progress"
-                            ? { background: "rgba(234,179,8,0.12)", color: "#B45309", border: "1px solid rgba(234,179,8,0.25)", fontWeight: 500 }
-                            : { background: S.surface, color: S.text2, border: `1px solid ${S.border}`, fontWeight: 500 }}>
-                        {isDone ? `✓ ${t("已完成")}` : tk.feishu_status === "in_progress" ? t("处理中") : t("待处理")}
-                      </span>
-                    </div>
-
-                    <p className="text-xs leading-relaxed mb-2" style={{ color: S.text1 }}>
-                      {truncate(tk.description, 150)}
-                    </p>
-
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] mb-2" style={{ color: S.text3 }}>
-                      {tk.assignee && <span>{t("指派人")}: {tk.assignee}</span>}
-                      {tk.created_at_ms > 0 && <span>{formatTime(new Date(tk.created_at_ms).toISOString())}</span>}
-                    </div>
-
-                    {tk.feishu_link && (
-                      <div className="flex items-center gap-2 pt-2" style={{ borderTop: `1px solid ${S.border}` }}>
-                        <a href={tk.feishu_link} target="_blank" rel="noreferrer"
-                          className="rounded-lg px-3 py-1.5 text-[11px] font-medium"
-                          style={{ color: "#2563EB", background: "rgba(37,99,235,0.06)", border: "1px solid rgba(37,99,235,0.15)" }}>
-                          {t("去飞书")}
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
 

@@ -412,11 +412,15 @@ class FeishuCLI:
         root_cause_summary = self._get_text(fields.get("一句话归因", ""))
 
         assignee_names = []
+        assignee_emails = []
         for a in (fields.get("问题指派人") or []):
             if isinstance(a, dict):
                 name = a.get("name") or a.get("en_name") or ""
                 if name:
                     assignee_names.append(name)
+                email = (a.get("email") or "").strip().lower()
+                if email:
+                    assignee_emails.append(email)
         assignee = ", ".join(assignee_names)
 
         created_at_ms = 0
@@ -432,6 +436,7 @@ class FeishuCLI:
             app_version=self._get_text(fields.get("APP 版本", "")),
             priority=self._get_text(fields.get("问题等级", "")),
             assignee=assignee,
+            assignee_emails=assignee_emails,
             zendesk=zendesk_url,
             zendesk_id=zendesk_id,
             feishu_link=self.get_feishu_link(record_id),

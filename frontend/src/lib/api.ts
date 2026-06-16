@@ -144,6 +144,7 @@ export interface Issue {
   app_version: string;
   priority: string;
   assignee?: string;
+  assignee_emails?: string[];
   zendesk: string;
   zendesk_id: string;
   source?: string;
@@ -663,9 +664,10 @@ export const resolveOncallTicket = (issueId: string) =>
 
 // Feishu tickets handled directly in Feishu (not escalated through the site).
 // status: "open" (pending+in_progress, default) | "done" | "all"
-export const getOncallFeishuTickets = (status: string = "open") =>
+// oncallOnly=false → all assignees' tickets (each carries assignee_emails for client-side grouping)
+export const getOncallFeishuTickets = (status: string = "open", oncallOnly: boolean = true) =>
   request<{ tickets: Issue[]; count: number; status: string }>(
-    `/oncall/feishu-tickets?status=${encodeURIComponent(status)}`
+    `/oncall/feishu-tickets?status=${encodeURIComponent(status)}&oncall_only=${oncallOnly}`
   );
 
 export interface OncallWeekStat {
