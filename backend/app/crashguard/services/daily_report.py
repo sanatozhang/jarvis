@@ -264,6 +264,11 @@ async def compose_report(
     # 关键收益：严格对齐 weekday + 时区双周期，规避 vs 昨日的周末效应假警。
     realtime_today_events: Dict[str, int] = {}
     realtime_baseline_events: Dict[str, int] = {}
+    # iid → "fatal" / "nonfatal"：dual-window 同时拉 fatal 和 nonfatal 两条 query，
+    # 必须记住每个 iid 来自哪条，否则下游「fatal」聚合（today_fatal_total / dual_window
+    # fatal_delta_pct / 突增主因）会把 MemoryWarning、NaN toInt 这类 non-fatal 业务异常
+    # 当成崩溃算进 fatal +X%。fatal query 先跑 → setdefault 让 fatal 在重叠时取胜。
+    realtime_fatality: Dict[str, str] = {}
     # 双窗口对照所需：baseline sessions by platform（today 已在上面拉过）
     baseline_sessions_by_plat: Dict[str, int] = {}
     # 主要版本（最大用户量版本）的 crash-free 详表所需
@@ -309,7 +314,10 @@ async def compose_report(
             import time as _t
             now_ms = int(_t.time() * 1000)
             win_ms = data_window_hours * 3600 * 1000
-            for q in (s_cfg.datadog_query_fatal, s_cfg.datadog_query_nonfatal):
+            for q, q_fatality in (
+                (s_cfg.datadog_query_fatal, "fatal"),
+                (s_cfg.datadog_query_nonfatal, "nonfatal"),
+            ):
                 try:
                     today_pull = await client.list_issues_for_window(
                         start_ms=now_ms - win_ms, end_ms=now_ms,
@@ -321,6 +329,7 @@ async def compose_report(
                             realtime_today_events[iid] = int(
                                 it.get("attributes", {}).get("events_count", 0) or 0
                             )
+                            realtime_fatality.setdefault(iid, q_fatality)
                     # SHoW-24h 基线：7 天前同时刻往前 24h
                     week_ago_end_ms = now_ms - 7 * 24 * 3600 * 1000
                     week_ago_start_ms = week_ago_end_ms - win_ms
@@ -334,6 +343,7 @@ async def compose_report(
                             realtime_baseline_events[iid] = int(
                                 it.get("attributes", {}).get("events_count", 0) or 0
                             )
+                            realtime_fatality.setdefault(iid, q_fatality)
                 except Exception:
                     logger.exception("dual-window pull failed for query=%s (non-fatal)", q)
             # baseline sessions（上周同 N 小时段）
@@ -591,8 +601,11 @@ async def compose_report(
     ):
         from datetime import timedelta as _td
         base_date = target_date - _td(days=7)
-        today_fatal_total = sum(realtime_today_events.values()) if realtime_today_events else 0
-        base_fatal_total = sum(realtime_baseline_events.values()) if realtime_baseline_events else 0
+        # 只统计 fatal-tagged：non-fatal 业务异常（MemoryWarning / NaN toInt 等）不进 fatal 口径
+        def _is_fatal_iid(iid: str) -> bool:
+            return realtime_fatality.get(iid) == "fatal"
+        today_fatal_total = sum(ev for iid, ev in realtime_today_events.items() if _is_fatal_iid(iid))
+        base_fatal_total = sum(ev for iid, ev in realtime_baseline_events.items() if _is_fatal_iid(iid))
 
         def _delta_str(t: int, b: int) -> str:
             if b == 0:
@@ -601,10 +614,14 @@ async def compose_report(
             sign = "+" if pct >= 0 else ""
             return f"{sign}{pct:.0f}%"
 
-        # 平台 fatal 分桶（id_to_plat 已在外层构造）
+        # 平台 fatal 分桶（id_to_plat 已在外层构造）—— 只算 fatal-tagged
         for iid, ev in (realtime_today_events or {}).items():
+            if not _is_fatal_iid(iid):
+                continue
             today_fatal_by_plat[id_to_plat.get(iid, "OTHER")] += int(ev)
         for iid, ev in (realtime_baseline_events or {}).items():
+            if not _is_fatal_iid(iid):
+                continue
             base_fatal_by_plat[id_to_plat.get(iid, "OTHER")] += int(ev)
 
         def _fmt_num(n: int) -> str:
@@ -1419,6 +1436,8 @@ async def compose_report(
                 for iid, t_ev_raw in realtime_today_events.items():
                     if id_to_plat.get(iid) != plat_key:
                         continue
+                    if realtime_fatality.get(iid) != "fatal":
+                        continue  # non-fatal 业务异常不算进 fatal 突增主因
                     t_ev = int(t_ev_raw or 0)
                     b_ev = int(realtime_baseline_events.get(iid, 0) or 0)
                     abs_delta = t_ev - b_ev
@@ -1542,13 +1561,13 @@ async def compose_report(
         today_fatal: int = 0,
         base_fatal: int = 0,
     ) -> str:
-        # red: fatal ≥ +50% 或本平台有新增 issue
+        # red: fatal ≥ +50%（真实恶化）
         # yellow: +10%~+50% 上涨
         # green_improve: ≤ -10% 改善
         # green: 持平
         # unknown: 无基线 / 小基数（百分比不可信）
-        if has_new:
-            return "red"
+        # 「新增 issue」不再直接顶红——新≠紧急，0 事件的新 issue 更不是。真有量的新崩溃
+        # 会拉高 today_fatal → 平台 % 自然飘红，所以不漏真问题（has_new 参数保留兼容签名）。
         if pct is None:
             return "unknown"
         # 小基数防噪（对齐 surge 判定）：今日 events 不足 attention_min_events，
@@ -1628,8 +1647,9 @@ async def compose_report(
         if snap.datadog_issue_id not in attn_ids
     )
 
-    # severity 顶部色：任一平台 red 或有新增 → red；任一 yellow → yellow；否则 green
-    if any(p["status"] == "red" for p in tldr_platforms) or fatal_news:
+    # severity 顶部色：只看真实恶化——任一平台 red（fatal ≥ +50%）→ red；任一 yellow → yellow；否则 green。
+    # 「新增 issue」不再抬严重度（新≠紧急，0 事件更不是）；新增仍在 🆕 段照常展示。
+    if any(p["status"] == "red" for p in tldr_platforms):
         tldr_severity = "red"
     elif any(p["status"] == "yellow" for p in tldr_platforms):
         tldr_severity = "yellow"
