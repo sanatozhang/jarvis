@@ -42,6 +42,16 @@
   outline-offset: 2px;
 }
 
+/* ── Docked detail panel slide-in ── */
+@keyframes panel-slide-in {
+  from { transform: translateX(16px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+.panel-slide-in { animation: panel-slide-in 0.18s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .panel-slide-in { animation: none; }
+}
+
 /* Crashguard markdown content (AI 分析卡片) */
 .crashguard-md pre {
   background: #0F172A;

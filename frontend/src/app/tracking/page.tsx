@@ -181,6 +181,14 @@ export default function TrackingPage() {
     window.history.replaceState({}, "", url.toString());
   };
 
+  // Esc closes the docked detail panel (clicking the list now switches tickets, not closes)
+  useEffect(() => {
+    if (!detailItem) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeDetail(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [detailItem]);
+
   const startFollowup = async (issueId: string, question: string) => {
     if (!question.trim()) return;
     setFollowupSubmitting(true);
@@ -368,7 +376,7 @@ export default function TrackingPage() {
   const tdBase = "px-3 py-3 align-top";
 
   return (
-    <div className="min-h-full">
+    <div className={`min-h-full transition-[padding] duration-200 ${detailItem ? "md:pr-[480px]" : ""}`}>
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
         style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
@@ -503,13 +511,16 @@ export default function TrackingPage() {
                 <tr><td colSpan={9} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("加载中...")}</td></tr>
               ) : !data?.issues.length ? (
                 <tr><td colSpan={9} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("暂无工单")}</td></tr>
-              ) : data.issues.map((item, idx) => (
+              ) : data.issues.map((item, idx) => {
+                const isSelected = detailItem?.record_id === item.record_id;
+                const rowBg = isSelected ? S.accentBg : (idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)");
+                return (
                 <tr key={item.record_id}
                   className="cursor-pointer transition-colors"
-                  style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}
+                  style={{ borderBottom: `1px solid ${S.borderSm}`, background: rowBg, boxShadow: isSelected ? `inset 3px 0 0 ${S.accent}` : "inset 3px 0 0 transparent" }}
                   onClick={() => openDetail(item)}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = S.hover + "60")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)")}>
+                  onMouseEnter={(e) => (e.currentTarget.style.background = isSelected ? S.accentBg : S.hover + "60")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = rowBg)}>
                   <td className={tdBase} style={{ width: "56px" }}><PriorityBadge p={item.priority} /></td>
                   <td className="px-3 py-3 max-w-md">
                     <p className="text-sm leading-snug" style={{ color: S.text1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
@@ -597,7 +608,8 @@ export default function TrackingPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -606,13 +618,14 @@ export default function TrackingPage() {
 
       {/* Detail panel */}
       {detailItem && (
-        <div className="fixed inset-0 z-50 flex">
-          <div className="flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={closeDetail} />
-          <div className="w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}` }}>
+        <aside className="panel-slide-in fixed top-0 right-0 bottom-0 z-30 w-full md:w-[480px] overflow-y-auto"
+          style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}`, boxShadow: "-16px 0 40px -24px rgba(0,0,0,0.25)" }}>
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3"
               style={{ background: "#FFFFFF", borderBottom: `1px solid ${S.border}` }}>
               <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("工单详情")}</h2>
-              <button onClick={closeDetail} className="rounded-lg p-1.5" style={{ color: S.text3 }}>
+              <button onClick={closeDetail} title={t("关闭 (Esc)")} aria-label={t("关闭 (Esc)")}
+                className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-black/5" style={{ color: S.text3 }}>
+                <kbd className="text-[10px] font-medium tracking-wide" style={{ color: S.text3 }}>Esc</kbd>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -1188,8 +1201,7 @@ export default function TrackingPage() {
                 )}
               </section>
             </div>
-          </div>
-        </div>
+        </aside>
       )}
 
       {/* Deep-analysis confirmation dialog */}
