@@ -101,6 +101,13 @@ Agent 必须写 `output/result.json` 包含：
 | `/rules` | 规则 CRUD | 编辑后调 `/api/rules/reload` 热生效 |
 | `/reports` | 历史报表 | 按时间 / 类型筛选 |
 
+### ⚠️ 详情面板有两份代码，改一处必同步另一处
+
+工单详情面板（右侧停靠 35% 分栏，点列表切换 / Esc 关闭 / 选中行金色高亮）在 `/`（`app/page.tsx`，
+状态 `detailId`+`detailData`）和 `/tracking`（`app/tracking/page.tsx`，状态 `detailItem`）各写了一份、
+相互独立。**改面板的展示或交互两处都要改**，否则会出现「一边改了另一边没变」的反复坑。共享的只有
+`globals.css` 的 `panel-slide-in` 动画与 `IssueComponents.tsx` 的 `S` 配色。（TODO：抽共享组件消除重复。）
+
 ### 关键约定
 
 - API 调用全部走 `src/lib/api.ts`：核心 wrapper 是 `analyzeIssue()`、`subscribeTaskProgress()`（SSE）、`fetchTrackingList()`、`fetchRules()`、`reloadRules()`

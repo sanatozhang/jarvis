@@ -376,7 +376,7 @@ export default function TrackingPage() {
   const tdBase = "px-3 py-3 align-top";
 
   return (
-    <div className={`min-h-full transition-[padding] duration-200 ${detailItem ? "md:pr-[480px]" : ""}`}>
+    <div className={`min-h-full transition-[padding] duration-200 ${detailItem ? "lg:pr-[35%]" : ""}`}>
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
         style={{ background: "rgba(255,255,255,0.92)", borderBottom: `1px solid ${S.border}` }}>
@@ -618,7 +618,7 @@ export default function TrackingPage() {
 
       {/* Detail panel */}
       {detailItem && (
-        <aside className="panel-slide-in fixed top-0 right-0 bottom-0 z-30 w-full md:w-[480px] overflow-y-auto"
+        <aside className="panel-slide-in fixed top-0 right-0 bottom-0 z-30 w-full lg:w-[35%] overflow-y-auto"
           style={{ background: "#FFFFFF", borderLeft: `1px solid ${S.border}`, boxShadow: "-16px 0 40px -24px rgba(0,0,0,0.25)" }}>
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3"
               style={{ background: "#FFFFFF", borderBottom: `1px solid ${S.border}` }}>
