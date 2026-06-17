@@ -618,6 +618,20 @@ async def escalate_issue(
         return True
 
 
+async def update_escalation_share_link(issue_id: str, share_link: str) -> bool:
+    """只刷新升级群分享链接（用于回填过期链接，不动其它 escalation 元数据）。"""
+    if not share_link:
+        return False
+    async with get_session() as session:
+        record = await session.get(IssueRecord, issue_id)
+        if not record:
+            return False
+        record.escalation_share_link = share_link
+        record.updated_at = datetime.utcnow()
+        await session.commit()
+        return True
+
+
 async def mark_escalation_reminded(issue_id: str) -> bool:
     async with get_session() as session:
         record = await session.get(IssueRecord, issue_id)

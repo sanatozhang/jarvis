@@ -822,6 +822,28 @@ async def _emails_to_open_id_map(emails: List[str]) -> Dict[str, str]:
         return {}
 
 
+async def create_chat_link(chat_id: str, validity_period: str = "permanently") -> str:
+    """生成飞书群分享链接。
+
+    飞书 `chats/{chat_id}/link` 的 validity_period 不传时默认 "week"（7 天后失效），
+    可选 week / year / permanently。升级群链接要长期可点，统一用 permanently，
+    否则 7 天后用户点开就是「链接已失效」。
+
+    返回 share_link；失败返回 ""（非致命，调用方自行兜底）。
+    """
+    if not chat_id:
+        return ""
+    try:
+        result = await _feishu_api(
+            "POST", f"/im/v1/chats/{chat_id}/link",
+            body={"is_external": False, "validity_period": validity_period},
+        )
+        return result.get("data", {}).get("share_link", "")
+    except Exception as e:
+        logger.warning("Failed to create chat link for %s: %s", chat_id, e)
+        return ""
+
+
 async def add_members_to_chat(chat_id: str, emails: List[str]) -> List[str]:
     """把指定邮箱（解析成 open_id 后）加入已存在的飞书群。非致命，返回成功加入的邮箱。
 
@@ -917,16 +939,10 @@ async def create_escalation_group(
         else:
             logger.warning("Could not resolve any emails to open_ids (missing contact:user.id:readonly?)")
 
-    # 3. Get invite link as fallback for members who couldn't be added
+    # 3. Get invite link as fallback for members who couldn't be added.
+    #    permanently → 链接不会 7 天后失效（飞书默认 week）。
     if chat_id:
-        try:
-            link_result = await _feishu_api(
-                "POST", f"/im/v1/chats/{chat_id}/link",
-                body={"is_external": False},
-            )
-            share_link = link_result.get("data", {}).get("share_link", "")
-        except Exception as e:
-            logger.warning("Failed to get group invite link: %s", e)
+        share_link = await create_chat_link(chat_id, validity_period="permanently")
 
     # 4. Post issue info to group (with @mentions for oncall members)
     if chat_id:
