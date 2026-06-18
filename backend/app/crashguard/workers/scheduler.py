@@ -16,12 +16,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime
-from typing import Tuple
+from typing import Optional, Tuple
 
 logger = logging.getLogger("crashguard.scheduler")
 
 _TICK_INTERVAL_SEC = 60
-_last_fired: dict[str, str] = {}  # report_type → "YYYY-MM-DD HH:MM"
+# 每日报告 catch-up 宽限：到点后这段时间内只要当天没发过就补发，容忍长任务/重启吞掉
+# 精确那一分钟。根因——单线程 60s loop 顺序 await，一个长任务（如 ~9min 的 analyze_tick）
+# 会让 loop 跳过整分钟，而早报 cron `0 8` 一天只有 08:00 这一分钟的机会，错过即全天不发。
+# 超过宽限视为过期不补，避免重启后深夜补发"早报"。
+_DAILY_CATCHUP_GRACE_SEC = 2 * 3600
+_last_fired: dict[str, str] = {}  # report_type → "YYYY-MM-DD HH:MM"（非固定 cron 兜底，分钟级幂等）
+_daily_fired_date: dict[str, str] = {}  # report_type → "YYYY-MM-DD"（固定每日 cron 的 catch-up 幂等）
 _pr_sync_last_fired: str = ""    # "YYYY-MM-DD HH:MM" 防同分钟重跑
 _analyze_last_fired: str = ""    # 定时分析 tick 防同分钟重跑
 _analyze_running: bool = False   # 上一 tick 还在跑就跳——max_per_tick>1 防 5min cron 互相踩
@@ -99,6 +105,50 @@ def _cron_matches(expr: str, now: datetime) -> bool:
     )
 
 
+def _parse_fixed_daily(expr: str) -> Optional[Tuple[int, int]]:
+    """固定每日 cron 'M H * * *'（M/H 纯整数、DOM/MON/DOW 均 *）→ (minute, hour)，否则 None。"""
+    parts = (expr or "").split()
+    if len(parts) != 5:
+        return None
+    m, h, dom, mon, dow = parts
+    if dom != "*" or mon != "*" or dow != "*":
+        return None
+    try:
+        mi, ho = int(m), int(h)
+    except ValueError:
+        return None
+    if 0 <= mi < 60 and 0 <= ho < 24:
+        return (mi, ho)
+    return None
+
+
+def _daily_fire_decision(
+    cron_expr: str, now: datetime, last_fired_date: Optional[str]
+) -> Optional[Tuple[bool, str]]:
+    """每日报告 catch-up 触发判定（纯函数，便于单测）。
+
+    返回：
+    - None → 非固定每日 cron，调用方回退精确分钟匹配 (_cron_matches)
+    - (should_fire, today_tag) → 固定每日 cron 判定；should_fire 时把 today_tag 写回幂等
+
+    规则：到点(now>=scheduled) 且未超 grace 且当天未发过 → 补发。容忍长任务/重启吞掉
+    精确那一分钟（如 08:00 被跳过，08:05 的下一个 tick 仍能补上）。
+    """
+    fixed = _parse_fixed_daily(cron_expr)
+    if fixed is None:
+        return None
+    mi, ho = fixed
+    scheduled = now.replace(hour=ho, minute=mi, second=0, microsecond=0)
+    today_tag = now.strftime("%Y-%m-%d")
+    if now < scheduled:
+        return (False, today_tag)                              # 还没到点
+    if (now - scheduled).total_seconds() > _DAILY_CATCHUP_GRACE_SEC:
+        return (False, today_tag)                              # 超过宽限，过期不补
+    if last_fired_date == today_tag:
+        return (False, today_tag)                              # 今天已发过
+    return (True, today_tag)
+
+
 async def _tick_once() -> None:
     from app.crashguard.config import get_crashguard_settings
     from app.crashguard.services.daily_report import send_daily_report
@@ -126,12 +176,19 @@ async def _tick_once() -> None:
     for report_type, cron_expr, enabled in schedule:
         if not enabled:
             continue
-        if _last_fired.get(report_type) == tag:
-            continue
-        if not _cron_matches(cron_expr, now):
-            continue
-        # 先打 tag 再 send——异常时本分钟内不重试（避免日志风暴），下分钟 cron 不再 match
-        _last_fired[report_type] = tag
+        decision = _daily_fire_decision(cron_expr, now, _daily_fired_date.get(report_type))
+        if decision is None:
+            # 非固定每日 cron：精确分钟匹配 + 分钟级幂等
+            if _last_fired.get(report_type) == tag or not _cron_matches(cron_expr, now):
+                continue
+            _last_fired[report_type] = tag
+        else:
+            should_fire, today_tag = decision
+            if not should_fire:
+                continue
+            # 先打当天幂等再 send——异常/重启后由 send_daily_report 的
+            # DB UNIQUE(report_date, report_type) 兜底防重发。
+            _daily_fired_date[report_type] = today_tag
         job_name = "morning_daily" if report_type == "morning" else "evening_daily"
         try:
             async with record_heartbeat(job_name) as hb:
