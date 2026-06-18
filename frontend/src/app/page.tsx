@@ -234,7 +234,6 @@ export default function HomePage() {
   const [usernameInput, setUsernameInput] = useState("");
   const [emailInput, setEmailInput] = useState("");
   const [setupError, setSetupError] = useState("");
-  const [showUsernameEdit, setShowUsernameEdit] = useState(false);
   const [showUsernameSetup, setShowUsernameSetup] = useState(false);
 
   const [assignee, setAssignee] = useState<string | null>(null);
@@ -272,7 +271,7 @@ export default function HomePage() {
       localStorage.setItem("appllo_role", user.role);
       if (user.feishu_email) localStorage.setItem("appllo_feishu_email", user.feishu_email);
       setSetupError("");
-      setShowUsernameSetup(false); setShowUsernameEdit(false);
+      setShowUsernameSetup(false);
     } catch (err: any) {
       const msg = err?.message || String(err);
       setSetupError(msg.includes("plaud.ai") ? t("邮箱必须以 @plaud.ai 结尾") : msg);
@@ -712,32 +711,6 @@ export default function HomePage() {
               style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
               {t("同步飞书")}
             </button>
-            {/* Username */}
-            <div className="ml-1 pl-3" style={{ borderLeft: `1px solid ${S.border}` }}>
-              {!showUsernameEdit ? (
-                <button onClick={() => { setShowUsernameEdit(true); setUsernameInput(username || ""); }}
-                  className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold"
-                    style={{ background: S.accent, color: "#FFFFFF" }}>
-                    {username ? username[0].toUpperCase() : "?"}
-                  </span>
-                  <span className="font-medium" style={{ color: S.text2 }}>
-                    {username || t("设置用户名")}
-                  </span>
-                </button>
-              ) : (
-                <div className="flex items-center gap-1">
-                  <input autoFocus value={usernameInput} onChange={(e) => setUsernameInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") saveUsername(usernameInput); if (e.key === "Escape") setShowUsernameEdit(false); }}
-                    placeholder={t("用户名")}
-                    className="w-24 rounded-lg px-2.5 py-1 text-xs outline-none font-sans"
-                    style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }} />
-                  <button onClick={() => saveUsername(usernameInput)} className="rounded-lg px-2 py-1 text-[11px] font-semibold"
-                    style={{ background: S.accent, color: "#FFFFFF" }}>{t("保存")}</button>
-                  <button onClick={() => setShowUsernameEdit(false)} className="text-[11px]" style={{ color: S.text3 }}>{t("取消")}</button>
-                </div>
-              )}
-            </div>
           </div>
         </div>
       </header>
