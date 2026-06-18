@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import Column, DateTime, Integer, String, Text, Boolean, Float, func, text
 from sqlalchemy.exc import IntegrityError
@@ -832,6 +832,27 @@ async def get_latest_done_task_for_issue(issue_id: str) -> Optional[TaskRecord]:
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
+
+
+async def get_prior_followup_history(
+    issue_id: str, exclude_task_id: str = ""
+) -> Tuple[int, List[str]]:
+    """该 issue 的历史分析链 → (prior_task_count, prior_followup_questions[oldest→newest])。
+
+    - prior_task_count：已存在的 task 数（不含当前 task）。追问递进放宽窗口的「深度」。
+    - prior_followup_questions：历史追问文本（去空，时间正序）。用于重裁锚点 + prompt 历史。
+    """
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = (
+            select(TaskRecord)
+            .where(TaskRecord.issue_id == issue_id)
+            .order_by(TaskRecord.created_at.asc())
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+        prior = [t for t in rows if t.id != exclude_task_id]
+        questions = [q for q in ((t.followup_question or "").strip() for t in prior) if q]
+        return len(prior), questions
 
 
 def normalize_device_type(raw: str) -> str:

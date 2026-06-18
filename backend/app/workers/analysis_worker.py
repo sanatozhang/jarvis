@@ -216,6 +216,19 @@ def _sanitize_followup_result(
     return result
 
 
+# 追问重裁日志：追问代表上次回复不满意（日志很可能裁错/不全），故不复用上次裁好的日志，
+# 改为按追问深度递进放宽时间窗重裁，到阈值直接给全量原始日志（跳过 windowing）。
+FOLLOWUP_WIDEN_FACTOR = 2          # 每加深一层追问，时间窗 ×N
+FOLLOWUP_FULL_LOGS_AT_DEPTH = 3    # 追问深度 ≥ 此值 → 全量原始日志（不裁）
+
+
+def _followup_window_params(depth: int) -> "tuple[float, bool]":
+    """追问深度 → (窗口放大系数, 是否直接给全量原始日志)。depth=0 表示非追问。"""
+    scale = float(FOLLOWUP_WIDEN_FACTOR ** max(0, depth))
+    force_full = depth >= FOLLOWUP_FULL_LOGS_AT_DEPTH
+    return scale, force_full
+
+
 async def run_analysis_pipeline(
     issue_id: str,
     task_id: str,
@@ -285,31 +298,36 @@ async def run_analysis_pipeline(
         logger.info("Processing issue %s: %s", issue_id, issue.description[:80])
         await db.upsert_issue(issue.model_dump(), status="analyzing")
 
-    # ── Follow-up fast path: reuse previous workspace ──
+    # ── Follow-up：不复用上次裁好的日志，重新裁剪 ──
+    # 追问 = 上次回复不满意，日志很可能不对/不全。故走完整管线重裁（raw 仍走缓存不重下载），
+    # 并按追问深度递进放宽时间窗，到阈值直接给全量原始日志。锚点 / prompt 都纳入历史追问。
+    followup_depth = 0
+    followup_window_scale = 1.0
+    followup_force_full = False
+    followup_anchor_text = ""
+    followup_question_for_agent = followup_question
     if followup_question:
-        result = await _try_followup_fast_path(
-            issue_id=issue_id,
-            task_id=task_id,
-            issue=issue,
-            agent_override=agent_override,
-            followup_question=followup_question,
-            on_progress=on_progress,
-            pipeline_timeout=pipeline_timeout,
+        followup_depth, prior_questions = await db.get_prior_followup_history(
+            issue_id, exclude_task_id=task_id
         )
-        if result is not None:
-            result.task_id = task_id
-            result.issue = issue
-            result.followup_question = followup_question
-            # Carry forward log_metadata from the previous analysis
-            prev_analysis = await db.get_analysis_by_issue(issue_id)
-            if prev_analysis and getattr(prev_analysis, "log_metadata_json", None):
-                import json as _jm
-                result.log_metadata = _jm.loads(prev_analysis.log_metadata_json)
-            if on_progress:
-                await on_progress(100, "Analysis complete")
-            return result
-        # Fast path unavailable — fall through to full pipeline
-        logger.info("Follow-up fast path unavailable for %s, running full pipeline", issue_id)
+        followup_window_scale, followup_force_full = _followup_window_params(followup_depth)
+        # 重裁锚点文本：原始描述 + 历史追问 + 本次（新输入里若有时间/日期线索 → 重定位窗口中心）
+        followup_anchor_text = " ".join(
+            [issue.description or "", *prior_questions, followup_question]
+        ).strip()
+        # prompt 带上历史追问，让 agent 知道前几次问过什么、为何不满意
+        if prior_questions:
+            history_block = "\n".join(f"- {q}" for q in prior_questions)
+            followup_question_for_agent = (
+                f"{followup_question}\n\n"
+                f"[历史追问，按时间顺序]\n{history_block}\n"
+                "（用户连续追问说明前几次回答未让其满意，已放宽日志范围重裁，"
+                "请结合更大范围的日志重新审视，不要重复之前的结论。）"
+            )
+        logger.info(
+            "Follow-up re-window for %s: depth=%d window_scale=%.1f force_full=%s",
+            issue_id, followup_depth, followup_window_scale, followup_force_full,
+        )
 
     # --- Step 2: Download / locate logs ---
     if on_progress:
@@ -497,7 +515,11 @@ async def run_analysis_pipeline(
 
     logger.info("Matched rules: %s (primary: %s), has_logs: %s", [r.meta.id for r in rules], rule_type, has_logs)
 
-    problem_date = guess_problem_date(routing_text, issue.occurred_at)
+    # 追问时锚点用「描述+历史追问+本次」组合文本——新输入里若带时间/日期则重定位窗口中心
+    problem_date = guess_problem_date(
+        normalize_description_for_matching(followup_anchor_text) if followup_anchor_text else routing_text,
+        issue.occurred_at,
+    )
 
     # --- Step 4.5: ① 日志时效性预检 ---
     # 日志最新事件远早于问题时间（如设备激活日的旧日志 vs 4 个月后的问题）→ 日志没覆盖问题时段，
@@ -546,7 +568,8 @@ async def run_analysis_pipeline(
             rules=rules,
             problem_date=problem_date,
             on_progress=on_progress,
-            deep_analysis=deep_analysis,
+            deep_analysis=deep_analysis or followup_force_full,  # 追问深到阈值 → 全量原始日志
+            window_scale=followup_window_scale,                  # 追问递进放宽时间窗
         )
         if condensation_result is not None:
             workspace_log_paths = condensation_result["log_paths"]
@@ -587,7 +610,7 @@ async def run_analysis_pipeline(
         logs_corrupted=logs_corrupted,
         on_progress=on_progress,
         previous_analysis=previous_analysis,
-        followup_question=followup_question,
+        followup_question=followup_question_for_agent,  # 含历史追问，供 agent 上下文
         condensation_context=condensation_result.get("structured_context") if condensation_result else None,
         pipeline_timeout=pipeline_timeout,
         deep_analysis=deep_analysis,
@@ -603,123 +626,6 @@ async def run_analysis_pipeline(
     if on_progress:
         await on_progress(100, "Analysis complete")
 
-    return result
-
-
-async def _try_followup_fast_path(
-    issue_id: str,
-    task_id: str,
-    issue: Issue,
-    agent_override: Optional[str],
-    followup_question: str,
-    on_progress: Optional[Callable[[int, str], Any]],
-    pipeline_timeout: Optional[int] = None,
-) -> Optional[AnalysisResult]:
-    """Attempt incremental follow-up: reuse previous workspace, skip heavy steps.
-
-    Returns AnalysisResult on success, or None to fall back to full pipeline.
-    """
-    import json as _json
-    import shutil
-
-    settings = get_settings()
-
-    # 1. Find the previous successful task for this issue
-    prev_task = await db.get_latest_done_task_for_issue(issue_id)
-    if not prev_task:
-        logger.info("No previous done task for %s — cannot use fast path", issue_id)
-        return None
-
-    prev_workspace = Path(settings.storage.workspace_dir) / prev_task.id
-    prev_logs_dir = prev_workspace / "logs"
-
-    # Require that the previous workspace still has logs/ (not cleaned up)
-    if not prev_logs_dir.exists() or not any(prev_logs_dir.iterdir()):
-        logger.info("Previous workspace %s has no logs/ — cannot use fast path", prev_task.id)
-        return None
-
-    if on_progress:
-        await on_progress(10, "追问模式：复用上次分析工作区...")
-
-    # 2. Create new workspace and symlink/copy heavy dirs from previous workspace
-    workspace = Path(settings.storage.workspace_dir) / task_id
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "output").mkdir(exist_ok=True)
-
-    reused_dirs = []
-    for dirname in ("logs", "rules", "code", "images", "raw"):
-        src = prev_workspace / dirname
-        dst = workspace / dirname
-        if src.exists() and not dst.exists():
-            try:
-                # Use symlink for speed — these are read-only for the agent
-                dst.symlink_to(src.resolve())
-                reused_dirs.append(dirname)
-            except OSError:
-                # Fallback: copy if symlinks not supported (e.g. cross-device)
-                shutil.copytree(src, dst)
-                reused_dirs.append(dirname)
-
-    logger.info(
-        "Follow-up fast path: reusing %s from workspace %s",
-        reused_dirs, prev_task.id,
-    )
-
-    if on_progress:
-        await on_progress(30, f"已复用上次工作区（{', '.join(reused_dirs)}）")
-
-    # 3. Load previous analysis result
-    prev_analysis_rec = await db.get_analysis_by_issue(issue_id)
-    previous_analysis = None
-    if prev_analysis_rec:
-        previous_analysis = {
-            "problem_type": prev_analysis_rec.problem_type or "",
-            "root_cause": prev_analysis_rec.root_cause or "",
-            "confidence": prev_analysis_rec.confidence or "",
-            "key_evidence": _json.loads(prev_analysis_rec.key_evidence_json) if prev_analysis_rec.key_evidence_json else [],
-            "user_reply": prev_analysis_rec.user_reply or "",
-            "fix_suggestion": prev_analysis_rec.fix_suggestion or "",
-        }
-
-    # 4. Load previous extraction from context (avoid re-running grep)
-    extraction = {}
-    prev_extraction_file = prev_workspace / "context" / "extraction_full.json"
-    if prev_extraction_file.exists():
-        try:
-            extraction = _json.loads(prev_extraction_file.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning("Failed to load previous extraction: %s", e)
-
-    # 5. Load rules & metadata from previous workspace
-    engine = _get_rule_engine()
-    routing_text = normalize_description_for_matching(issue.description)
-    rules = engine.match_rules(routing_text)
-    rule_type = engine.classify(routing_text)
-    problem_date = guess_problem_date(routing_text, issue.occurred_at)
-
-    has_logs = any((workspace / "logs").iterdir()) if (workspace / "logs").exists() else False
-
-    if on_progress:
-        await on_progress(50, "追问模式：构建分析 prompt...")
-
-    # 6. Run agent (the only expensive step)
-    orchestrator = _get_orchestrator()
-    result = await orchestrator.run_analysis(
-        workspace=workspace,
-        issue=issue,
-        rules=rules,
-        extraction=extraction,
-        rule_type=rule_type,
-        agent_override=agent_override,
-        problem_date=problem_date,
-        has_logs=has_logs,
-        on_progress=on_progress,
-        previous_analysis=previous_analysis,
-        followup_question=followup_question,
-        pipeline_timeout=pipeline_timeout,
-    )
-
-    result = _sanitize_followup_result(result, previous_analysis, issue_id)  # ④
     return result
 
 
@@ -815,8 +721,11 @@ async def _run_context_condensation(
     problem_date: Optional[str],
     on_progress: Optional[Callable[[int, str], Any]],
     deep_analysis: bool = False,
+    window_scale: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
     """Run L1.5 context condensation: time-window + optional LLM extraction.
+
+    window_scale: 时间窗放大系数（追问递进放宽用，默认 1.0 不放大）。
 
     Returns a dict with:
         - "log_paths": list of (possibly windowed) log paths to use in workspace
@@ -922,6 +831,11 @@ async def _run_context_condensation(
     # If only a date was provided (no time), use wider window to cover the full day
     hours_before = cc.time_window_hours_before if not date_only else max(cc.time_window_hours_before, 14)
     hours_after = cc.time_window_hours_after if not date_only else max(cc.time_window_hours_after, 14)
+    # 追问递进放宽：每加深一层窗口 ×window_scale（>1 时生效）
+    if window_scale and window_scale > 1.0:
+        hours_before *= window_scale
+        hours_after *= window_scale
+        logger.info("Follow-up widen: window ×%.1f → %.0f/%.0fh", window_scale, hours_before, hours_after)
 
     windowed_paths, windowing_meta = await asyncio.to_thread(
         lambda: window_log_files(
