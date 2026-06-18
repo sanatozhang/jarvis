@@ -111,7 +111,7 @@ export default function Sidebar() {
               </span>
             </div>
             <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.18em]" style={{ color: "var(--j-faint)" }}>
-              Signal Desk
+              Get answer here
             </div>
           </div>
         </div>
