@@ -248,6 +248,15 @@ html.theme-anim, html.theme-anim * {
 @keyframes j-check { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
 .j-check path { stroke-dasharray: 24; animation: j-check 0.4s ease forwards; }
 
+/* ── Docked detail panel slide-in (from main; used by the split-view panels) ── */
+@keyframes panel-slide-in {
+  from { transform: translateX(16px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+.panel-slide-in { animation: panel-slide-in 0.18s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .panel-slide-in { animation: none; }
+}
 /* Crashguard markdown content (AI 分析卡片) */
 .crashguard-md pre {
   background: #0F172A;

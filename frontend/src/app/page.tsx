@@ -593,6 +593,14 @@ export default function HomePage() {
   const openDetail = (id: string, t: Tab) => { setDetailId(id); setDirectDetail(null); setDetailTab(t); setShowEscalateDialog(false); setShowFeishuTransferDialog(false); setEscalateNote(""); setUrlParam("detail", id); setUrlParam("dtab", t); };
   const closeDetail = () => { setDetailId(null); setDirectDetail(null); setFollowupText(""); setFollowupSubmitting(false); setShowEscalateDialog(false); setShowFeishuTransferDialog(false); setEscalateNote(""); setUrlParam("detail", ""); setUrlParam("dtab", ""); };
 
+  // Esc closes the docked detail panel (clicking the list now switches tickets, not closes)
+  useEffect(() => {
+    if (!detailId) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeDetail(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [detailId]);
+
   const detailData = (() => {
     if (!detailId) return null;
     if (detailTab === "pending") {
@@ -661,7 +669,7 @@ export default function HomePage() {
   );
 
   return (
-    <div className="min-h-full">
+    <div className={`min-h-full transition-[padding] duration-200 ${detailId && detailData ? "lg:pr-[35%]" : ""}`}>
       {/* Header */}
       <header className="sticky top-0 z-10 backdrop-blur-md"
         style={{ background: "var(--j-header)", borderBottom: `1px solid ${S.border}` }}>
@@ -984,11 +992,12 @@ export default function HomePage() {
                     <tr><td colSpan={includeInProgress ? 9 : 8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{t("暂无待处理工单")}</td></tr>
                   ) : pendingData.issues.map((issue, idx) => (
                     <tr key={issue.record_id}
-                      className="j-row cursor-pointer transition-colors"
-                      style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}
+                      className="cursor-pointer transition-colors"
+                      style={{ borderBottom: `1px solid ${S.borderSm}`, background: detailId === issue.record_id ? S.accentBg : (idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)"), boxShadow: detailId === issue.record_id ? `inset 3px 0 0 ${S.accent}` : "inset 3px 0 0 transparent" }}
                       onClick={() => openDetail(issue.record_id, "pending")}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = S.hover)}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)")}>
+                      onMouseEnter={(e) => (e.currentTarget.style.background = detailId === issue.record_id ? S.accentBg : S.hover)}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = detailId === issue.record_id ? S.accentBg : (idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)"))}>
+
                       <td className={tdBase} onClick={(e) => e.stopPropagation()} style={{ width: "40px" }}>
                         <input type="checkbox" className="rounded" style={{ accentColor: S.accent }}
                           checked={selected.has(issue.record_id)} onChange={() => toggle(issue.record_id)} />
@@ -1070,11 +1079,12 @@ export default function HomePage() {
                       <tr><td colSpan={8} className="px-4 py-16 text-center text-sm" style={{ color: S.text3 }}>{emptyMsg}</td></tr>
                     ) : items.map((item, idx) => (
                       <tr key={item.record_id}
-                        className="j-row cursor-pointer transition-colors"
-                        style={{ borderBottom: `1px solid ${S.borderSm}`, background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)" }}
+                        className="cursor-pointer transition-colors"
+                        style={{ borderBottom: `1px solid ${S.borderSm}`, background: detailId === item.record_id ? S.accentBg : (idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)"), boxShadow: detailId === item.record_id ? `inset 3px 0 0 ${S.accent}` : "inset 3px 0 0 transparent" }}
                         onClick={() => openDetail(item.record_id, tab)}
-                        onMouseEnter={(e) => (e.currentTarget.style.background = S.hover)}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)")}>
+                        onMouseEnter={(e) => (e.currentTarget.style.background = detailId === item.record_id ? S.accentBg : S.hover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = detailId === item.record_id ? S.accentBg : (idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.01)"))}>
+
                         <td className={tdBase} style={{ width: "56px" }}><PriorityBadge p={item.priority} /></td>
                         <td className={tdBase} style={{ width: "64px" }}><SourceBadge source={item.source} linearUrl={item.linear_issue_url} /></td>
                         <td className="px-3 py-3 max-w-md">
@@ -1176,16 +1186,17 @@ export default function HomePage() {
         })()}
       </div>
 
-      {/* ── Detail panel ── */}
+      {/* ── Detail panel (docked split-view from main) ── */}
       {detailId && detailData && (
-        <div className="fixed inset-0 z-50 flex">
-          <div className="j-fade flex-1 backdrop-blur-sm" style={{ background: "rgba(0,0,0,0.65)" }} onClick={closeDetail} />
-          <div className="j-slide-in w-[520px] flex-shrink-0 overflow-y-auto" style={{ background: "var(--j-panel)", borderLeft: `1px solid ${S.border}` }}>
+        <aside className="panel-slide-in fixed top-0 right-0 bottom-0 z-30 w-full lg:w-[35%] overflow-y-auto"
+          style={{ background: "var(--j-panel)", borderLeft: `1px solid ${S.border}`, boxShadow: "-16px 0 40px -24px rgba(0,0,0,0.25)" }}>
             {/* Panel header */}
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3"
               style={{ background: "var(--j-panel)", borderBottom: `1px solid ${S.border}` }}>
               <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("工单详情")}</h2>
-              <button onClick={closeDetail} className="rounded-lg p-1.5 transition-colors" style={{ color: S.text3 }}>
+              <button onClick={closeDetail} title={t("关闭 (Esc)")} aria-label={t("关闭 (Esc)")}
+                className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-black/5" style={{ color: S.text3 }}>
+                <kbd className="text-[10px] font-medium tracking-wide" style={{ color: S.text3 }}>Esc</kbd>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -1902,8 +1913,7 @@ export default function HomePage() {
                 )}
               </section>
             </div>
-          </div>
-        </div>
+        </aside>
       )}
 
       {/* ── First-time username setup ── */}

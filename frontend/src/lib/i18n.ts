@@ -861,6 +861,7 @@ const EN: Record<string, string> = {
   "标记完成": "Mark Complete",
   "已标记完成": "Marked as complete",
   "已标记完成（飞书已同步）": "Marked complete (synced to Feishu)",
+  "关闭 (Esc)": "Close (Esc)",
   "打开飞书群": "Open Feishu Group",
   "加入飞书群": "Join Feishu Group",
   "加入群": "Join Group",
