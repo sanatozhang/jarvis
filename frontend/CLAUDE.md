@@ -48,20 +48,24 @@ src/
 | 深链 | 详情抽屉用 URL query 同步：进入 `?detail=<id>` 自动开抽屉，关闭去掉 query。`router.replace` 不 `push` |
 | 类型 | 后端响应类型在 `api.ts` 中定义并 `export`，组件 import 使用；不在组件内自己重复声明 shape |
 
-## ⚠️ 工单详情面板有两份代码，改一处必同步另一处
+## 工单详情面板：「分析结果」区已抽成共享组件
 
-「工单分析结果」的详情面板（右侧停靠 35% 分栏，点列表切换 / Esc 关闭 / 选中行金色高亮）
-**在两个文件里各写了一份，结构几乎一致但相互独立**：
+「工单分析结果」对话区（初次/追问卡片、问题类型、置信度、模型、需工程师 badge、
+问题原因、关键证据、Agent 轨迹、建议回复、深度分析 CTA、追问输入）已抽成
+**`src/components/AnalysisResultView.tsx`，首页 + tracking 共用同一份**。以首页（更丰富）
+为基准；首页专属的交互（客服反馈 widget）通过 `renderEngineerFeedback` slot 注入，
+CN/EN 切换通过 `onSetLang` 注入（仅首页传），tracking 跟随站点语言。
+
+→ **改分析结果卡片只改 `AnalysisResultView.tsx` 一处**，两页自动同步。
 
 | 页面 | 文件 | 状态字段 |
 |------|------|---------|
 | 首页 `/`（工单分析） | `src/app/page.tsx` | `detailId` + `detailData` |
 | `/tracking`（工单跟踪） | `src/app/tracking/page.tsx` | `detailItem` |
 
-**改详情面板的任何展示/交互（宽度、布局、字段、按钮、动画、关闭方式等）两处都要改**，
-否则会出现「tracking 改了首页没变」这类反复踩的坑。共享的只有 `globals.css` 的
-`panel-slide-in` 动画和 `IssueComponents.tsx` 的 `S` 配色 token。
-（历史 TODO：抽成共享组件 `IssueDetailPanel` 消除重复，未做。）
+⚠️ 注意：详情面板**其余部分**（面板外壳/meta 信息栅格/附件/升级转交/标记完成等动作区）
+**仍各写一份**，改这些区域两处都要同步。右侧停靠 35% 分栏 / Esc 关闭 / 选中行高亮的
+壳层用 `globals.css` 的 `panel-slide-in`，配色 token 用 `IssueComponents.tsx` 的 `S`。
 
 ## 数据流
 
