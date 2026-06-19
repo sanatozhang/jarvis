@@ -57,3 +57,45 @@ async def test_batch_analyze(client, db_session):
         resp = await client.post("/api/tasks/batch", json={"issue_ids": ["b1", "b2"]})
     assert resp.status_code == 200
     assert len(resp.json()) == 2
+
+
+async def _start_events(db_session, issue_id: str):
+    """读 analysis_start 事件（用于断言 followup_question 是否被记录，供失败后重放）。"""
+    import json
+    from sqlalchemy import select
+    from app.db.database import EventRecord
+    async with db_session() as s:
+        rows = (await s.execute(
+            select(EventRecord).where(
+                EventRecord.event_type == "analysis_start",
+                EventRecord.issue_id == issue_id,
+            )
+        )).scalars().all()
+    return [json.loads(r.detail_json or "{}") for r in rows]
+
+
+async def test_followup_task_records_question_in_start_event(client, db_session):
+    # 追问：analysis_start 事件须带 followup_question + task_id，失败后可据此重放
+    await seed_issue(db_session, "issue_fq", status="done")
+    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock):
+        resp = await client.post("/api/tasks", json={
+            "issue_id": "issue_fq", "username": "wm",
+            "followup_question": "看更早的蓝牙日志",
+        })
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+    details = await _start_events(db_session, "issue_fq")
+    assert len(details) == 1
+    assert details[0]["followup_question"] == "看更早的蓝牙日志"
+    assert details[0]["task_id"] == task_id
+
+
+async def test_base_task_start_event_has_no_followup(client, db_session):
+    # 首次分析（无追问）：start 事件不应塞 followup_question，保持干净
+    await seed_issue(db_session, "issue_base", status="pending")
+    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock):
+        resp = await client.post("/api/tasks", json={"issue_id": "issue_base", "username": "u"})
+    assert resp.status_code == 200
+    details = await _start_events(db_session, "issue_base")
+    assert len(details) == 1
+    assert "followup_question" not in details[0]

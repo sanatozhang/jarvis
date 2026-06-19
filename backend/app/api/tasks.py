@@ -101,7 +101,12 @@ async def create_task(req: TaskCreate, background_tasks: BackgroundTasks):
 
     # Track: analysis started
     # NOTE: Feishu mark_started is done inside _run_task to avoid blocking the response
-    await db.log_event("analysis_start", issue_id=req.issue_id, username=req.username)
+    # 追问时把问题文本 + task_id 记进事件：失败 task 不落 analysis，事件是唯一可据此重放的来源
+    _start_detail = (
+        {"followup_question": req.followup_question, "task_id": task_id}
+        if req.followup_question else {}
+    )
+    await db.log_event("analysis_start", issue_id=req.issue_id, username=req.username, detail=_start_detail)
 
     progress = TaskProgress(
         task_id=task_id,
@@ -636,7 +641,10 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
             # Track: analysis failed
             duration = int((_time.monotonic() - _start_time) * 1000)
-            await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": result.problem_type, "error": error_msg[:200]})
+            _fail_detail = {"reason": result.problem_type, "error": error_msg[:200]}
+            if followup_question:
+                _fail_detail["followup_question"] = followup_question  # 便于失败追问一键重放
+            await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail=_fail_detail)
 
             # Admin DM: link to the failed task so we can react fast.
             try:
@@ -696,7 +704,10 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             await db.update_task(task_id, status="failed", error=error_str)
             await db.update_issue_status(issue_id, "failed")
             duration = int((_time.monotonic() - _start_time) * 1000)
-            await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail={"reason": "exception", "error": error_str[:200]})
+            _fail_detail = {"reason": "exception", "error": error_str[:200]}
+            if followup_question:
+                _fail_detail["followup_question"] = followup_question  # 便于失败追问一键重放
+            await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail=_fail_detail)
         except Exception as db_err:
             logger.error("Failed to persist task failure to DB (disk full?): %s", db_err)
 
