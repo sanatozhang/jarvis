@@ -64,6 +64,8 @@ class CondensationResult:
     output_chars: int = 0
     duration_ms: int = 0
     error: str = ""
+    # 计量（2026-06-19）：L1.5 预提取的 token 用量（仅 anthropic API 路径填充）
+    usage: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -473,7 +475,12 @@ class ContextCondenser:
                 provider="anthropic", model=model,
             )
 
-        return self._parse_llm_output(text, provider="anthropic", model=model)
+        result = self._parse_llm_output(text, provider="anthropic", model=model)
+        # 计量：捕获 usage（input/output/cache_*），供 worker 叠加进工单总成本
+        raw_usage = data.get("usage") or {}
+        if isinstance(raw_usage, dict):
+            result.usage = {k: int(v) for k, v in raw_usage.items() if isinstance(v, (int, float))}
+        return result
 
     async def _call_claude_cli(self, prompt: str, model: str) -> CondensationResult:
         """Call Claude via CLI (uses OAuth auth, no API key needed)."""

@@ -227,6 +227,12 @@ export interface AnalysisResult {
   agent_model: string;
   followup_question?: string;
   log_metadata?: LogMetadata;
+  // 计量（每次分析/追问独立计费）
+  total_tokens?: number;
+  total_cost_usd?: number;
+  usage_breakdown?: Record<string, { cost_usd?: number; model?: string; source?: string; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }>;
+  cost_source?: string;        // cli_reported / computed / partial
+  is_deep_analysis?: boolean;  // 深度分析标记 → 结果页打 label
   created_at?: string;
 }
 
@@ -708,10 +714,10 @@ export const escalateIssue = (issueId: string, note: string = "", escalatedBy: s
 export const markInaccurate = (issueId: string) =>
   request<{ status: string }>(`/local/${issueId}/inaccurate`, { method: "POST" });
 
-export const markComplete = (issueId: string, username: string = "") =>
+export const markComplete = (issueId: string, username: string = "", reason: string = "") =>
   request<{ status: string; feishu_synced: boolean; feishu_notified: boolean }>(`/local/${issueId}/complete`, {
     method: "POST",
-    body: JSON.stringify({ username }),
+    body: JSON.stringify({ username, reason }),
   });
 
 export const fetchInaccurate = (page = 1, pageSize = 20) =>

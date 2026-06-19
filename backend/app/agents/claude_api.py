@@ -226,6 +226,8 @@ class ClaudeApiAgent(BaseAgent):
     ) -> AnalysisResult:
         cfg = self.config
         trace = _TraceWriter(workspace / "output" / "agent_trace.jsonl")
+        # 计量：累加各轮 usage（input/output/cache_*），最终挂到 result.usage_tokens
+        _total_usage: dict = {}
         trace.write({
             "event": "start",
             "model": cfg.model,
@@ -328,6 +330,10 @@ class ClaudeApiAgent(BaseAgent):
                 stop_reason = resp.get("stop_reason", "")
                 last_stop_reason = stop_reason
                 usage = resp.get("usage", {}) or {}
+                for _k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                    _v = usage.get(_k)
+                    if isinstance(_v, (int, float)):
+                        _total_usage[_k] = _total_usage.get(_k, 0) + int(_v)
                 content_blocks = resp.get("content", []) or []
 
                 # Append assistant message verbatim so tool_use_id stays consistent
@@ -431,6 +437,10 @@ class ClaudeApiAgent(BaseAgent):
 
             result = self.parse_result(workspace, raw_output)
             result.agent_type = "claude_api"
+            # 计量：API 无现成 cost → 只挂 usage，worker 按定价表算（cost_source=computed）
+            result.usage_tokens = dict(_total_usage)
+            result.agent_cost_usd = None
+            result.cost_source = ""
             trace.write({
                 "event": "end",
                 "stop_reason": last_stop_reason,

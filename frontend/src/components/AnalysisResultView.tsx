@@ -14,6 +14,7 @@
  */
 
 import type { Dispatch, ReactNode, SetStateAction } from "react";
+import { useState } from "react";
 import { useT } from "@/lib/i18n";
 import MarkdownText from "@/components/MarkdownText";
 import { AgentTraceBlock } from "@/components/AgentTraceBlock";
@@ -35,6 +36,84 @@ function ConfBadge({ c }: { c: string }) {
   );
 }
 
+// ---- Usage / cost formatting helpers (功能 1) ----
+type UsageEntry = NonNullable<AnalysisResult["usage_breakdown"]>[string];
+
+function entryTokens(e?: UsageEntry): number {
+  if (!e) return 0;
+  return (e.input_tokens || 0) + (e.output_tokens || 0)
+    + (e.cache_read_input_tokens || 0) + (e.cache_creation_input_tokens || 0);
+}
+
+function fmtTokens(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+function fmtCost(c: number): string {
+  if (c <= 0) return "$0.00";
+  if (c < 0.01) return "<$0.01";
+  return `$${c.toFixed(2)}`;
+}
+
+/** Per-card usage meter: 「本次：1,234 tokens · $0.05」, hover/expand → breakdown. */
+function UsageMeter({ r }: { r: AnalysisResult }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const tokens = r.total_tokens || 0;
+  const cost = r.total_cost_usd || 0;
+  const missing = !tokens || r.cost_source === "partial";
+  const breakdown = r.usage_breakdown || {};
+  const hasBreakdown = Object.keys(breakdown).length > 0;
+
+  if (missing) {
+    return (
+      <div className="text-[10px]" style={{ color: S.text3 }}>
+        {t("本次")}：—
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-[10px]" style={{ color: S.text3 }}>
+      <button
+        type="button"
+        onClick={() => hasBreakdown && setOpen((v) => !v)}
+        title={hasBreakdown ? t("用量明细") : undefined}
+        className="inline-flex items-center gap-1"
+        style={{ background: "none", border: "none", padding: 0, color: S.text3, cursor: hasBreakdown ? "pointer" : "default" }}>
+        <span className="tabular-nums">
+          {t("本次")}：{fmtTokens(tokens)} tokens · {fmtCost(cost)}
+        </span>
+        {hasBreakdown && (
+          <svg className={`h-2.5 w-2.5 transition-transform ${open ? "rotate-90" : ""}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        )}
+      </button>
+      {open && hasBreakdown && (
+        <div className="mt-1 space-y-0.5 rounded-md px-2 py-1.5"
+          style={{ background: S.overlay, border: `1px solid ${S.borderSm}` }}>
+          {Object.entries(breakdown).map(([key, e]) => {
+            const label = key === "condenser" ? t("凝缩器") : key === "agent" ? t("Agent") : key;
+            return (
+              <div key={key} className="flex items-center justify-between gap-3">
+                <span style={{ color: S.text2 }}>
+                  {label}
+                  {e?.model && <span className="ml-1" style={{ color: S.text3 }}>({e.model.replace(/^claude-/, "").replace(/-\d{8}$/, "")})</span>}
+                </span>
+                <span className="tabular-nums" style={{ color: S.text3 }}>
+                  {fmtTokens(entryTokens(e))} tokens · {fmtCost(e?.cost_usd || 0)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export interface AnalysisResultViewProps {
   analyses: AnalysisResult[];
   issueId: string;
@@ -50,7 +129,8 @@ export interface AnalysisResultViewProps {
   setFollowupText: (s: string) => void;
   followupSubmitting: boolean;
   onStartFollowup: (issueId: string, text: string) => void;
-  onDeepAnalysis: (issueId: string) => void;
+  /** direction = optional new analysis direction collected from the deep-analysis dialog. */
+  onDeepAnalysis: (issueId: string, direction?: string) => void;
   onCopy: (text: string) => void;
   /** 首页-only interactive engineer-label feedback widget. */
   renderEngineerFeedback?: (r: AnalysisResult) => ReactNode;
@@ -83,6 +163,9 @@ export function AnalysisResultView({
 }: AnalysisResultViewProps) {
   const t = useT();
   const isAnalyzing = !!activeTask && !["done", "failed"].includes(activeTask.status);
+  // Deep-analysis dialog: collect an optional "new analysis direction" before firing onDeepAnalysis.
+  const [deepDialogOpen, setDeepDialogOpen] = useState(false);
+  const [deepDirection, setDeepDirection] = useState("");
 
   return (
     <>
@@ -163,6 +246,15 @@ export function AnalysisResultView({
                   </svg>
                   {isFollowup ? t("追问分析") : t("初次分析")}
                 </span>
+                {r.is_deep_analysis === true && (
+                  <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                    style={{ background: "rgba(99,102,241,0.12)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.3)" }}>
+                    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    {t("Deep Analysis")}
+                  </span>
+                )}
                 {!isFollowup && createdAt && (
                   <span className="text-[10px]" style={{ color: S.text3 }}>{formatLocalTime(createdAt)}</span>
                 )}
@@ -212,6 +304,9 @@ export function AnalysisResultView({
                   );
                 })()}
               </div>
+
+              {/* Per-run usage meter — 本次 tokens · cost (功能 1) */}
+              <UsageMeter r={r} />
 
               {/* 客服反馈闭环 widget — 仅当宿主页提供 slot 且未反馈时显示 */}
               {r.needs_engineer
@@ -331,7 +426,7 @@ export function AnalysisResultView({
                 <p className="text-xs leading-relaxed" style={{ color: "#6366F1" }}>{t("分析可信度较低提示")}</p>
               </div>
             )}
-            <button onClick={() => onDeepAnalysis(issueId)}
+            <button onClick={() => { setDeepDirection(""); setDeepDialogOpen(true); }}
               className="w-full rounded-lg py-2 text-sm font-semibold"
               style={{ background: "rgba(99,102,241,0.15)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.3)" }}>
               {t("深度分析")}
@@ -339,6 +434,52 @@ export function AnalysisResultView({
           </section>
         );
       })()}
+
+      {/* Deep-analysis dialog: warn + collect optional new direction (功能 2) */}
+      {deepDialogOpen && (
+        <div className="j-fade fixed inset-0 z-[60] flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setDeepDialogOpen(false)}>
+          <div className="j-pop w-full max-w-md rounded-xl p-5"
+            style={{ background: "var(--j-panel)", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(99,102,241,0.12)" }}>
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="#6366F1" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("确认开始深度分析")}</h3>
+                <p className="mt-2 text-xs leading-relaxed" style={{ color: S.text2 }}>{t("深度分析风险提示")}</p>
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                {t("新的分析方向（可选）")}
+              </label>
+              <textarea
+                value={deepDirection}
+                onChange={(e) => setDeepDirection(e.target.value)}
+                placeholder={t("输入新的分析方向…")}
+                rows={3}
+                className="w-full resize-none rounded-lg px-3 py-2 text-sm outline-none"
+                style={{ background: S.overlay, border: `1px solid ${S.borderSm}`, color: S.text1 }}
+              />
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setDeepDialogOpen(false)}
+                className="rounded-lg px-4 py-2 text-sm font-medium"
+                style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
+                {t("取消")}
+              </button>
+              <button onClick={() => { const d = deepDirection.trim(); setDeepDialogOpen(false); onDeepAnalysis(issueId, d || undefined); }}
+                className="rounded-lg px-4 py-2 text-sm font-semibold"
+                style={{ background: "#6366F1", color: "#FFFFFF" }}>
+                {t("确定开始")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Follow-up progress — above input */}
       {isAnalyzing && activeTask && (

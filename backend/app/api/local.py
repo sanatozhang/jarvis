@@ -170,6 +170,12 @@ async def get_issue_analyses(issue_id: str):
             "agent_model": getattr(a, "agent_model", "") or "",
             "followup_question": a.followup_question or "",
             "log_metadata": json.loads(a.log_metadata_json) if getattr(a, "log_metadata_json", None) else {},
+            # 计量 + 深度分析标记（结果页展示）
+            "total_tokens": int(getattr(a, "total_tokens", 0) or 0),
+            "total_cost_usd": float(getattr(a, "total_cost_usd", 0.0) or 0.0),
+            "usage_breakdown": json.loads(a.usage_json) if getattr(a, "usage_json", None) else {},
+            "cost_source": getattr(a, "cost_source", "") or "",
+            "is_deep_analysis": bool(getattr(a, "is_deep_analysis", False)),
             "created_at": (a.created_at.isoformat() + "Z") if a.created_at else "",
         }
         for a in analyses
@@ -510,19 +516,27 @@ async def mark_inaccurate(issue_id: str):
 
 class MarkCompleteRequest(BaseModel):
     username: str = ""
+    reason: str = ""  # 标记完成原因（必填）
 
 
 @router.post("/{issue_id}/complete")
 @_handle_exceptions("Failed to mark complete")
 async def mark_complete(issue_id: str, body: MarkCompleteRequest):
-    """Mark issue as completed — syncs to Feishu if feishu-sourced."""
+    """Mark issue as completed — syncs to Feishu if feishu-sourced.
+
+    必须提供 reason（标记完成原因），否则 400。原因记入事件日志便于追溯。
+    """
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="标记完成需填写原因")
+
     async with db.get_session() as session:
         issue = await session.get(db.IssueRecord, issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
 
     await db.update_issue_status(issue_id, "done")
-    await db.log_event("mark_complete", issue_id=issue_id, username=body.username)
+    await db.log_event("mark_complete", issue_id=issue_id, username=body.username, detail={"reason": reason})
 
     # Sync to Feishu bitable: only set 确认提交=true (don't touch other fields)
     feishu_synced = False

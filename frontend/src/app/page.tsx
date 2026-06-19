@@ -198,6 +198,9 @@ export default function HomePage() {
   const [tabInd, setTabInd] = useState<{ left: number; width: number }>({ left: 0, width: 0 });
   // Deep-analysis confirmation: holds the issue id pending confirmation, or null
   const [deepConfirmId, setDeepConfirmId] = useState<string | null>(null);
+  // Mark-complete reason dialog: holds the issue id pending a reason, or null
+  const [completeId, setCompleteId] = useState<string | null>(null);
+  const [completeReason, setCompleteReason] = useState("");
 
   // Import state
   const [importQuery, setImportQuery] = useState("");
@@ -416,9 +419,9 @@ export default function HomePage() {
   const onDonePage = (p: number) => { setDonePage(p); loadDone(p); };
   const onInaccuratePage = (p: number) => { setInaccuratePage(p); loadInaccurate(p); };
 
-  const startAnalysis = async (issueId: string, isRetry = false, deepAnalysis = false) => {
+  const startAnalysis = async (issueId: string, isRetry = false, deepAnalysis = false, direction?: string) => {
     try {
-      const task = await createTask(issueId, undefined, isRetry ? "" : (username || ""), undefined, deepAnalysis);
+      const task = await createTask(issueId, undefined, isRetry ? "" : (username || ""), direction || undefined, deepAnalysis);
       setActiveTasks((p) => ({ ...p, [issueId]: task }));
       // Remove from pending list (new analysis)
       setPendingData((prev) => {
@@ -460,6 +463,12 @@ export default function HomePage() {
     setDeepConfirmId(null);
     trackEvent("deep_analysis", { issue_id: id });
     startAnalysis(id, true, true);
+    setToast(t("深度分析已启动"));
+  };
+  // Deep analysis launched from <AnalysisResultView> (its own dialog collected an optional direction).
+  const handleDeepAnalysisWithDirection = (id: string, direction?: string) => {
+    trackEvent("deep_analysis", { issue_id: id, has_direction: !!direction });
+    startAnalysis(id, true, true, direction);
     setToast(t("深度分析已启动"));
   };
 
@@ -517,9 +526,9 @@ export default function HomePage() {
     } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
   };
 
-  const handleMarkComplete = async (issueId: string) => {
+  const handleMarkComplete = async (issueId: string, reason: string) => {
     try {
-      const res = await markComplete(issueId, username || "");
+      const res = await markComplete(issueId, username || "", reason);
       const msg = res.feishu_notified
         ? t("工单已标记完成，已通知飞书群")
         : res.feishu_synced ? t("已标记完成（飞书已同步）") : t("已标记完成");
@@ -1362,7 +1371,7 @@ export default function HomePage() {
                     setFollowupText={setFollowupText}
                     followupSubmitting={followupSubmitting}
                     onStartFollowup={startFollowup}
-                    onDeepAnalysis={(id) => setDeepConfirmId(id)}
+                    onDeepAnalysis={handleDeepAnalysisWithDirection}
                     onCopy={copy}
                     renderEngineerFeedback={(r) => (
                       <EngineerLabelFeedbackWidget
@@ -1441,7 +1450,7 @@ export default function HomePage() {
               <section className="pt-4 space-y-2" style={{ borderTop: `1px solid ${S.border}` }}>
                 {/* Mark complete — for done/failed, syncs to Feishu */}
                 {(detailData.localItem?.local_status === "done" || detailData.localItem?.local_status === "failed") && (
-                  <button onClick={() => handleMarkComplete(detailId!)}
+                  <button onClick={() => { setCompleteReason(""); setCompleteId(detailId!); }}
                     className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
                     style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1656,6 +1665,59 @@ export default function HomePage() {
                 className="rounded-lg px-4 py-2 text-sm font-semibold"
                 style={{ background: "#6366F1", color: "#FFFFFF" }}>
                 {t("确定开始")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mark-complete reason dialog — reason is required (功能 3) */}
+      {completeId && (
+        <div className="j-fade fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setCompleteId(null)}>
+          <div className="j-pop w-full max-w-md rounded-xl p-5" style={{ background: "var(--j-panel)", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(34,197,94,0.12)" }}>
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="#16A34A" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("标记完成")}</h3>
+                <p className="mt-1 text-xs" style={{ color: S.text2 }}>{t("请输入标记完成的原因")}</p>
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                {t("标记完成原因")}
+              </label>
+              <textarea
+                value={completeReason}
+                onChange={(e) => setCompleteReason(e.target.value)}
+                placeholder={t("输入标记完成的原因…")}
+                rows={3}
+                autoFocus
+                className="w-full resize-none rounded-lg px-3 py-2 text-sm outline-none"
+                style={{ background: S.overlay, border: `1px solid ${S.borderSm}`, color: S.text1 }}
+              />
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setCompleteId(null)}
+                className="rounded-lg px-4 py-2 text-sm font-medium"
+                style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
+                {t("取消")}
+              </button>
+              <button
+                onClick={() => {
+                  const reason = completeReason.trim();
+                  if (!reason) { setToast(t("请填写原因")); return; }
+                  const id = completeId;
+                  setCompleteId(null);
+                  handleMarkComplete(id, reason);
+                }}
+                disabled={!completeReason.trim()}
+                className="rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-40"
+                style={{ background: "#16A34A", color: "#FFFFFF" }}>
+                {t("确定")}
               </button>
             </div>
           </div>

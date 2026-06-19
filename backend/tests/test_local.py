@@ -131,7 +131,7 @@ async def test_mark_complete_resolves_and_notifies_escalation_group(client, db_s
         escalation_status="in_progress",
     )
 
-    resp = await client.post("/api/local/fb_esc_done/complete", json={"username": "tester"})
+    resp = await client.post("/api/local/fb_esc_done/complete", json={"username": "tester", "reason": "已修复并验证"})
     assert resp.status_code == 200
     assert resp.json()["feishu_notified"] is True
 
@@ -158,7 +158,7 @@ async def test_mark_complete_non_escalated_no_notify(client, db_session, monkeyp
 
     await seed_issue(db_session, "fb_plain_done", source="local", status="done")
 
-    resp = await client.post("/api/local/fb_plain_done/complete", json={"username": "tester"})
+    resp = await client.post("/api/local/fb_plain_done/complete", json={"username": "tester", "reason": "已修复并验证"})
     assert resp.status_code == 200
     assert resp.json()["feishu_notified"] is False
     assert sent == []
@@ -224,3 +224,12 @@ async def test_download_logs_decrypted_takes_priority_over_raw(client, db_sessio
     resp = await client.get("/api/local/dl_both/download-logs")
     assert resp.status_code == 200
     assert resp.content == b"decrypted"
+
+
+async def test_mark_complete_requires_reason(client, db_session):
+    """标记完成必须填原因：缺 reason → 400。"""
+    await seed_issue(db_session, "need_reason", source="local", status="analyzing")
+    resp = await client.post("/api/local/need_reason/complete", json={"username": "tester"})
+    assert resp.status_code == 400
+    resp2 = await client.post("/api/local/need_reason/complete", json={"username": "tester", "reason": "  "})
+    assert resp2.status_code == 400  # 空白也不行

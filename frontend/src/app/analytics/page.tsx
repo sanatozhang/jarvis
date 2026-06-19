@@ -24,6 +24,8 @@ interface Analytics {
   feedback_submitted: number; escalations: number;
   fail_reasons: FailReasonItem[];
   daily: Record<string, Record<string, number>>;
+  total_tokens?: number;
+  total_cost_usd?: number;
   top_users: { username: string; count: number }[];
   value_metrics: {
     time_saved_hours: number; time_saved_per_ticket_min: number;
@@ -37,6 +39,19 @@ const S = {
   text1: "var(--j-ink)", text2: "var(--j-graphite)", text3: "var(--j-faint)",
 };
 
+// Token 大数千分位
+function fmtTokens(n: number): string {
+  return Math.round(n || 0).toLocaleString("en-US");
+}
+// 费用：保留 2-4 位小数（小额多保留几位）
+function fmtCost(n: number): string {
+  const v = n || 0;
+  if (v === 0) return "0.00";
+  if (v < 0.01) return v.toFixed(4);
+  if (v < 1) return v.toFixed(3);
+  return v.toFixed(2);
+}
+
 function StatCard({ label, value, sub, color, index = 0 }: { label: string; value: string | number; sub?: string; color?: string; index?: number }) {
   const numeric = typeof value === "number" && Number.isFinite(value);
   return (
@@ -46,15 +61,6 @@ function StatCard({ label, value, sub, color, index = 0 }: { label: string; valu
         {numeric ? <CountUp value={value} /> : value}
       </p>
       {sub && <p className="mt-0.5 text-[11px] font-mono" style={{ color: S.text3 }}>{sub}</p>}
-    </div>
-  );
-}
-
-function Bar({ value, max, color }: { value: number; max: number; color: string }) {
-  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
-  return (
-    <div className="h-4 w-full overflow-hidden rounded-full" style={{ background: S.hover }}>
-      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
     </div>
   );
 }
@@ -104,10 +110,6 @@ export default function AnalyticsPage() {
   useEffect(() => { load(days); }, [days]);
 
   const dailyDates = data ? Object.keys(data.daily).sort() : [];
-  const maxDaily = data ? Math.max(1, ...dailyDates.map((d) => {
-    const day = data.daily[d];
-    return (day.analysis_start || 0) + (day.feedback_submit || 0);
-  })) : 1;
 
   return (
     <div className="min-h-full">
@@ -223,35 +225,154 @@ export default function AnalyticsPage() {
             <StatCard label={t("页面访问")} value={data.event_counts.page_visit || 0} index={3} />
           </div>
 
-          {/* Daily trend */}
+          {/* 本期总计 汇总卡 */}
+          <div className="grid grid-cols-2 gap-3">
+            <StatCard label={t("本期总 Token")} value={fmtTokens(data.total_tokens || 0)} sub={`${dailyDates.length} ${t("天")}`} color="#B8922E" index={0} />
+            <StatCard label={t("本期总费用")} value={`$${fmtCost(data.total_cost_usd || 0)}`} sub={t("USD")} color="#16A34A" index={1} />
+          </div>
+
+          {/* Daily trend — 双轴折线（工单数 + Token 消耗）*/}
           <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.08s" }}>
             <h2 className="mb-4 text-sm font-semibold" style={{ color: S.text1 }}>{t("每日趋势")}</h2>
             {dailyDates.length === 0 ? (
               <p className="py-8 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>
-            ) : (
-              <div className="space-y-2.5">
-                {dailyDates.map((date) => {
-                  const day = data.daily[date];
-                  const analyses = day.analysis_start || 0;
-                  const success = day.analysis_done || 0;
-                  const fail = day.analysis_fail || 0;
-                  const feedback = day.feedback_submit || 0;
-                  return (
-                    <div key={date} className="flex items-center gap-3">
-                      <span className="w-20 flex-shrink-0 font-mono text-xs" style={{ color: S.text3 }}>{date.slice(5)}</span>
-                      <div className="flex-1">
-                        <Bar value={analyses + feedback} max={maxDaily} color={S.accent} />
-                      </div>
-                      <div className="flex w-44 flex-shrink-0 items-center gap-3 text-[11px] font-mono">
-                        <span style={{ color: S.text2 }}>{analyses} {t("分析")}</span>
-                        <span style={{ color: "#16A34A" }}>{success} ✓</span>
-                        {fail > 0 && <span style={{ color: "#DC2626" }}>{fail} ✗</span>}
-                      </div>
+            ) : (() => {
+              const COUNT_COLOR = "#B8922E"; // 站点金 — 工单数（左轴）
+              const TOKEN_COLOR = "#2563EB"; // 对比色 — Token 消耗（右轴）
+
+              const dates = dailyDates;
+              const counts = dates.map((d) => data.daily[d].analysis_start || 0);
+              const tokens = dates.map((d) => data.daily[d].tokens || 0);
+
+              const maxCount = Math.max(1, ...counts);
+              const maxToken = Math.max(1, ...tokens);
+
+              const W = 600, H = 220;
+              const pad = { top: 10, right: 44, bottom: 24, left: 32 };
+              const cw = W - pad.left - pad.right;
+              const ch = H - pad.top - pad.bottom;
+
+              const xStep = dates.length > 1 ? cw / (dates.length - 1) : 0;
+              const toX = (i: number) => dates.length > 1 ? pad.left + i * xStep : pad.left + cw / 2;
+              const toYCount = (v: number) => pad.top + ch - (v / maxCount) * ch;
+              const toYToken = (v: number) => pad.top + ch - (v / maxToken) * ch;
+
+              const buildPath = (pts: [number, number][]) => {
+                if (pts.length === 0) return "";
+                if (pts.length === 1) return `M${pts[0][0]},${pts[0][1]}`;
+                let d = `M${pts[0][0]},${pts[0][1]}`;
+                for (let i = 0; i < pts.length - 1; i++) {
+                  const p0 = pts[Math.max(0, i - 1)];
+                  const p1 = pts[i];
+                  const p2 = pts[i + 1];
+                  const p3 = pts[Math.min(pts.length - 1, i + 2)];
+                  const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+                  const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+                  const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+                  const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+                  d += ` C${cp1x},${cp1y} ${cp2x},${cp2y} ${p2[0]},${p2[1]}`;
+                }
+                return d;
+              };
+
+              const labelInterval = Math.max(1, Math.floor(dates.length / 6));
+
+              // 左轴网格刻度（工单数）
+              const countGridStep = maxCount <= 5 ? 1 : maxCount <= 20 ? 5 : Math.ceil(maxCount / 4 / 5) * 5;
+              const countTop = Math.ceil(maxCount / countGridStep) * countGridStep || 1;
+
+              // 右轴刻度（token）— 与左轴同数量的刻度行对齐
+              const gridLines = Math.max(1, Math.floor(countTop / countGridStep));
+
+              const countPts: [number, number][] = dates.map((d, i) => [toX(i), toYCount(counts[i])]);
+              const tokenPts: [number, number][] = dates.map((d, i) => [toX(i), toYToken(tokens[i])]);
+
+              // token 轴标签简写
+              const fmtTokenAxis = (v: number) =>
+                v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M`
+                : v >= 1_000 ? `${(v / 1_000).toFixed(0)}k`
+                : `${Math.round(v)}`;
+
+              return (
+                <div>
+                  {/* Legend */}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mb-2">
+                    <div className="flex items-center gap-1">
+                      <span className="inline-block h-2 w-2 rounded-full" style={{ background: COUNT_COLOR }} />
+                      <span className="text-[10px]" style={{ color: S.text3 }}>{t("工单数")}</span>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                    <div className="flex items-center gap-1">
+                      <span className="inline-block h-2 w-2 rounded-full" style={{ background: TOKEN_COLOR }} />
+                      <span className="text-[10px]" style={{ color: S.text3 }}>{t("Token 消耗")}</span>
+                    </div>
+                  </div>
+                  <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ overflow: "visible" }}>
+                    {/* 网格线 + 双轴标签 */}
+                    {Array.from({ length: gridLines + 1 }, (_, i) => {
+                      const cv = i * countGridStep;
+                      const y = toYCount(cv);
+                      const tv = (cv / countTop) * maxToken;
+                      return (
+                        <g key={i}>
+                          <line x1={pad.left} x2={W - pad.right} y1={y} y2={y}
+                            stroke={S.border} strokeWidth={0.5} />
+                          {/* 左轴：工单数 */}
+                          <text x={pad.left - 4} y={y + 3} textAnchor="end"
+                            style={{ fontSize: 8, fill: COUNT_COLOR, fontFamily: "monospace" }}>{cv}</text>
+                          {/* 右轴：token */}
+                          <text x={W - pad.right + 4} y={y + 3} textAnchor="start"
+                            style={{ fontSize: 8, fill: TOKEN_COLOR, fontFamily: "monospace" }}>{fmtTokenAxis(tv)}</text>
+                        </g>
+                      );
+                    })}
+                    {/* Token 线（右轴）*/}
+                    <path d={buildPath(tokenPts)} fill="none" stroke={TOKEN_COLOR}
+                      strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" opacity={0.85} />
+                    {/* 工单数线（左轴）*/}
+                    <path d={buildPath(countPts)} fill="none" stroke={COUNT_COLOR}
+                      strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" opacity={0.9} />
+                    {/* 数据点 + hover tooltip */}
+                    {dates.map((d, i) => {
+                      const day = data.daily[d];
+                      const cnt = counts[i];
+                      const tok = tokens[i];
+                      const cost = day.cost_usd || 0;
+                      const success = day.analysis_done || 0;
+                      const fail = day.analysis_fail || 0;
+                      const tip = `${d} · ${cnt} ${t("工单")} · ${fmtTokens(tok)} tok · $${fmtCost(cost)}\n${success}✓${fail > 0 ? ` ${fail}✗` : ""}`;
+                      return (
+                        <g key={d}>
+                          {/* token 点 */}
+                          <circle cx={toX(i)} cy={toYToken(tok)} r={2.5}
+                            fill="#fff" stroke={TOKEN_COLOR} strokeWidth={1.5}>
+                            <title>{tip}</title>
+                          </circle>
+                          {/* 工单数点 */}
+                          <circle cx={toX(i)} cy={toYCount(cnt)} r={2.5}
+                            fill="#fff" stroke={COUNT_COLOR} strokeWidth={1.5}>
+                            <title>{tip}</title>
+                          </circle>
+                          {/* 透明 hover 命中区（整条竖列）*/}
+                          <rect x={toX(i) - Math.max(6, xStep / 2)} y={pad.top}
+                            width={Math.max(12, xStep)} height={ch}
+                            fill="transparent">
+                            <title>{tip}</title>
+                          </rect>
+                        </g>
+                      );
+                    })}
+                    {/* X labels */}
+                    {dates.map((d, i) => {
+                      if (i % labelInterval !== 0 && i !== dates.length - 1) return null;
+                      return (
+                        <text key={d} x={toX(i)} y={H - 4} textAnchor="middle"
+                          style={{ fontSize: 8, fill: S.text3, fontFamily: "monospace" }}>{d.slice(5)}</text>
+                      );
+                    })}
+                  </svg>
+                </div>
+              );
+            })()}
           </section>
 
           {/* Problem type distribution + trend */}

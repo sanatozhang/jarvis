@@ -265,6 +265,16 @@ class Settings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     jenkins: JenkinsSettings = Field(default_factory=JenkinsSettings)
 
+    # 模型定价（每 Mtok USD），仅用于 API 路径成本估算（condenser haiku / claude_api agent）。
+    # claude_code CLI 直接用 --output-format json 的 total_cost_usd，不查此表。
+    # 来源：claude-api 定价（2026-06）；cache_read≈0.1×input，cache_write(5m)≈1.25×input。
+    # 可在 config.yaml `pricing:` 段覆盖；定价变动时人工维护。
+    pricing: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {
+        "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
+        "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+        "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
+    })
+
     model_config = {
         "env_file": str(PROJECT_ROOT / ".env"),
         "env_file_encoding": "utf-8",
@@ -389,6 +399,13 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
             or os.getenv("APPLLO_BASE_URL", "")
             or os.getenv("CRASHGUARD_FRONTEND_BASE_URL", "")
         ).rstrip("/")
+
+    # pricing：config.yaml `pricing:` 段按 model 合并覆盖默认表（缺省项保留默认）
+    pr = cfg.get("pricing", {})
+    if isinstance(pr, dict):
+        for model_name, rates in pr.items():
+            if isinstance(rates, dict):
+                settings.pricing[model_name] = {**settings.pricing.get(model_name, {}), **rates}
 
     return settings
 

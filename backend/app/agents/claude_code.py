@@ -31,6 +31,36 @@ def _make_cli_env() -> dict:
     return {k: v for k, v in os.environ.items() if k not in _CLI_ENV_EXCLUDE}
 
 
+def parse_cli_result_envelope(raw_stdout: str):
+    """解析 `claude -p --output-format json` 的 stdout 信封。
+
+    返回 (text, usage, cost_usd, source)：
+    - text：信封 `.result` 字段 == 原 text 模式 stdout（喂给下游 salvage/error/fixup，行为不变）
+    - usage：{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}
+    - cost_usd：信封 `total_cost_usd`（CLI 直接给，无需定价表）；缺失 → None
+    - source："cli_reported"（成功解析）/ "partial"（非 JSON 或畸形 → 当纯文本兜底）
+
+    向后安全：CLI 版本差异/异常导致 stdout 非合法信封时，原样当正文，不丢分析。
+    """
+    s = (raw_stdout or "").strip()
+    if s.startswith("{"):
+        try:
+            env = json.loads(s)
+            if isinstance(env, dict) and ("result" in env or env.get("type") == "result"):
+                text = env.get("result")
+                if not isinstance(text, str):
+                    text = raw_stdout
+                usage = env.get("usage") or {}
+                if not isinstance(usage, dict):
+                    usage = {}
+                cost = env.get("total_cost_usd")
+                cost = float(cost) if isinstance(cost, (int, float)) else None
+                return text, usage, cost, "cli_reported"
+        except (ValueError, TypeError):
+            pass
+    return raw_stdout, {}, None, "partial"
+
+
 # 进行中/占位标记：模型常先写一份 "PRELIMINARY / 分析中" 的 checkpoint result.json 再继续。
 # salvage 路径必须用它把占位结果挡掉——否则被外部 kill（看门狗/超时）时，会把占位当成品
 # 标成 done（实测 fb_17b4fa0293：root_cause="PRELIMINARY - still investigating" 被标 done）。
@@ -158,8 +188,10 @@ class ClaudeCodeAgent(BaseAgent):
                 if hb_task is not None and not hb_task.done():
                     hb_task.cancel()
 
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stdout_raw = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
+            # 解析 json 信封：取 .result 当作原 stdout 喂下游（行为不变），抽出 usage/cost 供计量
+            stdout, _cli_usage, _cli_cost, _cli_cost_source = parse_cli_result_envelope(stdout_raw)
 
             if proc.returncode != 0:
                 logger.warning(
@@ -230,6 +262,10 @@ class ClaudeCodeAgent(BaseAgent):
             raw_output = stdout
             result = self._parse_claude_output(workspace, raw_output)
             result.agent_type = "claude_code"
+            # 计量：CLI json 信封直接给 usage + total_cost_usd（无需定价表）
+            result.usage_tokens = {k: int(v) for k, v in (_cli_usage or {}).items() if isinstance(v, (int, float))}
+            result.agent_cost_usd = _cli_cost
+            result.cost_source = _cli_cost_source
             return result
 
         except asyncio.CancelledError:
@@ -361,7 +397,9 @@ class ClaudeCodeAgent(BaseAgent):
         cmd = [
             "claude",
             "-p",
-            "--output-format", "text",
+            # json 信封带 usage + total_cost_usd（计量用）；.result 字段等于原 text 模式 stdout，
+            # 解析后重赋给 stdout，下游 salvage/error/fixup 逻辑行为不变（见 parse_cli_result_envelope）
+            "--output-format", "json",
         ]
 
         if self.config.model:

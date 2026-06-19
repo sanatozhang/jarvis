@@ -142,6 +142,16 @@ class AnalysisResult(BaseModel):
     raw_output: str = ""
     followup_question: str = ""
     log_metadata: Dict[str, Any] = Field(default_factory=dict)  # Extracted from logs: uid, version, device, etc.
+    # 计量（2026-06-19）：本次 agent 调用的 token 用量与费用。claude_code CLI 直接给 cost；
+    # API 路径（claude_api）按定价表算。worker 再叠加 condenser 用量后持久化到 analyses 表。
+    usage_tokens: Dict[str, int] = Field(default_factory=dict)  # input/output/cache_read/cache_creation
+    agent_cost_usd: Optional[float] = None
+    cost_source: str = ""  # cli_reported / computed / partial
+    # worker 聚合后（agent + condenser）的落库口径
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
+    usage_breakdown: Dict[str, Any] = Field(default_factory=dict)
+    is_deep_analysis: bool = False  # 是否深度分析（全量日志），供结果页打 label
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Issue context (denormalized for convenience)

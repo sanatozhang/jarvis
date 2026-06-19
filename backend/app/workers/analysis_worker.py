@@ -619,9 +619,28 @@ async def run_analysis_pipeline(
     result.task_id = task_id
     result.issue = issue
     result.log_metadata = log_metadata
+    result.is_deep_analysis = bool(deep_analysis)
     if followup_question:
         result.followup_question = followup_question
         result = _sanitize_followup_result(result, previous_analysis, issue_id)  # ④
+
+    # 计量：聚合 agent（usage_tokens/agent_cost_usd/cost_source）+ condenser 用量 → 落库字段
+    try:
+        from app.services.cost import build_usage_record
+        rec = build_usage_record(
+            agent_usage=result.usage_tokens or {},
+            agent_cost_usd=result.agent_cost_usd,
+            agent_cost_source=result.cost_source,
+            agent_model=result.agent_model,
+            condenser_usage=(condensation_result or {}).get("condenser_usage", {}),
+            condenser_model=(condensation_result or {}).get("condenser_model", ""),
+        )
+        result.total_tokens = rec["total_tokens"]
+        result.total_cost_usd = rec["total_cost_usd"]
+        result.usage_breakdown = rec["usage_breakdown"]
+        result.cost_source = rec["cost_source"]
+    except Exception as e:
+        logger.warning("计量聚合失败（non-fatal）: %s", e)
 
     if on_progress:
         await on_progress(100, "Analysis complete")
@@ -920,6 +939,7 @@ async def _run_context_condensation(
     # anthropic provider falls back to Claude CLI (OAuth, no api_key required);
     # other providers still require an api_key.
     structured_context = None
+    condenser_usage: Dict[str, int] = {}  # 计量：L1.5 预提取 token 用量（anthropic 路径）
     if cc.enabled and (cc.api_key or cc.provider == "anthropic"):
         if on_progress:
             await on_progress(55, "L1.5: LLM 上下文提取...")
@@ -949,6 +969,7 @@ async def _run_context_condensation(
                 l1_extraction=extraction,
                 rules_summary=rules_summary,
             )
+            condenser_usage = dict(result.usage or {})  # 计量：无论成功与否都计费
 
             if result.success:
                 structured_context = result.structured_context
@@ -1016,4 +1037,6 @@ async def _run_context_condensation(
         "log_paths": windowed_paths,
         "structured_context": structured_context,
         "windowing_metadata": windowing_meta,
+        "condenser_usage": condenser_usage,
+        "condenser_model": cc.model,
     }

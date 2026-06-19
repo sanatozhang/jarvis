@@ -113,6 +113,13 @@ class AnalysisRecord(Base):
     raw_output = Column(Text, default="")
     followup_question = Column(Text, default="")
     log_metadata_json = Column(Text, default="{}")  # JSON: extracted log metadata (uid, version, device, etc.)
+    # 计量（2026-06-19）：每次分析/追问独立计费。total = agent + condenser；
+    # total_tokens/total_cost_usd 供 analytics 按天 SUM，usage_json 存拆分明细供结果页展示。
+    total_tokens = Column(Integer, default=0)        # (agent+condenser) input+output+cache 之和
+    total_cost_usd = Column(Float, default=0.0)      # agent_cost + condenser_cost (USD)
+    usage_json = Column(Text, default="{}")          # {"agent":{...,cost,source}, "condenser":{...,cost,model}}
+    cost_source = Column(String(16), default="")     # cli_reported / computed / partial
+    is_deep_analysis = Column(Boolean, default=False)  # 深度分析（全量日志）→ 结果页打 label
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -425,6 +432,11 @@ async def init_db():
             ("engineer_label_feedback_by", "VARCHAR(64)", "''"),  # T3
             ("engineer_label_feedback_at", "DATETIME", "NULL"),   # T3
             ("engineer_label_feedback_note", "TEXT", "''"),       # T3
+            ("total_tokens", "INTEGER", "0"),          # 计量：token 总量
+            ("total_cost_usd", "REAL", "0"),           # 计量：费用 USD
+            ("usage_json", "TEXT", "'{}'"),            # 计量：拆分明细
+            ("cost_source", "VARCHAR(16)", "''"),      # 计量：cli_reported/computed/partial
+            ("is_deep_analysis", "BOOLEAN", "0"),      # 深度分析标记
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -923,6 +935,11 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             raw_output=data.get("raw_output", ""),
             followup_question=data.get("followup_question", ""),
             log_metadata_json=json.dumps(data.get("log_metadata", {}), ensure_ascii=False),
+            total_tokens=int(data.get("total_tokens", 0) or 0),
+            total_cost_usd=float(data.get("total_cost_usd", 0.0) or 0.0),
+            usage_json=json.dumps(data.get("usage_breakdown", {}), ensure_ascii=False),
+            cost_source=data.get("cost_source", ""),
+            is_deep_analysis=bool(data.get("is_deep_analysis", False)),
         )
         session.add(record)
         await session.commit()
@@ -1548,6 +1565,27 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
                 daily[d] = {}
             daily[d][etype] = count
 
+        # 计量：按天聚合 analyses 的 token / 费用（含追问，每条独立计），合并进 daily
+        cost_stmt = select(
+            func.date(AnalysisRecord.created_at).label("day"),
+            func.sum(AnalysisRecord.total_tokens),
+            func.sum(AnalysisRecord.total_cost_usd),
+        ).where(
+            func.date(AnalysisRecord.created_at) >= date_from,
+            func.date(AnalysisRecord.created_at) <= date_to,
+        ).group_by("day").order_by("day")
+        period_tokens = 0
+        period_cost = 0.0
+        for day, tok, cost in (await session.execute(cost_stmt)).fetchall():
+            d = str(day)
+            t = int(tok or 0)
+            c = float(cost or 0.0)
+            daily.setdefault(d, {})
+            daily[d]["tokens"] = t
+            daily[d]["cost_usd"] = round(c, 4)
+            period_tokens += t
+            period_cost += c
+
         # Top users (only meaningful actions, exclude page_visit)
         _meaningful_events = ("analysis_start", "analysis_done", "analysis_fail", "feedback_submit", "escalate")
         top_users_stmt = select(
@@ -1585,6 +1623,9 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
             "external_failures": external_fail_count,
             "feedback_submitted": type_counts.get("feedback_submit", 0),
             "escalations": type_counts.get("escalate", 0),
+            # 计量：本期总 token / 费用（analytics Daily Trend 顶部汇总卡 + 折线右轴）
+            "total_tokens": period_tokens,
+            "total_cost_usd": round(period_cost, 4),
         }
 
 

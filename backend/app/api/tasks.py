@@ -270,6 +270,11 @@ async def get_task_result(task_id: str):
         agent_model=getattr(analysis, "agent_model", "") or "",
         raw_output=analysis.raw_output[:2000],
         log_metadata=json.loads(analysis.log_metadata_json) if getattr(analysis, "log_metadata_json", None) else {},
+        total_tokens=int(getattr(analysis, "total_tokens", 0) or 0),
+        total_cost_usd=float(getattr(analysis, "total_cost_usd", 0.0) or 0.0),
+        usage_breakdown=json.loads(analysis.usage_json) if getattr(analysis, "usage_json", None) else {},
+        cost_source=getattr(analysis, "cost_source", "") or "",
+        is_deep_analysis=bool(getattr(analysis, "is_deep_analysis", False)),
         created_at=analysis.created_at,
     )
 
