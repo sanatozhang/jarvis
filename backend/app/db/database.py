@@ -542,6 +542,10 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
             if "occurred_at" in data:
                 existing.occurred_at = data["occurred_at"]
             existing.status = status
+            # 复位软删标记：重新导入/触发是「该工单重新生效」的明确信号，
+            # 否则旧 deleted=True 残留 → 所有看板查询(deleted==False)永久隐藏该工单。
+            # （2026-06-19 修：A 分析+导出飞书→B 删除→重新导入→看板找不到工单）
+            existing.deleted = False
             existing.updated_at = datetime.utcnow()
             await session.commit()
             return existing
@@ -575,6 +579,7 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
             existing = await session.get(IssueRecord, rid)
             if existing:
                 existing.status = status
+                existing.deleted = False  # 同主分支：重新导入复位软删标记
                 existing.updated_at = datetime.utcnow()
                 await session.commit()
                 return existing

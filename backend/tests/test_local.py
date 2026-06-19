@@ -90,6 +90,27 @@ async def test_soft_delete_not_found(client):
     assert resp.status_code == 404
 
 
+async def test_reimport_undeletes_soft_deleted_issue(client, db_session):
+    """重新导入/触发已软删的工单 → deleted 必须复位 False，否则看板永久隐藏。
+
+    Repro (102 rec27CyKMwcZ5l)：A 分析工单并导出飞书 → B 删除该工单 → 重新导入飞书工单，
+    因同一 record_id 走 upsert existing 分支，旧 deleted=True 未复位 → 看板「找不到工单」。
+    """
+    from app.db import database as db
+    from app.db.database import IssueRecord
+
+    await seed_issue(db_session, "reimport_1", status="done")
+    assert await db.soft_delete_issue("reimport_1") is True
+
+    # 重新导入：同 record_id 命中 upsert 的 existing 分支
+    await db.upsert_issue({"record_id": "reimport_1", "description": "重新导入"}, status="analyzing")
+
+    async with db_session() as s:
+        rec = await s.get(IssueRecord, "reimport_1")
+    assert rec is not None
+    assert rec.deleted is False, "重新导入后 deleted 应复位为 False，否则工单永久隐藏在看板外"
+
+
 async def test_mark_complete_resolves_and_notifies_escalation_group(client, db_session, monkeypatch):
     """标记完成：已 escalate 的工单应同时 resolve + 通知飞书群（接线缺口回归测试）。"""
     from datetime import datetime
