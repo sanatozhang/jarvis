@@ -284,8 +284,20 @@ def _build_crash_free_column_md(
                     return "—"
                 sign = "+" if v >= 0 else ""
                 return f"{sign}{v:.0f}%"
+            # 小基数防护（2026-06-19）：fatal 今日<100 或 上周<500 时百分比噪声过大，置「—（基数小）」
+            try:
+                from app.crashguard.config import get_crashguard_settings
+                _s = get_crashguard_settings()
+                _min_today = int(getattr(_s, "daily_attention_min_events", 100) or 100)
+                _min_base = int(getattr(_s, "daily_baseline_min_events_for_pct", 500) or 500)
+            except Exception:
+                _min_today, _min_base = 100, 500
+            if int(wow.get("today_fatal", 0) or 0) < _min_today or int(wow.get("baseline_fatal", 0) or 0) < _min_base:
+                fatal_str = "—（基数小）"
+            else:
+                fatal_str = _wow_str(fat_pct)
             lines.append(
-                f"· vs 上周：sessions {_wow_str(sess_pct)} · fatal {_wow_str(fat_pct)}"
+                f"· vs 上周：sessions {_wow_str(sess_pct)} · fatal {fatal_str}"
             )
         lines.append("")
     if ver_stats:
@@ -354,6 +366,16 @@ def _build_dual_window_columns(dw: Dict[str, Any]) -> List[Dict[str, Any]]:
     plats = dw.get("platforms") or {}
     sumr = dw.get("summary") or {}
 
+    # 小基数防护阈值（2026-06-19）：与 daily_report 头条灯/突增判定同口径，
+    # fatal events 今日<min_events 或 上周<min_baseline 时 % 噪声过大，静音 % + 🔴。
+    try:
+        from app.crashguard.config import get_crashguard_settings
+        _s = get_crashguard_settings()
+        _fatal_min_today = int(getattr(_s, "daily_attention_min_events", 100) or 100)
+        _fatal_min_base = int(getattr(_s, "daily_baseline_min_events_for_pct", 500) or 500)
+    except Exception:
+        _fatal_min_today, _fatal_min_base = 100, 500
+
     def _fatal_tag(delta_pct):
         if delta_pct is None:
             return ""
@@ -370,14 +392,19 @@ def _build_dual_window_columns(dw: Dict[str, Any]) -> List[Dict[str, Any]]:
             return f"{_fmt_n(today)} / {_fmt_n(base)} → —"
         return f"**{_fmt_n(today)}** vs {_fmt_n(base)} → **{d_str}**"
 
+    def _fatal_line(today, base, delta_pct):
+        # 小基数防护：保留原始计数，但 % 置「—（基数小）」、不打 🔴
+        if int(today or 0) < _fatal_min_today or int(base or 0) < _fatal_min_base:
+            return f"**{_fmt_n(today)}** vs {_fmt_n(base)} → —（基数小）"
+        return _delta(today, base, delta_pct) + _fatal_tag(delta_pct)
+
     def _col_md(label: str, p: Dict[str, Any]) -> str:
         sess_line = _delta(
             p.get("today_sessions", 0), p.get("baseline_sessions", 0), p.get("sess_delta_pct")
         )
-        fatal_pct = p.get("fatal_delta_pct")
-        fatal_line = _delta(
-            p.get("today_fatal", 0), p.get("baseline_fatal", 0), fatal_pct,
-        ) + _fatal_tag(fatal_pct)
+        fatal_line = _fatal_line(
+            p.get("today_fatal", 0), p.get("baseline_fatal", 0), p.get("fatal_delta_pct"),
+        )
         return (
             f"**{label}**\n\n"
             f"__sessions__\n{sess_line}\n\n"
@@ -409,10 +436,9 @@ def _build_dual_window_columns(dw: Dict[str, Any]) -> List[Dict[str, Any]]:
         sess_line = _delta(
             sumr.get("today_sessions", 0), sumr.get("baseline_sessions", 0), sumr.get("sess_delta_pct"),
         )
-        fp = sumr.get("fatal_delta_pct")
-        fatal_line = _delta(
-            sumr.get("today_fatal", 0), sumr.get("baseline_fatal", 0), fp,
-        ) + _fatal_tag(fp)
+        fatal_line = _fatal_line(
+            sumr.get("today_fatal", 0), sumr.get("baseline_fatal", 0), sumr.get("fatal_delta_pct"),
+        )
         out.append(_div(
             f"**📊 合计** · sessions {sess_line}  ·  fatal {fatal_line}"
         ))

@@ -71,7 +71,8 @@ def test_headline_user_centric_red_no_dimension_mixing():
     )
     # lead：单一用户主语
     assert "1,721 用户" in lead
-    assert "crash-free 97.59%" in lead
+    # crash-free% 为主指标（加粗高亮），绝对受影响数后置（2026-06-19 去噪改版）
+    assert "crash-free" in lead and "97.59%" in lead
     assert "较上周同期" in lead and "pp" in lead
     assert "请工程师立刻跟进" in lead
     # 关键：lead 不得再混 events 百分比（旧 "fatal +509%" 病灶）

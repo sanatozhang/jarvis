@@ -194,6 +194,11 @@ async def compose_report(
     top_n = min(max(1, int(top_n)), 5)
     # 阈值从 config 读（可在 config.yaml 覆盖）
     surge_threshold, drop_threshold, attention_min_events = _thresholds()
+    # 新增 issue 进摘要的 events 下限 + 突增主因 driver 的绝对增量地板（2026-06-19 去噪）
+    _cfg_noise = get_crashguard_settings()
+    new_issue_min_events = int(getattr(_cfg_noise, "daily_new_issue_min_events", 10) or 0)
+    surge_driver_min_abs_delta = int(getattr(_cfg_noise, "daily_surge_driver_min_abs_delta", 20) or 0)
+    surge_driver_min_events = int(getattr(_cfg_noise, "daily_surge_driver_min_events", 50) or 0)
     # #3 跨告警去重：拿到过去 N 小时被 hourly_alert 点过的 issue_id 集合（surge 类不再重复点名）
     # 默认 12h——覆盖上一波 hourly 到本次早晚报，防 morning + evening + hourly 三连发
     s_cfg = get_crashguard_settings()
@@ -709,6 +714,13 @@ async def compose_report(
                 return " ✅"
             return ""
 
+        def _fatal_cell(today: int, base: int, delta_pct):
+            # 小基数防护（2026-06-19）：与头条灯/突增判定同口径——today<100 或 base<500 时
+            # 百分比噪声过大（16→21 events 就是 +53%），保留原始计数但 % 置「—（基数小）」、不打 🔴。
+            if today < attention_min_events or base < _baseline_min_for_pct():
+                return f"**{_fmt_num(today)}** / {_fmt_num(base)} → —（基数小）"
+            return f"{_cell_delta(today, base, delta_pct)}{_fatal_tag(delta_pct)}"
+
         cmp_lines.append(
             f"| sessions (今/上周→Δ) | "
             f"{_cell_delta(ios_p['today_sessions'], ios_p['baseline_sessions'], ios_p['sess_delta_pct'])} | "
@@ -717,9 +729,9 @@ async def compose_report(
         )
         cmp_lines.append(
             f"| fatal events (今/上周→Δ) | "
-            f"{_cell_delta(ios_p['today_fatal'], ios_p['baseline_fatal'], ios_p['fatal_delta_pct'])}{_fatal_tag(ios_p['fatal_delta_pct'])} | "
-            f"{_cell_delta(and_p['today_fatal'], and_p['baseline_fatal'], and_p['fatal_delta_pct'])}{_fatal_tag(and_p['fatal_delta_pct'])} | "
-            f"{_cell_delta(sumr['today_fatal'], sumr['baseline_fatal'], sumr['fatal_delta_pct'])}{_fatal_tag(sumr['fatal_delta_pct'])} |"
+            f"{_fatal_cell(ios_p['today_fatal'], ios_p['baseline_fatal'], ios_p['fatal_delta_pct'])} | "
+            f"{_fatal_cell(and_p['today_fatal'], and_p['baseline_fatal'], and_p['fatal_delta_pct'])} | "
+            f"{_fatal_cell(sumr['today_fatal'], sumr['baseline_fatal'], sumr['fatal_delta_pct'])} |"
         )
         cmp_lines.append("")
         cmp_lines.append(
@@ -1155,7 +1167,9 @@ async def compose_report(
                 is_new = bool(snap.is_new_in_version)
                 small = (yt is None or yt < _baseline_min_for_pct())
                 if is_new:
-                    attn_new_n += 1
+                    # 新增 issue 门槛：events 不足下限的新版首现不计入「关注」chip（与摘要池一致）
+                    if ev >= new_issue_min_events:
+                        attn_new_n += 1
                 elif (d is not None and d >= surge_threshold
                       and ev >= attention_min_events and not small):
                     attn_surge_n += 1
@@ -1228,9 +1242,12 @@ async def compose_report(
                     # #3 dedup：surge 类（非 new）若 hourly N 小时内已点过 → 跳 attention 列表
                     # 渲染段（日报正文 surges 表）仍保留——日报回看场景需要全景，attention 列表只挑没报过的
                     iid = snap.datadog_issue_id
+                    # 新增 issue 门槛（2026-06-19）：events < 下限的新版首现仍进明细表 🆕 行，
+                    # 但不进「必看 / ✨ 关注点 / TL;DR 🆕计数」摘要——2-events 的小不点不该顶上必看。
+                    new_below_floor = is_new and events_today < new_issue_min_events
                     skip_attn = (
-                        is_surge and not is_new
-                        and iid in hourly_alerted_ids
+                        (is_surge and not is_new and iid in hourly_alerted_ids)
+                        or new_below_floor
                     )
                     surges.append((snap, issue, delta))
                     if not skip_attn:
@@ -1426,10 +1443,9 @@ async def compose_report(
             if pct is not None and pct >= 10.0:
                 notable_plats.append((plat_key, pct))
         if notable_plats:
-            surge_driver_lines.append("")
-            surge_driver_lines.append(
-                "### 📌 突增主因 Top 3（按事件绝对增量 · 与头条 fatal +% 同源 · 无阈值/无去重）"
-            )
+            # 先把各平台 driver 主体收集到 body_lines，有内容才补标题——
+            # 加了增量地板后可能全平台 driver 都被过滤，避免留下空挂的孤儿标题。
+            body_lines: List[str] = []
             for plat_key, pct in notable_plats:
                 # 按平台聚拢 driver 候选
                 drivers: List[Tuple[str, int, int, int, Optional[float]]] = []
@@ -1443,14 +1459,18 @@ async def compose_report(
                     abs_delta = t_ev - b_ev
                     if abs_delta <= 0:
                         continue  # 只看上涨主因
+                    # 增量地板（2026-06-19）：仍无 % 阈值/无去重，但过滤 +2/+5 events 的小不点——
+                    # driver 满足 abs_delta≥X 或 today_events≥Y 之一才展示。
+                    if abs_delta < surge_driver_min_abs_delta and t_ev < surge_driver_min_events:
+                        continue
                     item_pct = ((t_ev - b_ev) / b_ev * 100.0) if b_ev > 0 else None
                     drivers.append((iid, t_ev, b_ev, abs_delta, item_pct))
                 drivers.sort(key=lambda x: -x[3])
                 top3 = drivers[:3]
                 if not top3:
                     continue
-                surge_driver_lines.append("")
-                surge_driver_lines.append(
+                body_lines.append("")
+                body_lines.append(
                     f"**{plat_icon.get(plat_key, plat_key)} fatal +{pct:.0f}%** — 主因："
                 )
                 for iid, t_ev, b_ev, abs_delta, item_pct in top3:
@@ -1462,9 +1482,16 @@ async def compose_report(
                     if iid in hourly_alerted_ids:
                         badges.append("🔔 hourly 已报")
                     badge_str = f" · {' · '.join(badges)}" if badges else ""
-                    surge_driver_lines.append(
+                    body_lines.append(
                         f"- **+{abs_delta:,} events** ({t_ev:,} vs 上周 {b_ev:,} · {pct_str}){badge_str} · [{title}]({url})"
                     )
+            # 有 driver 主体才补标题（否则不留孤儿标题）
+            if body_lines:
+                surge_driver_lines.append("")
+                surge_driver_lines.append(
+                    "### 📌 突增主因 Top 3（按事件绝对增量 · 与头条 fatal +% 同源 · 无 % 阈值/无去重 · 已设增量地板）"
+                )
+                surge_driver_lines.extend(body_lines)
 
     if surge_driver_lines:
         attn_lines.extend(surge_driver_lines)
@@ -1769,21 +1796,23 @@ def _compose_headline(
     if total_users > 0:
         rate = (1.0 - crashed_users / total_users) * 100.0
         # crash-free 同比（pp）：今日 vs 上周同段（SHoW）
+        # 主指标口径（2026-06-19 用户实测）：crash-free% + 较上周 pp 才是"高/低"的真信号，
+        # 绝对受影响用户数单独看无参照系——加粗权重给 crash-free%/pp，绝对数降为后置非加粗。
         pp_str = ""
         if base_total_users > 0:
             base_rate = (1.0 - base_crashed_users / base_total_users) * 100.0
             pp = rate - base_rate
             sign = "+" if pp >= 0 else ""
-            pp_str = f"，较上周同期 {sign}{pp:.1f}pp"
+            pp_str = f"，较上周同期 **{sign}{pp:.1f}pp**"
         if severity == "green" and crashed_users == 0:
             lead = (
-                f"{sev_word} —— 全平台 fatal 零用户受影响"
-                f"（crash-free 100%{pp_str}），安全无虞"
+                f"{sev_word} —— 全平台 fatal crash-free **100%**{pp_str}"
+                f"（零用户受影响），安全无虞"
             )
         else:
             lead = (
-                f"{sev_word} —— 今日全平台 **{crashed_users:,} 用户**受 fatal 影响"
-                f"（crash-free {rate:.2f}%{pp_str}）{cta}"
+                f"{sev_word} —— 今日全平台 fatal crash-free **{rate:.2f}%**{pp_str}"
+                f"（{crashed_users:,} 用户受影响）{cta}"
             )
 
         breakdown: List[str] = []

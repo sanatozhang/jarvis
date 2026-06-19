@@ -180,6 +180,16 @@ class CrashguardSettings(BaseSettings):
     # （5/13 实测案例：a64421ae baseline=172 → +81% 是假大，真增量仅 139；
     #  设 500 → 500 ev 以下的"上周同时段"不参与百分比 surge 判定）
     daily_baseline_min_events_for_pct: int = 500
+    # 新增 issue 进「必看 / ✨ 关注点 / TL;DR 🆕计数」前的 events 下限。
+    # 治理：is_new_in_version 历史上无条件进关注池，2-events 的新版首现 issue 也会顶上「必看」，
+    # 读感与头条"平稳/小涨"矛盾（2026-06-19 用户实测）。设门槛后小不点新 issue 不进摘要，
+    # 仍在各平台明细表的 🆕 行展示、仍进 auto-PR 池（不影响修复覆盖）。
+    daily_new_issue_min_events: int = 10
+    # 「📌 突增主因 Top3」绝对增量地板：该板块设计上「无 % 阈值/无去重」，按绝对增量列出"涨在哪"，
+    # 但会带进 +2/+5 events 的小不点污染读感。地板逻辑：driver 满足 abs_delta≥X 或 today_events≥Y
+    # 之一才展示；都不满足则该平台不列 driver（避免"头条小涨 + 正文一堆个位数"）。
+    daily_surge_driver_min_abs_delta: int = 20
+    daily_surge_driver_min_events: int = 50
 
     # Feishu
     feishu_target_chat_id: str = ""
@@ -569,6 +579,10 @@ def _yaml_overrides() -> Dict[str, Any]:
             ("daily_surge_threshold", "daily_surge_threshold"),
             ("daily_drop_threshold", "daily_drop_threshold"),
             ("daily_attention_min_events", "daily_attention_min_events"),
+            ("daily_baseline_min_events_for_pct", "daily_baseline_min_events_for_pct"),
+            ("daily_new_issue_min_events", "daily_new_issue_min_events"),
+            ("daily_surge_driver_min_abs_delta", "daily_surge_driver_min_abs_delta"),
+            ("daily_surge_driver_min_events", "daily_surge_driver_min_events"),
         ]:
             if k_yaml in t:
                 flat[k_py] = t[k_yaml]
