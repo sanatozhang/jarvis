@@ -349,10 +349,19 @@ async def download_logs(issue_id: str):
 @router.delete("/{issue_id}")
 @_handle_exceptions("Failed to delete issue")
 async def delete_issue(issue_id: str):
-    """Soft-delete an issue (mark as deleted, hide from UI)."""
+    """Soft-delete an issue (mark as deleted, hide from UI).
+
+    同时清理该 issue 的 per-issue 日志/解密缓存：删除常用于「日志非法、让用户重传」，
+    缓存按 issue_id 复用会导致重新导入后仍分析旧日志（2026-06-19 修，复现 rec27CyKMwcZ5l）。
+    """
     ok = await db.soft_delete_issue(issue_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Issue not found")
+    try:
+        from app.workers.analysis_worker import purge_issue_cache
+        purge_issue_cache(get_settings().storage.workspace_dir, issue_id)
+    except Exception as e:
+        logger.warning("Failed to purge issue cache for %s: %s", issue_id, e)
     return {"status": "deleted", "issue_id": issue_id}
 
 

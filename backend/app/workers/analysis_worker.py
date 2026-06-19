@@ -629,6 +629,25 @@ async def run_analysis_pipeline(
     return result
 
 
+def purge_issue_cache(workspace_dir: str, issue_id: str) -> None:
+    """删除某 issue 的全部 per-issue 缓存（raw 日志 + 解密产物 + 本地 issue 目录）。
+
+    背景（2026-06-19 修）：下载/解密都按 issue_id 缓存在 `_cache/<issue>/`（raw + processed +
+    decrypt_manifest.json）和本地 issue 目录 `<workspace>/<issue>/`，重新触发时无条件复用。
+    工单因日志非法被删除、用户重新导入新日志后，worker 仍命中旧缓存复用旧日志（复现
+    rec27CyKMwcZ5l）。删除是「丢弃这条 issue 数据、用户将重传」的明确信号 → 一并清缓存，
+    让下次导入重新下载 + 重新解密新日志。空目录/不存在时静默跳过。
+    """
+    root = Path(workspace_dir)
+    for target in (root / "_cache" / issue_id, root / issue_id):
+        try:
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+                logger.info("Purged per-issue cache: %s", target)
+        except Exception as e:
+            logger.warning("Failed to purge cache %s: %s", target, e)
+
+
 def _cleanup_log_cache(cache_root: Path, max_issues: int = 500):
     """Keep only the last N issues' cached raw logs, remove oldest.
 
