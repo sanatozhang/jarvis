@@ -854,21 +854,24 @@ async def get_latest_done_task_for_issue(issue_id: str) -> Optional[TaskRecord]:
 async def get_prior_followup_history(
     issue_id: str, exclude_task_id: str = ""
 ) -> Tuple[int, List[str]]:
-    """该 issue 的历史分析链 → (prior_task_count, prior_followup_questions[oldest→newest])。
+    """该 issue 的历史分析链 → (prior_analysis_count, prior_followup_questions[oldest→newest])。
 
-    - prior_task_count：已存在的 task 数（不含当前 task）。追问递进放宽窗口的「深度」。
+    ⚠️ followup_question 列在 analyses 表（AnalysisRecord），不在 tasks 表（TaskRecord）——
+    必须查 AnalysisRecord，否则 `t.followup_question` 会抛 AttributeError 致追问失败。
+
+    - prior_analysis_count：已存在的历史分析数（不含当前 task）。追问递进放宽窗口的「深度」。
     - prior_followup_questions：历史追问文本（去空，时间正序）。用于重裁锚点 + prompt 历史。
     """
     async with get_session() as session:
         from sqlalchemy import select
         stmt = (
-            select(TaskRecord)
-            .where(TaskRecord.issue_id == issue_id)
-            .order_by(TaskRecord.created_at.asc())
+            select(AnalysisRecord)
+            .where(AnalysisRecord.issue_id == issue_id)
+            .order_by(AnalysisRecord.created_at.asc())
         )
         rows = (await session.execute(stmt)).scalars().all()
-        prior = [t for t in rows if t.id != exclude_task_id]
-        questions = [q for q in ((t.followup_question or "").strip() for t in prior) if q]
+        prior = [a for a in rows if a.task_id != exclude_task_id]
+        questions = [q for q in ((a.followup_question or "").strip() for a in prior) if q]
         return len(prior), questions
 
 

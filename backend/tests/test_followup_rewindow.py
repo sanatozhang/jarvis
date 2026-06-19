@@ -5,12 +5,28 @@
 """
 from datetime import datetime
 
+import pytest
+
 from app.workers.analysis_worker import (
     FOLLOWUP_FULL_LOGS_AT_DEPTH,
     FOLLOWUP_WIDEN_FACTOR,
     _followup_window_params,
 )
-from tests.conftest import seed_issue, seed_task
+from tests.conftest import seed_analysis, seed_issue
+
+
+@pytest.fixture()
+async def bound_db(db_session):
+    """把生产代码的全局 session factory 绑到测试 in-memory DB。
+
+    get_prior_followup_history 内部走模块级 get_session()，默认 db_session fixture 不 patch
+    它（只有 client fixture 才 patch），导致生产函数读不到 seed 数据。这里临时绑定并复原。
+    """
+    import app.db.database as db_mod
+    original = db_mod._session_factory
+    db_mod._session_factory = db_session
+    yield db_session
+    db_mod._session_factory = original
 
 
 def test_window_params_non_followup():
@@ -31,27 +47,28 @@ def test_window_params_full_logs_at_threshold():
     assert _followup_window_params(FOLLOWUP_FULL_LOGS_AT_DEPTH + 5)[1] is True
 
 
-async def test_prior_followup_history_counts_and_orders(db_session):
+async def test_prior_followup_history_counts_and_orders(bound_db):
     from app.db.database import get_prior_followup_history
 
-    await seed_issue(db_session, "iss_fu")
+    await seed_issue(bound_db, "iss_fu")
+    # followup_question 存在 analyses 表（不在 tasks 表）：
     # 原始分析（无追问）+ 两次历史追问，时间递增
-    await seed_task(db_session, "t0", "iss_fu", followup_question="", created_at=datetime(2026, 6, 1, 8, 0))
-    await seed_task(db_session, "t1", "iss_fu", followup_question="是蓝牙问题吗", created_at=datetime(2026, 6, 1, 9, 0))
-    await seed_task(db_session, "t2", "iss_fu", followup_question="看更早的日志", created_at=datetime(2026, 6, 1, 10, 0))
-    # 当前（第三次追问）task 也已入库，应被 exclude，不计入 depth
-    await seed_task(db_session, "t3", "iss_fu", followup_question="还是不对", created_at=datetime(2026, 6, 1, 11, 0))
+    await seed_analysis(bound_db, "t0", "iss_fu", followup_question="", created_at=datetime(2026, 6, 1, 8, 0))
+    await seed_analysis(bound_db, "t1", "iss_fu", followup_question="是蓝牙问题吗", created_at=datetime(2026, 6, 1, 9, 0))
+    await seed_analysis(bound_db, "t2", "iss_fu", followup_question="看更早的日志", created_at=datetime(2026, 6, 1, 10, 0))
+    # 当前（第三次追问）的分析也已入库，应被 exclude，不计入 depth
+    await seed_analysis(bound_db, "t3", "iss_fu", followup_question="还是不对", created_at=datetime(2026, 6, 1, 11, 0))
 
     depth, questions = await get_prior_followup_history("iss_fu", exclude_task_id="t3")
     assert depth == 3                                    # t0, t1, t2（不含当前 t3）
     assert questions == ["是蓝牙问题吗", "看更早的日志"]   # 去掉空追问的 t0，按时间正序
 
 
-async def test_prior_followup_history_empty_for_first_analysis(db_session):
+async def test_prior_followup_history_empty_for_first_analysis(bound_db):
     from app.db.database import get_prior_followup_history
 
-    await seed_issue(db_session, "iss_first")
-    await seed_task(db_session, "only", "iss_first", followup_question="", created_at=datetime(2026, 6, 2, 8, 0))
+    await seed_issue(bound_db, "iss_first")
+    await seed_analysis(bound_db, "only", "iss_first", followup_question="", created_at=datetime(2026, 6, 2, 8, 0))
     # 首次分析（当前 task 即 only）：无历史
     depth, questions = await get_prior_followup_history("iss_first", exclude_task_id="only")
     assert depth == 0
