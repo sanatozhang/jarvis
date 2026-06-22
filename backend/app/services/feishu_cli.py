@@ -128,7 +128,24 @@ async def _ensure_cli_profile():
 # ---------------------------------------------------------------------------
 # CLI runner
 # ---------------------------------------------------------------------------
-async def _run_cli(*args: str, timeout: int = 120, retries: int = 2) -> Dict:
+# 飞书服务端瞬时错误标记：lark-cli 本身成功，但 API 返回可重试的错误响应
+# （server time out / internal error / rate limit 等）。命中则重试，不直接判死。
+_RETRYABLE_API_ERROR_MARKERS = (
+    "time out", "timeout", "timed out",
+    "internal error", "internal server",
+    "service unavailable", "try again",
+    "rate limit", "too many request",
+    "temporarily", "server busy",
+)
+
+
+def _is_retryable_api_error(msg: str) -> bool:
+    """API 级错误消息是否属于可重试的瞬时类（区别于 not found / invalid 等硬错误）。"""
+    m = (msg or "").lower()
+    return any(marker in m for marker in _RETRYABLE_API_ERROR_MARKERS)
+
+
+async def _run_cli(*args: str, timeout: int = 120, retries: int = 3) -> Dict:
     """Run lark-cli with given arguments and return parsed JSON output.
 
     Retries on transient failures (timeout, empty output, non-JSON).
@@ -198,6 +215,16 @@ async def _run_cli(*args: str, timeout: int = 120, retries: int = 2) -> Dict:
         if not is_ok:
             error = result.get("error", {})
             msg = error.get("message", "") or result.get("msg", "") or output[:300]
+            # 飞书服务端瞬时错误（如 server time out）：lark-cli 成功但 API 回了可重试错误。
+            # 原逻辑只重试进程级故障，这类会直接判死，致 get_record 第一步即失败。给它重试。
+            if attempt < retries and _is_retryable_api_error(msg):
+                last_error = RuntimeError(f"lark-cli error: {msg}")
+                logger.warning(
+                    "lark-cli transient API error (attempt %d/%d): %s — retrying",
+                    attempt, retries, msg,
+                )
+                await asyncio.sleep(1)
+                continue
             raise RuntimeError(f"lark-cli error: {msg}")
 
         return result
