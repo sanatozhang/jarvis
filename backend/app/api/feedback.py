@@ -178,6 +178,11 @@ async def submit_feedback(
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         await db.create_task(task_id=task_id, issue_id=record_id)
 
+        # 本地工单直接调 _run_task（它只记 analysis_done/fail），必须在这里补记
+        # analysis_start，否则 Total Analyses 会比 Analysis Done 少（本地工单只计 done）。
+        # 与 tasks.py:create_task / linear_webhook 的埋点保持一致。
+        await db.log_event("analysis_start", issue_id=record_id, username=username)
+
         from app.api.tasks import _run_task
         background_tasks.add_task(_run_task, task_id=task_id, issue_id=record_id, username=username)
 
