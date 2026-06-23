@@ -244,6 +244,7 @@ const EN: Record<string, string> = {
   "成功": "Done",
   "分析成功": "Analysis Done",
   "分析失败": "Analysis Failed",
+  "其中追问": "incl. follow-up",
   "外部因素": "External Factors",
   "额度/磁盘等": "Quota / Disk etc.",
   "失败": "Failed",

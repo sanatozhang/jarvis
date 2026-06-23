@@ -20,6 +20,7 @@ interface Analytics {
   unique_users: number;
   avg_analysis_duration_ms: number; avg_analysis_duration_min: number;
   total_analyses: number; successful_analyses: number; failed_analyses: number;
+  followup_done: number; followup_fail: number;
   external_failures: number;
   feedback_submitted: number; escalations: number;
   fail_reasons: FailReasonItem[];
@@ -211,8 +212,8 @@ export default function AnalyticsPage() {
           {/* Key metrics */}
           <div className="grid grid-cols-6 gap-3">
             <StatCard label={t("总分析次数")} value={data.total_analyses} index={0} />
-            <StatCard label={t("分析成功")} value={data.successful_analyses} color="#16A34A" index={1} />
-            <StatCard label={t("分析失败")} value={data.failed_analyses} color="#DC2626" index={2} />
+            <StatCard label={t("分析成功")} value={data.successful_analyses} sub={`${t("其中追问")} ${data.followup_done ?? 0}`} color="#16A34A" index={1} />
+            <StatCard label={t("分析失败")} value={data.failed_analyses} sub={`${t("其中追问")} ${data.followup_fail ?? 0}`} color="#DC2626" index={2} />
             <StatCard label={t("外部因素")} value={data.external_failures || 0} sub={t("额度/磁盘等")} color="#F59E0B" index={3} />
             <StatCard label={t("反馈提交")} value={data.feedback_submitted} color="#2563EB" index={4} />
             <StatCard label={t("活跃用户")} value={data.unique_users} color="#7C3AED" index={5} />

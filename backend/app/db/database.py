@@ -1610,6 +1610,28 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
         total_fail = type_counts.get("analysis_fail", 0)
         real_fail = total_fail - external_fail_count
 
+        # 追问（follow-up）拆分子项：
+        # - 成功追问：以 analyses 表为准（followup_question 自 2026-03-02 起逐条落库，历史完整）
+        # - 失败追问：失败 task 不落 analyses，只能查 events 的 analysis_fail.detail_json
+        #   （followup_question 自 2026-06-19 commit e080eda 起才写入，更早的失败追问无标记）
+        followup_done_stmt = select(func.count()).select_from(AnalysisRecord).where(
+            func.date(AnalysisRecord.created_at) >= date_from,
+            func.date(AnalysisRecord.created_at) <= date_to,
+            AnalysisRecord.followup_question != "",
+        )
+        followup_done = (await session.execute(followup_done_stmt)).scalar() or 0
+
+        ff_stmt = select(EventRecord.detail_json).where(
+            date_filter, EventRecord.event_type == "analysis_fail"
+        )
+        followup_fail = 0
+        for (dj,) in (await session.execute(ff_stmt)).fetchall():
+            try:
+                if dj and (json.loads(dj).get("followup_question") or "").strip():
+                    followup_fail += 1
+            except Exception:
+                pass
+
         return {
             "date_from": date_from,
             "date_to": date_to,
@@ -1623,6 +1645,8 @@ async def get_analytics(date_from: str, date_to: str) -> Dict[str, Any]:
             "total_analyses": type_counts.get("analysis_start", 0),
             "successful_analyses": type_counts.get("analysis_done", 0),
             "failed_analyses": real_fail,
+            "followup_done": followup_done,
+            "followup_fail": followup_fail,
             "external_failures": external_fail_count,
             "feedback_submitted": type_counts.get("feedback_submit", 0),
             "escalations": type_counts.get("escalate", 0),
