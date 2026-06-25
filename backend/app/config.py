@@ -254,6 +254,7 @@ class Settings(BaseSettings):
     log_level: str = "info"
     secret_key: str = "change-me"
     frontend_base_url: str = ""    # Jarvis 前端 URL，用于告警深链（env: APPLLO_BASE_URL）
+    feedback_recipient: str = "sanato.zhang@plaud.ai"   # 反馈 widget 收件人（飞书邮箱）
 
     # --- Sub-configs (populated from yaml + env) ---
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)

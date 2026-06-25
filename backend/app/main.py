@@ -257,6 +257,7 @@ from app.api.settings import router as settings_router
 from app.api.reports import router as reports_router
 from app.api.health import router as health_router
 from app.api.local import router as local_router
+from app.api.site_feedback import router as site_feedback_router
 from app.api.feedback import router as feedback_router
 from app.api.users import router as users_router
 from app.api.auth import router as auth_router
@@ -278,6 +279,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
 app.include_router(reports_router, prefix="/api/reports", tags=["Reports"])
 app.include_router(health_router, prefix="/api/health", tags=["Health"])
 app.include_router(local_router, prefix="/api/local", tags=["Local"])
+app.include_router(site_feedback_router, prefix="/api/site-feedback", tags=["SiteFeedback"])
 app.include_router(feedback_router, prefix="/api/feedback", tags=["Feedback"])
 app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 app.include_router(users_router, prefix="/api/users", tags=["Users"])

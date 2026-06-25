@@ -44,6 +44,7 @@ API 文档：`http://localhost:8000/docs`
 | `/api/users` | `api/users.py` | Oncall 管理（用户/管理员） |
 | `/api/analytics` | `api/analytics.py` | 数据统计 |
 | `/api/crash` | `app/crashguard/api/crash.py` | Crashguard（独立子模块） |
+| `/api/site-feedback` | `api/site_feedback.py` | 全局反馈 widget → 飞书私聊管理员 |
 | `/api/settings`、`/api/env`、`/api/health`、`/api/local`、`/api/v1` | 通用 | 系统接口 |
 
 ## 数据库
