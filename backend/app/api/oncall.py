@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, time as dtime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -268,6 +268,111 @@ async def get_oncall_stats():
         "groups": [g["members"] for g in groups],
         "start_date": start_date_str,
         "current_week_num": current_week_num,
+    }
+
+
+@router.get("/my-workload")
+async def get_my_workload(email: str = Query(..., description="Oncall member email")):
+    """Aggregate the tickets an oncall member must handle in their most recent
+    duty week: apollo escalated tickets + Feishu tickets, with links + attachments.
+    Read-only.
+    """
+    from app.config import get_settings
+    from app.services.feishu import FeishuClient
+
+    groups = await db.get_oncall_groups()
+    start_date_str = await db.get_oncall_config("start_date", "")
+    info = resolve_duty_week(groups, start_date_str, email, date.today())
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"{email} is not an oncall member or no schedule configured")
+
+    week_start = info["week_start"]
+    week_end = info["week_end"]
+    frontend_base = (get_settings().frontend_base_url or "").rstrip("/")
+    email_l = email.strip().lower()
+
+    # --- apollo escalated tickets within window, still open ---
+    apollo_tickets = []
+    for it in await db.get_escalated_issues(status=None):
+        if it.get("escalation_status") == "resolved":
+            continue
+        esc = it.get("escalated_at") or ""
+        if not esc:
+            continue
+        try:
+            esc_d = date.fromisoformat(esc[:10])
+        except ValueError:
+            continue
+        if not (week_start <= esc_d <= week_end):
+            continue
+        zid = it.get("zendesk_id", "")
+        rid = it["record_id"]
+        apollo_tickets.append({
+            "record_id": rid,
+            "description": it.get("description", ""),
+            "problem_type": it.get("problem_type", ""),
+            "root_cause": it.get("root_cause", ""),
+            "confidence": it.get("confidence", ""),
+            "zendesk_id": zid,
+            "zendesk_url": FeishuClient._normalize_zendesk_url(zid) if zid else "",
+            "escalated_at": esc,
+            "escalated_by": it.get("escalated_by", ""),
+            "escalation_status": it.get("escalation_status", ""),
+            "escalation_share_link": it.get("escalation_share_link", ""),
+            "apollo_url": f"{frontend_base}/tracking?detail={rid}" if frontend_base else "",
+            "logs_download_url": f"/api/local/{rid}/download-logs",
+        })
+
+    # --- Feishu tickets assigned to email, created within window, open ---
+    start_ms = int(datetime.combine(week_start, dtime.min).timestamp() * 1000)
+    end_ms = int(datetime.combine(week_end, dtime.max).timestamp() * 1000)
+    client = FeishuClient()
+    pending = await client.list_issues_by_status("pending", limit=200, assignee_emails=[email_l])
+    in_progress = await client.list_issues_by_status("in_progress", limit=200, assignee_emails=[email_l])
+
+    feishu_tickets = []
+    for iss in in_progress + pending:
+        if not (start_ms <= iss.created_at_ms <= end_ms):
+            continue
+        attachments = [
+            {"name": f.name, "size": f.size, "download_path": f"/api/local/{iss.record_id}/files/{f.name}"}
+            for f in iss.log_files
+        ]
+        feishu_tickets.append({
+            "record_id": iss.record_id,
+            "description": iss.description,
+            "priority": iss.priority,
+            "device_sn": iss.device_sn,
+            "firmware": iss.firmware,
+            "app_version": iss.app_version,
+            "assignee": iss.assignee,
+            "assignee_emails": iss.assignee_emails,
+            "feishu_link": iss.feishu_link,
+            "zendesk": iss.zendesk,
+            "zendesk_id": iss.zendesk_id,
+            "feishu_status": iss.feishu_status.value if hasattr(iss.feishu_status, "value") else iss.feishu_status,
+            "created_at_ms": iss.created_at_ms,
+            "attachments": attachments,
+        })
+
+    with_attachments = sum(1 for t in feishu_tickets if t["attachments"]) + len(apollo_tickets)
+    return {
+        "email": email_l,
+        "duty_week": {
+            "week_num": info["week_num"],
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "is_current": info["is_current"],
+        },
+        "oncall_partners": info["partners"],
+        "apollo_tickets": apollo_tickets,
+        "feishu_tickets": feishu_tickets,
+        "summary": {
+            "apollo_count": len(apollo_tickets),
+            "feishu_count": len(feishu_tickets),
+            "total": len(apollo_tickets) + len(feishu_tickets),
+            "with_attachments": with_attachments,
+        },
     }
 
 

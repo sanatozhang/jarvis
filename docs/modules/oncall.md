@@ -23,6 +23,7 @@
 | `PUT`  | `/api/oncall/schedule` | 更新排班（admin） |
 | `GET`  | `/api/oncall/tickets` | 已转交工程师的升级工单列表 |
 | `GET`  | `/api/oncall/stats` | 值班统计（人均工单数、平均处理时长） |
+| `GET`  | `/api/oncall/my-workload` | 按邮箱反查最近值周窗，聚合 apollo 升级工单 + 飞书工单（含链接 + 附件），供 skill 拉取 |
 | `PUT`  | `/api/oncall/tickets/{issue_id}/resolve` | 标记升级工单已解决 |
 
 ### 排班数据模型
