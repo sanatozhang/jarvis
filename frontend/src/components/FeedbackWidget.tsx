@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import html2canvas from "html2canvas";
 import { useT } from "@/lib/i18n";
 import { useCurrentUser } from "@/components/AuthProvider";
@@ -54,12 +54,22 @@ export default function FeedbackWidget() {
     }
   }, [message, shot, user, t]);
 
+  // Esc 关闭弹框
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
   return (
     <>
       {!open && (
         <button
           onClick={openPanel}
-          className="fixed bottom-6 right-6 z-50 rounded-full px-4 py-3 text-white shadow-lg text-sm font-medium"
+          className="fixed bottom-6 right-6 z-50 rounded-full px-4 py-3 text-white shadow-lg text-sm font-medium transition-transform hover:scale-105"
           style={{ backgroundColor: GOLD }}
         >
           {t("反馈")}
@@ -67,37 +77,61 @@ export default function FeedbackWidget() {
       )}
 
       {open && (
-        <div className="fixed bottom-6 right-6 z-50 w-80 rounded-xl bg-white dark:bg-neutral-900 shadow-2xl border border-neutral-200 dark:border-neutral-700 p-4">
-          <div className="text-sm font-semibold mb-2" style={{ color: GOLD }}>{t("提交反馈")}</div>
-          <textarea
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder={t("描述你遇到的问题…")}
-            rows={4}
-            className="w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent p-2 text-sm outline-none"
-          />
-          {shot && (
-            <div className="mt-2 text-xs text-neutral-500">
-              ✓ {t("已自动截取当前屏幕")}
-              <img src={shot} alt="screenshot" className="mt-1 max-h-24 w-full object-cover rounded border border-neutral-200 dark:border-neutral-700" />
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: "rgba(0,0,0,0.55)" }}
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl rounded-2xl bg-j-base text-j-fg shadow-2xl p-6"
+            style={{ border: "1px solid var(--j-border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-lg font-semibold mb-4" style={{ color: GOLD }}>
+              {t("提交反馈")}
             </div>
-          )}
-          <div className="mt-3 flex justify-end gap-2">
-            <button onClick={() => setOpen(false)} className="text-sm px-3 py-1.5 rounded-md text-neutral-500">{t("取消")}</button>
-            <button
-              onClick={submit}
-              disabled={sending || !message.trim()}
-              className="text-sm px-3 py-1.5 rounded-md text-white disabled:opacity-50"
-              style={{ backgroundColor: GOLD }}
-            >
-              {t("提交")}
-            </button>
+            <textarea
+              autoFocus
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder={t("描述你遇到的问题…")}
+              rows={8}
+              className="w-full rounded-lg bg-j-surface text-j-fg placeholder:text-j-muted p-3 text-sm outline-none resize-y min-h-40 focus:ring-2"
+              style={{ border: "1px solid var(--j-border)" }}
+            />
+            {shot && (
+              <div className="mt-3 text-xs text-j-muted">
+                ✓ {t("已自动截取当前屏幕")}
+                <img
+                  src={shot}
+                  alt="screenshot"
+                  className="mt-1.5 max-h-40 w-full object-cover object-top rounded-lg"
+                  style={{ border: "1px solid var(--j-border)" }}
+                />
+              </div>
+            )}
+            <div className="mt-5 flex justify-end gap-3">
+              <button
+                onClick={() => setOpen(false)}
+                className="text-sm px-4 py-2 rounded-lg text-j-muted hover:bg-j-hover transition-colors"
+              >
+                {t("取消")}
+              </button>
+              <button
+                onClick={submit}
+                disabled={sending || !message.trim()}
+                className="text-sm px-5 py-2 rounded-lg text-white font-medium disabled:opacity-50 transition-opacity"
+                style={{ backgroundColor: GOLD }}
+              >
+                {t("提交")}
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {toast && (
-        <div className="fixed bottom-24 right-6 z-50 rounded-md bg-neutral-900 text-white text-sm px-4 py-2 shadow-lg">
+        <div className="fixed bottom-24 right-6 z-50 rounded-md bg-j-surface text-j-fg text-sm px-4 py-2 shadow-lg" style={{ border: "1px solid var(--j-border)" }}>
           {toast}
         </div>
       )}
