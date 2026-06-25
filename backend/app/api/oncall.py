@@ -23,6 +23,55 @@ logger = logging.getLogger("jarvis.api.oncall")
 router = APIRouter()
 
 
+def resolve_duty_week(
+    groups: List[Dict[str, Any]],
+    start_date_str: str,
+    email: str,
+    today: date,
+) -> Optional[Dict[str, Any]]:
+    """Resolve the most recent duty week for `email`.
+
+    Returns None when there is no schedule, the email is not in any group,
+    or the person has not yet had a duty week (start in the future for them).
+    """
+    if not groups or not start_date_str:
+        return None
+    email_l = email.strip().lower()
+    group_index = None
+    for i, g in enumerate(groups):
+        members = [m.strip().lower() for m in g.get("members", [])]
+        if email_l in members:
+            group_index = i
+            break
+    if group_index is None:
+        return None
+    try:
+        start = date.fromisoformat(start_date_str)
+    except ValueError:
+        return None
+
+    n = len(groups)
+    current_week = max(0, (today - start).days // 7)
+    # largest week_num <= current_week with week_num % n == group_index
+    duty = current_week - ((current_week - group_index) % n)
+    if duty < 0:
+        return None
+    week_start = start + timedelta(weeks=duty)
+    week_end = week_start + timedelta(days=6)
+    partners = [
+        m for m in groups[group_index].get("members", [])
+        if m.strip().lower() != email_l
+    ]
+    return {
+        "group_index": group_index,
+        "week_num": duty,
+        "week_start": week_start,
+        "week_end": week_end,
+        "is_current": duty == current_week,
+        "partners": partners,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
