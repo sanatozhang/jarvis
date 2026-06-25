@@ -1102,6 +1102,42 @@ async def notify_analysis_failure(
     return sent > 0
 
 
+async def upload_image(image_bytes: bytes) -> str:
+    """Upload an image to Feishu and return its image_key (multipart)."""
+    token = await _get_tenant_token()
+    url = "https://open.feishu.cn/open-apis/im/v1/images"
+    async with httpx.AsyncClient(verify=False, timeout=30) as http:
+        resp = await http.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            data={"image_type": "message"},
+            files={"image": ("feedback.png", image_bytes, "image/png")},
+        )
+        result = resp.json()
+        if result.get("code") != 0:
+            raise RuntimeError(f"Feishu image upload error ({result.get('code')}): {result.get('msg', result)}")
+        return result["data"]["image_key"]
+
+
+async def send_image_message(image_key: str, chat_id: str = "", email: str = "") -> bool:
+    """Send an image message to a chat or a user (by email)."""
+    if not chat_id and not email:
+        raise ValueError("Either chat_id or email required")
+    import json as _json
+    content = _json.dumps({"image_key": image_key}, ensure_ascii=False)
+    try:
+        if chat_id:
+            await _feishu_api("POST", "/im/v1/messages", params={"receive_id_type": "chat_id"},
+                              body={"receive_id": chat_id, "msg_type": "image", "content": content})
+        else:
+            await _feishu_api("POST", "/im/v1/messages", params={"receive_id_type": "email"},
+                              body={"receive_id": email, "msg_type": "image", "content": content})
+        return True
+    except Exception as e:
+        logger.error("Failed to send image message: %s", e)
+        return False
+
+
 async def notify_oncall(
     issue_id: str,
     description: str,
