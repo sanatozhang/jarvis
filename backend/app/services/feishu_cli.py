@@ -1113,6 +1113,7 @@ async def upload_image(image_bytes: bytes) -> str:
             data={"image_type": "message"},
             files={"image": ("feedback.png", image_bytes, "image/png")},
         )
+        resp.raise_for_status()
         result = resp.json()
         if result.get("code") != 0:
             raise RuntimeError(f"Feishu image upload error ({result.get('code')}): {result.get('msg', result)}")
