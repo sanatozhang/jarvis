@@ -7,6 +7,7 @@ import LangProvider from "@/components/LangProvider";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider } from "@/components/AuthProvider";
 import { AuthGate } from "@/components/AuthGate";
+import FeedbackWidget from "@/components/FeedbackWidget";
 
 // Display — characterful technical grotesque, used with restraint for titles / big numbers / brand
 const spaceGrotesk = Space_Grotesk({
@@ -89,6 +90,7 @@ try {
                   <PageTracker />
                   {children}
                 </main>
+                <FeedbackWidget />
               </div>
             </AuthGate>
           </AuthProvider>

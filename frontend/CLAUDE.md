@@ -48,6 +48,8 @@ src/
 | 深链 | 详情抽屉用 URL query 同步：进入 `?detail=<id>` 自动开抽屉，关闭去掉 query。`router.replace` 不 `push` |
 | 类型 | 后端响应类型在 `api.ts` 中定义并 `export`，组件 import 使用；不在组件内自己重复声明 shape |
 
+全局 `FeedbackWidget`（右下角悬浮反馈，html2canvas 截图 + `/api/site-feedback`）挂在 `layout.tsx`。
+
 ## 工单详情面板：「分析结果」区已抽成共享组件
 
 「工单分析结果」对话区（初次/追问卡片、问题类型、置信度、模型、需工程师 badge、

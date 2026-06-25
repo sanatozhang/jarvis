@@ -1998,3 +1998,24 @@ export const listReleaseBuilds = (
 
 export const releaseArtifactUrl = (buildId: number, platform: "android" | "ios") =>
   `${BASE}/release/builds/${buildId}/artifacts/${platform}`;
+
+// ============================================================
+// Site Feedback
+// ============================================================
+
+export interface SiteFeedbackPayload {
+  message: string;
+  page_url: string | null;
+  screenshot: string | null;
+  user_email: string | null;
+}
+
+export async function submitSiteFeedback(payload: SiteFeedbackPayload): Promise<{ status: string; image_sent: boolean }> {
+  const resp = await fetch(`${BASE}/site-feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) throw new Error(`feedback failed: ${resp.status}`);
+  return resp.json();
+}

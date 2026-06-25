@@ -899,6 +899,14 @@ const EN: Record<string, string> = {
   "完整示例": "Full Example",
   "已选": "selected",
 
+  // FeedbackWidget
+  "反馈": "Feedback",
+  "描述你遇到的问题…": "Describe the issue you ran into…",
+  "已自动截取当前屏幕": "Current screen captured automatically",
+  "提交": "Submit",
+  "反馈已发送，谢谢！": "Feedback sent, thank you!",
+  "反馈发送失败": "Failed to send feedback",
+
   // Login / Logout / Feishu OAuth bind
   "登出": "Log out",
   "用飞书登录": "Sign in with Feishu",
