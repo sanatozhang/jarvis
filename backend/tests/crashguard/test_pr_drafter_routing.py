@@ -87,3 +87,52 @@ def test_flutter_subrepo_detection_gated_to_flutter():
     assert pr_drafter._should_run_flutter_subrepo_detection("desktop") is False
     assert pr_drafter._should_run_flutter_subrepo_detection("") is False
     assert pr_drafter._should_run_flutter_subrepo_detection("FLUTTER") is True
+
+
+# ---------------------------------------------------------------------------
+# New tests: _sample_version
+# ---------------------------------------------------------------------------
+
+def test_sample_version_reads_from_representative_stack():
+    """Issue with representative_stack JSON → returns sample_app_version."""
+    import types
+    from app.crashguard.services import pr_drafter
+
+    issue = types.SimpleNamespace(
+        representative_stack='{"sample_app_version": "4.1.0-720"}',
+        app_version="3.0.0",
+    )
+    assert pr_drafter._sample_version(issue) == "4.1.0-720"
+
+
+def test_sample_version_falls_back_on_malformed_json():
+    """Malformed JSON in representative_stack → falls back to app_version."""
+    import types
+    from app.crashguard.services import pr_drafter
+
+    issue = types.SimpleNamespace(
+        representative_stack="{not valid json!!!",
+        app_version="3.16.0-634",
+    )
+    assert pr_drafter._sample_version(issue) == "3.16.0-634"
+
+
+def test_sample_version_falls_back_when_field_absent():
+    """representative_stack JSON present but sample_app_version key absent → app_version."""
+    import types
+    from app.crashguard.services import pr_drafter
+
+    issue = types.SimpleNamespace(
+        representative_stack='{"other_field": "x"}',
+        app_version="2.5.0",
+    )
+    assert pr_drafter._sample_version(issue) == "2.5.0"
+
+
+def test_sample_version_empty_when_neither_field():
+    """Neither representative_stack nor app_version → empty string."""
+    import types
+    from app.crashguard.services import pr_drafter
+
+    issue = types.SimpleNamespace()  # no attributes at all
+    assert pr_drafter._sample_version(issue) == ""

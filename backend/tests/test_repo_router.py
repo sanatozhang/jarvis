@@ -80,3 +80,57 @@ def test_normalize_platform():
     assert rr.normalize_platform("ANDROID") == "android"
     assert rr.normalize_platform("web") == "web"
     assert rr.normalize_platform("") is None
+
+
+# ---------------------------------------------------------------------------
+# New tests: normalize_platform edge cases
+# ---------------------------------------------------------------------------
+
+def test_normalize_platform_app_ios():
+    assert rr.normalize_platform("app", os_name="iOS") == "ios"
+
+
+def test_normalize_platform_app_android():
+    assert rr.normalize_platform("app", os_name="Android") == "android"
+
+
+def test_normalize_platform_app_no_os():
+    # "app" without os_name → cannot disambiguate → None
+    assert rr.normalize_platform("app") is None
+
+
+def test_normalize_platform_flutter_ipadOS():
+    # iPadOS contains "ipad" → maps to "ios"
+    assert rr.normalize_platform("flutter", os_name="iPadOS") == "ios"
+
+
+# ---------------------------------------------------------------------------
+# New test: resolve with os_name disambiguation
+# ---------------------------------------------------------------------------
+
+def test_resolve_app_platform_disambiguated_by_os_name():
+    """platform='app' + os_name='Android' should resolve to the android native band."""
+    r = rr.resolve("app", "4.0.0", ROUTING, os_name="Android", path_exists=ALWAYS)
+    assert r is not None
+    assert r.platform == "android"
+    assert r.family == "native"
+    assert r.logical_name == "plaud-native-android"
+
+
+# ---------------------------------------------------------------------------
+# New test: select_band below-floor returns low confidence
+# ---------------------------------------------------------------------------
+
+def test_select_band_below_floor_returns_low_confidence():
+    """A version below every band's min_version falls back to oldest band with 'low' confidence."""
+    bands = [
+        {"min_version": "2.0.0", "family": "old_a"},
+        {"min_version": "4.0.0", "family": "native"},
+    ]
+    # "1.0.0" is below both bands' min_version
+    result = rr.select_band(bands, "1.0.0")
+    assert result is not None
+    band, confidence = result
+    assert confidence == "low"
+    # The oldest (lowest min_version) band should be returned
+    assert band["min_version"] == "2.0.0"
