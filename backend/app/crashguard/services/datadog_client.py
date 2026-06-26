@@ -446,7 +446,14 @@ class DatadogClient:
         app_ver = self._extract_app_version(inner) or _tag_value(tags, "version") or ""
         try:
             from app.crashguard.services.symbolication import symbolicate_stack
-            symbolicated = await symbolicate_stack(best_stack, binary_images, platform_str, app_ver)
+            from app.config import get_repo_routing
+            from app.services import repo_router
+            _res = repo_router.resolve(platform_str, app_ver, get_repo_routing())
+            symbolicated = await symbolicate_stack(
+                best_stack, binary_images, platform_str, app_ver,
+                symbol_profile=(_res.symbol_profile if _res else ""),
+                github_repo=(_res.github_repo if _res else ""),
+            )
         except Exception:
             symbolicated = best_stack
 

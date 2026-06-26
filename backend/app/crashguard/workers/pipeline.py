@@ -264,6 +264,8 @@ async def _try_symbolicate_issue(datadog_issue_id: str, platform: str) -> None:
     try:
         from app.crashguard.services.symbolication import symbolicate_stack
         from app.crashguard.models import CrashIssue
+        from app.config import get_repo_routing
+        from app.services import repo_router
 
         async with get_session() as session:
             row = (await session.execute(
@@ -273,8 +275,11 @@ async def _try_symbolicate_issue(datadog_issue_id: str, platform: str) -> None:
                 return
             original = row.representative_stack
             app_ver = (row.last_seen_version or "").strip()
+            _res = repo_router.resolve(platform or row.platform or "", app_ver, get_repo_routing())
             enhanced = await symbolicate_stack(
                 original, [], platform or row.platform or "", app_ver,
+                symbol_profile=(_res.symbol_profile if _res else ""),
+                github_repo=(_res.github_repo if _res else ""),
             )
             if enhanced and enhanced != original:
                 row.representative_stack = enhanced[:32000]
