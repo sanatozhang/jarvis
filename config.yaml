@@ -105,6 +105,27 @@ storage:
 # CODE_REPO_PATH=/path/to/plaud_ai         # 旧字段，兼容，等同于 CODE_REPO_APP
 
 # ===========================
+# 源码仓库路由（按平台 + 版本）—— repo_router 单一真相源
+# 切换线：3.x.x 及以下=flutter 旧仓，4.0.0 起=native 新仓（android/ios 同线）
+# 路径可被 env / 设置页 DB override 覆盖；服务器路径在 /Users/mac/Downloads/
+# ===========================
+repo_routing:
+  android:
+    bands:
+      - {min_version: "0",     family: flutter, wrapper: "/Users/mac/Downloads/plaud_ai",        sub: "plaud-android",        github_repo: "Plaud-AI/Plaud-App",            symbol_profile: "flutter_android"}
+      - {min_version: "4.0.0", family: native,  wrapper: "/Users/mac/Downloads/plaud-native-app", sub: "plaud-native-android", github_repo: "Plaud-AI/plaud-native-android", symbol_profile: "native_android"}
+  ios:
+    bands:
+      - {min_version: "0",     family: flutter, wrapper: "/Users/mac/Downloads/plaud_ai",        sub: "plaud-ios",            github_repo: "Plaud-AI/Plaud-App",        symbol_profile: "flutter_ios"}
+      - {min_version: "4.0.0", family: native,  wrapper: "/Users/mac/Downloads/plaud-native-app", sub: "plaud-native-ios",     github_repo: "Plaud-AI/plaud-native-ios",    symbol_profile: "native_ios"}
+  web:
+    bands:
+      - {min_version: "0", family: web,     wrapper: "/Users/mac/Downloads/plaud-web", sub: "", github_repo: "Plaud-AI/plaud-web", symbol_profile: "none"}
+  desktop:
+    bands:
+      - {min_version: "0", family: desktop, wrapper: "/Users/mac/Downloads/fe-nexus",  sub: "", github_repo: "Plaud-AI/fe-nexus",  symbol_profile: "none"}
+
+# ===========================
 # Release 自动化 (Jenkins)
 # ===========================
 # 触发 Plaud APP release 分支构建。3 台 Jenkins 各自独立账号体系——每台单独配 user
