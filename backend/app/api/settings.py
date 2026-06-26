@@ -226,9 +226,9 @@ async def preview_repo_routing(req: PreviewReq):
 def _apply_repo_routing(override: dict) -> None:
     """Merge override dict into in-memory Settings.repo_routing + crashguard service_filter."""
     s = get_settings()
-    if override.get("routing"):
+    if "routing" in override:
         s.repo_routing = override["routing"]
-    if override.get("service_filter"):
+    if "service_filter" in override:
         from app.crashguard.config import get_crashguard_settings
         get_crashguard_settings().datadog_service_filter = override["service_filter"]
 
