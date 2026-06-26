@@ -221,6 +221,12 @@ async def _symbolicate_with_github(
         is_android = "android" in plat or "flutter" in plat
 
         if is_ios:
+            # NOTE: native_ios sets use_app_dsym=True while flutter_ios sets use_flutter_dsym=True,
+            # but both currently invoke the same getter (get_ios_dsyms_dir → PLAUD.dSYMs.zip).
+            # The flag distinction is intentional but not yet operational: once the native iOS
+            # release publishes a separate app-dSYM asset, split this branch to use it for
+            # native_ios. Until then native_ios reuses the dSYM zip (no-ops on BuildId mismatch).
+            # ⚠️ External TODO: confirm native release asset names/contents with the App team.
             # Determine whether to run iOS dSYM symbolication
             if strategy is None or strategy.get("use_flutter_dsym") or strategy.get("use_app_dsym"):
                 dsyms_dir = await get_ios_dsyms_dir(app_version, repo=repo)

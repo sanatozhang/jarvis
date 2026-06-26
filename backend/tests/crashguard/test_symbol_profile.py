@@ -8,21 +8,7 @@ before implementation is in place.
 from app.crashguard.services import symbolication
 
 
-def test_native_android_skips_dart_symbols(monkeypatch):
-    calls = {"dart": 0, "mapping": 0}
-
-    async def fake_dart(v, repo=""):
-        calls["dart"] += 1
-        return None
-
-    async def fake_mapping(v, repo=""):
-        calls["mapping"] += 1
-        return None
-
-    async def fake_native(v, repo=""):
-        return None
-
-    monkeypatch.setattr(symbolication, "get_dart_symbols_dir", fake_dart, raising=False)
+def test_native_android_skips_dart_symbols():
     # native_android profile：不应调 dart 符号（Flutter 专属）
     prof = symbolication._profile_strategy("native_android")
     assert prof["use_dart_symbols"] is False
