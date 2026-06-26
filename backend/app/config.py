@@ -411,7 +411,7 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
 
     # repo_routing (repo_router bands)
     rr = cfg.get("repo_routing", {})
-    if rr:
+    if isinstance(rr, dict) and rr:
         settings.repo_routing = rr
 
     return settings
