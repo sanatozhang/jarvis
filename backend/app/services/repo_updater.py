@@ -96,16 +96,51 @@ def _update_repo(name: str, repo_path: str) -> bool:
     if _is_submodule_shell(path):
         try:
             with workspace_lock(path, timeout_sec=120):
-                for cmd in (
+                # --- fatal phase: fetch + checkout (main→master fallback) + pull ---
+                r = subprocess.run(
                     ["git", "fetch", "origin"],
+                    cwd=str(path), capture_output=True, text=True, timeout=300,
+                )
+                if r.returncode != 0:
+                    logger.error("[repo:%s] git fetch failed: %s", name, r.stderr.strip())
+                    return False
+
+                branch = "main"
+                r = subprocess.run(
                     ["git", "checkout", "main"],
-                    ["git", "pull", "origin"],
+                    cwd=str(path), capture_output=True, text=True, timeout=60,
+                )
+                if r.returncode != 0:
+                    branch = "master"
+                    r = subprocess.run(
+                        ["git", "checkout", "master"],
+                        cwd=str(path), capture_output=True, text=True, timeout=60,
+                    )
+                    if r.returncode != 0:
+                        logger.error(
+                            "[repo:%s] checkout main/master failed: %s", name, r.stderr.strip()
+                        )
+                        return False
+
+                r = subprocess.run(
+                    ["git", "pull", "origin", branch],
+                    cwd=str(path), capture_output=True, text=True, timeout=300,
+                )
+                if r.returncode != 0:
+                    logger.error("[repo:%s] git pull failed: %s", name, r.stderr.strip())
+                    return False
+
+                # --- non-fatal phase: submodule sync + recursive update ---
+                for cmd in (
                     ["git", "submodule", "sync", "--recursive"],
                     ["git", "submodule", "update", "--init", "--remote", "--recursive"],
                 ):
                     r = subprocess.run(cmd, cwd=str(path), capture_output=True, text=True, timeout=300)
-                    if r.returncode != 0 and cmd[1] in ("submodule",):
-                        logger.warning("[repo:%s] %s failed: %s", name, " ".join(cmd), r.stderr.strip())
+                    if r.returncode != 0:
+                        logger.warning(
+                            "[repo:%s] %s failed: %s", name, " ".join(cmd), r.stderr.strip()
+                        )
+
                 logger.info("[repo:%s] submodule shell updated at %s", name, repo_path)
                 return True
         except TimeoutError:
