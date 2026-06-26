@@ -62,15 +62,12 @@ def _should_run_flutter_subrepo_detection(family: str) -> bool:
     return (family or "").strip().lower() == "flutter"
 
 
-import json as _json
-
-
 def _sample_version(issue) -> str:
     """从 issue.representative_stack JSON 的 sample_app_version 取版本；
     回退到 issue.app_version；再回退空字符串。
     """
     try:
-        rep = _json.loads(getattr(issue, "representative_stack", "") or "{}")
+        rep = json.loads(getattr(issue, "representative_stack", "") or "{}")
         v = (rep.get("sample_app_version") or "").strip()
         if v:
             return v
@@ -504,10 +501,15 @@ def _github_open_crashguard_pr(
     查询失败一律返回 None（fail-open）：GitHub 抖动不该把自动化卡死，
     最坏退回到本地 DB 去重 + 同 fingerprint 的 pr_dedup_days 窗口。
 
-    github_slug: 如果已知（来自 repo_router res.github_repo），直接使用；
-                 否则从 repo_path git remote 反解（旧行为兜底）。
+    github_slug: 如果已知（来自 repo_router res.github_repo），作为最后兜底；
+                 优先从 repo_path git remote 反解——对 flutter sub-repo 和 native submodule
+                 都是正确的 PR 目标仓库。res.github_repo 语义是符号化源仓库，不是 PR 目标仓库。
     """
-    slug = github_slug or _github_slug(repo_path)
+    # Prefer git-remote-derived slug: correct for both flutter sub-repos (e.g.
+    # plaud-flutter-common/global/cn) and native submodules.  res.github_repo is
+    # the release/symbol monorepo (e.g. Plaud-AI/Plaud-App for flutter) and must
+    # NOT drive dedup queries — PRs live in the sub-repo, not the release monorepo.
+    slug = _github_slug(repo_path) or github_slug
     if not slug:
         return None
     short = re.sub(r"[^a-zA-Z0-9]", "", issue_id)[:8] or "noid"
@@ -1065,6 +1067,9 @@ async def _create_one_draft_pr(
 
     _s = get_crashguard_settings()
     _create_draft = bool(getattr(_s, "pr_create_as_draft", False))
+    # repo inferred from checkout git remote — correct for both flutter sub-repos and
+    # native submodules; do NOT force res.github_repo (flutter's is the release monorepo
+    # Plaud-AI/Plaud-App, not the PR sub-repo like plaud-flutter-common/global/cn).
     _gh_args = ["gh", "pr", "create", "--title", pr_title, "--body", pr_body,
                 "--head", branch]
     if _create_draft:
@@ -1681,6 +1686,11 @@ async def draft_pr_for_analysis(
         res = _resolve_repo_for_issue(platform, sample_version)
         if res is None:
             # Fallback to old static mapping if repo_router has no config for this platform
+            logger.warning(
+                "repo_router returned None for platform=%s version=%s; "
+                "falling back to static _platform_repo_path mapping",
+                platform, sample_version,
+            )
             repo_logical = platform
             repo_path = _platform_repo_path(platform)
         else:
