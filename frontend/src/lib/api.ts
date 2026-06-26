@@ -2024,7 +2024,7 @@ export interface RepoRoutingPreviewResult {
   sub_repo_path?: string;
   github_repo?: string;
   symbol_profile?: string;
-  confidence?: number;
+  confidence?: "high" | "low";
   reason?: string;
 }
 

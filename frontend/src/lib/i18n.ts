@@ -455,6 +455,8 @@ const EN: Record<string, string> = {
   "暂无工单": "No tickets",
 
   // Common
+  "暂无配置": "No configuration",
+  "预览失败": "Preview failed",
   "已标记为不准确": "Marked as inaccurate",
   "暂无不准确工单": "No inaccurate tickets",
   "暂无数据": "No data",
@@ -939,7 +941,6 @@ const EN: Record<string, string> = {
   "命中": "Matched",
   "未命中": "No match",
   "无法解析": "Unresolved",
-  "Bands 配置": "Bands Config",
   "添加行": "Add Row",
   "最低版本": "Min Version",
   "代码族": "Family",
