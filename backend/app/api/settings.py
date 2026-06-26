@@ -165,6 +165,94 @@ async def apply_agent_overrides_from_db() -> dict:
     return applied
 
 
+# ---------------------------------------------------------------------------
+# Repo-routing overrides — DB-persisted（UI 配置 repo_routing + service_filter）
+# ---------------------------------------------------------------------------
+REPO_ROUTING_OVERRIDE_KEY = "repo_routing_overrides"
+
+from app.config import get_repo_routing  # noqa: E402  (module-level for monkeypatch)
+
+
+class RepoRoutingUpdate(BaseModel):
+    routing: dict
+    service_filter: str | None = None
+
+
+class PreviewReq(BaseModel):
+    platform: str
+    version: str | None = None
+
+
+@router.get("/repo-routing")
+async def get_repo_routing_cfg():
+    """Get current repo-routing config + crashguard service_filter."""
+    from app.crashguard.config import get_crashguard_settings
+    return {
+        "routing": get_repo_routing(),
+        "service_filter": get_crashguard_settings().datadog_service_filter,
+    }
+
+
+@router.put("/repo-routing")
+async def update_repo_routing(req: RepoRoutingUpdate):
+    """Write repo-routing override to DB and apply immediately into memory."""
+    override: dict = {"routing": req.routing}
+    if req.service_filter is not None:
+        override["service_filter"] = req.service_filter
+    await db.set_oncall_config(REPO_ROUTING_OVERRIDE_KEY, json.dumps(override, ensure_ascii=False))
+    _apply_repo_routing(override)
+    logger.info("Repo-routing override persisted + applied: routing keys=%s", list(req.routing.keys()))
+    return {"ok": True}
+
+
+@router.post("/repo-routing/preview")
+async def preview_repo_routing(req: PreviewReq):
+    """Resolve a (platform, version) pair against current routing config."""
+    from app.services import repo_router
+    res = repo_router.resolve(req.platform, req.version, get_repo_routing())
+    if not res:
+        return {"resolved": False, "reason": "platform 未配置 / 路径不存在 / 版本无法归一"}
+    return {
+        "resolved": True,
+        "family": res.family,
+        "platform": res.platform,
+        "sub_repo_path": res.sub_repo_path,
+        "github_repo": res.github_repo,
+        "symbol_profile": res.symbol_profile,
+        "confidence": res.confidence,
+    }
+
+
+def _apply_repo_routing(override: dict) -> None:
+    """Merge override dict into in-memory Settings.repo_routing + crashguard service_filter."""
+    s = get_settings()
+    if override.get("routing"):
+        s.repo_routing = override["routing"]
+    if override.get("service_filter"):
+        from app.crashguard.config import get_crashguard_settings
+        get_crashguard_settings().datadog_service_filter = override["service_filter"]
+
+
+async def apply_repo_routing_overrides_from_db() -> dict:
+    """Startup hook: load repo_routing_overrides from DB and merge into in-memory settings.
+
+    Called from main.py lifespan after init_db(). Idempotent.
+    Returns applied dict for logging; empty dict means no override in DB.
+    """
+    try:
+        raw = await db.get_oncall_config(REPO_ROUTING_OVERRIDE_KEY, "")
+        if not raw:
+            return {}
+        override = json.loads(raw)
+    except Exception as e:
+        logger.warning("Failed to load repo_routing override from DB (non-fatal): %s", e)
+        return {}
+    _apply_repo_routing(override)
+    if override:
+        logger.info("Repo-routing overrides applied from DB: keys=%s", list(override.keys()))
+    return override
+
+
 @router.get("/concurrency")
 async def get_concurrency_config():
     """Get concurrency configuration."""
