@@ -478,13 +478,12 @@ def get_code_repo_for_platform(platform: str, version: Optional[str] = None,
 
 
 def get_all_code_repos() -> dict[str, str]:
-    """Return all configured code repo paths (non-empty only)."""
-    s = get_settings()
-    repos = {}
-    if s.code_repo_app:
-        repos["app"] = s.code_repo_app
-    if s.code_repo_web:
-        repos["web"] = s.code_repo_web
-    if s.code_repo_desktop:
-        repos["desktop"] = s.code_repo_desktop
+    """所有需要定时更新的 distinct wrapper（含 flutter/native/web/desktop）。"""
+    routing = get_repo_routing()
+    repos: dict[str, str] = {}
+    for platform, cfg in routing.items():
+        for band in cfg.get("bands", []):
+            w = os.path.expanduser(band.get("wrapper", "") or "")
+            if w:
+                repos[w] = w   # key=去重后的 wrapper 路径
     return repos
