@@ -94,6 +94,7 @@ def resolve(
         return None
     picked = select_band(cfg["bands"], version)
     if not picked:
+        logger.warning("repo_router: select_band returned None for platform=%s version=%s", norm, version)
         return None
     band, confidence = picked
 
@@ -111,6 +112,12 @@ def resolve(
     if not path_exists(sub_path):
         logger.warning("repo_router: sub_repo missing for %s: %s", norm, sub_path)
         return None
+
+    logger.info(
+        "repo_router.resolved platform=%s version=%s family=%s repo=%s sub=%s symbol_profile=%s confidence=%s",
+        norm, version or "?", band.get("family"), band.get("github_repo"), logical,
+        band.get("symbol_profile"), confidence,
+    )
 
     return RepoResolution(
         family=band.get("family", ""),
