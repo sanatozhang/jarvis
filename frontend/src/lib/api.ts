@@ -2000,6 +2000,50 @@ export const releaseArtifactUrl = (buildId: number, platform: "android" | "ios")
   `${BASE}/release/builds/${buildId}/artifacts/${platform}`;
 
 // ============================================================
+// Repo Routing (源码仓库路由)
+// ============================================================
+
+export interface RepoBand {
+  min_version: string;
+  family: string;
+  wrapper: string;
+  sub: string;
+  github_repo: string;
+  symbol_profile: string;
+}
+
+export interface RepoRoutingConfig {
+  routing: Record<string, { bands: RepoBand[] }>;
+  service_filter: string;
+}
+
+export interface RepoRoutingPreviewResult {
+  resolved: boolean;
+  family?: string;
+  platform?: string;
+  sub_repo_path?: string;
+  github_repo?: string;
+  symbol_profile?: string;
+  confidence?: number;
+  reason?: string;
+}
+
+export const getRepoRouting = () =>
+  request<RepoRoutingConfig>("/settings/repo-routing");
+
+export const updateRepoRouting = (body: { routing: Record<string, { bands: RepoBand[] }>; service_filter?: string }) =>
+  request<{ ok: boolean }>("/settings/repo-routing", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+
+export const previewRepoRouting = (platform: string, version?: string) =>
+  request<RepoRoutingPreviewResult>("/settings/repo-routing/preview", {
+    method: "POST",
+    body: JSON.stringify({ platform, version }),
+  });
+
+// ============================================================
 // Site Feedback
 // ============================================================
 

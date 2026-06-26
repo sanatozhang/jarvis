@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchSymbolSettings, updateSymbolSettings, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type SymbolSettings } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchSymbolSettings, updateSymbolSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type SymbolSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult } from "@/lib/api";
 import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
@@ -145,6 +145,259 @@ function CrashguardPrefsSection() {
               {symError && <span className="text-xs" style={{ color: "#EF4444" }}>{symError}</span>}
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
+const PLATFORMS = ["android", "ios", "web", "desktop"] as const;
+type Platform = typeof PLATFORMS[number];
+
+const EMPTY_BAND: RepoBand = { min_version: "", family: "", wrapper: "", sub: "", github_repo: "", symbol_profile: "" };
+
+function RepoRoutingSection() {
+  const t = useT();
+
+  const [routing, setRouting] = useState<Record<string, { bands: RepoBand[] }>>({});
+  const [serviceFilter, setServiceFilter] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  // Preview widget state
+  const [previewPlatform, setPreviewPlatform] = useState<Platform>("android");
+  const [previewVersion, setPreviewVersion] = useState("");
+  const [previewing, setPreviewing] = useState(false);
+  const [previewResult, setPreviewResult] = useState<RepoRoutingPreviewResult | null>(null);
+
+  useEffect(() => {
+    getRepoRouting().then((data: RepoRoutingConfig) => {
+      setRouting(data.routing || {});
+      setServiceFilter(data.service_filter || "");
+    }).catch(console.error);
+  }, []);
+
+  const getBands = (platform: string): RepoBand[] =>
+    routing[platform]?.bands || [];
+
+  const setBands = (platform: string, bands: RepoBand[]) =>
+    setRouting((prev) => ({ ...prev, [platform]: { ...prev[platform], bands } }));
+
+  const updateBand = (platform: string, idx: number, field: keyof RepoBand, value: string) => {
+    const bands = getBands(platform).map((b, i) => i === idx ? { ...b, [field]: value } : b);
+    setBands(platform, bands);
+  };
+
+  const addBand = (platform: string) =>
+    setBands(platform, [...getBands(platform), { ...EMPTY_BAND }]);
+
+  const removeBand = (platform: string, idx: number) =>
+    setBands(platform, getBands(platform).filter((_, i) => i !== idx));
+
+  const onSave = async () => {
+    setSaving(true);
+    setSaveError("");
+    try {
+      await updateRepoRouting({ routing, service_filter: serviceFilter });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) {
+      setSaveError(t("保存失败") + ": " + (e.message || ""));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onPreview = async () => {
+    setPreviewing(true);
+    setPreviewResult(null);
+    try {
+      const res = await previewRepoRouting(previewPlatform, previewVersion || undefined);
+      setPreviewResult(res);
+    } catch (e: any) {
+      setPreviewResult({ resolved: false, reason: e.message || t("预览失败") });
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const bandHeaderCols = [
+    t("最低版本"), t("代码族"), "Wrapper", t("子模块路径"), t("GitHub 仓库"), t("符号化配置"), ""
+  ];
+
+  return (
+    <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h2 className="text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+            {t("源码仓库路由")}
+          </h2>
+          <p className="mt-0.5 text-xs" style={{ color: S.text3 }}>
+            {t("平台版本路由规则，用于 Crashguard 符号化与代码定位")}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {saved && <span className="text-xs" style={{ color: S.accent }}>✓ {t("路由配置已保存")}</span>}
+          {saveError && <span className="text-xs" style={{ color: "#EF4444" }}>{saveError}</span>}
+          <button
+            onClick={onSave} disabled={saving}
+            className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50 transition-opacity"
+            style={{ background: S.overlay, color: S.text1, border: `1px solid ${S.border}` }}
+          >
+            {saving ? t("保存中...") : t("保存路由配置")}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-5">
+        {/* Service Filter */}
+        <div>
+          <label className="mb-1.5 block text-xs font-medium" style={{ color: S.text2 }}>
+            {t("Service 过滤器")}
+          </label>
+          <input
+            type="text"
+            value={serviceFilter}
+            onChange={(e) => setServiceFilter(e.target.value)}
+            placeholder="e.g. plaud-android-native"
+            className="w-full max-w-sm rounded-lg px-3 py-2 text-sm font-mono"
+            style={inputStyle}
+          />
+          <p className="mt-1 text-[11px]" style={{ color: S.text3 }}>
+            {t("Datadog native service tag，上线前需实测确认")}
+          </p>
+        </div>
+
+        {/* Per-platform bands */}
+        {PLATFORMS.map((platform) => {
+          const bands = getBands(platform);
+          return (
+            <div key={platform} style={{ borderTop: `1px solid ${S.borderSm}`, paddingTop: 12 }}>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: S.text2 }}>
+                  {platform}
+                </span>
+                <button
+                  onClick={() => addBand(platform)}
+                  className="rounded px-2 py-0.5 text-xs font-medium"
+                  style={{ background: S.accentBg, color: S.accent, border: `1px solid rgba(14,124,134,0.2)` }}
+                >
+                  + {t("添加行")}
+                </button>
+              </div>
+              {bands.length === 0 ? (
+                <p className="text-xs py-1" style={{ color: S.text3 }}>{t("暂无配置")}</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        {bandHeaderCols.map((col, i) => (
+                          <th key={i} className="pb-1.5 pr-2 text-left font-semibold" style={{ color: S.text3 }}>
+                            {col}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bands.map((band, idx) => (
+                        <tr key={idx} style={{ borderTop: `1px solid ${S.borderSm}` }}>
+                          {(["min_version", "family", "wrapper", "sub", "github_repo", "symbol_profile"] as Array<keyof RepoBand>).map((field) => (
+                            <td key={field} className="py-1 pr-1.5">
+                              <input
+                                type="text"
+                                value={band[field]}
+                                onChange={(e) => updateBand(platform, idx, field, e.target.value)}
+                                className="rounded px-2 py-1 text-xs font-mono w-full"
+                                style={{ ...inputStyle, minWidth: field === "github_repo" || field === "symbol_profile" ? 120 : 80 }}
+                                placeholder={field}
+                              />
+                            </td>
+                          ))}
+                          <td className="py-1 pl-1">
+                            <button
+                              onClick={() => removeBand(platform, idx)}
+                              className="rounded px-2 py-0.5 text-xs"
+                              style={{ background: "rgba(239,68,68,0.08)", color: "#EF4444", border: "1px solid rgba(239,68,68,0.2)" }}
+                            >
+                              {t("删除")}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Resolution Preview */}
+        <div style={{ borderTop: `1px solid ${S.borderSm}`, paddingTop: 12 }}>
+          <h3 className="mb-3 text-xs font-semibold" style={{ color: S.text2 }}>{t("解析预览")}</h3>
+          <div className="flex items-end gap-2 flex-wrap">
+            <div>
+              <label className="mb-1 block text-[11px]" style={{ color: S.text3 }}>{t("平台")}</label>
+              <select
+                value={previewPlatform}
+                onChange={(e) => setPreviewPlatform(e.target.value as Platform)}
+                className="rounded px-2 py-1.5 text-xs"
+                style={inputStyle}
+              >
+                {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px]" style={{ color: S.text3 }}>{t("版本号")}</label>
+              <input
+                type="text"
+                value={previewVersion}
+                onChange={(e) => setPreviewVersion(e.target.value)}
+                placeholder="e.g. 3.2.1"
+                className="rounded px-2 py-1.5 text-xs font-mono w-32"
+                style={inputStyle}
+              />
+            </div>
+            <button
+              onClick={onPreview} disabled={previewing}
+              className="rounded px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+              style={{ background: S.accent, color: "white", border: "none" }}
+            >
+              {previewing ? t("预览中...") : t("预览")}
+            </button>
+          </div>
+
+          {previewResult && (
+            <div className="mt-3 rounded-lg p-3 text-xs" style={{
+              background: previewResult.resolved ? "rgba(22,163,74,0.06)" : "rgba(239,68,68,0.06)",
+              border: `1px solid ${previewResult.resolved ? "rgba(22,163,74,0.2)" : "rgba(239,68,68,0.2)"}`,
+            }}>
+              {previewResult.resolved ? (
+                <>
+                  <p className="font-semibold mb-1" style={{ color: "#16A34A" }}>✓ {t("命中")}</p>
+                  <div className="grid grid-cols-2 gap-1">
+                    {([
+                      ["family", previewResult.family],
+                      ["sub_repo_path", previewResult.sub_repo_path],
+                      ["github_repo", previewResult.github_repo],
+                      ["symbol_profile", previewResult.symbol_profile],
+                      ["confidence", previewResult.confidence !== undefined ? String(previewResult.confidence) : undefined],
+                    ] as [string, string | undefined][]).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => (
+                      <div key={k}>
+                        <span style={{ color: S.text3 }}>{k}: </span>
+                        <span className="font-mono" style={{ color: S.text1 }}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p style={{ color: "#EF4444" }}>✗ {t("未命中")}: {previewResult.reason || t("无法解析")}</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </section>
@@ -689,6 +942,9 @@ export default function SettingsPage() {
             </div>
           </section>
         )}
+
+        {/* REPO ROUTING */}
+        <RepoRoutingSection />
 
         {/* CRASHGUARD PREFERENCES (per-browser) */}
         <CrashguardPrefsSection />
