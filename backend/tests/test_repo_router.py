@@ -67,6 +67,13 @@ def test_missing_path_returns_none():
     assert rr.resolve("android", "4.0.0", ROUTING, path_exists=lambda p: False) is None
 
 
+def test_missing_subrepo_path_returns_none():
+    # wrapper exists, sub-repo does not → None
+    res = rr.resolve("android", "4.0.0", ROUTING,
+                     path_exists=lambda p: p == "/repos/plaud-native-app")
+    assert res is None
+
+
 def test_normalize_platform():
     assert rr.normalize_platform("app", os_name="Android") == "android"
     assert rr.normalize_platform("flutter", os_name="iOS") == "ios"

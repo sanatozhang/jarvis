@@ -69,7 +69,8 @@ def select_band(bands: list[dict], version: Optional[str]) -> Optional[tuple[dic
         mv = parse_version(b.get("min_version", "0")) or (0, 0, 0)
         if pv >= mv:
             return b, "high"
-    return ordered[-1], "high"
+    # version is parseable but below every band's min_version → unmatched fallback (low confidence)
+    return ordered[-1], "low"
 
 
 def resolve(
@@ -82,6 +83,7 @@ def resolve(
     os_name: str = "",
     path_exists: Callable[[str], bool] = os.path.exists,
 ) -> Optional[RepoResolution]:
+    # sub_hint / stack_text: reserved for later tasks (flutter sub-repo override + crash-text heuristics)
     norm = normalize_platform(platform, os_name=os_name)
     if not norm:
         logger.info("repo_router: cannot normalize platform=%r os=%r", platform, os_name)
