@@ -16,7 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from app.config import get_settings, get_code_repo_for_platform
+from app.config import get_settings, get_repo_routing
+from app.services import repo_router
 from app.db import database as db
 from app.models.schemas import AnalysisResult, Issue
 from app.services.agent_orchestrator import AgentOrchestrator
@@ -578,7 +579,14 @@ async def run_analysis_pipeline(
         await on_progress(60, "准备 Agent 工作空间..." if has_logs else "准备代码分析...")
 
     # --- Step 6: Prepare workspace ---
-    code_repo = get_code_repo_for_platform(platform)
+    version = (getattr(issue, "app_version", "") or "").strip()
+    res = repo_router.resolve(platform, version, get_repo_routing())
+    code_repo = res.sub_repo_path if res else None
+    if res is None:
+        logger.info("repo_router: no repo for platform=%s version=%s — logs-only", platform, version)
+    else:
+        logger.info("repo_router: %s v%s → %s (%s, conf=%s)",
+                    platform, version or "?", res.logical_name, res.family, res.confidence)
     engine.prepare_workspace(workspace, rules, workspace_log_paths, code_repo=code_repo)
 
     # --- Step 7: Run agent ---

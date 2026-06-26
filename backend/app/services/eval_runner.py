@@ -10,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.config import get_code_repo_for_platform, get_settings
+from app.config import get_repo_routing, get_settings
+from app.services import repo_router
 from app.db import database as db
 from app.models.schemas import Issue
 from app.services.decrypt import process_log_file_for_platform
@@ -224,7 +225,12 @@ async def run_eval(run_id: int):
                 engine = RuleEngine()
                 rules = engine.match_rules(routing_text)
                 extraction = extract_for_rules(rules, log_paths, problem_date=problem_date) if has_logs else {}
-                code_repo = get_code_repo_for_platform((issue.platform or "").strip().lower())
+                res = repo_router.resolve(
+                    (issue.platform or "").strip().lower(),
+                    (getattr(issue, "app_version", "") or "").strip(),
+                    get_repo_routing(),
+                )
+                code_repo = res.sub_repo_path if res else None
                 engine.prepare_workspace(workspace, rules, log_paths, code_repo=code_repo)
 
                 result = await orchestrator.run_analysis(
