@@ -136,3 +136,62 @@ def test_sample_version_empty_when_neither_field():
 
     issue = types.SimpleNamespace()  # no attributes at all
     assert pr_drafter._sample_version(issue) == ""
+
+
+# ---------------------------------------------------------------------------
+# New tests: _select_candidates (Fix 1)
+# ---------------------------------------------------------------------------
+
+def test_select_candidates_native_with_res_returns_single():
+    """Native family + non-None res → single-element list from res (no fallback)."""
+    import types
+    from app.crashguard.services import pr_drafter
+
+    res = types.SimpleNamespace(logical_name="plaud-native-android", sub_repo_path="/r/plaud-native-app/plaud-native-android")
+    fallback_called = []
+
+    def fallback():
+        fallback_called.append(True)
+        return [("flutter-global", "/r/flutter/global"), ("flutter-cn", "/r/flutter/cn")]
+
+    result = pr_drafter._select_candidates("native", res, fallback)
+    assert result == [("plaud-native-android", "/r/plaud-native-app/plaud-native-android")]
+    assert not fallback_called, "fallback must NOT be called for native family with valid res"
+
+
+def test_select_candidates_desktop_with_res_returns_single():
+    """Desktop family + non-None res → single-element list (same short-circuit as native)."""
+    import types
+    from app.crashguard.services import pr_drafter
+
+    res = types.SimpleNamespace(logical_name="plaud-desktop-win", sub_repo_path="/r/desktop/win")
+    fallback_called = []
+
+    def fallback():
+        fallback_called.append(True)
+        return []
+
+    result = pr_drafter._select_candidates("desktop", res, fallback)
+    assert result == [("plaud-desktop-win", "/r/desktop/win")]
+    assert not fallback_called
+
+
+def test_select_candidates_flutter_falls_through_to_fallback():
+    """Flutter family → always falls through to fallback_callable (blob detection needed)."""
+    import types
+    from app.crashguard.services import pr_drafter
+
+    res = types.SimpleNamespace(logical_name="plaud-flutter-global", sub_repo_path="/r/plaud_ai/plaud-flutter-global")
+
+    expected = [("flutter-global", "/r/g"), ("flutter-cn", "/r/cn")]
+    result = pr_drafter._select_candidates("flutter", res, lambda: expected)
+    assert result is expected
+
+
+def test_select_candidates_native_none_res_falls_through_to_fallback():
+    """Native family + None res → resolution failed, fall through to fallback_callable."""
+    from app.crashguard.services import pr_drafter
+
+    expected = [("plaud-android", "/r/fallback")]
+    result = pr_drafter._select_candidates("native", None, lambda: expected)
+    assert result is expected

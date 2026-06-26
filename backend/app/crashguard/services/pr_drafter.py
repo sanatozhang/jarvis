@@ -62,6 +62,31 @@ def _should_run_flutter_subrepo_detection(family: str) -> bool:
     return (family or "").strip().lower() == "flutter"
 
 
+def _select_candidates(family: str, res, fallback_callable):
+    """Pure helper: select PR candidate repos based on family + resolved repo.
+
+    For non-flutter families with a valid resolution, short-circuit directly to
+    the single version-aware submodule path — no multi-candidate blob detection
+    needed (native/desktop always map 1:1 to a submodule repo).
+
+    For flutter, or when res is None (resolution failed), fall through to the
+    full _resolve_candidate_repos() machinery via fallback_callable().
+
+    Args:
+        family: family string from repo_router resolution ("flutter"/"native"/"desktop"/...)
+        res:    RepoResolution or None from _resolve_repo_for_issue()
+        fallback_callable: zero-arg callable that returns the full candidates list
+
+    Returns:
+        list of (logical_name, abs_path) tuples
+    """
+    if family != "flutter" and res is not None:
+        # native / desktop = single submodule; no multi-candidate blob machinery needed.
+        # Use the version-aware repo_router resolution directly as the sole candidate.
+        return [(res.logical_name, res.sub_repo_path)]
+    return fallback_callable()
+
+
 def _sample_version(issue) -> str:
     """从 issue.representative_stack JSON 的 sample_app_version 取版本；
     回退到 issue.app_version；再回退空字符串。
@@ -2401,10 +2426,14 @@ async def draft_prs_multi(
     _sample_ver = _sample_version(issue)
     _res_for_family = _resolve_repo_for_issue((issue.platform or "").lower(), _sample_ver)
     _family = _res_for_family.family if _res_for_family else "flutter"
-    candidates = _resolve_candidate_repos(
-        issue.platform or "", fix_text, issue.representative_stack or "",
-        fix_diff=ana.fix_diff or "",
-        family=_family,
+    candidates = _select_candidates(
+        _family,
+        _res_for_family,
+        lambda: _resolve_candidate_repos(
+            issue.platform or "", fix_text, issue.representative_stack or "",
+            fix_diff=ana.fix_diff or "",
+            family=_family,
+        ),
     )
 
     # === Gate#10：多候选先合议——≥2 个平台时锁 primary，只在 primary 仓开 PR ===

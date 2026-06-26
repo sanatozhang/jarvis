@@ -69,7 +69,13 @@ def select_band(bands: list[dict], version: Optional[str]) -> Optional[tuple[dic
         mv = parse_version(b.get("min_version", "0")) or (0, 0, 0)
         if pv >= mv:
             return b, "high"
-    # version is parseable but below every band's min_version → unmatched fallback (low confidence)
+    # Below-floor fallback: this branch triggers only when a parseable version is
+    # below EVERY band's min_version (i.e., older than the oldest configured band).
+    # We return the oldest band (ordered[-1], the one with the smallest min_version)
+    # with confidence="low" so callers can apply extra caution.
+    # In production the oldest band always has min_version="0", which matches any
+    # version ≥ 0 in the loop above — making this branch currently unreachable.
+    # It is kept defensive in case a config is ever deployed without a "0" floor band.
     return ordered[-1], "low"
 
 

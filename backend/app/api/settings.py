@@ -193,6 +193,49 @@ async def get_repo_routing_cfg():
     }
 
 
+def _validate_routing(routing: dict) -> list[dict]:
+    """Validate each band in a routing config and return a list of warnings.
+
+    Checks per band:
+    - wrapper path exists on disk
+    - wrapper has a .git entry (is a git repo or submodule shell)
+    - sub path exists inside wrapper (if sub is non-empty)
+
+    Does NOT raise; always returns a (possibly empty) list so callers can
+    choose to surface warnings without blocking the write.
+    """
+    import os as _os
+    warnings: list[dict] = []
+    for platform, cfg in (routing or {}).items():
+        for i, band in enumerate(cfg.get("bands", [])):
+            wrapper = _os.path.expanduser((band.get("wrapper") or "").strip())
+            sub = (band.get("sub") or "").strip()
+            if not wrapper:
+                continue
+            if not _os.path.exists(wrapper):
+                warnings.append({
+                    "platform": platform,
+                    "band": i,
+                    "issue": f"wrapper not found: {wrapper}",
+                })
+                continue
+            if not _os.path.exists(_os.path.join(wrapper, ".git")):
+                warnings.append({
+                    "platform": platform,
+                    "band": i,
+                    "issue": f"wrapper exists but no .git entry (not a git repo/submodule): {wrapper}",
+                })
+            if sub:
+                sub_path = _os.path.join(wrapper, sub)
+                if not _os.path.exists(sub_path):
+                    warnings.append({
+                        "platform": platform,
+                        "band": i,
+                        "issue": f"sub not found inside wrapper: {sub_path}",
+                    })
+    return warnings
+
+
 @router.put("/repo-routing")
 async def update_repo_routing(req: RepoRoutingUpdate):
     """Write repo-routing override to DB and apply immediately into memory."""
@@ -202,7 +245,10 @@ async def update_repo_routing(req: RepoRoutingUpdate):
     await db.set_oncall_config(REPO_ROUTING_OVERRIDE_KEY, json.dumps(override, ensure_ascii=False))
     _apply_repo_routing(override)
     logger.info("Repo-routing override persisted + applied: routing keys=%s", list(req.routing.keys()))
-    return {"ok": True}
+    warnings = _validate_routing(req.routing)
+    if warnings:
+        logger.warning("Repo-routing PUT validation warnings: %s", warnings)
+    return {"ok": True, "warnings": warnings}
 
 
 @router.post("/repo-routing/preview")
