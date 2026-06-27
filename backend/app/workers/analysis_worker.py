@@ -620,6 +620,34 @@ async def run_analysis_pipeline(
     else:
         logger.info("repo_router(analysis): no repo for platform=%s version=%s os=%s -> logs-only",
                     platform, version, os_name)
+    # --- Code-routing badge: attach to log_metadata before workspace prep ---
+    import os as _os
+    if res is not None:
+        _family = res.family
+        _conf = res.confidence
+        _source = "resolved"
+    elif code_repo is not None:
+        _family = "flutter"          # coexistence fallback always lands on flutter monorepo
+        _conf = "fallback"
+        _source = "fallback-app"
+    else:
+        _family = ""
+        _conf = "none"
+        _source = "logs-only"
+    code_routing = {
+        "family": _family,
+        "repo": (_os.path.basename(code_repo.rstrip("/")) if code_repo else ""),
+        "version": version or "",
+        "platform": platform or "",
+        "confidence": _conf,
+        "source": _source,
+    }
+    try:
+        log_metadata["code_routing"] = code_routing
+    except Exception:
+        pass
+    logger.info("code_routing badge: %s", code_routing)
+
     engine.prepare_workspace(workspace, rules, workspace_log_paths, code_repo=code_repo)
 
     # --- Step 7: Run agent ---

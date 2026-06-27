@@ -191,6 +191,14 @@ export interface LogMetadata {
   locale?: string;
   api_region?: string;
   file_ids?: string[];
+  code_routing?: {
+    family?: string;       // flutter | native | web | desktop | ""
+    repo?: string;
+    version?: string;
+    platform?: string;
+    confidence?: string;   // high | low | fallback | none
+    source?: string;       // resolved | fallback-app | logs-only
+  };
 }
 
 export interface AnalysisResult {

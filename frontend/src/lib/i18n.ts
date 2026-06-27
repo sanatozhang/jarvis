@@ -949,4 +949,8 @@ const EN: Record<string, string> = {
   "符号化配置": "Symbol Profile",
   "保存路由配置": "Save Routing",
   "路由配置已保存": "Routing config saved",
+
+  // Code-version badge
+  "Flutter（默认兜底）": "Flutter (default fallback)",
+  "无源码（logs-only）": "No codebase (logs-only)",
 };
