@@ -344,11 +344,8 @@ export function AnalysisResultView({
                     </span>
                   );
                 })()}
-                {/* Code-version badge — shows which codebase (flutter/native/fallback) was used */}
-                <CodeRoutingBadge
-                  cr={r.log_metadata?.code_routing ?? { source: "logs-only" }}
-                  t={t}
-                />
+                {/* Code-version badge — only render when code_routing exists (hides on pre-feature results) */}
+                {r.log_metadata?.code_routing && <CodeRoutingBadge cr={r.log_metadata.code_routing} t={t} />}
               </div>
 
               {/* Per-run usage meter — 本次 tokens · cost (功能 1) */}

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,37 @@ def _os_name_from_issue(issue: object) -> str:
         return (meta.get("os_version") or meta.get("os") or "").strip()
     except Exception:
         return ""
+
+
+def _compute_code_routing(platform: str, version: str, os_name: str) -> dict:
+    """Compute the code-version badge dict (which codebase this ticket maps to).
+
+    Mirrors Step 6's resolve+coexistence-fallback so all result paths
+    (incl. stale-log) can show the badge. resolve() is cheap/pure.
+    """
+    res = repo_router.resolve(platform, version, get_repo_routing(), os_name=os_name)
+    code_repo = repo_router.analysis_path(res)
+    used_fallback = res is None or code_repo is None
+    if code_repo is None and (platform in ("", "app", "flutter")):
+        _fb = repo_router.resolve("app", version, get_repo_routing(), os_name=os_name)
+        code_repo = repo_router.analysis_path(_fb)
+        if code_repo is None:
+            code_repo = (get_settings().code_repo_app or get_settings().code_repo_path) or None
+        used_fallback = True
+    if res is not None and not used_fallback:
+        family, conf, source = res.family, res.confidence, "resolved"
+    elif code_repo is not None:
+        family, conf, source = "flutter", "fallback", "fallback-app"
+    else:
+        family, conf, source = "", "none", "logs-only"
+    return {
+        "family": family,
+        "repo": (os.path.basename(code_repo.rstrip("/")) if code_repo else ""),
+        "version": version or "",
+        "platform": platform or "",
+        "confidence": conf,
+        "source": source,
+    }
 
 
 # ====================== ① 日志时效性预检 ======================
@@ -181,6 +213,14 @@ def _build_stale_log_result(
         agent_type="precheck",
     )
     result.issue = issue
+    # Attach code_routing badge so stale-log results also carry badge info
+    try:
+        _platform = (getattr(issue, "platform", "") or "").strip().lower()
+        _version = (getattr(issue, "app_version", "") or "").strip()
+        _os_n = _os_name_from_issue(issue)
+        log_metadata["code_routing"] = _compute_code_routing(_platform, _version, _os_n)
+    except Exception:
+        pass
     result.log_metadata = log_metadata
     return result
 
@@ -621,32 +661,14 @@ async def run_analysis_pipeline(
         logger.info("repo_router(analysis): no repo for platform=%s version=%s os=%s -> logs-only",
                     platform, version, os_name)
     # --- Code-routing badge: attach to log_metadata before workspace prep ---
-    import os as _os
-    if res is not None:
-        _family = res.family
-        _conf = res.confidence
-        _source = "resolved"
-    elif code_repo is not None:
-        _family = "flutter"          # coexistence fallback always lands on flutter monorepo
-        _conf = "fallback"
-        _source = "fallback-app"
-    else:
-        _family = ""
-        _conf = "none"
-        _source = "logs-only"
-    code_routing = {
-        "family": _family,
-        "repo": (_os.path.basename(code_repo.rstrip("/")) if code_repo else ""),
-        "version": version or "",
-        "platform": platform or "",
-        "confidence": _conf,
-        "source": _source,
-    }
+    # Use helper so badge source reflects the ACTUAL repo used (fallback-aware).
+    # Note: prepare_workspace still uses the `res`/`code_repo` resolved above.
     try:
-        log_metadata["code_routing"] = code_routing
+        _cr = _compute_code_routing(platform, version, os_name)
+        log_metadata["code_routing"] = _cr
     except Exception:
-        pass
-    logger.info("code_routing badge: %s", code_routing)
+        _cr = {}
+    logger.info("code_routing badge: %s", _cr)
 
     engine.prepare_workspace(workspace, rules, workspace_log_paths, code_repo=code_repo)
 
