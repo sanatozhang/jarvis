@@ -121,6 +121,25 @@ cmd_start() {
         set +a
     fi
 
+    # --- Unlock login keychain for claude CLI (bare macOS) ---
+    # claude stores its OAuth token in the macOS login Keychain, which is LOCKED in
+    # SSH/non-GUI sessions. A backend launched via `ssh + nohup` (deploy-all.sh) can't
+    # read it -> every analysis fails with "Not logged in" (claude exits code 1).
+    # Unlock here so the backend below (and the claude children it spawns) can authenticate.
+    # Password comes from an UNTRACKED local file (NOT committed): ~/.jarvis_keychain_pw
+    KC_DB="$HOME/Library/Keychains/login.keychain-db"
+    KC_PW_FILE="$HOME/.jarvis_keychain_pw"
+    if [ -f "$KC_PW_FILE" ] && [ -f "$KC_DB" ] && command -v security >/dev/null 2>&1; then
+        if security unlock-keychain -p "$(cat "$KC_PW_FILE")" "$KC_DB" 2>/dev/null; then
+            security set-keychain-settings "$KC_DB" 2>/dev/null || true
+            log "🔓 login keychain unlocked (claude CLI auth)"
+        else
+            warn "keychain unlock failed — claude CLI may report 'Not logged in'"
+        fi
+    elif [ ! -f "$KC_PW_FILE" ]; then
+        warn "no ~/.jarvis_keychain_pw — skipping keychain unlock (claude CLI may need it on bare macOS)"
+    fi
+
     # Start backend
     if [ -f "$PID_DIR/backend.pid" ] && kill -0 "$(cat "$PID_DIR/backend.pid")" 2>/dev/null; then
         warn "Backend already running (PID $(cat "$PID_DIR/backend.pid"))"
