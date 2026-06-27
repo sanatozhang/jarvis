@@ -135,3 +135,18 @@ def resolve(
         symbol_profile=band.get("symbol_profile", "none") or "none",
         confidence=confidence,
     )
+
+
+def analysis_path(res: Optional[RepoResolution]) -> Optional[str]:
+    """Source path for ticket ANALYSIS (read/grep), which wants broad context.
+
+    flutter: the whole monorepo wrapper (dart code spans sub-repos) — NOT the thin
+             native shell sub-repo (plaud-android / plaud-ios).
+    native/web/desktop: the resolved repo (sub_repo_path; for web/desktop sub is
+                        empty so sub_repo_path == wrapper_path already).
+
+    Returns None when res is None (caller should handle fallback).
+    """
+    if res is None:
+        return None
+    return res.wrapper_path if res.family == "flutter" else res.sub_repo_path

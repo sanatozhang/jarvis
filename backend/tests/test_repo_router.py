@@ -134,3 +134,39 @@ def test_select_band_below_floor_returns_low_confidence():
     assert confidence == "low"
     # The oldest (lowest min_version) band should be returned
     assert band["min_version"] == "2.0.0"
+
+
+# ---------------------------------------------------------------------------
+# New tests: analysis_path helper (TDD RED — will fail until helper is added)
+# ---------------------------------------------------------------------------
+
+def test_analysis_path_none_input():
+    """analysis_path(None) returns None."""
+    assert rr.analysis_path(None) is None
+
+
+def test_analysis_path_flutter_returns_wrapper():
+    """flutter family: analysis_path returns wrapper_path (full monorepo), NOT sub_repo_path."""
+    res = rr.resolve("android", "3.5.0", ROUTING, path_exists=ALWAYS)
+    assert res is not None and res.family == "flutter"
+    # sub_repo_path is /repos/plaud_ai/plaud-android (the thin shell)
+    assert res.sub_repo_path == "/repos/plaud_ai/plaud-android"
+    # analysis_path must return the monorepo wrapper, not the thin native shell
+    assert rr.analysis_path(res) == "/repos/plaud_ai"
+
+
+def test_analysis_path_native_returns_sub_repo_path():
+    """native family: analysis_path returns sub_repo_path (the full native app repo)."""
+    res = rr.resolve("android", "4.0.0", ROUTING, path_exists=ALWAYS)
+    assert res is not None and res.family == "native"
+    assert rr.analysis_path(res) == res.sub_repo_path
+    assert rr.analysis_path(res) == "/repos/plaud-native-app/plaud-native-android"
+
+
+def test_analysis_path_web_returns_sub_repo_path_equals_wrapper():
+    """web family: sub_repo_path == wrapper_path (sub is empty), analysis_path returns it."""
+    res = rr.resolve("web", "1.2.3", ROUTING, path_exists=ALWAYS)
+    assert res is not None and res.family == "web"
+    # For web, sub is empty so sub_repo_path == wrapper_path
+    assert res.sub_repo_path == res.wrapper_path
+    assert rr.analysis_path(res) == res.sub_repo_path

@@ -48,6 +48,22 @@ def _get_orchestrator() -> AgentOrchestrator:
     return _orchestrator
 
 
+def _os_name_from_issue(issue: object) -> str:
+    """Extract OS name string from an issue's log_metadata_json (JSON string).
+
+    Checks keys in order: 'os_version', 'os'. Returns '' on any error or if
+    the attribute is missing. normalize_platform() matches 'Android 14', 'iOS 17'
+    etc. case-insensitively via substring match, so the raw value is fine to pass.
+    """
+    try:
+        raw = getattr(issue, "log_metadata_json", None)
+        if not raw:
+            return ""
+        meta = json.loads(raw)
+        return (meta.get("os_version") or meta.get("os") or "").strip()
+    except Exception:
+        return ""
+
 # ====================== ① 日志时效性预检 ======================
 
 def _parse_problem_ref_time(problem_date: Optional[str], issue: Issue) -> Optional[datetime]:
@@ -580,13 +596,27 @@ async def run_analysis_pipeline(
 
     # --- Step 6: Prepare workspace ---
     version = (getattr(issue, "app_version", "") or "").strip()
-    res = repo_router.resolve(platform, version, get_repo_routing())
-    code_repo = res.sub_repo_path if res else None
-    if res is None:
-        logger.info("repo_router: no repo for platform=%s version=%s — logs-only", platform, version)
+    # os_name: prefer already-parsed log_metadata dict (available when has_logs);
+    # fall back to issue.log_metadata_json for no-log / eval paths.
+    os_name = (
+        (log_metadata.get("os_version") or log_metadata.get("os") or "").strip()
+        if log_metadata
+        else _os_name_from_issue(issue)
+    )
+    res = repo_router.resolve(platform, version, get_repo_routing(), os_name=os_name)
+    code_repo = repo_router.analysis_path(res)
+    if code_repo is None and (platform in ("", "app", "flutter")):
+        # Coexistence fallback: ambiguous/empty app ticket keeps flutter app monorepo source
+        # (pre-migration behavior). web/desktop deliberately stay logs-only (no flutter source).
+        from app.config import get_code_repo_for_platform
+        code_repo = get_code_repo_for_platform("app", version, os_name) or None
+    if code_repo:
+        logger.info("repo_router(analysis): %s v%s os=%s -> %s (family=%s)",
+                    platform or "?", version or "?", os_name or "?", code_repo,
+                    res.family if res else "fallback-app")
     else:
-        logger.info("repo_router: %s v%s → %s (%s, conf=%s)",
-                    platform, version or "?", res.logical_name, res.family, res.confidence)
+        logger.info("repo_router(analysis): no repo for platform=%s version=%s os=%s -> logs-only",
+                    platform, version, os_name)
     engine.prepare_workspace(workspace, rules, workspace_log_paths, code_repo=code_repo)
 
     # --- Step 7: Run agent ---

@@ -225,12 +225,15 @@ async def run_eval(run_id: int):
                 engine = RuleEngine()
                 rules = engine.match_rules(routing_text)
                 extraction = extract_for_rules(rules, log_paths, problem_date=problem_date) if has_logs else {}
-                res = repo_router.resolve(
-                    (issue.platform or "").strip().lower(),
-                    (getattr(issue, "app_version", "") or "").strip(),
-                    get_repo_routing(),
-                )
-                code_repo = res.sub_repo_path if res else None
+                version = (getattr(issue, "app_version", "") or "").strip()
+                os_name = getattr(issue, "os_version", "") or ""
+                _plat = (issue.platform or "").strip().lower()
+                res = repo_router.resolve(_plat, version, get_repo_routing(), os_name=os_name)
+                code_repo = repo_router.analysis_path(res)
+                if code_repo is None and (_plat in ("", "app", "flutter")):
+                    # Coexistence fallback: ambiguous platform → flutter app monorepo source
+                    from app.config import get_code_repo_for_platform
+                    code_repo = get_code_repo_for_platform("app", version, os_name) or None
                 engine.prepare_workspace(workspace, rules, log_paths, code_repo=code_repo)
 
                 result = await orchestrator.run_analysis(
