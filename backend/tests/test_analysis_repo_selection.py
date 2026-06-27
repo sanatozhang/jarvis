@@ -104,14 +104,17 @@ def test_resolve_ambiguous_app_no_os_returns_none():
 
 
 def test_app_family_coexistence_fallback_pattern():
-    """Verify that for an ambiguous 'app' platform, the caller fallback pattern works.
+    """The coexistence fallback resolve+analysis_path arm yields the flutter monorepo, not the thin shell.
 
-    This test simulates the coexistence fallback logic in analysis_worker:
-    If resolve returns None for 'app'/'flutter'/'', the caller should check
-    analysis_path on a fallback resolve of 'app' with no os_name disambiguation
-    — but since that also returns None, the actual fallback to get_code_repo_for_platform
-    is needed. This test just confirms the None path and that analysis_path handles it.
+    Simulates the fallback in analysis_worker/eval_runner:
+        _fb = repo_router.resolve("app", version, routing, os_name=os_name)
+        code_repo = repo_router.analysis_path(_fb)
+    For an ambiguous 'app' ticket with os_name="Android 14" (as the fallback provides),
+    resolve finds the flutter band → analysis_path must return the wrapper (/repos/plaud_ai),
+    NOT the thin sub-repo (/repos/plaud_ai/plaud-android).
     """
-    res = rr.resolve("", "3.0.0", ROUTING, path_exists=ALWAYS)
-    assert res is None
-    assert rr.analysis_path(None) is None
+    # Use os_name so resolve can disambiguate (simulating the fallback with os_name still in scope)
+    _fb = rr.resolve("app", "3.5.0", ROUTING, os_name="Android 14", path_exists=ALWAYS)
+    code_repo = rr.analysis_path(_fb)
+    # Must be the flutter monorepo wrapper, not the thin android sub-shell
+    assert code_repo == "/repos/plaud_ai"

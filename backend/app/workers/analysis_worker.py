@@ -64,6 +64,7 @@ def _os_name_from_issue(issue: object) -> str:
     except Exception:
         return ""
 
+
 # ====================== ① 日志时效性预检 ======================
 
 def _parse_problem_ref_time(problem_date: Optional[str], issue: Issue) -> Optional[datetime]:
@@ -606,10 +607,12 @@ async def run_analysis_pipeline(
     res = repo_router.resolve(platform, version, get_repo_routing(), os_name=os_name)
     code_repo = repo_router.analysis_path(res)
     if code_repo is None and (platform in ("", "app", "flutter")):
-        # Coexistence fallback: ambiguous/empty app ticket keeps flutter app monorepo source
-        # (pre-migration behavior). web/desktop deliberately stay logs-only (no flutter source).
-        from app.config import get_code_repo_for_platform
-        code_repo = get_code_repo_for_platform("app", version, os_name) or None
+        # Coexistence fallback: ambiguous/empty app ticket → flutter app monorepo (analysis wants broad context).
+        _fb = repo_router.resolve("app", version, get_repo_routing(), os_name=os_name)
+        code_repo = repo_router.analysis_path(_fb)
+        if code_repo is None:
+            from app.config import get_settings as _gs
+            code_repo = (_gs().code_repo_app or _gs().code_repo_path) or None
     if code_repo:
         logger.info("repo_router(analysis): %s v%s os=%s -> %s (family=%s)",
                     platform or "?", version or "?", os_name or "?", code_repo,
