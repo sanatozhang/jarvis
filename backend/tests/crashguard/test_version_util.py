@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.crashguard.services.version_util import (
+    classify_generation,
     collect_recent_versions,
     derive_latest_release_from_crashes,
     derive_top_user_version_from_crashes,
@@ -53,6 +54,57 @@ class TestParseSemver:
         assert parse_semver("abc") is None
         assert parse_semver("") is None
         assert parse_semver(None) is None  # type: ignore[arg-type]
+
+
+class TestClassifyGeneration:
+    # service tag 为主（SDK 直接盖的真相）
+    def test_native_by_service_ios(self):
+        assert classify_generation("plaud_ios") == "native"
+
+    def test_native_by_service_android(self):
+        assert classify_generation("plaud_android") == "native"
+
+    def test_flutter_by_service(self):
+        assert classify_generation("plaud-flutter") == "flutter"
+
+    def test_service_case_insensitive(self):
+        assert classify_generation("PLAUD_IOS") == "native"
+
+    # service 优先于 version（即使 version 给了相反信号，service 是真相）
+    def test_service_wins_over_version(self):
+        assert classify_generation("plaud_ios", "3.16.0") == "native"
+        assert classify_generation("plaud-flutter", "4.0.0") == "flutter"
+
+    # version 兜底（service 缺失）
+    def test_native_by_version_fallback(self):
+        assert classify_generation("", "4.0.100") == "native"
+        assert classify_generation("", "4.0.0") == "native"
+        assert classify_generation("", "5.2.1-700") == "native"
+
+    def test_flutter_by_version_fallback(self):
+        assert classify_generation("", "3.16.0-634") == "flutter"
+        assert classify_generation("", "3.99.99") == "flutter"
+
+    def test_cutover_boundary(self):
+        # 切线 4.0.0：3.x 全是 flutter，4.0.0 起是 native
+        assert classify_generation("", "3.999.999") == "flutter"
+        assert classify_generation("", "4.0.0") == "native"
+
+    # 非 app service（web）且无版本 → 不标
+    def test_web_service_unknown(self):
+        assert classify_generation("plaud-web", "") == ""
+
+    # web service 带版本时按版本兜底（web 版本通常很大，会判 native——但 web issue
+    # 在早报里已被 _resolve_real_os 过滤掉，分类器只需不崩；这里只断言不抛异常）
+    def test_unknown_service_falls_back_to_version(self):
+        assert classify_generation("plaud-web", "3.16.0") == "flutter"
+
+    def test_both_empty_unknown(self):
+        assert classify_generation("", "") == ""
+        assert classify_generation() == ""
+
+    def test_unparseable_version_unknown(self):
+        assert classify_generation("", "abc") == ""
 
 
 class TestMaxVersion:

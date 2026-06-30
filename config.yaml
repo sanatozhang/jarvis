@@ -166,8 +166,9 @@ crashguard:
     # api_key / app_key 请通过 .env 配置:
     #   CRASHGUARD_DATADOG_API_KEY=xxx
     #   CRASHGUARD_DATADOG_APP_KEY=xxx
-    # 共存期 Flutter+native 两代全拉；⚠️ 上线前 Datadog 实测确认原生真实 service tag
-    service_filter: "(service:plaud-flutter OR service:plaud-native-android OR service:plaud-native-ios)"
+    # 共存期 Flutter+native 两代全拉；native 真实 service = plaud_android/plaud_ios（下划线，
+    # 2026-06-30 Datadog 实测，源头 4.0 代码 DatadogConfig）。旧值 plaud-native-* 匹配 0 条，勿回退。
+    service_filter: "(service:plaud-flutter OR service:plaud_android OR service:plaud_ios)"
 
   feishu:
     target_chat_id: "oc_7b7ed77c489e7459a6f7d9a299eef51a"  # 生产群聊（早晚报进群）

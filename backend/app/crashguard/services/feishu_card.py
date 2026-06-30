@@ -597,7 +597,8 @@ def build_daily_card(
 
     # 主题分类：标题里含这些关键字 → 必看（默认展开）；其余 → 折叠
     # 2026-05-26：Crash-free 详表 从 EXPANDED 白名单移除（用户要求默认折叠）
-    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR")
+    # "Native" → 4.0 native 崩溃段（迁移共存期必看，置顶且默认展开）
+    EXPANDED_KEYWORDS = ("关注", "新增", "突增", "TL;DR", "Native")
 
     crash_free_detail = payload.get("crash_free_detail") or {}
     dual_window = payload.get("dual_window") or {}

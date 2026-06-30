@@ -38,6 +38,42 @@ def parse_semver(s: str) -> Optional[Tuple[int, int, int, str]]:
     return (major, minor, patch, suffix)
 
 
+# ── 代际判定（Flutter→native 迁移）─────────────────────────────────
+# native 新仓的 Datadog service tag（SDK 盖的最直接真相，2026-06-30 实测，
+# 源头见 4.0 代码 DatadogConfig.{kt,swift}）。注意是下划线。
+_NATIVE_SERVICES = {"plaud_android", "plaud_ios"}
+_FLUTTER_SERVICES = {"plaud-flutter"}
+# 版本兜底切线：>=4.0.0 为 native，与 repo_router 的 4.0.0 cutover 一致（单一真相源）。
+# 若产品调整切换线，repo_routing config 的 band min_version 与此处需同步。
+_NATIVE_MIN_VERSION = (4, 0, 0)
+
+
+def classify_generation(service: str = "", version: str = "") -> str:
+    """判定崩溃"代际"：'native'（4.0 原生新仓）/ 'flutter'（3.x 旧仓）/ ''（未知）。
+
+    优先级：service tag 为主（plaud_android/plaud_ios=native，plaud-flutter=flutter，
+    这是 SDK 直接盖的真相）；service 缺失/非 app 时用 version 兜底（semver>=4.0.0=native，
+    与 repo_router 4.0.0 切线一致）；两者都无法判定返回 ''（调用方不标注）。
+
+    示例：
+        classify_generation("plaud_ios")            -> "native"
+        classify_generation("plaud-flutter")        -> "flutter"
+        classify_generation("", "4.0.100")          -> "native"
+        classify_generation("", "3.16.0-634")       -> "flutter"
+        classify_generation("plaud-web", "")        -> ""   (非 app，不标)
+        classify_generation("", "")                 -> ""
+    """
+    svc = (service or "").strip().lower()
+    if svc in _NATIVE_SERVICES:
+        return "native"
+    if svc in _FLUTTER_SERVICES:
+        return "flutter"
+    parsed = parse_semver(version or "")
+    if parsed is not None:
+        return "native" if parsed[:3] >= _NATIVE_MIN_VERSION else "flutter"
+    return ""
+
+
 def _sort_key(v: str) -> Tuple[int, int, int, int, str]:
     """排序 key：能解析的优先（用 semver 数值），不能解析的丢到最后（用字典序）。"""
     parsed = parse_semver(v)
