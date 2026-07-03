@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { fetchAuthMe, readLocalStorageUser, type AuthState, type AuthUser } from "@/lib/auth";
+import { fetchAuthConfig, fetchAuthMe, readLocalStorageUser, type AuthState, type AuthUser } from "@/lib/auth";
 
 type Ctx = {
   state: AuthState;
@@ -16,20 +16,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetchAuthMe().then((user) => {
+    // ssoActive must reflect the backend's ENABLE_SSO config, not "has this
+    // browser ever completed a Feishu login" — /me returns 401 both for a
+    // brand-new visitor on an SSO-enabled deployment and for any visitor on
+    // an SSO-disabled one, so deriving ssoActive from a successful /me call
+    // left first-time SSO visitors ungated (they fell through to the legacy
+    // username form instead of being redirected to /login).
+    Promise.all([fetchAuthConfig(), fetchAuthMe()]).then(([config, user]) => {
       if (cancelled) return;
+      setSsoActive(config.sso_enabled);
       if (user) {
         setState({ status: "authed", user });
-        setSsoActive(true);
         return;
       }
       const legacy = readLocalStorageUser();
       if (legacy) {
         setState({ status: "authed", user: legacy });
-        setSsoActive(false);
       } else {
         setState({ status: "anonymous" });
-        setSsoActive(false);
       }
     });
     return () => { cancelled = true; };

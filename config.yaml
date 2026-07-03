@@ -29,7 +29,7 @@ agent:
   providers:
     claude_api:
       enabled: true
-      model: "claude-sonnet-4-6"        # Vertex 代理不识别 [1m] 后缀
+      model: "claude-sonnet-5"          # Vertex 代理不识别 [1m] 后缀
       fallback_model: "claude-haiku-4-5"
       base_url: "http://34.216.169.232:30001/vertex"   # 公司 Vertex 代理（VPN 内）
       per_turn_timeout: 120             # 单轮 messages.create 超时（秒）
@@ -39,9 +39,9 @@ agent:
 
     claude_code:
       enabled: true
-      model: "claude-sonnet-4-6[1m]"    # Sonnet 4.6 with 1M context window
+      model: "claude-sonnet-5[1m]"      # Sonnet 5 with 1M context window
       effort: "high"                    # low / medium / high / max — 思考深度
-      fallback_model: "claude-sonnet-4-6"  # 主模型过载时自动降级（200K context）
+      fallback_model: "claude-sonnet-5"    # 主模型过载时自动降级（200K context）
       allowed_tools:
         - "Read"
         - "Write"
@@ -135,8 +135,8 @@ jenkins:
 # Crashguard 模块配置
 # ===========================
 crashguard:
-  enabled: true                # kill switch
-  pr_enabled: true             # PR 创建总开关
+  enabled: true                # kill switch — 保持开启，否则整个只读看板/PR列表也会 403
+  pr_enabled: false            # PR 创建总开关 — 2026-07-03 暂停自动化开PR；分析/看板照常
   feishu_enabled: true         # 群消息开关
   max_top_n: 20
 
