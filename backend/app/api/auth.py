@@ -53,8 +53,13 @@ async def auth_config():
     `/me` returns 401 both when SSO is on but the visitor is new, and when SSO
     is off entirely, so it can't be used to distinguish the two.
     """
-    settings = get_settings().sso
-    return {"sso_enabled": settings.enabled}
+    settings = get_settings()
+    return {
+        "sso_enabled": settings.sso.enabled,
+        # 平台支持开关（公开读，无需鉴权）：submit 页据此决定 web/desktop 是否可选。
+        "support_web": settings.support_web,
+        "support_desktop": settings.support_desktop,
+    }
 
 
 @router.get("/feishu/login")

@@ -2023,6 +2023,8 @@ export interface RepoBand {
 export interface RepoRoutingConfig {
   routing: Record<string, { bands: RepoBand[] }>;
   service_filter: string;
+  support_web: boolean;
+  support_desktop: boolean;
 }
 
 export interface RepoRoutingPreviewResult {
@@ -2039,7 +2041,7 @@ export interface RepoRoutingPreviewResult {
 export const getRepoRouting = () =>
   request<RepoRoutingConfig>("/settings/repo-routing");
 
-export const updateRepoRouting = (body: { routing: Record<string, { bands: RepoBand[] }>; service_filter?: string }) =>
+export const updateRepoRouting = (body: { routing: Record<string, { bands: RepoBand[] }>; service_filter?: string; support_web?: boolean; support_desktop?: boolean }) =>
   request<{ ok: boolean }>("/settings/repo-routing", {
     method: "PUT",
     body: JSON.stringify(body),

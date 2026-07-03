@@ -162,6 +162,8 @@ function RepoRoutingSection() {
 
   const [routing, setRouting] = useState<Record<string, { bands: RepoBand[] }>>({});
   const [serviceFilter, setServiceFilter] = useState("");
+  const [supportWeb, setSupportWeb] = useState(false);
+  const [supportDesktop, setSupportDesktop] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -176,6 +178,8 @@ function RepoRoutingSection() {
     getRepoRouting().then((data: RepoRoutingConfig) => {
       setRouting(data.routing || {});
       setServiceFilter(data.service_filter || "");
+      setSupportWeb(!!data.support_web);
+      setSupportDesktop(!!data.support_desktop);
     }).catch(console.error);
   }, []);
 
@@ -200,7 +204,7 @@ function RepoRoutingSection() {
     setSaving(true);
     setSaveError("");
     try {
-      await updateRepoRouting({ routing, service_filter: serviceFilter });
+      await updateRepoRouting({ routing, service_filter: serviceFilter, support_web: supportWeb, support_desktop: supportDesktop });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e: any) {
@@ -267,6 +271,38 @@ function RepoRoutingSection() {
           />
           <p className="mt-1 text-[11px]" style={{ color: S.text3 }}>
             {t("Datadog native service tag，上线前需实测确认")}
+          </p>
+        </div>
+
+        {/* Platform support toggles — 控制 submit 页 web/desktop 是否可选 */}
+        <div style={{ borderTop: `1px solid ${S.borderSm}`, paddingTop: 12 }}>
+          <label className="mb-2 block text-xs font-medium" style={{ color: S.text2 }}>
+            {t("支持的工单平台")}
+          </label>
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: S.text1 }}>
+              <input
+                type="checkbox"
+                checked={supportWeb}
+                onChange={(e) => setSupportWeb(e.target.checked)}
+                className="h-4 w-4 rounded"
+                style={{ accentColor: S.accent }}
+              />
+              {t("支持 Web 工单")}
+            </label>
+            <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: S.text1 }}>
+              <input
+                type="checkbox"
+                checked={supportDesktop}
+                onChange={(e) => setSupportDesktop(e.target.checked)}
+                className="h-4 w-4 rounded"
+                style={{ accentColor: S.accent }}
+              />
+              {t("支持 Desktop 工单")}
+            </label>
+          </div>
+          <p className="mt-1.5 text-[11px]" style={{ color: S.text3 }}>
+            {t("关闭后提交页无法选择该平台（默认关闭，为 4.0 native 做准备）")}
           </p>
         </div>
 

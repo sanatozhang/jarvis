@@ -12,13 +12,20 @@ export type AuthState =
   | { status: "anonymous" }
   | { status: "authed"; user: AuthUser };
 
-export async function fetchAuthConfig(): Promise<{ sso_enabled: boolean }> {
+export type AuthConfig = {
+  sso_enabled: boolean;
+  support_web: boolean;
+  support_desktop: boolean;
+};
+
+export async function fetchAuthConfig(): Promise<AuthConfig> {
+  const fallback: AuthConfig = { sso_enabled: false, support_web: false, support_desktop: false };
   try {
     const res = await fetch("/api/auth/config", { cache: "no-store" });
-    if (!res.ok) return { sso_enabled: false };
-    return (await res.json()) as { sso_enabled: boolean };
+    if (!res.ok) return fallback;
+    return { ...fallback, ...(await res.json()) } as AuthConfig;
   } catch {
-    return { sso_enabled: false };
+    return fallback;
   }
 }
 

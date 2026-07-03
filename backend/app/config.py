@@ -249,6 +249,8 @@ class Settings(BaseSettings):
     code_repo_web: str = ""               # Web frontend source code path
     code_repo_desktop: str = ""           # Desktop (Electron) source code path
     repo_routing: dict = {}              # repo_router bands（yaml repo_routing 段）
+    support_web: bool = False            # 平台开关：是否支持 web 工单（默认关；submit 页据此 gating）
+    support_desktop: bool = False        # 平台开关：是否支持 desktop 工单（默认关）
     host: str = "0.0.0.0"
     port: int = 8000
     workers: int = 1

@@ -43,6 +43,8 @@ class TestApplyRepoRouting:
         # Save original values
         self._orig_routing = dict(self._settings.repo_routing)
         self._orig_service_filter = self._cg_settings.datadog_service_filter
+        self._orig_support_web = self._settings.support_web
+        self._orig_support_desktop = self._settings.support_desktop
 
     def teardown_method(self):
         from app.config import get_settings
@@ -51,6 +53,8 @@ class TestApplyRepoRouting:
         # Restore originals
         self._settings.repo_routing = self._orig_routing
         self._cg_settings.datadog_service_filter = self._orig_service_filter
+        self._settings.support_web = self._orig_support_web
+        self._settings.support_desktop = self._orig_support_desktop
 
         # Clear caches so no mutations leak
         get_settings.cache_clear()
@@ -95,6 +99,21 @@ class TestApplyRepoRouting:
         _apply_repo_routing({"routing": {}})
 
         assert get_settings().repo_routing == {}
+
+    def test_apply_sets_support_flags(self):
+        """support_web/support_desktop in override toggle the in-memory Settings bools;
+        an absent key leaves that flag unchanged (partial-update semantics)."""
+        from app.api.settings import _apply_repo_routing
+        from app.config import get_settings
+
+        _apply_repo_routing({"routing": {}, "support_web": True, "support_desktop": True})
+        assert get_settings().support_web is True
+        assert get_settings().support_desktop is True
+
+        # Only support_web present → desktop flag must stay True (unchanged).
+        _apply_repo_routing({"routing": {}, "support_web": False})
+        assert get_settings().support_web is False
+        assert get_settings().support_desktop is True
 
     def test_apply_service_filter_only_does_not_touch_routing(self):
         """When 'routing' key is absent, existing repo_routing is unchanged."""

@@ -176,6 +176,8 @@ from app.config import get_repo_routing  # noqa: E402  (module-level for monkeyp
 class RepoRoutingUpdate(BaseModel):
     routing: dict
     service_filter: str | None = None
+    support_web: bool | None = None
+    support_desktop: bool | None = None
 
 
 class PreviewReq(BaseModel):
@@ -187,9 +189,12 @@ class PreviewReq(BaseModel):
 async def get_repo_routing_cfg():
     """Get current repo-routing config + crashguard service_filter."""
     from app.crashguard.config import get_crashguard_settings
+    s = get_settings()
     return {
         "routing": get_repo_routing(),
         "service_filter": get_crashguard_settings().datadog_service_filter,
+        "support_web": s.support_web,
+        "support_desktop": s.support_desktop,
     }
 
 
@@ -242,6 +247,10 @@ async def update_repo_routing(req: RepoRoutingUpdate):
     override: dict = {"routing": req.routing}
     if req.service_filter is not None:
         override["service_filter"] = req.service_filter
+    if req.support_web is not None:
+        override["support_web"] = req.support_web
+    if req.support_desktop is not None:
+        override["support_desktop"] = req.support_desktop
     await db.set_oncall_config(REPO_ROUTING_OVERRIDE_KEY, json.dumps(override, ensure_ascii=False))
     _apply_repo_routing(override)
     logger.info("Repo-routing override persisted + applied: routing keys=%s", list(req.routing.keys()))
@@ -277,6 +286,10 @@ def _apply_repo_routing(override: dict) -> None:
     if "service_filter" in override:
         from app.crashguard.config import get_crashguard_settings
         get_crashguard_settings().datadog_service_filter = override["service_filter"]
+    if "support_web" in override:
+        s.support_web = bool(override["support_web"])
+    if "support_desktop" in override:
+        s.support_desktop = bool(override["support_desktop"])
 
 
 async def apply_repo_routing_overrides_from_db() -> dict:
