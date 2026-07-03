@@ -46,6 +46,17 @@ def _login_error_redirect(error_code: str) -> RedirectResponse:
     return RedirectResponse(f"/login?error={error_code}", status_code=302)
 
 
+@router.get("/config")
+async def auth_config():
+    """Public, no-auth endpoint so the frontend can decide whether to gate on
+    Feishu login *before* knowing if the visitor has ever authenticated —
+    `/me` returns 401 both when SSO is on but the visitor is new, and when SSO
+    is off entirely, so it can't be used to distinguish the two.
+    """
+    settings = get_settings().sso
+    return {"sso_enabled": settings.enabled}
+
+
 @router.get("/feishu/login")
 async def feishu_login(request: Request, next: str = "/"):
     settings = get_settings().sso
@@ -134,8 +145,19 @@ async def feishu_callback(request: Request, code: Optional[str] = None,
         logger.warning("sso_login_rejected_domain email=%s", email)
         return _login_error_redirect("domain_not_allowed")
 
-    username = derive_username_from_email(email)
-    existing = await db.get_user(username)
+    # Look up by email first so a Feishu login lands on whatever account
+    # already owns this email — whether that account was created via legacy
+    # local registration or a prior Feishu login — instead of creating a
+    # duplicate row keyed by a freshly-derived username.
+    existing = await db.get_user_by_email(email)
+    if not existing:
+        # Legacy/ops-provisioned accounts (e.g. admins created by username
+        # only, before feishu_email was ever populated) won't match on
+        # email — fall back to the username Feishu login has always
+        # derived, so we don't spin up a duplicate row for an account that
+        # already exists under that name.
+        existing = await db.get_user(derive_username_from_email(email))
+    username = existing["username"] if existing else derive_username_from_email(email)
     is_env_admin = email in settings.admin_emails
 
     if existing:

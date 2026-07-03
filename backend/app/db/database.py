@@ -1234,6 +1234,11 @@ def _issue_to_dict(
             "followup_question": analysis.followup_question or "",
             "log_metadata": json.loads(analysis.log_metadata_json) if getattr(analysis, "log_metadata_json", None) else {},
             "created_at": (analysis.created_at.isoformat() + "Z") if analysis.created_at else "",
+            "total_tokens": int(getattr(analysis, "total_tokens", 0) or 0),
+            "total_cost_usd": float(getattr(analysis, "total_cost_usd", 0.0) or 0.0),
+            "usage_breakdown": json.loads(analysis.usage_json) if getattr(analysis, "usage_json", None) else {},
+            "cost_source": getattr(analysis, "cost_source", "") or "",
+            "is_deep_analysis": bool(getattr(analysis, "is_deep_analysis", False)),
         }
         d["result_summary"] = analysis.user_reply or ""
         d["result_summary_en"] = analysis.user_reply_en or ""
@@ -1320,6 +1325,30 @@ async def get_user(username: str) -> Optional[Dict[str, Any]]:
     async with get_session() as session:
         from sqlalchemy import select
         record = await session.get(UserRecord, username)
+        if not record:
+            return None
+        return {"username": record.username, "role": record.role, "feishu_email": record.feishu_email}
+
+
+async def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """Look up a user by feishu_email, regardless of which flow (legacy local
+    registration or a prior Feishu login) created the row. `feishu_email` has
+    no uniqueness constraint, so if duplicates exist we deterministically pick
+    the oldest account (created_at asc) so account identity doesn't shift
+    between logins.
+    """
+    email = (email or "").lower().strip()
+    if not email:
+        return None
+    async with get_session() as session:
+        from sqlalchemy import select
+        stmt = (
+            select(UserRecord)
+            .where(UserRecord.feishu_email == email)
+            .order_by(UserRecord.created_at.asc())
+        )
+        result = await session.execute(stmt)
+        record = result.scalars().first()
         if not record:
             return None
         return {"username": record.username, "role": record.role, "feishu_email": record.feishu_email}

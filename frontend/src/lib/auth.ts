@@ -12,6 +12,16 @@ export type AuthState =
   | { status: "anonymous" }
   | { status: "authed"; user: AuthUser };
 
+export async function fetchAuthConfig(): Promise<{ sso_enabled: boolean }> {
+  try {
+    const res = await fetch("/api/auth/config", { cache: "no-store" });
+    if (!res.ok) return { sso_enabled: false };
+    return (await res.json()) as { sso_enabled: boolean };
+  } catch {
+    return { sso_enabled: false };
+  }
+}
+
 export async function fetchAuthMe(): Promise<AuthUser | null> {
   try {
     const res = await fetch("/api/auth/me", {

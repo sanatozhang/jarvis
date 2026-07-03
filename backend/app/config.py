@@ -274,6 +274,8 @@ class Settings(BaseSettings):
     pricing: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {
         "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
         "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+        # 2026-07-03: intro 价 $2/$10（至 2026-08-31），到期后改回标准价 $3/$15、cache_read 0.3、cache_write 3.75
+        "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
         "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     })
 
