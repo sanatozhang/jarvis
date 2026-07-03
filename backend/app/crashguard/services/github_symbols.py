@@ -36,6 +36,11 @@ async def _get_download_lock(tag: str, asset_name: str) -> asyncio.Lock:
             _DOWNLOAD_LOCKS[key] = lock
         return lock
 
+# NOTE: 本地 GitHub 符号化是 FLUTTER 期机制（补 Datadog 解不了的 Dart AOT libapp.so 帧）。
+# native(4.0) 不走这里：native 发布流水线把 iOS dSYM(UUID)/Android mapping+NDK(build_id)
+# 直接传 Datadog，Datadog 服务端已符号化 native 栈；crashguard 读到的 native 栈本就符号化过。
+# 下面的默认仓/资产名都是 flutter 约定；native band 的 github_repo 是 no-op 占位（找不到即
+# 静默保留原栈）。详见 config.yaml repo_routing 段注释与 memory。
 _DEFAULT_REPO = "Plaud-AI/Plaud-App"
 _GITHUB_API = "https://api.github.com"
 

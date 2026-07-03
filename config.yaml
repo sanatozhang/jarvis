@@ -108,6 +108,19 @@ storage:
 # 源码仓库路由（按平台 + 版本）—— repo_router 单一真相源
 # 切换线：3.x.x 及以下=flutter 旧仓，4.0.0 起=native 新仓（android/ios 同线）
 # 路径可被 env / 设置页 DB override 覆盖；服务器路径在 /Users/mac/Downloads/
+#
+# github_repo 字段语义：仅用于 crashguard 的「符号 release 源」（PR 目标仓另取 checkout 的
+# git remote，见 repo_updater._github_slug，与此字段无关，勿混用）。
+# native(4.0)符号化走 Datadog 服务端，不走这里：发布流水线
+# (plaud-native-app/jenkins/plaud-native-app-publish-global.sh) 把 iOS dSYM(按 UUID)、
+# Android ProGuard mapping+NDK(按 build_id) 直接传 Datadog（DATADOG_API_KEY 门控），
+# Datadog 后端服务端就把 native 崩溃栈符号化好；crashguard 从 Datadog Error Tracking 读到的
+# native 栈本来就已符号化。crashguard 的 github_symbols.py 本地重符号化是为 flutter 的 Dart
+# AOT(libapp.so) 缺口而建，native 无此缺口。故下面 native band 的 github_repo
+# (plaud-native-android/ios) 目前是 no-op 占位（symbolication 容错，找不到即静默保留原栈）。
+# 若将来真要让 crashguard 本地重符号化 native：需改成发布实际所在仓 Plaud-AI/plaud-native-app、
+# 对齐 iOS 资产名(native 发的是 Plaud-Global.dSYMs.zip 而非 PLAUD.dSYMs.zip)、并开
+# UPLOAD_TO_GITHUB_RELEASE=true（默认关，native 走 Datadog/Firebase/Sentry）。
 # ===========================
 repo_routing:
   android:
