@@ -637,6 +637,12 @@ async def run_analysis_pipeline(
 
     # --- Step 6: Prepare workspace ---
     version = (getattr(issue, "app_version", "") or "").strip()
+    # When the ticket didn't carry a version, fall back to the one the extractor
+    # resolved from the NEWEST log era (flutter 3.x vs native 4.x). Without this,
+    # an unspecified version makes repo_router default to the highest band
+    # (native) even for a flutter ticket. "日志解析为主": logs drive the era.
+    if not version and log_metadata:
+        version = (log_metadata.get("app_version") or "").strip()
     # os_name: prefer already-parsed log_metadata dict (available when has_logs);
     # fall back to issue.log_metadata_json for no-log / eval paths.
     os_name = (
