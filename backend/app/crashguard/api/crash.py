@@ -2330,7 +2330,9 @@ _JOB_META: List[Dict[str, str]] = [
     {"name": "top_crash_auto_pr", "cron_field": "top_crash_auto_pr_cron",
      "label": "Top crash 自动 PR",
      "desc": "Top N 专属低门槛 (0.5) + 节流，兜底覆盖 feasibility 0.5~0.7 区间的崩溃",
-     "enabled_field": "top_crash_auto_pr_enabled"},
+     # 同时受自己的开关和全局 pr_enabled 把关（见 job_health_alerter.py 同名注释）——
+     # 只看 top_crash_auto_pr_enabled 会导致 pr_enabled=false 暂停期间面板仍显示 "enabled"。
+     "enabled_field": ("top_crash_auto_pr_enabled", "pr_enabled")},
 ]
 
 
@@ -2393,10 +2395,10 @@ async def jobs_status() -> Dict[str, Any]:
         for meta in _JOB_META:
             jn = meta["name"]
             cron_expr = getattr(s, meta["cron_field"], "") if meta["cron_field"] else ""
-            enabled_flag = (
-                bool(getattr(s, meta["enabled_field"], True))
-                if meta["enabled_field"] else True
-            )
+            # enabled_field 可以是单个字段名或字段名 tuple（联合把关，任一为 False 即视为禁用）
+            ef = meta["enabled_field"] or ""
+            ef_fields = (ef,) if isinstance(ef, str) else ef
+            enabled_flag = all(bool(getattr(s, f, True)) for f in ef_fields) if ef_fields else True
 
             # 上次心跳（含 failed/skipped）
             last_row = (await session.execute(
