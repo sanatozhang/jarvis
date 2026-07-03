@@ -55,6 +55,7 @@ def _make_settings(monkeypatch, **overrides):
     s.morning_enabled = True
     s.evening_enabled = False    # ← 关键：晚报已下线
     s.top_crash_auto_pr_enabled = True
+    s.pr_enabled = True
     for k, v in overrides.items():
         setattr(s, k, v)
     monkeypatch.setattr(
@@ -126,3 +127,32 @@ async def test_enabled_morning_stale_still_alerts(patched_session, monkeypatch):
     assert "morning_daily" in res["unhealthy_jobs"]
     assert "evening_daily" not in res["unhealthy_jobs"]
     assert "evening_daily" in res["skipped_disabled"]
+
+
+@pytest.mark.asyncio
+async def test_top_crash_auto_pr_skips_when_pr_enabled_false(patched_session, monkeypatch):
+    """抓手：2026-07-03 事故——pr_enabled=false 全局暂停开 PR 期间，
+    run_top_crash_auto_pr_tick 提前 return 只写 "skipped" 心跳，last_success 不再
+    推进。top_crash_auto_pr_enabled 自身仍是 True，若 alerter 只看这一个字段就会
+    把这种"预期内的暂停"误判成 stale 并反复告警。此开关同时受
+    top_crash_auto_pr_enabled 和全局 pr_enabled 双重把关，任一为 False 都要跳过。
+    """
+    from app.crashguard.services.job_health_alerter import run_job_health_check
+    from app.crashguard.models import CrashJobHeartbeat
+    from app.db.database import get_session
+
+    _make_settings(monkeypatch, pr_enabled=False)  # top_crash_auto_pr_enabled 仍是 True
+
+    async with get_session() as s:
+        s.add(CrashJobHeartbeat(
+            job_name="top_crash_auto_pr",
+            fired_at=datetime.utcnow() - timedelta(days=5),
+            status="success",
+            duration_ms=100,
+            summary="{}", error="",
+        ))
+        await s.commit()
+
+    res = await run_job_health_check()
+    assert res["alerted"] is False
+    assert "top_crash_auto_pr" in res["skipped_disabled"]

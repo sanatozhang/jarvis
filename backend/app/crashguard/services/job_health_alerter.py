@@ -125,7 +125,10 @@ async def run_job_health_check() -> Dict[str, Any]:
 
     # 与 _JOB_META 保持对齐——但本服务避免反向 import api 层，重新声明一份精简元数据
     # enabled_field: 任务自身的 kill switch；为 "" 表示该任务无独立开关（受 enabled/feishu_enabled 总控）
-    job_meta: List[Dict[str, str]] = [
+    # 也可以是 tuple——任务被多个开关联合把关时（例如 top_crash_auto_pr 同时受自己的
+    # top_crash_auto_pr_enabled 和全局 pr_enabled 双重闸门），任一为 False 都要跳过，
+    # 否则该任务因开关关闭而长期"skipped"、last_success 不再推进 → 被误判 stale 告警。
+    job_meta: List[Dict[str, Any]] = [
         {"name": "core_metric", "cron_field": "core_metric_cron",
          "enabled_field": "core_metric_enabled"},
         {"name": "hourly_alert", "cron_field": "hourly_alert_cron",
@@ -142,8 +145,11 @@ async def run_job_health_check() -> Dict[str, Any]:
         # 保留——alerter 必须看 enabled_field 跳过，否则 stale 永远叫
         {"name": "evening_daily", "cron_field": "evening_cron",
          "enabled_field": "evening_enabled"},
+        # 2026-07-03: pr_enabled=false 暂停自动开 PR 期间，run_top_crash_auto_pr_tick
+        # 提前 return 只写 "skipped" 心跳，从不产生新 success —— 只查
+        # top_crash_auto_pr_enabled（本身还是 True）就会永远判 stale 并反复告警。
         {"name": "top_crash_auto_pr", "cron_field": "top_crash_auto_pr_cron",
-         "enabled_field": "top_crash_auto_pr_enabled"},
+         "enabled_field": ("top_crash_auto_pr_enabled", "pr_enabled")},
     ]
 
     now_utc = datetime.utcnow()
@@ -180,8 +186,11 @@ async def run_job_health_check() -> Dict[str, Any]:
 
             # 任务自身 kill switch：disabled 任务跳过所有健康度判定
             # 抓手：evening_daily 已下线后 stale 永远叫的问题
+            # enabled_field 可以是单个字段名或多个字段名的 tuple（联合把关，任一为
+            # False 即跳过）——见上面 top_crash_auto_pr 的注释。
             ef = meta.get("enabled_field") or ""
-            if ef and not getattr(s, ef, True):
+            ef_fields = (ef,) if isinstance(ef, str) else ef
+            if any(f and not getattr(s, f, True) for f in ef_fields):
                 skipped_disabled.append(jn)
                 continue
 
