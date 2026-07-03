@@ -721,6 +721,21 @@ def _resolve_repo_path_for_pr(pr, settings) -> str:
         return getattr(settings, "repo_path_android", "") or ""
     if repo.startswith("plaud-ios") or repo in ("ios", "plaud_ios"):
         return getattr(settings, "repo_path_ios", "") or ""
+    # Native / desktop (and any future repo): resolve via repo_routing by logical sub-repo name.
+    try:
+        from app.config import get_repo_routing
+        import os as _os
+        for _plat, _cfg in (get_repo_routing() or {}).items():
+            for _band in _cfg.get("bands", []):
+                _sub = (_band.get("sub") or "").strip()
+                _wrap = _os.path.expanduser(_band.get("wrapper", "") or "")
+                _logical = _sub or _os.path.basename(_wrap.rstrip("/"))
+                if _logical.lower() == repo and _wrap:
+                    _path = _os.path.join(_wrap, _sub) if _sub else _wrap
+                    if _os.path.exists(_path):
+                        return _path
+    except Exception as e:
+        logger.warning("repo_routing lookup failed for pr.repo=%s: %s", repo, e)
     return ""
 
 

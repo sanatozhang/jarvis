@@ -16,6 +16,42 @@ def test_build_daily_card_anomaly_red_template():
     assert "2026-04-29" in card["header"]["title"]["content"]
 
 
+def test_build_daily_card_native_section_expanded():
+    """🆕 4.0 Native 段在卡片里默认展开（平铺 div），而非折叠 collapsible_panel"""
+    import json
+
+    from app.crashguard.services.feishu_card import build_daily_card
+    card = build_daily_card(
+        report_type="morning",
+        target_date="2026-04-29",
+        markdown=(
+            "# Test\n\n"
+            "## 🆕 4.0 Native 崩溃\n"
+            "> 📦 代际拆分\n\n"
+            "- iOS · 4.0.100 · **265** events · [EXC_BAD_ACCESS](u)\n\n"
+            "## ✨ 今日关注点\n- foo"
+        ),
+        payload={"new_count": 1, "surge_count": 0, "regression_count": 0},
+        frontend_base_url="https://example.com",
+    )
+    elements = card["body"]["elements"]
+    # 展开段：标题作为独立 div "**...**" 平铺在 body.elements 顶层
+    flat_titles = [
+        e for e in elements
+        if e.get("tag") == "div"
+        and "🆕 4.0 Native 崩溃" in (e.get("text", {}).get("content", ""))
+    ]
+    assert flat_titles, (
+        "native 段应平铺展开（顶层 div 含标题），实际:\n"
+        + json.dumps(elements, ensure_ascii=False)[:800]
+    )
+    # 不应被塞进 collapsible_panel（折叠）
+    panels = [e for e in elements if e.get("tag") == "collapsible_panel"]
+    for p in panels:
+        assert "🆕 4.0 Native" not in json.dumps(p, ensure_ascii=False), \
+            "native 段不该被折叠"
+
+
 def test_build_daily_card_no_anomaly_turquoise_template():
     from app.crashguard.services.feishu_card import build_daily_card
     card = build_daily_card(

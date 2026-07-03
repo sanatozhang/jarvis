@@ -21,6 +21,47 @@ import { AgentTraceBlock } from "@/components/AgentTraceBlock";
 import { S } from "@/components/IssueComponents";
 import { formatLocalTime, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
+function CodeRoutingBadge({ cr, t }: { cr: NonNullable<NonNullable<AnalysisResult["log_metadata"]>["code_routing"]>; t: (k: string) => string }) {
+  const { source, family, version, repo } = cr;
+  let emoji = "⚪";
+  let label = t("无源码（logs-only）");
+  let bg = "rgba(107,114,128,0.08)";
+  let color = "#6B7280";
+  let border = "rgba(107,114,128,0.2)";
+
+  if (source === "resolved") {
+    const ver = version ? ` ${version}` : "";
+    const repoSuffix = repo ? ` · ${repo}` : "";
+    if (family === "native") {
+      emoji = "🟢"; label = `Native${ver}${repoSuffix}`;
+      bg = "rgba(34,197,94,0.10)"; color = "#16A34A"; border = "rgba(34,197,94,0.25)";
+    } else if (family === "flutter") {
+      emoji = "🔵"; label = `Flutter${ver}${repoSuffix}`;
+      bg = "rgba(96,165,250,0.10)"; color = "#2563EB"; border = "rgba(96,165,250,0.25)";
+    } else if (family === "web") {
+      emoji = "🟢"; label = `Web${ver}${repoSuffix}`;
+      bg = "rgba(34,197,94,0.10)"; color = "#16A34A"; border = "rgba(34,197,94,0.25)";
+    } else if (family === "desktop") {
+      emoji = "🟢"; label = `Desktop${ver}${repoSuffix}`;
+      bg = "rgba(34,197,94,0.10)"; color = "#16A34A"; border = "rgba(34,197,94,0.25)";
+    }
+  } else if (source === "fallback-app") {
+    const repoSuffix = repo ? ` · ${repo}` : "";
+    emoji = "🟡"; label = `${t("Flutter（默认兜底）")}${repoSuffix}`;
+    bg = "rgba(234,179,8,0.10)"; color = "#B45309"; border = "rgba(234,179,8,0.30)";
+  }
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-medium"
+      style={{ background: bg, color, border: `1px solid ${border}` }}
+      title={`source: ${source || "none"}, family: ${family || "-"}, confidence: ${cr.confidence || "-"}`}
+    >
+      {emoji} {label}
+    </span>
+  );
+}
+
 function ConfBadge({ c }: { c: string }) {
   const m: Record<string, { bg: string; color: string; border: string }> = {
     high:   { bg: "rgba(34,197,94,0.12)",   color: "#16A34A", border: "rgba(34,197,94,0.25)" },
@@ -303,6 +344,8 @@ export function AnalysisResultView({
                     </span>
                   );
                 })()}
+                {/* Code-version badge — only render when code_routing exists (hides on pre-feature results) */}
+                {r.log_metadata?.code_routing && <CodeRoutingBadge cr={r.log_metadata.code_routing} t={t} />}
               </div>
 
               {/* Per-run usage meter — 本次 tokens · cost (功能 1) */}

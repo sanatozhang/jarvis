@@ -248,6 +248,9 @@ class Settings(BaseSettings):
     code_repo_app: str = ""               # APP (Flutter) source code path
     code_repo_web: str = ""               # Web frontend source code path
     code_repo_desktop: str = ""           # Desktop (Electron) source code path
+    repo_routing: dict = {}              # repo_router bands（yaml repo_routing 段）
+    support_web: bool = False            # 平台开关：是否支持 web 工单（默认关；submit 页据此 gating）
+    support_desktop: bool = False        # 平台开关：是否支持 desktop 工单（默认关）
     host: str = "0.0.0.0"
     port: int = 8000
     workers: int = 1
@@ -410,6 +413,11 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
             if isinstance(rates, dict):
                 settings.pricing[model_name] = {**settings.pricing.get(model_name, {}), **rates}
 
+    # repo_routing (repo_router bands)
+    rr = cfg.get("repo_routing", {})
+    if isinstance(rr, dict) and rr:
+        settings.repo_routing = rr
+
     return settings
 
 
@@ -437,29 +445,49 @@ def get_settings() -> Settings:
     return settings
 
 
-def get_code_repo_for_platform(platform: str) -> Optional[str]:
-    """Return the source code repo path for a given platform (app/web/desktop)."""
+def get_repo_routing() -> dict:
+    """返回 repo_router 用的 routing dict。
+    优先 yaml `repo_routing`；其缺失的平台用旧 env (code_repo_app/web/desktop)
+    backfill 出一个 flutter-family band（min_version "0"），保证现有部署不炸。"""
     s = get_settings()
-    mapping = {
-        "app": s.code_repo_app,
-        "web": s.code_repo_web,
-        "desktop": s.code_repo_desktop,
-    }
-    path = mapping.get(platform.lower(), "") if platform else ""
-    # Fallback: if platform unknown or not configured, use app repo
-    if not path:
-        path = s.code_repo_app or s.code_repo_path
-    return path if path else None
+    routing = dict(s.repo_routing or {})
+
+    def _flutter_band(wrapper: str, sub: str, gh: str, prof: str) -> dict:
+        return {"min_version": "0", "family": "flutter", "wrapper": wrapper,
+                "sub": sub, "github_repo": gh, "symbol_profile": prof}
+
+    app_repo = s.code_repo_app or s.code_repo_path
+    if "android" not in routing and app_repo:
+        routing["android"] = {"bands": [_flutter_band(app_repo, "plaud-android", "Plaud-AI/Plaud-App", "flutter_android")]}
+    if "ios" not in routing and app_repo:
+        routing["ios"] = {"bands": [_flutter_band(app_repo, "plaud-ios", "Plaud-AI/Plaud-App", "flutter_ios")]}
+    if "web" not in routing and s.code_repo_web:
+        routing["web"] = {"bands": [{"min_version": "0", "family": "web", "wrapper": s.code_repo_web, "sub": "", "github_repo": "Plaud-AI/plaud-web", "symbol_profile": "none"}]}
+    if "desktop" not in routing and s.code_repo_desktop:
+        routing["desktop"] = {"bands": [{"min_version": "0", "family": "desktop", "wrapper": s.code_repo_desktop, "sub": "", "github_repo": "Plaud-AI/fe-nexus", "symbol_profile": "none"}]}
+    return routing
+
+
+def get_code_repo_for_platform(platform: str, version: Optional[str] = None,
+                               os_name: str = "") -> Optional[str]:
+    """[DEPRECATED] 旧接口降级：调 repo_router。无 version → 取最新 band 回落。
+    新代码请直接用 app.services.repo_router.resolve。"""
+    from app.services import repo_router
+    res = repo_router.resolve(platform, version, get_repo_routing(), os_name=os_name)
+    if res:
+        return res.sub_repo_path
+    # 兜底：旧静态映射（platform 无法归一 / 未配置时）
+    s = get_settings()
+    return (s.code_repo_app or s.code_repo_path) or None
 
 
 def get_all_code_repos() -> dict[str, str]:
-    """Return all configured code repo paths (non-empty only)."""
-    s = get_settings()
-    repos = {}
-    if s.code_repo_app:
-        repos["app"] = s.code_repo_app
-    if s.code_repo_web:
-        repos["web"] = s.code_repo_web
-    if s.code_repo_desktop:
-        repos["desktop"] = s.code_repo_desktop
+    """所有需要定时更新的 distinct wrapper（含 flutter/native/web/desktop）。"""
+    routing = get_repo_routing()
+    repos: dict[str, str] = {}
+    for platform, cfg in routing.items():
+        for band in cfg.get("bands", []):
+            w = os.path.expanduser(band.get("wrapper", "") or "")
+            if w:
+                repos[w] = w   # key=去重后的 wrapper 路径
     return repos

@@ -21,6 +21,12 @@ from app.services.mt_runner import workspace_lock
 logger = logging.getLogger("jarvis.repo_updater")
 
 
+def _is_submodule_shell(path: Path) -> bool:
+    """有顶层 .git 且有 .gitmodules → git submodule 壳（plaud-native-app / fe-nexus）。
+    需 recursive 更新；普通 git pull 不会动 submodule。"""
+    return (path / ".git").exists() and (path / ".gitmodules").exists()
+
+
 def _is_mt_workspace(path: Path) -> bool:
     """A directory with ≥1 immediate child sub-dir containing .git looks like a mt workspace."""
     if (path / ".git").exists():
@@ -84,6 +90,64 @@ def _update_repo(name: str, repo_path: str) -> bool:
             return False
         except Exception as e:
             logger.error("[repo:%s] mt update failed: %s", name, e)
+            return False
+
+    # submodule 壳分支（plaud-native-app / fe-nexus）：recursive 更新
+    if _is_submodule_shell(path):
+        try:
+            with workspace_lock(path, timeout_sec=120):
+                # --- fatal phase: fetch + checkout (main→master fallback) + pull ---
+                r = subprocess.run(
+                    ["git", "fetch", "origin"],
+                    cwd=str(path), capture_output=True, text=True, timeout=300,
+                )
+                if r.returncode != 0:
+                    logger.error("[repo:%s] git fetch failed: %s", name, r.stderr.strip())
+                    return False
+
+                branch = "main"
+                r = subprocess.run(
+                    ["git", "checkout", "main"],
+                    cwd=str(path), capture_output=True, text=True, timeout=60,
+                )
+                if r.returncode != 0:
+                    branch = "master"
+                    r = subprocess.run(
+                        ["git", "checkout", "master"],
+                        cwd=str(path), capture_output=True, text=True, timeout=60,
+                    )
+                    if r.returncode != 0:
+                        logger.error(
+                            "[repo:%s] checkout main/master failed: %s", name, r.stderr.strip()
+                        )
+                        return False
+
+                r = subprocess.run(
+                    ["git", "pull", "origin", branch],
+                    cwd=str(path), capture_output=True, text=True, timeout=300,
+                )
+                if r.returncode != 0:
+                    logger.error("[repo:%s] git pull failed: %s", name, r.stderr.strip())
+                    return False
+
+                # --- non-fatal phase: submodule sync + recursive update ---
+                for cmd in (
+                    ["git", "submodule", "sync", "--recursive"],
+                    ["git", "submodule", "update", "--init", "--remote", "--recursive"],
+                ):
+                    r = subprocess.run(cmd, cwd=str(path), capture_output=True, text=True, timeout=300)
+                    if r.returncode != 0:
+                        logger.warning(
+                            "[repo:%s] %s failed: %s", name, " ".join(cmd), r.stderr.strip()
+                        )
+
+                logger.info("[repo:%s] submodule shell updated at %s", name, repo_path)
+                return True
+        except TimeoutError:
+            logger.warning("[repo:%s] workspace busy — skipping this tick", name)
+            return False
+        except Exception as e:
+            logger.error("[repo:%s] submodule update failed: %s", name, e)
             return False
 
     # Plain single-git repo branch

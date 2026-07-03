@@ -33,9 +33,29 @@ from app.crashguard.models import (
     CrashIssue,
     CrashSnapshot,
 )
+from app.crashguard.services.version_util import classify_generation
 from app.db.database import get_session
 
 logger = logging.getLogger("crashguard.daily_report")
+
+# 代际 badge（行内标注 4.0 native vs 3.x flutter）
+_GEN_BADGE = {"native": "🆕4.0", "flutter": "🦋3.x"}
+
+
+def _generation_of(issue: CrashIssue) -> str:
+    """issue 代际：'native' / 'flutter' / ''（service 为主，version 兜底）。"""
+    return classify_generation(
+        getattr(issue, "service", "") or "",
+        getattr(issue, "last_seen_version", "") or "",
+    )
+
+
+def _gen_badge_str(issue: Optional[CrashIssue]) -> str:
+    """行内代际 badge（前置空格）：' 🆕4.0' / ' 🦋3.x' / ''。issue 为空返回 ''。"""
+    if issue is None:
+        return ""
+    b = _GEN_BADGE.get(_generation_of(issue), "")
+    return f" {b}" if b else ""
 
 # fire-and-forget 后台任务强引用集合——防止 asyncio.create_task 返回值丢失被 GC 回收
 _BG_TASKS: set = set()
@@ -1369,8 +1389,9 @@ async def compose_report(
                 if r["kind"] == "🔥" and r.get("rank"):
                     kind_label = f"🔥{r['rank']}"
                 tags_str = f" · {', '.join(r['tags'])}" if r["tags"] else ""
+                gen_str = _gen_badge_str(issue)
                 lines.append(
-                    f"- {kind_label} **{ev:,}** events ({d_str}){tags_str} · [{title_short}]({url})"
+                    f"- {kind_label} **{ev:,}** events ({d_str}){gen_str}{tags_str} · [{title_short}]({url})"
                 )
             if not ordered:
                 lines.append("- _无_")
@@ -1510,8 +1531,9 @@ async def compose_report(
             for item in sorted(fatal_news, key=lambda x: -x["events"])[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
+                gb = _gen_badge_str(id_to_issue.get(item["issue_id"]))
                 attn_lines.append(
-                    f"- [{item['platform']}] **{item['events']:,}** events · "
+                    f"- [{item['platform']}] **{item['events']:,}** events{gb} · "
                     f"[{title_short}]({url})"
                 )
         if fatal_surges:
@@ -1522,8 +1544,9 @@ async def compose_report(
                 title_short = item["title"][:70]
                 d = item["delta"]
                 d_str = f"+{d * 100:.0f}%" if d is not None else "—"
+                gb = _gen_badge_str(id_to_issue.get(item["issue_id"]))
                 attn_lines.append(
-                    f"- [{item['platform']}] **{item['events']:,}** events ({d_str}) · "
+                    f"- [{item['platform']}] **{item['events']:,}** events ({d_str}){gb} · "
                     f"[{title_short}]({url})"
                 )
         if fatal_drops:
@@ -1534,8 +1557,9 @@ async def compose_report(
                 title_short = item["title"][:70]
                 d = item["delta"]
                 d_str = f"{d * 100:.0f}%" if d is not None else "—"
+                gb = _gen_badge_str(id_to_issue.get(item["issue_id"]))
                 attn_lines.append(
-                    f"- [{item['platform']}] **{item['events']:,}** events ({d_str}) · "
+                    f"- [{item['platform']}] **{item['events']:,}** events ({d_str}){gb} · "
                     f"[{title_short}]({url})"
                 )
 
@@ -1557,10 +1581,63 @@ async def compose_report(
     # 早晚报不再展示 PR 修复段——按用户要求，PR 内容只在 crashguard web 端查看
     # 早晚报只聚焦"出了什么事"，PR 状态查看走前端，避免群消息聒噪
 
+    # ── 🆕 4.0 Native 崩溃板块（置顶，Flutter→native 迁移共存期）────────────
+    # 共存期 native 量远小于 flutter（3.x），会被 Top-N 淹没；单独置顶一段让运维盯住 4.0。
+    # 代际拆分汇总行折进本段段首（intro 区会被飞书卡片丢弃，必须挂在 ## 段内才进群）。
+    # 受"报告只显示异常"约束：无 native 崩溃则整段不出。代际判定见 _generation_of（service 为主）。
+    native_lines: List[str] = []
+    _native_rows = []  # (plat, issue, snap, events, is_fatal)
+    _gen_fatal = {"native": 0, "flutter": 0}
+    _native_by_plat = {"ANDROID": 0, "IOS": 0}
+    for _snap, _issue in today_rows:
+        _gen = _generation_of(_issue)
+        _ev = int(_snap.events_count or 0)
+        _iid = _snap.datadog_issue_id
+        # realtime_fatality 拉失败时退化为"全计"（宁可多算也别漏报 native）
+        _is_fatal = (realtime_fatality.get(_iid) == "fatal") if realtime_fatality else True
+        if _gen == "native":
+            _plat = id_to_plat.get(_iid, "OTHER")
+            _native_rows.append((_plat, _issue, _snap, _ev, _is_fatal))
+            if _is_fatal:
+                _gen_fatal["native"] += _ev
+                if _plat in _native_by_plat:
+                    _native_by_plat[_plat] += _ev
+        elif _gen == "flutter" and _is_fatal:
+            _gen_fatal["flutter"] += _ev
+
+    # 列表与汇总行口径对齐：优先只列 fatal native；若无 fatality 信号则全列（兜底不漏）
+    _native_fatal_rows = [r for r in _native_rows if r[4]]
+    _native_show_rows = _native_fatal_rows or _native_rows
+    if _native_show_rows:
+        _PLAT_DISP = {"ANDROID": "Android", "IOS": "iOS", "OTHER": "?"}
+        native_lines.append("## 🆕 4.0 Native 崩溃")
+        native_lines.append(
+            f"> 📦 代际拆分（fatal events）：🦋 3.x Flutter **{_gen_fatal['flutter']:,}** · "
+            f"🆕 4.0 Native **{_gen_fatal['native']:,}**"
+            f"（iOS {_native_by_plat['IOS']:,} / Android {_native_by_plat['ANDROID']:,}）"
+        )
+        native_lines.append("")
+        for _plat, _issue, _snap, _ev, _ in sorted(_native_show_rows, key=lambda t: -t[3])[:10]:
+            _ver = (
+                getattr(_issue, "last_seen_version", "")
+                or getattr(_issue, "first_seen_version", "")
+                or ""
+            ).strip()
+            _ver_str = f"{_ver} · " if _ver else ""
+            _title_short = (_issue.title or "")[:60]
+            _url = _frontend_issue_url(_snap.datadog_issue_id)
+            native_lines.append(
+                f"- {_PLAT_DISP.get(_plat, _plat)} · {_ver_str}**{_ev:,}** events · "
+                f"[{_title_short}]({_url})"
+            )
+        native_lines.append("")
+        native_lines.append("---")
+        native_lines.append("")
+
     # 插入位置：title (line 0) + 数据窗口 (line 1) + 空行 (line 2) 后
-    # 顺序：Σ 摘要 → 昨日复盘 → ✨ 关注点
+    # 顺序：Σ 摘要 → 昨日复盘 → 🆕 4.0 Native（置顶，紧贴 ## ✨关注点 前，段边界才干净）→ ✨ 关注点
     insert_at = 2
-    lines[insert_at:insert_at] = [sigma, ""] + retro_lines + attn_lines
+    lines[insert_at:insert_at] = [sigma, ""] + retro_lines + native_lines + attn_lines
 
     payload["new_count"] = total_new
     payload["regression_count"] = total_surge

@@ -24,7 +24,9 @@ from sqlalchemy import select
 
 from app.crashguard.config import get_crashguard_settings
 from app.crashguard.models import CrashAnalysis, CrashIssue, CrashPullRequest
+from app.config import get_repo_routing
 from app.db.database import get_session
+from app.services import repo_router
 
 logger = logging.getLogger("crashguard.pr_drafter")
 
@@ -44,6 +46,62 @@ async def _acquire_repo_lock(repo_path: str) -> asyncio.Lock:
             _repo_locks[repo_path] = lock
         return lock
 
+
+# ─── Task 5: version-aware repo resolution + flutter family gate ──────────────
+
+def _resolve_repo_for_issue(platform: str, version: str):
+    """crashguard PR 选仓：按 (platform, sample_app_version) 经 repo_router 路由。
+
+    返回 RepoResolution | None（None 时调用方应返回 {"ok": False, "error": ...}）。
+    """
+    return repo_router.resolve(platform, version, get_repo_routing())
+
+
+def _should_run_flutter_subrepo_detection(family: str) -> bool:
+    """只有 flutter family 才跑 global/cn/common blob 探测；native/desktop 单 submodule 跳过。"""
+    return (family or "").strip().lower() == "flutter"
+
+
+def _select_candidates(family: str, res, fallback_callable):
+    """Pure helper: select PR candidate repos based on family + resolved repo.
+
+    For non-flutter families with a valid resolution, short-circuit directly to
+    the single version-aware submodule path — no multi-candidate blob detection
+    needed (native/desktop always map 1:1 to a submodule repo).
+
+    For flutter, or when res is None (resolution failed), fall through to the
+    full _resolve_candidate_repos() machinery via fallback_callable().
+
+    Args:
+        family: family string from repo_router resolution ("flutter"/"native"/"desktop"/...)
+        res:    RepoResolution or None from _resolve_repo_for_issue()
+        fallback_callable: zero-arg callable that returns the full candidates list
+
+    Returns:
+        list of (logical_name, abs_path) tuples
+    """
+    if family != "flutter" and res is not None:
+        # native / desktop = single submodule; no multi-candidate blob machinery needed.
+        # Use the version-aware repo_router resolution directly as the sole candidate.
+        return [(res.logical_name, res.sub_repo_path)]
+    return fallback_callable()
+
+
+def _sample_version(issue) -> str:
+    """从 issue.representative_stack JSON 的 sample_app_version 取版本；
+    回退到 issue.app_version；再回退空字符串。
+    """
+    try:
+        rep = json.loads(getattr(issue, "representative_stack", "") or "{}")
+        v = (rep.get("sample_app_version") or "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return (getattr(issue, "app_version", "") or "").strip()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 # 仅当命令是 git 时才需检查这些子命令；只匹配 args[1] 的精确子命令名，
 # 不再扫整个 cmd 数组（避免 PR body / commit message 中的自然词触发误判）。
@@ -276,6 +334,7 @@ def _detect_flutter_subrepo_by_basename(text: str) -> str:
 
 def _resolve_candidate_repos(
     platform: str, fix_text: str, issue_stack: str = "", fix_diff: str = "",
+    family: str = "flutter",
 ) -> list[tuple[str, str]]:
     """根据 platform + fix_suggestion 文本，返回所有候选 sub-repo 列表。
 
@@ -288,23 +347,32 @@ def _resolve_candidate_repos(
     lib/shared/puth_helper/push_helper.dart 在 common 是 git 空文件 e69de29b...，
     但在 global / cn 是真实实现）。
 
+    family: 由调用方从 repo_router 解析结果传入（"flutter" / "native" / "desktop"）。
+    只有 flutter family 才跑 global/cn/common blob 探测和跨仓 flutter 候选追加；
+    native/desktop family 单 submodule 直接走 resolved sub-repo，跳过 blob 探测。
+    默认 "flutter" 保持后向兼容——任何不传 family 的旧调用方行为不变。
+
     返回 [(logical_name, abs_path), ...]，已去重，platform 默认仓库始终在第一位。
     """
     out: list[tuple[str, str]] = []
     seen: set = set()
     text = ((fix_text or "") + " " + (issue_stack or "")).lower()
-    flutter_hint = _detect_flutter_subrepo_hint(text)
-    # 治本 v2：text hint 没命中时，用 git blob 探测自动选仓——
-    # AI 几乎不会主动写 "plaud-flutter-global" 字面，本路径覆盖率 ≈ 0%；
-    # blob 探测从 fix_diff 反推目标在哪个 sub-repo 里有真代码（非空 stub）。
-    if not flutter_hint and (fix_diff or "").strip():
-        flutter_hint = _detect_flutter_subrepo_by_blob(fix_diff) or flutter_hint
-    # 治本 v3：fix_diff 为空（implementation agent 路径）时——从 fix_text 抽
-    # 源码 basename 跨三仓 fuzzy 匹配。典型救援场景：ana=96 LateInitError 里 AI 只写
-    # "chatbots.view.dart"，common 没此文件，global 真路径 lib/app/modules/.../*.dart
-    # 命中 → 自动切 global，让 Gate#1 path_verify 不再误拦。
-    if not flutter_hint:
-        flutter_hint = _detect_flutter_subrepo_by_basename(fix_text or "") or flutter_hint
+
+    # --- Flutter sub-repo detection: gated by family ---
+    flutter_hint = ""
+    if _should_run_flutter_subrepo_detection(family):
+        flutter_hint = _detect_flutter_subrepo_hint(text)
+        # 治本 v2：text hint 没命中时，用 git blob 探测自动选仓——
+        # AI 几乎不会主动写 "plaud-flutter-global" 字面，本路径覆盖率 ≈ 0%；
+        # blob 探测从 fix_diff 反推目标在哪个 sub-repo 里有真代码（非空 stub）。
+        if not flutter_hint and (fix_diff or "").strip():
+            flutter_hint = _detect_flutter_subrepo_by_blob(fix_diff) or flutter_hint
+        # 治本 v3：fix_diff 为空（implementation agent 路径）时——从 fix_text 抽
+        # 源码 basename 跨三仓 fuzzy 匹配。典型救援场景：ana=96 LateInitError 里 AI 只写
+        # "chatbots.view.dart"，common 没此文件，global 真路径 lib/app/modules/.../*.dart
+        # 命中 → 自动切 global，让 Gate#1 path_verify 不再误拦。
+        if not flutter_hint:
+            flutter_hint = _detect_flutter_subrepo_by_basename(fix_text or "") or flutter_hint
 
     def add(name: str, sub_hint: str = "") -> None:
         path = _platform_repo_path(name, sub_hint)
@@ -318,21 +386,23 @@ def _resolve_candidate_repos(
     elif p in ("android", "ios"):
         add(p)
 
-    has_dart = (".dart" in text) or ("pubspec" in text) or ("flutter" in text)
-    has_kotlin_java = (
-        ".kt" in text or ".java" in text or "androidmanifest" in text
-        or "mainactivity" in text or ".gradle" in text or "fragmentactivity" in text
-    )
-    has_swift_objc = (
-        ".swift" in text or "appdelegate" in text or "viewcontroller" in text
-        or "podfile" in text or ".plist" in text
-    )
-    if has_dart and p != "flutter":
-        add("flutter", flutter_hint)
-    if has_kotlin_java and p != "android":
-        add("android")
-    if has_swift_objc and p != "ios":
-        add("ios")
+    # Cross-repo flutter candidate additions: only when family is flutter
+    if _should_run_flutter_subrepo_detection(family):
+        has_dart = (".dart" in text) or ("pubspec" in text) or ("flutter" in text)
+        has_kotlin_java = (
+            ".kt" in text or ".java" in text or "androidmanifest" in text
+            or "mainactivity" in text or ".gradle" in text or "fragmentactivity" in text
+        )
+        has_swift_objc = (
+            ".swift" in text or "appdelegate" in text or "viewcontroller" in text
+            or "podfile" in text or ".plist" in text
+        )
+        if has_dart and p != "flutter":
+            add("flutter", flutter_hint)
+        if has_kotlin_java and p != "android":
+            add("android")
+        if has_swift_objc and p != "ios":
+            add("ios")
     return out
 
 
@@ -443,7 +513,9 @@ def _github_slug(repo_path: str) -> str:
     return m.group(1) if m else ""
 
 
-def _github_open_crashguard_pr(repo_path: str, issue_id: str) -> Optional[str]:
+def _github_open_crashguard_pr(
+    repo_path: str, issue_id: str, github_slug: str = "",
+) -> Optional[str]:
     """跨实例去重：查 GitHub 上该仓库是否已有同 issue 的 open crashguard PR。
 
     命中返回已存在 PR 的 URL，否则 None。这是本地 DB 去重之外的**权威兜底**——
@@ -453,8 +525,16 @@ def _github_open_crashguard_pr(repo_path: str, issue_id: str) -> Optional[str]:
 
     查询失败一律返回 None（fail-open）：GitHub 抖动不该把自动化卡死，
     最坏退回到本地 DB 去重 + 同 fingerprint 的 pr_dedup_days 窗口。
+
+    github_slug: 如果已知（来自 repo_router res.github_repo），作为最后兜底；
+                 优先从 repo_path git remote 反解——对 flutter sub-repo 和 native submodule
+                 都是正确的 PR 目标仓库。res.github_repo 语义是符号化源仓库，不是 PR 目标仓库。
     """
-    slug = _github_slug(repo_path)
+    # Prefer git-remote-derived slug: correct for both flutter sub-repos (e.g.
+    # plaud-flutter-common/global/cn) and native submodules.  res.github_repo is
+    # the release/symbol monorepo (e.g. Plaud-AI/Plaud-App for flutter) and must
+    # NOT drive dedup queries — PRs live in the sub-repo, not the release monorepo.
+    slug = _github_slug(repo_path) or github_slug
     if not slug:
         return None
     short = re.sub(r"[^a-zA-Z0-9]", "", issue_id)[:8] or "noid"
@@ -1012,6 +1092,9 @@ async def _create_one_draft_pr(
 
     _s = get_crashguard_settings()
     _create_draft = bool(getattr(_s, "pr_create_as_draft", False))
+    # repo inferred from checkout git remote — correct for both flutter sub-repos and
+    # native submodules; do NOT force res.github_repo (flutter's is the release monorepo
+    # Plaud-AI/Plaud-App, not the PR sub-repo like plaud-flutter-common/global/cn).
     _gh_args = ["gh", "pr", "create", "--title", pr_title, "--body", pr_body,
                 "--head", branch]
     if _create_draft:
@@ -1619,11 +1702,26 @@ async def draft_pr_for_analysis(
             }
 
     platform = (issue.platform or "").lower()
+    github_slug = ""  # derived from res.github_repo when using repo_router path
     if repo_override:
         repo_logical, repo_path = repo_override
     else:
-        repo_logical = platform
-        repo_path = _platform_repo_path(platform)
+        # Version-aware repo selection via repo_router (Goal 1 + Goal 3)
+        sample_version = _sample_version(issue)
+        res = _resolve_repo_for_issue(platform, sample_version)
+        if res is None:
+            # Fallback to old static mapping if repo_router has no config for this platform
+            logger.warning(
+                "repo_router returned None for platform=%s version=%s; "
+                "falling back to static _platform_repo_path mapping",
+                platform, sample_version,
+            )
+            repo_logical = platform
+            repo_path = _platform_repo_path(platform)
+        else:
+            repo_path = res.sub_repo_path
+            repo_logical = res.logical_name
+            github_slug = res.github_repo  # used for gh --repo calls below
     if not repo_path or not Path(repo_path).exists():
         return {"ok": False, "error": f"repo_path not configured/found for platform={platform} repo={repo_logical}"}
 
@@ -1631,7 +1729,7 @@ async def draft_pr_for_analysis(
     # 本地 DB 去重（上方 pr_dedup_days 窗口）只看本实例 SQLite；多机/多实例
     # 各自独立 DB，看不到彼此开的 PR → 同 issue 重复开。开 PR 前直接问 GitHub。
     if not dry_run:
-        gh_existing = _github_open_crashguard_pr(repo_path, ana.datadog_issue_id)
+        gh_existing = _github_open_crashguard_pr(repo_path, ana.datadog_issue_id, github_slug=github_slug)
         if gh_existing:
             logger.info(
                 "github dedup hit issue=%s repo=%s existing=%s",
@@ -2324,9 +2422,18 @@ async def draft_prs_multi(
             return {"ok": False, "error": "issue not found", "prs": []}
 
     fix_text = "\n".join([ana.fix_suggestion or "", ana.solution or "", ana.fix_diff or ""])
-    candidates = _resolve_candidate_repos(
-        issue.platform or "", fix_text, issue.representative_stack or "",
-        fix_diff=ana.fix_diff or "",
+    # Derive family from repo_router to gate flutter sub-repo detection (Goal 2)
+    _sample_ver = _sample_version(issue)
+    _res_for_family = _resolve_repo_for_issue((issue.platform or "").lower(), _sample_ver)
+    _family = _res_for_family.family if _res_for_family else "flutter"
+    candidates = _select_candidates(
+        _family,
+        _res_for_family,
+        lambda: _resolve_candidate_repos(
+            issue.platform or "", fix_text, issue.representative_stack or "",
+            fix_diff=ana.fix_diff or "",
+            family=_family,
+        ),
     )
 
     # === Gate#10：多候选先合议——≥2 个平台时锁 primary，只在 primary 仓开 PR ===

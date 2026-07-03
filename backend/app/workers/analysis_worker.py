@@ -11,12 +11,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from app.config import get_settings, get_code_repo_for_platform
+from app.config import get_settings, get_repo_routing
+from app.services import repo_router
 from app.db import database as db
 from app.models.schemas import AnalysisResult, Issue
 from app.services.agent_orchestrator import AgentOrchestrator
@@ -45,6 +47,54 @@ def _get_orchestrator() -> AgentOrchestrator:
     if _orchestrator is None:
         _orchestrator = AgentOrchestrator()
     return _orchestrator
+
+
+def _os_name_from_issue(issue: object) -> str:
+    """Extract OS name string from an issue's log_metadata_json (JSON string).
+
+    Checks keys in order: 'os_version', 'os'. Returns '' on any error or if
+    the attribute is missing. normalize_platform() matches 'Android 14', 'iOS 17'
+    etc. case-insensitively via substring match, so the raw value is fine to pass.
+    """
+    try:
+        raw = getattr(issue, "log_metadata_json", None)
+        if not raw:
+            return ""
+        meta = json.loads(raw)
+        return (meta.get("os_version") or meta.get("os") or "").strip()
+    except Exception:
+        return ""
+
+
+def _compute_code_routing(platform: str, version: str, os_name: str) -> dict:
+    """Compute the code-version badge dict (which codebase this ticket maps to).
+
+    Mirrors Step 6's resolve+coexistence-fallback so all result paths
+    (incl. stale-log) can show the badge. resolve() is cheap/pure.
+    """
+    res = repo_router.resolve(platform, version, get_repo_routing(), os_name=os_name)
+    code_repo = repo_router.analysis_path(res)
+    used_fallback = res is None or code_repo is None
+    if code_repo is None and (platform in ("", "app", "flutter")):
+        _fb = repo_router.resolve("app", version, get_repo_routing(), os_name=os_name)
+        code_repo = repo_router.analysis_path(_fb)
+        if code_repo is None:
+            code_repo = (get_settings().code_repo_app or get_settings().code_repo_path) or None
+        used_fallback = True
+    if res is not None and not used_fallback:
+        family, conf, source = res.family, res.confidence, "resolved"
+    elif code_repo is not None:
+        family, conf, source = "flutter", "fallback", "fallback-app"
+    else:
+        family, conf, source = "", "none", "logs-only"
+    return {
+        "family": family,
+        "repo": (os.path.basename(code_repo.rstrip("/")) if code_repo else ""),
+        "version": version or "",
+        "platform": platform or "",
+        "confidence": conf,
+        "source": source,
+    }
 
 
 # ====================== ① 日志时效性预检 ======================
@@ -163,6 +213,14 @@ def _build_stale_log_result(
         agent_type="precheck",
     )
     result.issue = issue
+    # Attach code_routing badge so stale-log results also carry badge info
+    try:
+        _platform = (getattr(issue, "platform", "") or "").strip().lower()
+        _version = (getattr(issue, "app_version", "") or "").strip()
+        _os_n = _os_name_from_issue(issue)
+        log_metadata["code_routing"] = _compute_code_routing(_platform, _version, _os_n)
+    except Exception:
+        pass
     result.log_metadata = log_metadata
     return result
 
@@ -578,7 +636,46 @@ async def run_analysis_pipeline(
         await on_progress(60, "准备 Agent 工作空间..." if has_logs else "准备代码分析...")
 
     # --- Step 6: Prepare workspace ---
-    code_repo = get_code_repo_for_platform(platform)
+    version = (getattr(issue, "app_version", "") or "").strip()
+    # When the ticket didn't carry a version, fall back to the one the extractor
+    # resolved from the NEWEST log era (flutter 3.x vs native 4.x). Without this,
+    # an unspecified version makes repo_router default to the highest band
+    # (native) even for a flutter ticket. "日志解析为主": logs drive the era.
+    if not version and log_metadata:
+        version = (log_metadata.get("app_version") or "").strip()
+    # os_name: prefer already-parsed log_metadata dict (available when has_logs);
+    # fall back to issue.log_metadata_json for no-log / eval paths.
+    os_name = (
+        (log_metadata.get("os_version") or log_metadata.get("os") or "").strip()
+        if log_metadata
+        else _os_name_from_issue(issue)
+    )
+    res = repo_router.resolve(platform, version, get_repo_routing(), os_name=os_name)
+    code_repo = repo_router.analysis_path(res)
+    if code_repo is None and (platform in ("", "app", "flutter")):
+        # Coexistence fallback: ambiguous/empty app ticket → flutter app monorepo (analysis wants broad context).
+        _fb = repo_router.resolve("app", version, get_repo_routing(), os_name=os_name)
+        code_repo = repo_router.analysis_path(_fb)
+        if code_repo is None:
+            from app.config import get_settings as _gs
+            code_repo = (_gs().code_repo_app or _gs().code_repo_path) or None
+    if code_repo:
+        logger.info("repo_router(analysis): %s v%s os=%s -> %s (family=%s)",
+                    platform or "?", version or "?", os_name or "?", code_repo,
+                    res.family if res else "fallback-app")
+    else:
+        logger.info("repo_router(analysis): no repo for platform=%s version=%s os=%s -> logs-only",
+                    platform, version, os_name)
+    # --- Code-routing badge: attach to log_metadata before workspace prep ---
+    # Use helper so badge source reflects the ACTUAL repo used (fallback-aware).
+    # Note: prepare_workspace still uses the `res`/`code_repo` resolved above.
+    try:
+        _cr = _compute_code_routing(platform, version, os_name)
+        log_metadata["code_routing"] = _cr
+    except Exception:
+        _cr = {}
+    logger.info("code_routing badge: %s", _cr)
+
     engine.prepare_workspace(workspace, rules, workspace_log_paths, code_repo=code_repo)
 
     # --- Step 7: Run agent ---

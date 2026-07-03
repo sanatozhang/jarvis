@@ -112,6 +112,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("apply_agent_overrides_from_db failed (non-fatal): %s", e)
 
+    try:
+        from app.api.settings import apply_repo_routing_overrides_from_db
+        await apply_repo_routing_overrides_from_db()
+    except Exception as e:
+        logger.warning("apply_repo_routing_overrides_from_db failed (non-fatal): %s", e)
+
     # Crashguard DB 解耦自检 — 违规则阻止启动
     try:
         from scripts.check_crash_decoupling import assert_crash_tables_decoupled

@@ -22,6 +22,62 @@ from typing import List, Optional
 
 logger = logging.getLogger("crashguard.symbolication")
 
+# ── 符号化 profile 策略表 ─────────────────────────────────────────────────────
+# 每个 symbol_profile 控制哪些 asset getter 会被调用（True = 调用，False = 跳过）。
+# native_android: R8/ProGuard mapping + native .so，没有 Dart 符号
+# native_ios: app dSYM 只，没有 Flutter.dSYM
+# flutter_*: 当前完整行为（向后兼容）
+# none: 全部跳过
+_SYMBOL_PROFILES: dict = {
+    "flutter_android": {
+        "use_dart_symbols": True,
+        "use_proguard": True,
+        "use_native_so": True,
+        "use_flutter_dsym": True,
+        "use_app_dsym": False,
+    },
+    "flutter_ios": {
+        "use_dart_symbols": True,
+        "use_proguard": False,
+        "use_native_so": False,
+        "use_flutter_dsym": True,
+        "use_app_dsym": False,
+    },
+    "native_android": {
+        "use_dart_symbols": False,
+        "use_proguard": True,
+        "use_native_so": True,
+        "use_flutter_dsym": False,
+        "use_app_dsym": False,
+    },
+    "native_ios": {
+        "use_dart_symbols": False,
+        "use_proguard": False,
+        "use_native_so": False,
+        "use_flutter_dsym": False,
+        "use_app_dsym": True,
+    },
+    "none": {
+        "use_dart_symbols": False,
+        "use_proguard": False,
+        "use_native_so": False,
+        "use_flutter_dsym": False,
+        "use_app_dsym": False,
+    },
+}
+
+
+def _profile_strategy(symbol_profile: str) -> dict:
+    """返回 symbol_profile 对应的策略 dict。未知/空 profile → 'none'（全 False）。
+
+    向后兼容注：symbol_profile="" 返回 none 策略（全 False），但 symbolicate_stack
+    在 symbol_profile 为空时会用 flutter 默认策略回退（platform-based 路由），
+    不走此函数控制的 gating，保持现有行为不变。
+    """
+    key = (symbol_profile or "none").strip().lower()
+    return _SYMBOL_PROFILES.get(key, _SYMBOL_PROFILES["none"])
+
+
 # ── 工具可用性缓存（进程级，启动时探测一次）──────────────────────────────────
 _ADDR2LINE: Optional[str] = None   # addr2line 或 llvm-symbolizer 路径
 _ATOS: Optional[str] = None        # atos 路径（仅 macOS）
@@ -72,6 +128,9 @@ async def symbolicate_stack(
     binary_images: list,
     platform: str,
     app_version: str = "",
+    *,
+    symbol_profile: str = "",
+    github_repo: str = "",
 ) -> str:
     """
     尝试符号化 stack 中的帧，返回增强后的 stack 字符串。
@@ -82,10 +141,13 @@ async def symbolicate_stack(
       3. GitHub release 符号包（Plan C：自动按版本下载）
 
     Args:
-        stack:         原始堆栈字符串
-        binary_images: Datadog RUM 事件里的 binary_images 列表（可为空 list）
-        platform:      "ios" | "android" | "flutter" 等
-        app_version:   Datadog @application.version，如 "3.18.0-708"（可为空）
+        stack:          原始堆栈字符串
+        binary_images:  Datadog RUM 事件里的 binary_images 列表（可为空 list）
+        platform:       "ios" | "android" | "flutter" 等
+        app_version:    Datadog @application.version，如 "3.18.0-708"（可为空）
+        symbol_profile: 符号化策略（"flutter_android" / "flutter_ios" / "native_android" /
+                        "native_ios" / "none" / ""）。空字符串 → 向后兼容（platform-based）。
+        github_repo:    源码/符号仓（如 "Plaud-AI/Plaud-App"）。空 → 默认 Flutter 仓。
 
     Returns:
         符号化后的堆栈字符串（失败时原样返回 stack）
@@ -98,7 +160,11 @@ async def symbolicate_stack(
         result = await asyncio.to_thread(_symbolicate_stack_sync, stack, binary_images, platform)
         # Plan C：GitHub release 符号（异步，按需下载）
         if app_version:
-            result = await _symbolicate_with_github(result, platform, app_version)
+            result = await _symbolicate_with_github(
+                result, platform, app_version,
+                symbol_profile=symbol_profile,
+                github_repo=github_repo,
+            )
         return result
     except Exception as exc:
         logger.warning("symbolicate_stack failed (non-fatal): %s", exc)
@@ -118,38 +184,78 @@ def _symbolicate_stack_sync(stack: str, binary_images: list, platform: str) -> s
     return _symbolicate_ios(out, binary_images)
 
 
-async def _symbolicate_with_github(stack: str, platform: str, app_version: str) -> str:
+async def _symbolicate_with_github(
+    stack: str,
+    platform: str,
+    app_version: str,
+    *,
+    symbol_profile: str = "",
+    github_repo: str = "",
+) -> str:
     """Plan C：利用 Plaud GitHub release 里的符号文件对 stack 做进一步增强。
 
     Android：
       1. 优先用 native_symbols.tar.gz 里的 libflutter.so / libapp.so（带 debug 符号）解 native 帧
       2. 用 mapping_globalRelease.txt 做 ProGuard 反混淆 Java 帧
     iOS：用 PLAUD.dSYMs.zip 里的 dSYM bundle 用 atos 解析
+
+    symbol_profile 控制哪些 getter 被调用（见 _SYMBOL_PROFILES 表）。
+    空 profile → platform-based 向后兼容路径（与既有行为一致）。
+    github_repo 为空 → 使用 _DEFAULT_REPO（向后兼容）。
     """
     from app.crashguard.services.github_symbols import (
         get_ios_dsyms_dir, get_android_mapping, get_android_native_symbols_dir,
-        get_dart_symbols_dir,
+        get_dart_symbols_dir, _DEFAULT_REPO,
     )
+    repo = github_repo or _DEFAULT_REPO
     plat = (platform or "").lower()
+
+    # 如果有明确的 symbol_profile，走 strategy 表控制哪些 getter 调用
+    # 如果没有（空/none），回退到原来的 platform-based 逻辑（向后兼容）
+    profile_key = (symbol_profile or "").strip().lower()
+    use_strategy = bool(profile_key and profile_key != "none")
+    strategy = _profile_strategy(symbol_profile) if use_strategy else None
+
     try:
-        if "ios" in plat or "iphone" in plat or "ipados" in plat:
-            dsyms_dir = await get_ios_dsyms_dir(app_version)
-            if dsyms_dir:
-                stack = await asyncio.to_thread(_symbolicate_ios_with_dir, stack, dsyms_dir)
-        elif "android" in plat or "flutter" in plat:
+        is_ios = "ios" in plat or "iphone" in plat or "ipados" in plat
+        is_android = "android" in plat or "flutter" in plat
+
+        if is_ios:
+            # NOTE: native_ios sets use_app_dsym=True while flutter_ios sets use_flutter_dsym=True,
+            # but both currently invoke the same getter (get_ios_dsyms_dir → PLAUD.dSYMs.zip).
+            # The flag distinction is intentional but not yet operational: once the native iOS
+            # release publishes a separate app-dSYM asset, split this branch to use it for
+            # native_ios. Until then native_ios reuses the dSYM zip (no-ops on BuildId mismatch).
+            # ⚠️ External TODO: confirm native release asset names/contents with the App team.
+            # Determine whether to run iOS dSYM symbolication
+            if strategy is None or strategy.get("use_flutter_dsym") or strategy.get("use_app_dsym"):
+                dsyms_dir = await get_ios_dsyms_dir(app_version, repo=repo)
+                if dsyms_dir:
+                    stack = await asyncio.to_thread(_symbolicate_ios_with_dir, stack, dsyms_dir)
+        elif is_android:
             # 1. native 符号（关键：libflutter.so / libapp.so 带 debug 符号）+
             #    Dart AOT 符号包 flutter_symbols.tar.gz 里的 app.android-arm64.symbols
             #    （libapp.so stripped 后真正的 DWARF 在这里）
-            native_dir = await get_android_native_symbols_dir(app_version)
-            dart_dir = await get_dart_symbols_dir(app_version)
+            native_dir = None
+            dart_dir = None
+
+            # native_so: always run unless strategy explicitly disables it
+            if strategy is None or strategy.get("use_native_so"):
+                native_dir = await get_android_native_symbols_dir(app_version, repo=repo)
+
+            # dart_symbols: skip for native_android (no Dart in native builds)
+            if strategy is None or strategy.get("use_dart_symbols"):
+                dart_dir = await get_dart_symbols_dir(app_version, repo=repo)
+
             if native_dir or dart_dir:
                 stack = await asyncio.to_thread(
                     _symbolicate_android_with_dir, stack, native_dir, dart_dir,
                 )
             # 2. ProGuard mapping（Java 帧反混淆）
-            mapping_path = await get_android_mapping(app_version)
-            if mapping_path:
-                stack = await asyncio.to_thread(_retrace_proguard, stack, mapping_path)
+            if strategy is None or strategy.get("use_proguard"):
+                mapping_path = await get_android_mapping(app_version, repo=repo)
+                if mapping_path:
+                    stack = await asyncio.to_thread(_retrace_proguard, stack, mapping_path)
     except Exception as exc:
         logger.debug("github symbolication failed (non-fatal): %s", exc)
     return stack

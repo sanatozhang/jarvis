@@ -6,13 +6,22 @@ import { fetchAuthConfig, fetchAuthMe, readLocalStorageUser, type AuthState, typ
 type Ctx = {
   state: AuthState;
   ssoActive: boolean;
+  supportWeb: boolean;
+  supportDesktop: boolean;
 };
 
-const AuthContext = createContext<Ctx>({ state: { status: "loading" }, ssoActive: false });
+const AuthContext = createContext<Ctx>({
+  state: { status: "loading" },
+  ssoActive: false,
+  supportWeb: false,
+  supportDesktop: false,
+});
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: "loading" });
   const [ssoActive, setSsoActive] = useState(false);
+  const [supportWeb, setSupportWeb] = useState(false);
+  const [supportDesktop, setSupportDesktop] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,6 +34,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     Promise.all([fetchAuthConfig(), fetchAuthMe()]).then(([config, user]) => {
       if (cancelled) return;
       setSsoActive(config.sso_enabled);
+      setSupportWeb(config.support_web);
+      setSupportDesktop(config.support_desktop);
       if (user) {
         setState({ status: "authed", user });
         return;
@@ -39,7 +50,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
-  return <AuthContext.Provider value={{ state, ssoActive }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ state, ssoActive, supportWeb, supportDesktop }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): Ctx {

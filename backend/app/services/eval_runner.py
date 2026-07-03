@@ -10,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.config import get_code_repo_for_platform, get_settings
+from app.config import get_repo_routing, get_settings
+from app.services import repo_router
 from app.db import database as db
 from app.models.schemas import Issue
 from app.services.decrypt import process_log_file_for_platform
@@ -224,7 +225,26 @@ async def run_eval(run_id: int):
                 engine = RuleEngine()
                 rules = engine.match_rules(routing_text)
                 extraction = extract_for_rules(rules, log_paths, problem_date=problem_date) if has_logs else {}
-                code_repo = get_code_repo_for_platform((issue.platform or "").strip().lower())
+                version = (getattr(issue, "app_version", "") or "").strip()
+                _md = getattr(issue, "log_metadata_json", "") or ""
+                os_name = ""
+                if _md:
+                    try:
+                        import json as _json
+                        _m = _json.loads(_md)
+                        os_name = (_m.get("os_version") or _m.get("os") or "") if isinstance(_m, dict) else ""
+                    except Exception:
+                        os_name = ""
+                _plat = (issue.platform or "").strip().lower()
+                res = repo_router.resolve(_plat, version, get_repo_routing(), os_name=os_name)
+                code_repo = repo_router.analysis_path(res)
+                if code_repo is None and (_plat in ("", "app", "flutter")):
+                    # Coexistence fallback: ambiguous/empty app ticket → flutter app monorepo (analysis wants broad context).
+                    _fb = repo_router.resolve("app", version, get_repo_routing(), os_name=os_name)
+                    code_repo = repo_router.analysis_path(_fb)
+                    if code_repo is None:
+                        from app.config import get_settings as _gs
+                        code_repo = (_gs().code_repo_app or _gs().code_repo_path) or None
                 engine.prepare_workspace(workspace, rules, log_paths, code_repo=code_repo)
 
                 result = await orchestrator.run_analysis(

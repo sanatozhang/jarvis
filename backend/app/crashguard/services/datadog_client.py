@@ -58,8 +58,8 @@ class DatadogClient:
         # 历史 bug 现场：早晚报「最新版本」选到 3.32.4 这种 web 端版本号；iOS 桶混入 ~5.7%
         # plaud-web Safari sessions（Android ~1.5%）。所有 RUM / Issue Search query 入口
         # 统一前置 service:plaud-flutter（默认）保证 app-only 颗粒度。
-        # 如未来 native iOS/Android (plaud-ios / plaud-android) 投放，扩成
-        # "(service:plaud-flutter OR service:plaud-ios OR service:plaud-android)" 即可。
+        # native iOS/Android 真实 service = plaud_ios / plaud_android（下划线，2026-06-30 实测），
+        # 共存期 filter 已扩成 "(service:plaud-flutter OR service:plaud_android OR service:plaud_ios)"。
         # 空串 = 不注入（兜底逃生口；仅 debug 用）。
         self.service_filter = (service_filter or "").strip()
         self._rate_limit_events: Deque[float] = deque(maxlen=10)
@@ -446,7 +446,14 @@ class DatadogClient:
         app_ver = self._extract_app_version(inner) or _tag_value(tags, "version") or ""
         try:
             from app.crashguard.services.symbolication import symbolicate_stack
-            symbolicated = await symbolicate_stack(best_stack, binary_images, platform_str, app_ver)
+            from app.config import get_repo_routing
+            from app.services import repo_router
+            _res = repo_router.resolve(platform_str, app_ver, get_repo_routing())
+            symbolicated = await symbolicate_stack(
+                best_stack, binary_images, platform_str, app_ver,
+                symbol_profile=(_res.symbol_profile if _res else ""),
+                github_repo=(_res.github_repo if _res else ""),
+            )
         except Exception:
             symbolicated = best_stack
 

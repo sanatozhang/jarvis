@@ -130,14 +130,16 @@ class CrashguardSettings(BaseSettings):
     # 哪个 track 含有崩溃数据：rum / logs / trace。Plaud 移动端崩溃在 RUM。
     # 多 track 用逗号分隔（如 "rum,logs"），空 = 单 track。
     datadog_tracks: str = "rum"
-    # 顶层设计：只看 app 侧数据（plaud-flutter）。
+    # 顶层设计：只看 app 侧数据（plaud-flutter + native 两代）。
     # 历史 bug 现场：早晚报「最新版本」选到 3.32.4（来自 plaud-web）；iOS 桶
     # 24h 内被 plaud-web Safari 污染 ~5.7%，Android 被 plaud-web Chrome 污染 ~1.5%。
     # DatadogClient 所有 RUM / Issue Search query 入口统一注入此 filter。
-    # 默认 "service:plaud-flutter"；如未来 native iOS/Android 投放，扩成
-    # "(service:plaud-flutter OR service:plaud-ios OR service:plaud-android)"。
+    # 共存期：Flutter + native 两代 service 全拉进同一池，落仓靠 repo_router (platform,version)
+    # ✅ 2026-06-30 Datadog 实测确认 native 真实 service tag = plaud_android / plaud_ios（下划线，
+    #    源头见 4.0 代码 DatadogConfig.{kt:39,swift:22}；native 用独立 type=android/ios RUM app）。
+    #    旧值 plaud-native-android/ios 是错的 → Datadog 无此 service → native 崩溃漏拉，勿回退。
     # 空串 = 不注入（debug 兜底）。
-    datadog_service_filter: str = "service:plaud-flutter"
+    datadog_service_filter: str = "(service:plaud-flutter OR service:plaud_android OR service:plaud_ios)"
     # 搜索 query（event search 语法）。
     # ⚠️ 双路口径（C 路线，对齐 Datadog UI "Crashes" 与 "Errors" 两个独立看板）：
     #   - fatal  → 真崩溃 + ANR + App Hang（App 死/卡）

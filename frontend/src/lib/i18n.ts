@@ -455,6 +455,8 @@ const EN: Record<string, string> = {
   "暂无工单": "No tickets",
 
   // Common
+  "暂无配置": "No configuration",
+  "预览失败": "Preview failed",
   "已标记为不准确": "Marked as inaccurate",
   "暂无不准确工单": "No inaccurate tickets",
   "暂无数据": "No data",
@@ -927,4 +929,32 @@ const EN: Record<string, string> = {
   "未找到当前用户": "Current user not found",
   "缺少用户名": "Missing username",
   "未获取到邮箱信息": "Email not provided by Feishu",
+
+  // Repo Routing
+  "源码仓库路由": "Repo Routing",
+  "平台版本路由规则，用于 Crashguard 符号化与代码定位": "Platform version routing rules for Crashguard symbolication and code location",
+  "Service 过滤器": "Service Filter",
+  "Datadog native service tag，上线前需实测确认": "Datadog native service tag — must be confirmed with real data before go-live",
+  "支持的工单平台": "Supported ticket platforms",
+  "支持 Web 工单": "Enable Web tickets",
+  "支持 Desktop 工单": "Enable Desktop tickets",
+  "关闭后提交页无法选择该平台（默认关闭，为 4.0 native 做准备）": "When off, this platform can't be selected on the submit page (off by default; prep for 4.0 native)",
+  "解析预览": "Resolution Preview",
+  "版本号": "Version",
+  "预览中...": "Previewing...",
+  "命中": "Matched",
+  "未命中": "No match",
+  "无法解析": "Unresolved",
+  "添加行": "Add Row",
+  "最低版本": "Min Version",
+  "代码族": "Family",
+  "子模块路径": "Sub Path",
+  "GitHub 仓库": "GitHub Repo",
+  "符号化配置": "Symbol Profile",
+  "保存路由配置": "Save Routing",
+  "路由配置已保存": "Routing config saved",
+
+  // Code-version badge
+  "Flutter（默认兜底）": "Flutter (default fallback)",
+  "无源码（logs-only）": "No codebase (logs-only)",
 };

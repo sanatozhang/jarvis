@@ -3,6 +3,7 @@
 import { useT, useLang } from "@/lib/i18n";
 import { useState, useRef } from "react";
 import { Toast } from "@/components/Toast";
+import { useAuth } from "@/components/AuthProvider";
 
 function getBackendUrl(): string {
   if (typeof window === "undefined") return "http://localhost:8000";
@@ -44,6 +45,7 @@ export default function FeedbackPage() {
   });
   const t = useT();
   const currentLang = useLang();
+  const { supportWeb, supportDesktop } = useAuth();
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -201,8 +203,8 @@ export default function FeedbackPage() {
               <select value={form.platform} onChange={(e) => update("platform", e.target.value)}
                 className={inputCls} style={inputStyle}>
                 <option value="APP">APP</option>
-                <option value="Web" disabled>Web</option>
-                <option value="Desktop" disabled>Desktop</option>
+                <option value="Web" disabled={!supportWeb}>Web</option>
+                <option value="Desktop" disabled={!supportDesktop}>Desktop</option>
               </select>
             </div>
             <div>

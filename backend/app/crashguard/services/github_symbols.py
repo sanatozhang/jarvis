@@ -36,7 +36,12 @@ async def _get_download_lock(tag: str, asset_name: str) -> asyncio.Lock:
             _DOWNLOAD_LOCKS[key] = lock
         return lock
 
-_REPO = "Plaud-AI/Plaud-App"
+# NOTE: 本地 GitHub 符号化是 FLUTTER 期机制（补 Datadog 解不了的 Dart AOT libapp.so 帧）。
+# native(4.0) 不走这里：native 发布流水线把 iOS dSYM(UUID)/Android mapping+NDK(build_id)
+# 直接传 Datadog，Datadog 服务端已符号化 native 栈；crashguard 读到的 native 栈本就符号化过。
+# 下面的默认仓/资产名都是 flutter 约定；native band 的 github_repo 是 no-op 占位（找不到即
+# 静默保留原栈）。详见 config.yaml repo_routing 段注释与 memory。
+_DEFAULT_REPO = "Plaud-AI/Plaud-App"
 _GITHUB_API = "https://api.github.com"
 
 _ASSET_IOS_DSYM = "PLAUD.dSYMs.zip"
@@ -91,7 +96,7 @@ def _version_to_tag_prefix(app_version: str) -> Optional[str]:
     return f"v{parts[0]}+{parts[1]}-"
 
 
-async def find_release_tag(app_version: str, allow_fallback: bool = True) -> Optional[str]:
+async def find_release_tag(app_version: str, allow_fallback: bool = True, repo: str = _DEFAULT_REPO) -> Optional[str]:
     """
     查找对应 app_version 的 GitHub release tag（仅 global flavor）。
 
@@ -125,7 +130,7 @@ async def find_release_tag(app_version: str, allow_fallback: bool = True) -> Opt
             # 最多翻 3 页，每页 100 条，覆盖近 300 个 release
             for page in range(1, 4):
                 resp = await client.get(
-                    f"{_GITHUB_API}/repos/{_REPO}/releases",
+                    f"{_GITHUB_API}/repos/{repo}/releases",
                     headers=headers,
                     params={"per_page": 100, "page": page},
                 )
@@ -173,7 +178,7 @@ async def find_release_tag(app_version: str, allow_fallback: bool = True) -> Opt
     return None
 
 
-async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Path]:
+async def _download_asset(tag: str, asset_name: str, dest: Path, repo: str = _DEFAULT_REPO) -> Optional[Path]:
     """下载单个 release asset 到 dest。已存在且大小匹配则直接返回；不完整则重下。
 
     并发安全：同一 (tag, asset_name) 加锁——多 task 同时触发符号化时不再互相
@@ -193,7 +198,7 @@ async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Pat
             encoded_tag = quote(tag, safe="")  # `+` 必须编码为 %2B，否则 GitHub API 404
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(
-                    f"{_GITHUB_API}/repos/{_REPO}/releases/tags/{encoded_tag}",
+                    f"{_GITHUB_API}/repos/{repo}/releases/tags/{encoded_tag}",
                     headers=headers,
                 )
                 resp.raise_for_status()
@@ -223,7 +228,7 @@ async def _download_asset(tag: str, asset_name: str, dest: Path) -> Optional[Pat
             # 私有 repo 必须用 API URL `releases/assets/{id}` + Accept: octet-stream，
             # browser_download_url 对私有 repo 直接 404（GitHub 鉴权策略）
             dl_headers = {**headers, "Accept": "application/octet-stream"}
-            asset_api_url = f"{_GITHUB_API}/repos/{_REPO}/releases/assets/{asset['id']}"
+            asset_api_url = f"{_GITHUB_API}/repos/{repo}/releases/assets/{asset['id']}"
 
             # 先写 .part，全量写完再 rename → 即使中途崩溃，dest 也不会留下半截垃圾
             tmp = dest.with_suffix(dest.suffix + ".part")
@@ -271,12 +276,12 @@ def _tag_cache_dir(tag: str) -> Path:
     return _github_cache_dir() / "_by_tag" / safe
 
 
-async def get_ios_dsyms_dir(app_version: str) -> Optional[str]:
+async def get_ios_dsyms_dir(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
     """
     返回 iOS dSYMs 目录路径（含 .dSYM bundles）。
     按 tag 共享 cache：多个 app_version 命中同一 release 时不重复下载/解压。
     """
-    tag = await find_release_tag(app_version)
+    tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
 
@@ -286,7 +291,7 @@ async def get_ios_dsyms_dir(app_version: str) -> Optional[str]:
         return str(cache_dir)
 
     zip_path = cache_dir / _ASSET_IOS_DSYM
-    result = await _download_asset(tag, _ASSET_IOS_DSYM, zip_path)
+    result = await _download_asset(tag, _ASSET_IOS_DSYM, zip_path, repo=repo)
     if not result:
         return None
 
@@ -303,11 +308,11 @@ async def get_ios_dsyms_dir(app_version: str) -> Optional[str]:
         return None
 
 
-async def get_android_mapping(app_version: str) -> Optional[str]:
+async def get_android_mapping(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
     """
     返回 Android ProGuard mapping 文件路径。按 tag 共享 cache。
     """
-    tag = await find_release_tag(app_version)
+    tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
 
@@ -316,18 +321,18 @@ async def get_android_mapping(app_version: str) -> Optional[str]:
     if dest.exists():
         return str(dest)
 
-    result = await _download_asset(tag, _ASSET_ANDROID_MAPPING, dest)
+    result = await _download_asset(tag, _ASSET_ANDROID_MAPPING, dest, repo=repo)
     return str(result) if result else None
 
 
-async def get_android_native_symbols_dir(app_version: str) -> Optional[str]:
+async def get_android_native_symbols_dir(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
     """
     返回 Android native_symbols 目录路径（带 debug 符号的 libflutter.so / libapp.so 等）。
     按 tag 共享 cache：661MB 文件不会被多个 app_version 重复下载。
 
     这是 Plan C for Android native crash 的关键 — Plaud 自己打包了带符号版本的 .so 文件。
     """
-    tag = await find_release_tag(app_version)
+    tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
 
@@ -337,7 +342,7 @@ async def get_android_native_symbols_dir(app_version: str) -> Optional[str]:
         return str(cache_dir)
 
     tar_path = cache_dir / _ASSET_ANDROID_NATIVE_SYMBOLS
-    result = await _download_asset(tag, _ASSET_ANDROID_NATIVE_SYMBOLS, tar_path)
+    result = await _download_asset(tag, _ASSET_ANDROID_NATIVE_SYMBOLS, tar_path, repo=repo)
     if not result:
         return None
 
@@ -387,11 +392,11 @@ async def get_android_native_symbols_dir(app_version: str) -> Optional[str]:
         return None
 
 
-async def get_dart_symbols_dir(app_version: str) -> Optional[str]:
+async def get_dart_symbols_dir(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
     """
     返回 Dart debug symbols 目录路径（flutter_symbols.tar.gz 解压后）。按 tag 共享。
     """
-    tag = await find_release_tag(app_version)
+    tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
 
@@ -401,7 +406,7 @@ async def get_dart_symbols_dir(app_version: str) -> Optional[str]:
         return str(cache_dir)
 
     tar_path = cache_dir / _ASSET_DART_SYMBOLS
-    result = await _download_asset(tag, _ASSET_DART_SYMBOLS, tar_path)
+    result = await _download_asset(tag, _ASSET_DART_SYMBOLS, tar_path, repo=repo)
     if not result:
         return None
 
