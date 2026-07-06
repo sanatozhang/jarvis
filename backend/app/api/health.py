@@ -43,8 +43,18 @@ async def health_check():
         checks["redis"] = {"status": "unavailable", "error": str(e), "note": "Fallback to in-process tasks"}
 
     # Agents
+    # Wrap the per-agent dict with a top-level "status" so the all_ok aggregate
+    # below can read it. Previously checks["agents"] was a bare
+    # {claude_code, codex} dict with no "status" key, so `c.get("status")` was
+    # None for this entry → all_ok was ALWAYS False → /api/health never returned
+    # "healthy" on any deployment regardless of real agent health.
     agents = await _detect_agents()
-    checks["agents"] = agents
+    agents_ok = all(
+        a.get("status") in ("ok", "unavailable")
+        for a in agents.values()
+        if isinstance(a, dict)
+    )
+    checks["agents"] = {"status": "ok" if agents_ok else "degraded", **agents}
 
     # Rules
     from app.services.rule_engine import RuleEngine
