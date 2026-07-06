@@ -66,6 +66,21 @@ def _os_name_from_issue(issue: object) -> str:
         return ""
 
 
+def _effective_version(issue: object, log_metadata: Optional[dict]) -> str:
+    """Version used for repo routing.
+
+    The ticket-supplied `issue.app_version` wins. When it's empty, fall back to
+    the version the extractor resolved from the NEWEST log era (flutter 3.x vs
+    native 4.x) — otherwise repo_router's version-None path defaults to the
+    highest band (native) even for a flutter ticket. "日志解析为主": logs drive
+    the era when the reporter didn't specify a version.
+    """
+    version = (getattr(issue, "app_version", "") or "").strip()
+    if not version and log_metadata:
+        version = (log_metadata.get("app_version") or "").strip()
+    return version
+
+
 def _compute_code_routing(platform: str, version: str, os_name: str) -> dict:
     """Compute the code-version badge dict (which codebase this ticket maps to).
 
@@ -636,13 +651,7 @@ async def run_analysis_pipeline(
         await on_progress(60, "准备 Agent 工作空间..." if has_logs else "准备代码分析...")
 
     # --- Step 6: Prepare workspace ---
-    version = (getattr(issue, "app_version", "") or "").strip()
-    # When the ticket didn't carry a version, fall back to the one the extractor
-    # resolved from the NEWEST log era (flutter 3.x vs native 4.x). Without this,
-    # an unspecified version makes repo_router default to the highest band
-    # (native) even for a flutter ticket. "日志解析为主": logs drive the era.
-    if not version and log_metadata:
-        version = (log_metadata.get("app_version") or "").strip()
+    version = _effective_version(issue, log_metadata)
     # os_name: prefer already-parsed log_metadata dict (available when has_logs);
     # fall back to issue.log_metadata_json for no-log / eval paths.
     os_name = (

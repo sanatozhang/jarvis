@@ -3,6 +3,15 @@
 Covers the transition-period risk: a device upgraded 3.x flutter → 4.x native
 keeps writing the SAME plaud.log, so one file holds both eras. The extractor
 must resolve os/version/platform from the NEWEST era, not head-500 (oldest).
+
+Validated against REAL logs (2026-07-06):
+  - native iOS      → 4.0.100 / iOS 26.5 / native   (log_1782964615)
+  - native Android  → 4.0.100 / Android 16 / native (plaud_safe_mode_log; SM-S928B)
+  - flutter iOS     → 3.3.1 (516) / iOS 26.3 / flutter
+  - flutter Android → 3.0.8 (481) / Android 16 / flutter
+Real logs carry PII (uid/file_ids) so they aren't checked in; the fixtures below
+mirror their confirmed line shapes. Only the mixed-upgrade case is synthetic-only
+(a device that upgraded AND kept its log is rare), so it gets extra coverage here.
 """
 from __future__ import annotations
 
@@ -81,6 +90,33 @@ def test_upgraded_device_flutter_then_native_same_file(tmp_path):
     assert meta["app_version"] == "4.0.100"
     assert meta["platform"] == "android"
     assert meta["os_version"] == "Android 14"
+
+
+def test_upgraded_device_realistic_mixed_headers(tmp_path):
+    """Realistic upgrade log: flutter 3.x era (LEVEL:/╟ headers) first, then native
+    4.x era — which in real logs emits BOTH bracketed startup markers AND its own
+    flutter-style `│ app-version: 4.x`/`User-Agent: PLAUD/4.x` headers. Newest era
+    (native) must win; version/os/platform come from the 4.x native lines."""
+    flutter_era = (
+        "INFO: 2026-06-01 09:00:00.000000: [tag:boot] == [flutter session]\n"
+        "╟ app-platform: android\n"
+        "╟ app-version: 3.19.0 (717)\n"
+        "╟ User-Agent: PLAUD/3.19.0(build:717;Android 15;samsung;SM-S928B)\n"
+    )
+    native_era = (
+        "[2026-06-24 18:47:08.719] [I] [PLogger] DeviceInfoManager init: model=SM-S928B, brand=samsung, os=16\n"
+        "[2026-06-24 18:47:08.757] [I] [PLogger] DatadogConfig initialized with environment: production, version: 4.0.100+803\n"
+        "│ app-platform: android\n"
+        "│ app-version: 4.0.100 (803)\n"
+        "│ User-Agent: PLAUD/4.0.100(build:803;Android 16;samsung;SM-S928B)\n"
+        "[2026-06-24 18:47:43.871] [E] [Crash] native ANR\n"
+    )
+    p = _write(tmp_path, "plaud.log", flutter_era + native_era)
+    meta = extract_log_metadata([p])
+    assert meta["engine"] == "native", "newest era (native 4.x) must win"
+    assert meta["app_version"] == "4.0.100"
+    assert meta["platform"] == "android"
+    assert meta["os_version"] == "Android 16"
 
 
 def test_native_via_shared_http_headers_only(tmp_path):
