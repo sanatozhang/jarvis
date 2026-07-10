@@ -36,6 +36,7 @@ _job_health_last_fired: str = ""    # 兜底告警 tick 进程级幂等
 _top_crash_auto_pr_last_fired: str = ""  # Top crash 自动 PR 进程级幂等
 _backfill_last_fired: str = ""      # 周度 baseline 回填 tick 进程级幂等
 _deep_analyze_auto_last_fired: str = ""  # Phase 1 深度诊断自动 tick 进程级幂等
+_repo_sync_last_fired: str = ""      # 每日仓库同步 tick 进程级幂等
 
 
 async def _run_analyze_tick(max_per_tick: int) -> dict:
@@ -377,6 +378,32 @@ async def _tick_once() -> None:
                         res.get("daily", {}).get("written"),
                     )
             _enqueue_job("baseline_backfill", _backfill_job)
+
+    # 每日仓库同步（保证 crashguard auto-PR 的本地 checkout 不变旧；默认关，见 config.py 说明）
+    global _repo_sync_last_fired
+    if getattr(s, "repo_sync_enabled", False):
+        rs_cron = getattr(s, "repo_sync_cron", "") or "0 3 * * *"
+        if rs_cron and _repo_sync_last_fired != tag and _cron_matches(rs_cron, now):
+            _repo_sync_last_fired = tag
+            async def _repo_sync_job():
+                async with record_heartbeat("repo_sync") as hb:
+                    from app.crashguard.services.repo_sync import run_repo_sync
+                    res = await run_repo_sync()
+                    hb.set_summary(res)
+                    # 批量任务用 counts 三态判定（同 pr_sync 模式）——res["ok"] 是成功计数
+                    # 而非布尔值，set_status_from_result 会误判它恒为 truthy → 永远 success。
+                    total = int(res.get("total", 0) or 0)
+                    failed = int(res.get("failed", 0) or 0)
+                    hb.set_status_from_partial(
+                        success_count=total - failed,
+                        total_count=total,
+                        error_hint=f"failed={failed}/{total}" if failed else "",
+                    )
+                    logger.info(
+                        "crashguard repo_sync fired: total=%s ok=%s failed=%s",
+                        res.get("total"), res.get("ok"), res.get("failed"),
+                    )
+            _enqueue_job("repo_sync", _repo_sync_job)
 
     # Phase 1 深度诊断自动触发：对 no-PR + 低置信度 issue 自动跑深度调查
     # 默认每 35 分钟 1 个（Phase 1 最长 30min，留 5min buffer 防重叠）

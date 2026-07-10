@@ -264,6 +264,12 @@ class CrashguardSettings(BaseSettings):
     # 周期 pipeline cron（与早晚报解耦）；默认每 4 小时整点
     pipeline_cron: str = "0 */4 * * *"
 
+    # === 每日仓库同步（保证 crashguard auto-PR 的本地 checkout 不变旧）===
+    # 上线安全策略：默认 False，先用 POST /api/crash/repo-sync/run-now 在测试机手动验证
+    # 行为符合预期，再打开——这是一个会做 git reset --hard、无人值守碰生产仓库的新机制。
+    repo_sync_enabled: bool = False
+    repo_sync_cron: str = "0 3 * * *"
+
     # 「线上最新版本」手动覆盖（按平台），留空则按崩溃数据自动派生
     current_release_flutter: str = ""
     current_release_android: str = ""
@@ -645,6 +651,10 @@ def _yaml_overrides() -> Dict[str, Any]:
         flat["warmup_on_startup"] = bool(cfg["warmup_on_startup"])
     if "pipeline_cron" in cfg:
         flat["pipeline_cron"] = str(cfg["pipeline_cron"])
+    if "repo_sync_enabled" in cfg:
+        flat["repo_sync_enabled"] = bool(cfg["repo_sync_enabled"])
+    if "repo_sync_cron" in cfg:
+        flat["repo_sync_cron"] = str(cfg["repo_sync_cron"])
     if "current_release" in cfg:
         cr = cfg["current_release"] or {}
         if isinstance(cr, dict):

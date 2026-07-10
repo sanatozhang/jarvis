@@ -136,6 +136,21 @@ async def trigger_warmup() -> Dict[str, Any]:
     }
 
 
+@router.post("/repo-sync/run-now")
+async def trigger_repo_sync_now() -> Dict[str, Any]:
+    """立即触发一次仓库同步（不受 repo_sync_enabled 开关限制——手动触发本来就是显式意图）。
+
+    用于上线前在测试机验证行为，不用等到默认的凌晨 3 点。
+    """
+    from app.crashguard.services.repo_sync import run_repo_sync
+
+    try:
+        return await run_repo_sync()
+    except Exception as e:
+        logger.exception("manual repo_sync failed")
+        raise HTTPException(status_code=500, detail=f"repo_sync failed: {e}")
+
+
 @router.get("/auto-pr-queue")
 async def auto_pr_queue() -> Dict[str, Any]:
     """自动 PR 队列状态总览。
