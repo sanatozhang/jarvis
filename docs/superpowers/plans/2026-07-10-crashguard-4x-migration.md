@@ -935,7 +935,21 @@ EOF
 
 ---
 
-### Task 7: 每日仓库同步任务（Section F）
+### Task 7（原版，已废弃——见下方"Task 7（修订版）"）: 每日仓库同步任务（Section F）
+
+> **2026-07-10 实施阶段订正**：本任务原计划已实现并通过 review（commit `654c4ad`），但
+> 实现过程中发现 `app/services/repo_updater.py::repo_update_loop()` 早就是一个已经在
+> `main.py` 启动时注册运行的、独立于 crashguard 的夜间仓库同步机制（2-6点随机窗口，覆盖
+> 全部 platform，用 `workspace_lock` 跨进程文件锁）。原 Task 7 新建的锁（`pr_drafter`
+> 的 `asyncio.Lock`）和这个已有机制完全不通气——不仅原 Task 7 本身与"保鲜 checkout"这个
+> 目的部分重复，更关键的是**这暴露了一个更早就存在的、`pr_drafter` 和 `repo_updater` 之间
+> 从未协调过的竞态**（这不是本次改动引入的，是本次实施排查中发现的）。已 `git revert
+> 654c4ad`，改为下方"Task 7（修订版）"：不新建 repo_sync 任务，而是让 `pr_drafter` 也去
+> 拿 `repo_updater` 已经在用的跨进程文件锁。原 Task 7 的文字内容保留在此处仅供追溯，
+> **不要按这段执行**。
+
+<details>
+<summary>原 Task 7 内容（已废弃，仅供追溯）</summary>
 
 **Files:**
 - Create: `backend/app/crashguard/services/repo_sync.py`
@@ -1278,6 +1292,334 @@ Shares pr_drafter's per-repo lock so it can't race an in-flight PR
 git operation. repo_sync_enabled defaults false — verify via the new
 POST /api/crash/repo-sync/run-now on the test server before enabling
 on prod.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+</details>
+
+---
+
+### Task 7（修订版）: pr_drafter 与 repo_updater 共享跨进程仓库锁
+
+**背景**：`app/services/repo_updater.py::repo_update_loop()`（`main.py:168-169` 启动时注册，
+每天 2-6 点随机窗口跑一次）已经在用 `workspace_lock`（`app/services/mt_runner.py`，基于
+`fcntl.flock` 的跨进程文件锁，锁文件 `$wrapper/.jarvis.lock`）保护它自己的 git 操作。
+但 crashguard 的 `pr_drafter.py` 开自动 PR 时的 git 操作（checkout/commit/push）只用了
+自己进程内的 `asyncio.Lock`（`_acquire_repo_lock`），从来没有和 `repo_updater` 协调过——
+两者可能同时对同一个仓库做 git 操作。
+
+**方向**：不能反过来让 `repo_updater._update_repo` 去拿 `pr_drafter` 的 `asyncio.Lock`——
+`_update_repo` 跑在线程池 executor 里（`repo_update_loop` 用 `run_in_executor` 卸载阻塞的
+`subprocess.run` 调用），`asyncio.Lock` 不是跨线程安全的东西。正确方向是反过来：让
+`pr_drafter` 也去拿 `workspace_lock` 这把已经跨进程/跨线程安全的文件锁。
+
+**关键约束**：`workspace_lock` 的 `__enter__`/`__exit__` 是**阻塞**调用（`fcntl.flock` +
+轮询 sleep，最长等 `timeout_sec`）。`pr_drafter._create_one_draft_pr` 内部混合了同步 git
+子进程调用和真正的 `await session.commit()`（异步 DB 写入）。不能把整个函数塞进
+`asyncio.to_thread`（线程函数里不能 `await`），也不能在 async 函数里直接
+`with workspace_lock(...): await ...`（那样阻塞的 flock 等待会卡住整个事件循环，
+影响其他并发请求）。必须拆成"獲取"和"释放"两个独立的 `to_thread` 调用，中间夹着
+await 的业务逻辑，并且 try/finally 保证异常路径也一定释放。
+
+**Files:**
+- Modify: `backend/app/services/mt_runner.py`（提取 `_flock_acquire`/`_flock_release` 内部
+  helper，供既有的 `workspace_lock`（同步 contextmanager，不变）和新增的
+  `acquire_workspace_lock_async`/`release_workspace_lock_async`（异步安全的獲取/释放对）
+  共用同一套 flock 逻辑，不重复实现）
+- Modify: `backend/app/crashguard/services/pr_drafter.py`（在每个调用 `_create_one_draft_pr`
+  的地方，外面套一层 `acquire_workspace_lock_async`/`release_workspace_lock_async`，
+  key 用 `res.wrapper_path`；`res is None`（老的静态兜底路径）时跳过，不额外加锁，
+  记一条 log 说明原因即可，不阻塞）
+- Test: `backend/tests/services/test_mt_runner.py`（若无此文件则新建，测新增的两个异步函数：
+  正常获取/释放、超时行为、并发两个 asyncio task 争抢同一把锁时后者会等到前者释放）
+- Test: `backend/tests/crashguard/test_pr_drafter.py`（补一个测试：`_create_one_draft_pr` 抛异常
+  时锁依然被释放；可以 mock `acquire_workspace_lock_async`/`release_workspace_lock_async`
+  验证调用顺序和 try/finally 语义，不需要真的碰文件系统）
+
+**Interfaces:**
+- Consumes：`app.services.mt_runner` 现有的 `LOCK_FILENAME`/`DEFAULT_LOCK_TIMEOUT_SEC` 常量。
+- Produces：`mt_runner.acquire_workspace_lock_async(workspace: Path, timeout_sec: int = DEFAULT_LOCK_TIMEOUT_SEC) -> int`
+  （返回打开的 fd）+ `mt_runner.release_workspace_lock_async(fd: int) -> None`，供
+  `pr_drafter.py` 使用；不改变 `workspace_lock` 的既有签名/行为（`repo_updater.py` 和
+  Jenkins release API 两个既有调用方不受影响）。
+
+- [ ] **Step 1: 读 `mt_runner.py` 现状，确认 `workspace_lock` 精确实现**
+
+Run: `sed -n '1,70p' backend/app/services/mt_runner.py`
+
+确认 `LOCK_FILENAME`、`DEFAULT_LOCK_TIMEOUT_SEC` 常量名和 `workspace_lock` 的精确实现
+（本计划撰写时读到的版本见下方 Step 2 代码，若已变化按实际调整逻辑，不要改变
+`workspace_lock` 对外行为）。
+
+- [ ] **Step 2: 提取共享 flock 逻辑，加异步安全的獲取/释放函数**
+
+Edit `backend/app/services/mt_runner.py`，把 `workspace_lock` 内部的 flock 逻辑提取成
+两个私有 helper，`workspace_lock` 本身改成调用它们（外部行为完全不变）：
+
+```python
+def _flock_acquire(lock_path: Path, timeout_sec: int) -> int:
+    """阻塞：打开 lock_path 并排他 flock，超时抛 TimeoutError。返回打开的 fd。"""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    start = _monotonic()
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except (OSError, IOError) as e:
+            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                os.close(fd)
+                raise
+            if _monotonic() - start > timeout_sec:
+                os.close(fd)
+                raise TimeoutError(f"workspace lock not acquired within {timeout_sec}s")
+            _sleep(0.2)
+
+
+def _flock_release(fd: int) -> None:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def workspace_lock(workspace: Path, timeout_sec: int = DEFAULT_LOCK_TIMEOUT_SEC):
+    """Cross-process exclusive lock on `$workspace/.jarvis.lock`.
+
+    Blocks up to `timeout_sec` waiting; raises TimeoutError if not acquired.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    lock_path = workspace / LOCK_FILENAME
+    fd = _flock_acquire(lock_path, timeout_sec)
+    try:
+        yield
+    finally:
+        _flock_release(fd)
+
+
+async def acquire_workspace_lock_async(
+    workspace: Path, timeout_sec: int = DEFAULT_LOCK_TIMEOUT_SEC,
+) -> int:
+    """异步安全的獲取：阻塞的 flock 等待放进线程池跑，不卡事件循环。
+
+    不是 contextmanager——调用方需要在持锁期间跨越 `await` 边界（比如中间要
+    `await` 真正的 git/DB 操作），普通 `with` 的同步 __enter__/__exit__ 做不到
+    这件事还不阻塞事件循环。调用方必须在 try/finally 里配对调用
+    release_workspace_lock_async，即使异常路径也要释放。
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    lock_path = workspace / LOCK_FILENAME
+    return await asyncio.to_thread(_flock_acquire, lock_path, timeout_sec)
+
+
+async def release_workspace_lock_async(fd: int) -> None:
+    await asyncio.to_thread(_flock_release, fd)
+```
+
+需要在文件顶部 import 区确认/补上 `asyncio`（若尚未 import）。`workspace_lock` 对外行为
+必须与改动前完全一致（`repo_updater.py`/release API 两个既有调用方不用改）。
+
+- [ ] **Step 3: 写异步锁的测试**
+
+Create/extend `backend/tests/services/test_mt_runner.py`:
+
+```python
+"""Tests for mt_runner async-safe workspace lock primitives."""
+from __future__ import annotations
+
+import asyncio
+import time
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_acquire_release_roundtrip(tmp_path):
+    from app.services.mt_runner import acquire_workspace_lock_async, release_workspace_lock_async
+
+    fd = await acquire_workspace_lock_async(tmp_path, timeout_sec=5)
+    assert isinstance(fd, int)
+    await release_workspace_lock_async(fd)
+
+
+@pytest.mark.asyncio
+async def test_second_acquire_waits_for_release(tmp_path):
+    """并发两个 task 抢同一把锁：第二个要等第一个释放才能拿到。"""
+    from app.services.mt_runner import acquire_workspace_lock_async, release_workspace_lock_async
+
+    fd1 = await acquire_workspace_lock_async(tmp_path, timeout_sec=5)
+    order: list[str] = []
+
+    async def _second():
+        fd2 = await acquire_workspace_lock_async(tmp_path, timeout_sec=5)
+        order.append("second_acquired")
+        await release_workspace_lock_async(fd2)
+
+    task = asyncio.create_task(_second())
+    await asyncio.sleep(0.3)
+    assert "second_acquired" not in order  # 还没释放，第二个应该还在等
+    order.append("released_first")
+    await release_workspace_lock_async(fd1)
+    await task
+    assert order == ["released_first", "second_acquired"]
+
+
+@pytest.mark.asyncio
+async def test_acquire_times_out_if_never_released(tmp_path):
+    from app.services.mt_runner import acquire_workspace_lock_async
+
+    fd1 = await acquire_workspace_lock_async(tmp_path, timeout_sec=5)
+    try:
+        with pytest.raises(TimeoutError):
+            await acquire_workspace_lock_async(tmp_path, timeout_sec=1)
+    finally:
+        import fcntl
+        import os
+        fcntl.flock(fd1, fcntl.LOCK_UN)
+        os.close(fd1)
+```
+
+（若仓库里没有 `backend/tests/services/` 目录或没配 `pytest-asyncio` 的 `asyncio_mode`，
+先看 `backend/tests/crashguard/` 里现有异步测试怎么标记 `@pytest.mark.asyncio` 或
+`pytest.ini`/`pyproject.toml` 的 `asyncio_mode` 设置，保持一致。）
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `cd backend && pytest tests/services/test_mt_runner.py -v`
+Expected: 3 passed
+
+- [ ] **Step 5: 在 pr_drafter.py 里找到全部 `_create_one_draft_pr` 调用点**
+
+Run: `grep -n "_create_one_draft_pr(" backend/app/crashguard/services/pr_drafter.py`
+
+读每个调用点周围的完整函数上下文，确认：
+1. 这次调用之前，`res`（`_resolve_repo_for_issue` 的返回值，可能是 `None`）在作用域内
+   是否可及，还是需要往上追溯到外层函数参数/局部变量。
+2. 每个调用点是否已经被某个 `async with await _acquire_repo_lock(...)` 包住（比如
+   submodule 分支那处已经有 `sm_lock = await _acquire_repo_lock(sm_abs)`）——新加的
+   workspace 级文件锁是**在已有锁之外再加一层**，不是替换。
+
+如果发现调用点比预期多（比如 `draft_prs_multi` 函数本身也有独立调用路径），全部
+一并处理，不要漏掉任何一个。
+
+- [ ] **Step 6: 给每个调用点套上 workspace 级异步锁**
+
+对每个 `_create_one_draft_pr(...)` 调用点，改成类似（具体变量名按实际上下文调整）：
+
+```python
+            wrapper_path = res.wrapper_path if res is not None else ""
+            if wrapper_path:
+                from pathlib import Path as _Path
+                from app.services.mt_runner import (
+                    acquire_workspace_lock_async, release_workspace_lock_async,
+                )
+                ws_fd = await acquire_workspace_lock_async(_Path(wrapper_path), timeout_sec=120)
+                try:
+                    parent_result, parent_pushed = await _create_one_draft_pr(
+                        cwd=repo_path,
+                        ...  # 其余参数不变
+                    )
+                finally:
+                    await release_workspace_lock_async(ws_fd)
+            else:
+                # res is None（老的静态兜底路径，没有 wrapper 概念）——不额外加锁，
+                # 保持原有行为，记一条 log 说明跳过原因
+                logger.info(
+                    "pr_drafter: no repo_router resolution, skipping workspace-level lock "
+                    "(static fallback path, issue=%s)", ana.datadog_issue_id,
+                )
+                parent_result, parent_pushed = await _create_one_draft_pr(
+                    cwd=repo_path,
+                    ...  # 其余参数不变
+                )
+```
+
+每个调用点重复同样的模式（获取→try 调用→finally 释放，或 res 为 None 时跳过）。
+
+- [ ] **Step 7: 写测试验证异常路径也释放锁**
+
+在 `backend/tests/crashguard/test_pr_drafter.py` 里加一个测试，mock
+`acquire_workspace_lock_async`/`release_workspace_lock_async`（monkeypatch 到
+`app.crashguard.services.pr_drafter` 里被 import 进来的名字，或 patch 源模块
+`app.services.mt_runner` 上的名字，取决于实现是 `from ... import` 还是
+`import ...; mt_runner.acquire_...`——参照 Step 6 实际写法决定 patch 目标），
+验证即便 `_create_one_draft_pr` 抛异常，`release_workspace_lock_async` 依然被调用了一次：
+
+```python
+@pytest.mark.asyncio
+async def test_workspace_lock_released_even_if_create_pr_raises(monkeypatch):
+    from app.crashguard.services import pr_drafter
+
+    acquire_calls = []
+    release_calls = []
+
+    async def fake_acquire(path, timeout_sec=120):
+        acquire_calls.append(path)
+        return 999
+
+    async def fake_release(fd):
+        release_calls.append(fd)
+
+    monkeypatch.setattr(pr_drafter, "acquire_workspace_lock_async", fake_acquire)
+    monkeypatch.setattr(pr_drafter, "release_workspace_lock_async", fake_release)
+
+    async def raising_create_one_draft_pr(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pr_drafter, "_create_one_draft_pr", raising_create_one_draft_pr)
+
+    # 直接测试被 Step 6 改造过的那段代码路径——具体怎么触发到这段代码，
+    # 参照 Step 5/6 实际改动的函数签名来构造最小调用（可能需要先构造一个
+    # 有效的 res/repo_path，或者把 Step 6 的加锁逻辑抽成一个小的可独立测试的
+    # helper 函数，这样测试不需要驱动整个 draft_prs_multi 的所有前置校验）。
+    with pytest.raises(RuntimeError):
+        await pr_drafter._create_one_draft_pr_locked(  # 假设 Step 6 抽出了这样一个 helper；
+            # 若 Step 6 选择不抽 helper 而是内联在每个调用点，这个测试改成
+            # 直接测 Step 2 的 acquire/release 语义（已在 Step 3 覆盖），
+            # 这里改为一个更高层的集成测试或跳过，在报告里说明原因。
+        )
+    assert len(acquire_calls) == 1
+    assert len(release_calls) == 1
+```
+
+**如果 Step 6 内联加锁而不抽 helper 函数**（这是更贴近现有代码风格、改动面更小的做法，
+优先选择），这一步的测试可以改成：验证 Step 3 的 acquire/release 单元测试已经覆盖了
+"try/finally 保证释放"这个语义（`acquire_workspace_lock_async`/`release_workspace_lock_async`
+本身不会抛出让 finally 失效的异常），而 pr_drafter 里的 try/finally 结构本身是 Python
+语言级保证，可以用一个更简单的测试验证：mock `_create_one_draft_pr` 抛异常、mock
+`release_workspace_lock_async`，直接断言无论如何 release 都被调用了一次——不需要真的
+构造一个假的 helper 函数名。写这一步时用实际的 Step 6 实现结构来决定测试怎么写，
+不要生搬硬套上面这段假设了 `_create_one_draft_pr_locked` helper 存在的示例代码。
+
+- [ ] **Step 8: 跑全量测试确认无回归**
+
+Run: `cd backend && pytest tests/crashguard/ tests/services/ -v && lint-imports`
+Expected: all passed（基线 546 + 本任务新增测试数）
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add backend/app/services/mt_runner.py backend/app/crashguard/services/pr_drafter.py backend/tests/services/test_mt_runner.py backend/tests/crashguard/test_pr_drafter.py
+git commit -m "$(cat <<'EOF'
+fix(crashguard): pr_drafter shares repo_updater's cross-process lock
+
+pr_drafter's auto-PR git operations and repo_updater's nightly
+2-6AM repo-sync job (already running via main.py's startup, covering
+all repo_routing platforms) never coordinated — pr_drafter only held
+an in-process asyncio.Lock, repo_updater holds workspace_lock's
+fcntl.flock file lock. They could race on the same working tree.
+
+Extracted workspace_lock's flock mechanics into shared acquire/release
+primitives in mt_runner.py; added an async-safe acquire/release pair
+(not a context manager, since the caller must hold the lock across an
+await boundary that a sync __enter__/__exit__ can't straddle without
+blocking the event loop) for pr_drafter to use around each
+_create_one_draft_pr call, keyed by the resolved wrapper_path.
+workspace_lock's own behavior/signature is unchanged.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
