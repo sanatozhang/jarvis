@@ -1146,6 +1146,7 @@ export interface CrashIssueDetail {
   title: string;
   platform: string;
   service: string;
+  generation?: "native" | "flutter" | "";
   first_seen_at?: string;
   last_seen_at?: string;
   first_seen_version: string;

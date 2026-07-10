@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from pydantic import BaseModel, Field
 
 from app.crashguard.config import get_crashguard_settings
+from app.crashguard.services.version_util import classify_generation
 
 logger = logging.getLogger("crashguard.api")
 
@@ -1191,6 +1192,7 @@ async def get_issue_detail(
         "title": issue.title or "",
         "platform": issue.platform or "",
         "service": issue.service or "",
+        "generation": classify_generation(issue.service or "", issue.last_seen_version or ""),
         "top_os": getattr(issue, "top_os", "") or "",
         "top_device": getattr(issue, "top_device", "") or "",
         "top_app_version": getattr(issue, "top_app_version", "") or "",
