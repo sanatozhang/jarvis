@@ -138,8 +138,10 @@ class CrashguardSettings(BaseSettings):
     # ✅ 2026-06-30 Datadog 实测确认 native 真实 service tag = plaud_android / plaud_ios（下划线，
     #    源头见 4.0 代码 DatadogConfig.{kt:39,swift:22}；native 用独立 type=android/ios RUM app）。
     #    旧值 plaud-native-android/ios 是错的 → Datadog 无此 service → native 崩溃漏拉，勿回退。
+    # ✅ 2026-07-10 追加：native 有 env:production/development 两种 tag，development 是
+    #    内部测试 App 噪声（详见 config.yaml service_filter 旁的核实数据），只放行 production。
     # 空串 = 不注入（debug 兜底）。
-    datadog_service_filter: str = "(service:plaud-flutter OR service:plaud_android OR service:plaud_ios)"
+    datadog_service_filter: str = "(service:plaud-flutter OR (service:plaud_android AND env:production) OR (service:plaud_ios AND env:production))"
     # 搜索 query（event search 语法）。
     # ⚠️ 双路口径（C 路线，对齐 Datadog UI "Crashes" 与 "Errors" 两个独立看板）：
     #   - fatal  → 真崩溃 + ANR + App Hang（App 死/卡）

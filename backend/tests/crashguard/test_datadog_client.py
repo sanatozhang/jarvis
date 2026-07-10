@@ -389,3 +389,33 @@ async def test_top_user_version_skips_empty_version_and_zero_users(monkeypatch):
     client = DatadogClient(api_key="k", app_key="a", site="datadoghq.com")
     out = await client.top_user_version_by_platform(window_hours=24)
     assert out["android"] == {"version": "3.16.0", "users": 10}
+
+
+# ---------------------------------------------------------------------------
+# Service filter injection — env:production whitelist for native platforms
+# ---------------------------------------------------------------------------
+
+
+def test_inject_service_prepends_env_production_filter():
+    """env:production filter 在注入 query 时被正确包含"""
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    client = DatadogClient(
+        api_key="x", app_key="y",
+        service_filter=(
+            "(service:plaud-flutter OR (service:plaud_android AND env:production) "
+            "OR (service:plaud_ios AND env:production))"
+        ),
+    )
+    injected = client._inject_service("@error.is_crash:true")
+    assert "env:production" in injected
+    assert injected.startswith("(service:plaud-flutter")
+    assert injected.endswith("@error.is_crash:true")
+
+
+def test_inject_service_empty_filter_is_debug_escape_hatch():
+    """空的 service_filter 是 debug 逃生口，不注入"""
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    client = DatadogClient(api_key="x", app_key="y", service_filter="")
+    assert client._inject_service("@type:error") == "@type:error"
