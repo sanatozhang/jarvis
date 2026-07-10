@@ -439,6 +439,76 @@ async def test_run_alert_lists_approved_prs_separately(patched_session, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_run_pending_review_alert_tags_generation(monkeypatch, patched_session):
+    """待审核 PR 列表里每条应该带 generation 字段（反查 CrashIssue.service 分类）。"""
+    from app.crashguard.models import CrashIssue, CrashPullRequest
+    from app.crashguard.services.pr_pending_review_alert import (
+        _build_generation_lookup,
+        run_pending_review_alert,
+    )
+
+    _make_settings(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.feishu_cli.send_interactive_card",
+        AsyncMock(return_value=True),
+    )
+
+    async with patched_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="native-1", platform="ANDROID", service="plaud_android",
+            last_seen_version="4.0.100", title="native crash", stack_fingerprint="fp1",
+        ))
+        session.add(CrashIssue(
+            datadog_issue_id="flutter-1", platform="ANDROID", service="plaud-flutter",
+            last_seen_version="3.20.0", title="flutter crash", stack_fingerprint="fp2",
+        ))
+        session.add(CrashPullRequest(
+            analysis_id=1, datadog_issue_id="native-1", repo="plaud-native-android",
+            pr_url="https://github.com/x/y/pull/1", pr_number=1, pr_status="draft",
+        ))
+        session.add(CrashPullRequest(
+            analysis_id=2, datadog_issue_id="flutter-1", repo="plaud-android",
+            pr_url="https://github.com/x/y/pull/2", pr_number=2, pr_status="draft",
+        ))
+        await session.commit()
+
+    result = await run_pending_review_alert()
+    assert result["sent"] is True
+    assert result["pending_count"] == 2
+
+    from sqlalchemy import select as _select
+    async with patched_session() as session:
+        stmt = _select(CrashPullRequest)
+        rows = (await session.execute(stmt)).scalars().all()
+        gen_map = await _build_generation_lookup(session, [r.datadog_issue_id for r in rows])
+    assert gen_map["native-1"] == "native"
+    assert gen_map["flutter-1"] == "flutter"
+
+
+def test_build_pending_review_card_sorts_native_first_and_shows_badge():
+    """当前积压清单里 native (4.0) PR 应排在 flutter (3.x) 前面，且带 🆕4.0 角标。"""
+    from app.crashguard.services.pr_pending_review_alert import build_pending_review_card
+
+    prs = [
+        {"pr_url": "u1", "pr_number": 1, "repo": "same-repo", "pr_status": "draft",
+         "reviewer_emails": [], "age_days": 1, "generation": "flutter"},
+        {"pr_url": "u2", "pr_number": 2, "repo": "same-repo", "pr_status": "draft",
+         "reviewer_emails": [], "age_days": 0, "generation": "native"},
+    ]
+    card = build_pending_review_card(prs, stats={})
+    # 找到「当前积压」清单区块，确认 native (#2) 的行在 flutter (#1) 之前
+    all_text = "\n".join(
+        el.get("text", {}).get("content", "")
+        for el in card["elements"] if el.get("tag") == "div"
+    )
+    idx_native = all_text.find("#2")
+    idx_flutter = all_text.find("#1")
+    assert idx_native != -1 and idx_flutter != -1
+    assert idx_native < idx_flutter
+    assert "🆕4.0" in all_text
+
+
+@pytest.mark.asyncio
 async def test_run_alert_send_failure_returns_reason(patched_session, monkeypatch):
     from app.crashguard.services.pr_pending_review_alert import run_pending_review_alert
     from app.crashguard.models import CrashPullRequest

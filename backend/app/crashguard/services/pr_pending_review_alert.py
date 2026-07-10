@@ -21,6 +21,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List
 
+from app.crashguard.services.version_util import GEN_BADGE, classify_generation
+
 logger = logging.getLogger("crashguard.pr_pending_review_alert")
 
 
@@ -61,6 +63,28 @@ def _age_days(created_at: datetime) -> int:
     """从 created_at 到 now 的天数（向下取整）。"""
     delta = datetime.utcnow() - created_at
     return max(0, delta.days)
+
+
+async def _build_generation_lookup(session, issue_ids: List[str]) -> Dict[str, str]:
+    """批量反查 CrashIssue.service/last_seen_version，分类每个 issue_id 的代际。
+
+    CrashPullRequest 本身不存 service/version（只有 repo_router 的 logical_name），
+    要判代际必须反查 CrashIssue。空 issue_ids 直接返回空 dict（避免空 IN() 查询）。
+    """
+    from app.crashguard.models import CrashIssue
+    from sqlalchemy import select
+
+    ids = [i for i in set(issue_ids) if i]
+    if not ids:
+        return {}
+    stmt = select(
+        CrashIssue.datadog_issue_id, CrashIssue.service, CrashIssue.last_seen_version,
+    ).where(CrashIssue.datadog_issue_id.in_(ids))
+    rows = (await session.execute(stmt)).all()
+    return {
+        iid: classify_generation(svc or "", ver or "")
+        for iid, svc, ver in rows
+    }
 
 
 def build_pending_review_card(
@@ -161,11 +185,19 @@ def build_pending_review_card(
         for p in prs_in:
             by_repo_local.setdefault(p.get("repo") or "unknown", []).append(p)
         for r in sorted(by_repo_local.keys()):
-            repo_prs = sorted(by_repo_local[r], key=lambda x: -x.get("age_days", 0))
+            repo_prs = sorted(
+                by_repo_local[r],
+                key=lambda x: (
+                    0 if x.get("generation") == "native" else 1,
+                    -x.get("age_days", 0),
+                ),
+            )
             lines = [f"\n**📦 {r} ({len(repo_prs)} 条)**"]
             for p in repo_prs:
+                gb = GEN_BADGE.get(p.get("generation", ""), "")
+                gb_str = f" {gb}" if gb else ""
                 lines.append(
-                    f"{emoji} [#{p.get('pr_number')}]({p.get('pr_url')}) · {suffix_fn(p)}"
+                    f"{emoji} [#{p.get('pr_number')}]({p.get('pr_url')}){gb_str} · {suffix_fn(p)}"
                 )
             blocks.append({"tag": "div", "text": {
                 "tag": "lark_md",
@@ -218,7 +250,13 @@ def build_pending_review_card(
     }})
 
     for repo in sorted(by_repo.keys()):
-        repo_prs = sorted(by_repo[repo], key=lambda x: -x.get("age_days", 0))
+        repo_prs = sorted(
+            by_repo[repo],
+            key=lambda x: (
+                0 if x.get("generation") == "native" else 1,
+                -x.get("age_days", 0),
+            ),
+        )
         lines = [f"\n**📦 {repo} ({len(repo_prs)} 条)**"]
         for p in repo_prs:
             revs = p.get("reviewer_emails") or []
@@ -228,8 +266,10 @@ def build_pending_review_card(
             age = p.get("age_days", 0)
             age_str = f"{age}天" if age > 0 else "今天"
             status_emoji = "📝" if p.get("pr_status") == "draft" else "🔵"
+            gb = GEN_BADGE.get(p.get("generation", ""), "")
+            gb_str = f" {gb}" if gb else ""
             lines.append(
-                f"{status_emoji} [#{p.get('pr_number')}]({p.get('pr_url')}) "
+                f"{status_emoji} [#{p.get('pr_number')}]({p.get('pr_url')}){gb_str} "
                 f"· {age_str} · reviewer: {rev_short}"
             )
         blocks.append({"tag": "div", "text": {
@@ -359,6 +399,15 @@ async def run_pending_review_alert() -> Dict:
             "yesterday_closed": len(breakdown["closed"]),
             "yesterday_created": len(breakdown["created"]),
         }
+        # 反查代际（4.0 native / 3.x flutter），供卡片角标 + 排序用
+        all_issue_ids = (
+            [r.datadog_issue_id for r in rows]
+            + [r.datadog_issue_id for r in approved_rows]
+            + [r.datadog_issue_id for r in breakdown["merged"]]
+            + [r.datadog_issue_id for r in breakdown["closed"]]
+            + [r.datadog_issue_id for r in breakdown["created"]]
+        )
+        gen_map = await _build_generation_lookup(session, all_issue_ids)
 
     total_pending = len(rows)
     total_approved = len(approved_rows)
@@ -373,7 +422,7 @@ async def run_pending_review_alert() -> Dict:
             "sent": False, "skip_reason": "no_pending_no_activity",
         }
 
-    def _row_to_dict(r) -> Dict:
+    def _row_to_dict(r, generation: str = "") -> Dict:
         # 优先用 GitHub 实际 reviewer（pr_sync 回写的 gh_reviewers），它覆盖手动/自动/
         # 兜底加的所有 reviewer；为空再退回 app blame 流程写的 reviewer_emails。
         revs = []
@@ -393,13 +442,14 @@ async def run_pending_review_alert() -> Dict:
             "pr_status": r.pr_status or "",
             "reviewer_emails": revs,
             "age_days": _age_days(r.created_at) if r.created_at else 0,
+            "generation": generation,
         }
 
-    prs = [_row_to_dict(r) for r in rows]
-    approved_prs = [_row_to_dict(r) for r in approved_rows]
-    yesterday_merged_prs = [_row_to_dict(r) for r in breakdown["merged"]]
-    yesterday_closed_prs = [_row_to_dict(r) for r in breakdown["closed"]]
-    yesterday_created_prs = [_row_to_dict(r) for r in breakdown["created"]]
+    prs = [_row_to_dict(r, gen_map.get(r.datadog_issue_id, "")) for r in rows]
+    approved_prs = [_row_to_dict(r, gen_map.get(r.datadog_issue_id, "")) for r in approved_rows]
+    yesterday_merged_prs = [_row_to_dict(r, gen_map.get(r.datadog_issue_id, "")) for r in breakdown["merged"]]
+    yesterday_closed_prs = [_row_to_dict(r, gen_map.get(r.datadog_issue_id, "")) for r in breakdown["closed"]]
+    yesterday_created_prs = [_row_to_dict(r, gen_map.get(r.datadog_issue_id, "")) for r in breakdown["created"]]
 
     card = build_pending_review_card(
         prs,
