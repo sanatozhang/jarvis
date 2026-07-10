@@ -47,6 +47,9 @@ _FLUTTER_SERVICES = {"plaud-flutter"}
 # 若产品调整切换线，repo_routing config 的 band min_version 与此处需同步。
 _NATIVE_MIN_VERSION = (4, 0, 0)
 
+# 代际 badge（行内标注 4.0 native vs 3.x flutter）——daily_report / pr_pending_review_alert 共用。
+GEN_BADGE = {"native": "🆕4.0", "flutter": "🦋3.x"}
+
 
 def classify_generation(service: str = "", version: str = "") -> str:
     """判定崩溃"代际"：'native'（4.0 原生新仓）/ 'flutter'（3.x 旧仓）/ ''（未知）。

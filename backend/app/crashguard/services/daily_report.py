@@ -33,13 +33,10 @@ from app.crashguard.models import (
     CrashIssue,
     CrashSnapshot,
 )
-from app.crashguard.services.version_util import classify_generation
+from app.crashguard.services.version_util import GEN_BADGE, classify_generation
 from app.db.database import get_session
 
 logger = logging.getLogger("crashguard.daily_report")
-
-# 代际 badge（行内标注 4.0 native vs 3.x flutter）
-_GEN_BADGE = {"native": "🆕4.0", "flutter": "🦋3.x"}
 
 
 def _generation_of(issue: CrashIssue) -> str:
@@ -54,7 +51,7 @@ def _gen_badge_str(issue: Optional[CrashIssue]) -> str:
     """行内代际 badge（前置空格）：' 🆕4.0' / ' 🦋3.x' / ''。issue 为空返回 ''。"""
     if issue is None:
         return ""
-    b = _GEN_BADGE.get(_generation_of(issue), "")
+    b = GEN_BADGE.get(_generation_of(issue), "")
     return f" {b}" if b else ""
 
 # fire-and-forget 后台任务强引用集合——防止 asyncio.create_task 返回值丢失被 GC 回收

@@ -276,3 +276,10 @@ async def test_derive_top_user_version_case_insensitive_platform(patched_session
         await s.commit()
         out = await derive_top_user_version_from_crashes(s, platform="android")
     assert out == {"version": "3.17.0", "users": 1234}
+
+
+def test_gen_badge_has_native_and_flutter_entries():
+    from app.crashguard.services.version_util import GEN_BADGE
+
+    assert GEN_BADGE["native"] == "🆕4.0"
+    assert GEN_BADGE["flutter"] == "🦋3.x"
