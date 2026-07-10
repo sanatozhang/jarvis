@@ -935,7 +935,7 @@ EOF
 
 ---
 
-### Task 7（原版，已废弃——见下方"Task 7（修订版）"）: 每日仓库同步任务（Section F）
+### [废弃草案，非 Task] 每日仓库同步任务（Section F，已被下方"Task 7（修订版）"取代）
 
 > **2026-07-10 实施阶段订正**：本任务原计划已实现并通过 review（commit `654c4ad`），但
 > 实现过程中发现 `app/services/repo_updater.py::repo_update_loop()` 早就是一个已经在
