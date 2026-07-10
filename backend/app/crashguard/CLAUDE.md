@@ -17,7 +17,7 @@
 5. ❌ SQL join 到非 `crash_*` 表（`issues` / `tasks` / `feedbacks` 等）
 6. ❌ 把 crashguard 字段塞进 jarvis 全局配置（独立的 `crashguard:` 段）
 
-### 允许的对外耦合点（仅这 5 个）
+### 允许的对外耦合点（仅这 6 个）
 
 | 函数 | 用途 |
 |------|------|
@@ -26,6 +26,7 @@
 | `app.services.agent_orchestrator.run_agent` | agent 调度 |
 | `app.db.database.get_session` | 共用 connection pool |
 | `app.services.repo_router.resolve` | 按 (platform, version) 解析源码/PR/符号化目标仓（Flutter→native 版本切换，2026-06-26）|
+| `app.services.mt_runner.acquire_workspace_lock_async` / `release_workspace_lock_async` | 跨进程仓库文件锁（`$wrapper/.jarvis.lock`），让 `pr_drafter` 的 git 操作与 `app.services.repo_updater` 的夜间同步任务协调，避免同一仓库并发 git 操作打架（2026-07-10）|
 
 ### 防腐机制（违反硬阻断）
 
