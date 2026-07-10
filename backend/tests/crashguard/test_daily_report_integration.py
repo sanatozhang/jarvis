@@ -1,7 +1,7 @@
 """端到端集成测试：seed crash_issues / crash_snapshots → compose_report → 验证输出"""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -234,3 +234,186 @@ async def test_no_native_section_when_all_flutter(patched_session):
         text, _ = await daily_report.compose_report("morning", target, top_n=5)
 
     assert "## 🆕 4.0 Native 崩溃" not in text, "无 native 崩溃不该出 native 段"
+
+
+# ── Section B 混合列表 4.0 排序权重（native-first tie-break）────────
+async def _seed_news_tie_pair(factory, target_date: date):
+    """seed 一对同 events 的新增(is_new_in_version=True) issue：1 flutter + 1 native"""
+    from app.crashguard.models import CrashIssue, CrashSnapshot
+
+    issues = [
+        CrashIssue(
+            datadog_issue_id="and-flutter-tie", title="Flutter tie crash",
+            platform="Android", top_os="Android 13 (80%)", service="plaud-flutter",
+            first_seen_version="3.20.0", last_seen_version="3.20.0",
+            top_app_version="3.20.0 (80%)", status="open", total_users_affected=40,
+        ),
+        CrashIssue(
+            datadog_issue_id="and-native-tie", title="Native tie crash",
+            platform="Android", top_os="Android 14 (80%)", service="plaud_android",
+            first_seen_version="4.0.0", last_seen_version="4.0.100",
+            top_app_version="4.0.100 (90%)", status="open", total_users_affected=40,
+        ),
+    ]
+    snaps = [
+        CrashSnapshot(datadog_issue_id="and-flutter-tie", snapshot_date=target_date,
+                      events_count=200, sessions_affected=150, users_affected=40,
+                      crash_free_impact_score=90.0, is_new_in_version=True),
+        CrashSnapshot(datadog_issue_id="and-native-tie", snapshot_date=target_date,
+                      events_count=200, sessions_affected=150, users_affected=40,
+                      crash_free_impact_score=90.0, is_new_in_version=True),
+    ]
+    async with factory() as session:
+        for it in issues:
+            session.add(it)
+        for sn in snaps:
+            session.add(sn)
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_fatal_news_native_before_flutter_at_same_events(patched_session):
+    """✨ 今日关注点 → 🆕 新增：同 events 数值下，4.0 native 应排在 3.x flutter 前面"""
+    target = date(2026, 4, 29)
+    await _seed_news_tie_pair(patched_session, target)
+
+    from app.crashguard.services import daily_report
+    with patch.object(daily_report, "get_crashguard_settings", return_value=_make_settings()):
+        text, _ = await daily_report.compose_report("morning", target, top_n=5)
+
+    attn_idx = text.find("## ✨ 今日关注点")
+    assert attn_idx > 0, f"今日关注点段缺失:\n{text[:600]}"
+    section = text[attn_idx:]
+    native_idx = section.find("Native tie crash")
+    flutter_idx = section.find("Flutter tie crash")
+    assert native_idx > 0 and flutter_idx > 0, (
+        f"两条 tie 记录都应出现在 🆕 新增 列表:\n{section[:800]}"
+    )
+    assert native_idx < flutter_idx, "同 events 下 4.0 native 应排在 3.x flutter 前面"
+
+
+async def _seed_surge_tie_pair(factory, target_date: date):
+    """seed 一对同 events/同 delta 的突增 issue（非新增）：1 flutter + 1 native
+
+    today=1500 vs baseline(7天前)=1000 → delta=+50%（>= surge 阈值 10%，
+    baseline=1000 >= daily_baseline_min_events_for_pct 默认 500，不落"基数小"兜底）。
+    """
+    from app.crashguard.models import CrashIssue, CrashSnapshot
+
+    baseline_date = target_date - timedelta(days=7)
+    issues = [
+        CrashIssue(
+            datadog_issue_id="and-flutter-surge-tie", title="Flutter surge tie crash",
+            platform="Android", top_os="Android 13 (80%)", service="plaud-flutter",
+            first_seen_version="3.20.0", last_seen_version="3.20.0",
+            top_app_version="3.20.0 (80%)", status="open", total_users_affected=200,
+        ),
+        CrashIssue(
+            datadog_issue_id="and-native-surge-tie", title="Native surge tie crash",
+            platform="Android", top_os="Android 14 (80%)", service="plaud_android",
+            first_seen_version="4.0.0", last_seen_version="4.0.100",
+            top_app_version="4.0.100 (90%)", status="open", total_users_affected=200,
+        ),
+    ]
+    snaps = [
+        CrashSnapshot(datadog_issue_id="and-flutter-surge-tie", snapshot_date=target_date,
+                      events_count=1500, sessions_affected=1000, users_affected=200,
+                      crash_free_impact_score=90.0),
+        CrashSnapshot(datadog_issue_id="and-native-surge-tie", snapshot_date=target_date,
+                      events_count=1500, sessions_affected=1000, users_affected=200,
+                      crash_free_impact_score=90.0),
+        CrashSnapshot(datadog_issue_id="and-flutter-surge-tie", snapshot_date=baseline_date,
+                      events_count=1000, sessions_affected=700, users_affected=150),
+        CrashSnapshot(datadog_issue_id="and-native-surge-tie", snapshot_date=baseline_date,
+                      events_count=1000, sessions_affected=700, users_affected=150),
+    ]
+    async with factory() as session:
+        for it in issues:
+            session.add(it)
+        for sn in snaps:
+            session.add(sn)
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_fatal_surges_native_before_flutter_at_same_delta(patched_session):
+    """✨ 今日关注点 → 📈 突增：同 delta 数值下，4.0 native 应排在 3.x flutter 前面"""
+    target = date(2026, 4, 29)
+    await _seed_surge_tie_pair(patched_session, target)
+
+    from app.crashguard.services import daily_report
+    with patch.object(daily_report, "get_crashguard_settings", return_value=_make_settings()):
+        text, _ = await daily_report.compose_report("morning", target, top_n=5)
+
+    attn_idx = text.find("## ✨ 今日关注点")
+    assert attn_idx > 0, f"今日关注点段缺失:\n{text[:600]}"
+    section = text[attn_idx:]
+    native_idx = section.find("Native surge tie crash")
+    flutter_idx = section.find("Flutter surge tie crash")
+    assert native_idx > 0 and flutter_idx > 0, (
+        f"两条 tie 记录都应出现在 📈 突增 列表:\n{section[:1000]}"
+    )
+    assert native_idx < flutter_idx, "同 delta 下 4.0 native 应排在 3.x flutter 前面"
+
+
+async def _seed_drop_tie_pair(factory, target_date: date):
+    """seed 一对同 events/同 delta 的下降 issue：1 flutter + 1 native
+
+    today=100 vs baseline(7天前)=1000 → delta=-90%（<= drop 阈值 -10%）。
+    """
+    from app.crashguard.models import CrashIssue, CrashSnapshot
+
+    baseline_date = target_date - timedelta(days=7)
+    issues = [
+        CrashIssue(
+            datadog_issue_id="and-flutter-drop-tie", title="Flutter drop tie crash",
+            platform="Android", top_os="Android 13 (80%)", service="plaud-flutter",
+            first_seen_version="3.20.0", last_seen_version="3.20.0",
+            top_app_version="3.20.0 (80%)", status="open", total_users_affected=20,
+        ),
+        CrashIssue(
+            datadog_issue_id="and-native-drop-tie", title="Native drop tie crash",
+            platform="Android", top_os="Android 14 (80%)", service="plaud_android",
+            first_seen_version="4.0.0", last_seen_version="4.0.100",
+            top_app_version="4.0.100 (90%)", status="open", total_users_affected=20,
+        ),
+    ]
+    snaps = [
+        CrashSnapshot(datadog_issue_id="and-flutter-drop-tie", snapshot_date=target_date,
+                      events_count=100, sessions_affected=70, users_affected=20,
+                      crash_free_impact_score=10.0),
+        CrashSnapshot(datadog_issue_id="and-native-drop-tie", snapshot_date=target_date,
+                      events_count=100, sessions_affected=70, users_affected=20,
+                      crash_free_impact_score=10.0),
+        CrashSnapshot(datadog_issue_id="and-flutter-drop-tie", snapshot_date=baseline_date,
+                      events_count=1000, sessions_affected=700, users_affected=150),
+        CrashSnapshot(datadog_issue_id="and-native-drop-tie", snapshot_date=baseline_date,
+                      events_count=1000, sessions_affected=700, users_affected=150),
+    ]
+    async with factory() as session:
+        for it in issues:
+            session.add(it)
+        for sn in snaps:
+            session.add(sn)
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_fatal_drops_native_before_flutter_at_same_delta(patched_session):
+    """✨ 今日关注点 → 📉 下降：同 delta 数值下，4.0 native 应排在 3.x flutter 前面"""
+    target = date(2026, 4, 29)
+    await _seed_drop_tie_pair(patched_session, target)
+
+    from app.crashguard.services import daily_report
+    with patch.object(daily_report, "get_crashguard_settings", return_value=_make_settings()):
+        text, _ = await daily_report.compose_report("morning", target, top_n=5)
+
+    attn_idx = text.find("## ✨ 今日关注点")
+    assert attn_idx > 0, f"今日关注点段缺失:\n{text[:600]}"
+    section = text[attn_idx:]
+    native_idx = section.find("Native drop tie crash")
+    flutter_idx = section.find("Flutter drop tie crash")
+    assert native_idx > 0 and flutter_idx > 0, (
+        f"两条 tie 记录都应出现在 📉 下降 列表:\n{section[:1000]}"
+    )
+    assert native_idx < flutter_idx, "同 delta 下 4.0 native 应排在 3.x flutter 前面"

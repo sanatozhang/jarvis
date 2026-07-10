@@ -39,8 +39,8 @@ from app.db.database import get_session
 logger = logging.getLogger("crashguard.daily_report")
 
 
-def _generation_of(issue: CrashIssue) -> str:
-    """issue 代际：'native' / 'flutter' / ''（service 为主，version 兜底）。"""
+def _generation_of(issue: Optional[CrashIssue]) -> str:
+    """issue 代际：'native' / 'flutter' / ''（service 为主，version 兜底）。issue 为空返回 ''。"""
     return classify_generation(
         getattr(issue, "service", "") or "",
         getattr(issue, "last_seen_version", "") or "",
@@ -1525,7 +1525,13 @@ async def compose_report(
         if fatal_news:
             attn_lines.append("")
             attn_lines.append(f"### 🆕 新增 ({len(fatal_news)} 项)")
-            for item in sorted(fatal_news, key=lambda x: -x["events"])[:5]:
+            for item in sorted(
+                fatal_news,
+                key=lambda x: (
+                    0 if _generation_of(id_to_issue.get(x["issue_id"])) == "native" else 1,
+                    -x["events"],
+                ),
+            )[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
                 gb = _gen_badge_str(id_to_issue.get(item["issue_id"]))
@@ -1536,7 +1542,13 @@ async def compose_report(
         if fatal_surges:
             attn_lines.append("")
             attn_lines.append(f"### 📈 突增 (>= +10% vs 上周同时段, {len(fatal_surges)} 项)")
-            for item in sorted(fatal_surges, key=lambda x: -(x["delta"] or 0))[:5]:
+            for item in sorted(
+                fatal_surges,
+                key=lambda x: (
+                    0 if _generation_of(id_to_issue.get(x["issue_id"])) == "native" else 1,
+                    -(x["delta"] or 0),
+                ),
+            )[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
                 d = item["delta"]
@@ -1549,7 +1561,13 @@ async def compose_report(
         if fatal_drops:
             attn_lines.append("")
             attn_lines.append(f"### 📉 下降 (<= -10% vs 上周同时段, {len(fatal_drops)} 项)")
-            for item in sorted(fatal_drops, key=lambda x: x["delta"] or 0)[:5]:
+            for item in sorted(
+                fatal_drops,
+                key=lambda x: (
+                    0 if _generation_of(id_to_issue.get(x["issue_id"])) == "native" else 1,
+                    x["delta"] or 0,
+                ),
+            )[:5]:
                 url = _frontend_issue_url(item["issue_id"])
                 title_short = item["title"][:70]
                 d = item["delta"]
