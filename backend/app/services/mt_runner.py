@@ -37,35 +37,89 @@ class MtRunnerError(RuntimeError):
         self.returncode = returncode
 
 
+def _flock_acquire(lock_path: Path, timeout_sec: int) -> int:
+    """Blocking: open `lock_path` and take an exclusive flock, spinning with
+    sleep until acquired or `timeout_sec` elapses. Returns the open fd.
+
+    Raises TimeoutError on timeout. On any error the fd is closed before the
+    exception propagates, so callers never leak the descriptor. This is the
+    single source of truth for the flock mechanics shared by the sync
+    `workspace_lock` contextmanager and the async acquire/release pair — do
+    NOT duplicate this logic.
+
+    MUST be called from a worker thread (directly, or via `workspace_lock`
+    inside `run_in_executor`; via `asyncio.to_thread` for the async path) —
+    the poll loop is blocking and would freeze the event loop if awaited
+    inline.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    # Spin with sleep — fcntl.flock has no native timeout. We poll every
+    # 0.2s up to `timeout_sec`.
+    start = _monotonic()
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except (OSError, IOError) as e:
+            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                os.close(fd)
+                raise
+            if _monotonic() - start > timeout_sec:
+                os.close(fd)
+                raise TimeoutError(f"workspace lock not acquired within {timeout_sec}s")
+            _sleep(0.2)
+
+
+def _flock_release(fd: int) -> None:
+    """Release the flock and close the fd. Closing is guaranteed even if the
+    unlock raises, so the descriptor is never leaked."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 @contextlib.contextmanager
 def workspace_lock(workspace: Path, timeout_sec: int = DEFAULT_LOCK_TIMEOUT_SEC):
     """Cross-process exclusive lock on `$workspace/.jarvis.lock`.
 
     Blocks up to `timeout_sec` waiting; raises TimeoutError if not acquired.
+    Sync context (called from to_thread / run_in_executor). External behavior
+    unchanged — this now delegates to the shared `_flock_acquire`/`_flock_release`.
     """
     workspace.mkdir(parents=True, exist_ok=True)
     lock_path = workspace / LOCK_FILENAME
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = _flock_acquire(lock_path, timeout_sec)
     try:
-        # Spin with sleep — fcntl.flock has no native timeout. We poll every
-        # 0.2s up to `timeout_sec`. Sync context (called from to_thread).
-        start = _monotonic()
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except (OSError, IOError) as e:
-                if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
-                    raise
-                if _monotonic() - start > timeout_sec:
-                    raise TimeoutError(f"workspace lock not acquired within {timeout_sec}s")
-                _sleep(0.2)
         yield
     finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+        _flock_release(fd)
+
+
+async def acquire_workspace_lock_async(
+    workspace: Path, timeout_sec: int = DEFAULT_LOCK_TIMEOUT_SEC,
+) -> int:
+    """Async-safe acquire of the `$workspace/.jarvis.lock` file lock.
+
+    The blocking flock spin runs in a worker thread (`asyncio.to_thread`) so
+    the event loop is never frozen while waiting. Returns the open fd.
+
+    NOT a contextmanager: the caller needs to hold the lock across an `await`
+    boundary (e.g. an async git/DB operation between acquire and release),
+    which a sync `with`'s __enter__/__exit__ cannot do without blocking the
+    loop. The caller MUST pair this with `release_workspace_lock_async` in a
+    `try/finally` so the lock is released on every exit path — a leaked lock
+    would block BOTH pr_drafter and repo_updater in production.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    lock_path = workspace / LOCK_FILENAME
+    return await asyncio.to_thread(_flock_acquire, lock_path, timeout_sec)
+
+
+async def release_workspace_lock_async(fd: int) -> None:
+    """Async-safe release of a fd returned by `acquire_workspace_lock_async`."""
+    await asyncio.to_thread(_flock_release, fd)
 
 
 def _monotonic() -> float:

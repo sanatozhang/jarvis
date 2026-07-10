@@ -27,6 +27,10 @@ from app.crashguard.models import CrashAnalysis, CrashIssue, CrashPullRequest
 from app.config import get_repo_routing
 from app.db.database import get_session
 from app.services import repo_router
+from app.services.mt_runner import (
+    acquire_workspace_lock_async,
+    release_workspace_lock_async,
+)
 
 logger = logging.getLogger("crashguard.pr_drafter")
 
@@ -45,6 +49,46 @@ async def _acquire_repo_lock(repo_path: str) -> asyncio.Lock:
             lock = asyncio.Lock()
             _repo_locks[repo_path] = lock
         return lock
+
+
+# Workspace-level cross-process file lock timeout (seconds). Matches
+# repo_updater's `workspace_lock(path, timeout_sec=120)` so both sides wait
+# the same bounded window before giving up.
+_WORKSPACE_LOCK_TIMEOUT_SEC = 120
+
+
+async def _with_workspace_lock(wrapper_path: str, coro_factory, *, issue_id: str = ""):
+    """Run `coro_factory()` while holding the cross-process workspace file lock.
+
+    The lock is `$wrapper_path/.jarvis.lock` — the SAME lock `repo_updater`'s
+    nightly 2-6AM git sync holds (`app.services.mt_runner.workspace_lock`), so
+    pr_drafter's checkout/commit/push can't race repo_updater on the shared
+    working tree. It sits ON TOP of the caller's in-process `_acquire_repo_lock`
+    asyncio.Lock (which only guards this process); this file lock crosses the
+    thread boundary to repo_updater's `run_in_executor` git ops.
+
+    `wrapper_path == ""` means repo_router produced no resolution (old static
+    fallback path, which has no wrapper concept) — skip the lock, log why, and
+    just run, preserving legacy behavior without blocking.
+
+    The blocking flock wait always goes through `acquire_workspace_lock_async`
+    (asyncio.to_thread), never inline, so the event loop is never frozen. The
+    lock is released on EVERY exit path — normal return, early error-dict
+    return by the caller, or exception — via this single try/finally.
+    """
+    if not wrapper_path:
+        logger.info(
+            "pr_drafter: no repo_router wrapper_path; skipping workspace-level "
+            "lock (static fallback path, issue=%s)", issue_id,
+        )
+        return await coro_factory()
+    ws_fd = await acquire_workspace_lock_async(
+        Path(wrapper_path), timeout_sec=_WORKSPACE_LOCK_TIMEOUT_SEC,
+    )
+    try:
+        return await coro_factory()
+    finally:
+        await release_workspace_lock_async(ws_fd)
 
 
 # ─── Task 5: version-aware repo resolution + flutter family gate ──────────────
@@ -1703,8 +1747,22 @@ async def draft_pr_for_analysis(
 
     platform = (issue.platform or "").lower()
     github_slug = ""  # derived from res.github_repo when using repo_router path
+    # Workspace root for the cross-process file lock shared with repo_updater
+    # (keyed by repo_router's wrapper_path). "" → no repo_router resolution →
+    # skip the workspace-level lock (see the _create_one_draft_pr call sites).
+    wrapper_path = ""
     if repo_override:
         repo_logical, repo_path = repo_override
+        # repo_override comes from draft_prs_multi's candidate loop and carries
+        # no RepoResolution. Re-resolve (repo_router.resolve is pure / side-
+        # effect-free) purely to recover the wrapper_path for the workspace
+        # lock — all candidate sub-repos live under the same monorepo wrapper,
+        # so locking it serialises correctly against repo_updater's nightly
+        # sync. Does NOT touch github_slug: the repo_override path keeps its
+        # existing "" default (unchanged behavior).
+        _ov_res = _resolve_repo_for_issue(platform, _sample_version(issue))
+        if _ov_res is not None:
+            wrapper_path = _ov_res.wrapper_path
     else:
         # Version-aware repo selection via repo_router (Goal 1 + Goal 3)
         sample_version = _sample_version(issue)
@@ -1722,6 +1780,7 @@ async def draft_pr_for_analysis(
             repo_path = res.sub_repo_path
             repo_logical = res.logical_name
             github_slug = res.github_repo  # used for gh --repo calls below
+            wrapper_path = res.wrapper_path
     if not repo_path or not Path(repo_path).exists():
         return {"ok": False, "error": f"repo_path not configured/found for platform={platform} repo={repo_logical}"}
 
@@ -2247,18 +2306,25 @@ async def draft_pr_for_analysis(
             # 避免 git add -A 把 submodule pointer 残留扫进 commit（PR #209 教训：
             # nicebuildSDK pointer 改动被当 parent file 上车，reviewer 困惑）
             parent_files_arg = parent_files
-            parent_result, parent_pushed = await _create_one_draft_pr(
-                cwd=repo_path,
-                branch=branch,
-                files_to_add=parent_files_arg,
-                commit_message=_build_commit_msg(issue, ana, impl_source, parent_files),
-                pr_title=pr_title,
-                pr_body=pr_body,
-                analysis_id=analysis_id,
-                repo_logical=repo_logical or platform,
-                approver=approver,
-                change_kind="parent",
-                prep_branch=False,
+            # Workspace-level cross-process lock (coordinates with repo_updater's
+            # nightly git sync) around the parent repo git ops. Released on every
+            # exit path incl. the `not ok → return` below.
+            parent_result, parent_pushed = await _with_workspace_lock(
+                wrapper_path,
+                lambda: _create_one_draft_pr(
+                    cwd=repo_path,
+                    branch=branch,
+                    files_to_add=parent_files_arg,
+                    commit_message=_build_commit_msg(issue, ana, impl_source, parent_files),
+                    pr_title=pr_title,
+                    pr_body=pr_body,
+                    analysis_id=analysis_id,
+                    repo_logical=repo_logical or platform,
+                    approver=approver,
+                    change_kind="parent",
+                    prep_branch=False,
+                ),
+                issue_id=ana.datadog_issue_id,
             )
             if parent_pushed:
                 pushed_to_remote = True
@@ -2303,20 +2369,27 @@ async def draft_pr_for_analysis(
             sm_lock = await _acquire_repo_lock(sm_abs)
             async with sm_lock:
                 affected_submodules.append(sm_abs)
-                sm_result, _ = await _create_one_draft_pr(
-                    cwd=sm_abs,
-                    branch=sm_branch,
-                    files_to_add=info["files"],
-                    commit_message=_build_commit_msg(
-                        issue, ana, impl_source, info["files"],
+                # Same wrapper-level cross-process lock as the parent call:
+                # submodules live under the wrapper repo_updater syncs
+                # recursively, so keying by wrapper_path serialises against it.
+                sm_result, _ = await _with_workspace_lock(
+                    wrapper_path,
+                    lambda: _create_one_draft_pr(
+                        cwd=sm_abs,
+                        branch=sm_branch,
+                        files_to_add=info["files"],
+                        commit_message=_build_commit_msg(
+                            issue, ana, impl_source, info["files"],
+                        ),
+                        pr_title=f"[Crashguard][{sm_logical}] {(issue.title or 'crash fix')[:80]}",
+                        pr_body=pr_body,
+                        analysis_id=analysis_id,
+                        repo_logical=sm_logical,
+                        approver=approver,
+                        change_kind="submodule",
+                        prep_branch=True,
                     ),
-                    pr_title=f"[Crashguard][{sm_logical}] {(issue.title or 'crash fix')[:80]}",
-                    pr_body=pr_body,
-                    analysis_id=analysis_id,
-                    repo_logical=sm_logical,
-                    approver=approver,
-                    change_kind="submodule",
-                    prep_branch=True,
+                    issue_id=ana.datadog_issue_id,
                 )
                 # 给 result 加 submodule_path 字段方便前端/审计
                 sm_result.setdefault("submodule_path", sm_path)

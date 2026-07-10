@@ -734,3 +734,91 @@ def test_resolve_candidate_repos_uses_basename_when_fix_diff_empty(tmp_path, mon
     )
     assert len(cands) == 1
     assert cands[0][1].endswith("plaud-flutter-global")
+
+
+# ─── Task 7: workspace-level cross-process lock around _create_one_draft_pr ───
+
+@pytest.mark.asyncio
+async def test_with_workspace_lock_releases_on_success(monkeypatch):
+    """正常路径：acquire 一次、release 一次，返回 factory 结果。"""
+    from app.crashguard.services import pr_drafter
+
+    acquire_calls: list = []
+    release_calls: list = []
+
+    async def fake_acquire(path, timeout_sec=120):
+        acquire_calls.append((path, timeout_sec))
+        return 999
+
+    async def fake_release(fd):
+        release_calls.append(fd)
+
+    monkeypatch.setattr(pr_drafter, "acquire_workspace_lock_async", fake_acquire)
+    monkeypatch.setattr(pr_drafter, "release_workspace_lock_async", fake_release)
+
+    async def factory():
+        return ("ok", True)
+
+    result = await pr_drafter._with_workspace_lock(
+        "/some/wrapper", factory, issue_id="iss-1",
+    )
+    assert result == ("ok", True)
+    assert len(acquire_calls) == 1
+    assert acquire_calls[0][1] == 120  # timeout passed through
+    assert release_calls == [999]
+
+
+@pytest.mark.asyncio
+async def test_with_workspace_lock_releases_even_if_factory_raises(monkeypatch):
+    """异常路径（核心断言）：factory 抛异常，锁依然被释放一次。"""
+    from app.crashguard.services import pr_drafter
+
+    acquire_calls: list = []
+    release_calls: list = []
+
+    async def fake_acquire(path, timeout_sec=120):
+        acquire_calls.append(path)
+        return 42
+
+    async def fake_release(fd):
+        release_calls.append(fd)
+
+    monkeypatch.setattr(pr_drafter, "acquire_workspace_lock_async", fake_acquire)
+    monkeypatch.setattr(pr_drafter, "release_workspace_lock_async", fake_release)
+
+    async def raising_factory():
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await pr_drafter._with_workspace_lock(
+            "/some/wrapper", raising_factory, issue_id="iss-2",
+        )
+    assert len(acquire_calls) == 1
+    assert release_calls == [42]  # released despite the exception
+
+
+@pytest.mark.asyncio
+async def test_with_workspace_lock_skips_lock_when_no_wrapper(monkeypatch):
+    """wrapper_path 为空（静态兜底路径）：不加锁、不 acquire/release，仍运行 factory。"""
+    from app.crashguard.services import pr_drafter
+
+    acquire_calls: list = []
+    release_calls: list = []
+
+    async def fake_acquire(path, timeout_sec=120):
+        acquire_calls.append(path)
+        return 1
+
+    async def fake_release(fd):
+        release_calls.append(fd)
+
+    monkeypatch.setattr(pr_drafter, "acquire_workspace_lock_async", fake_acquire)
+    monkeypatch.setattr(pr_drafter, "release_workspace_lock_async", fake_release)
+
+    async def factory():
+        return "ran"
+
+    result = await pr_drafter._with_workspace_lock("", factory, issue_id="iss-3")
+    assert result == "ran"
+    assert acquire_calls == []  # no lock acquired on the static fallback path
+    assert release_calls == []
