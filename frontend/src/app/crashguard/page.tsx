@@ -1878,6 +1878,30 @@ function Badge({
   );
 }
 
+function GenerationBadge({ generation }: { generation?: string }) {
+  if (generation === "native") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] font-medium"
+        style={{ background: "rgba(34,197,94,0.10)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}
+      >
+        🆕 4.0
+      </span>
+    );
+  }
+  if (generation === "flutter") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] font-medium"
+        style={{ background: "rgba(96,165,250,0.10)", color: "#2563EB", border: "1px solid rgba(96,165,250,0.25)" }}
+      >
+        🦋 3.x
+      </span>
+    );
+  }
+  return null;
+}
+
 function StatusSelect({
   value,
   disabled,
@@ -2154,7 +2178,15 @@ function DetailDrawer({
             <Section title={t("基础信息")}>
               <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
                 <KV k={t("平台")} v={platformLabel(detail.platform)} />
-                <KV k={t("服务")} v={detail.service || "—"} />
+                <KV
+                  k={t("服务")}
+                  v={
+                    <span className="inline-flex items-center gap-1.5">
+                      {detail.service || "—"}
+                      <GenerationBadge generation={detail.generation} />
+                    </span>
+                  }
+                />
                 <KV k={t("版本范围")} v={versionRange(detail.first_seen_version, detail.last_seen_version)} />
                 <KV k={t("总事件数")} v={detail.total_events.toLocaleString()} />
                 <KV k={t("首次出现")} v={`${detail.first_seen_at?.replace("T", " ").slice(0, 16) || "—"}`} />
@@ -3252,7 +3284,7 @@ function Section({ title, children, right }: { title: string; children: React.Re
   );
 }
 
-function KV({ k, v, multiline }: { k: string; v: string; multiline?: boolean }) {
+function KV({ k, v, multiline }: { k: string; v: React.ReactNode; multiline?: boolean }) {
   return (
     <div className={multiline ? "" : "flex items-baseline justify-between gap-3"}>
       <span className="text-xs" style={{ color: D.text3 }}>
