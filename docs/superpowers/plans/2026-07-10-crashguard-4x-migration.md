@@ -279,26 +279,7 @@ Run: `sed -n '1526,1565p' backend/app/crashguard/services/daily_report.py`
 确认与设计调研时读到的一致（`sorted(fatal_news, key=lambda x: -x["events"])[:5]` 等三行）。若行号因中间改动漂移，用 grep 定位：
 `grep -n 'sorted(fatal_news\|sorted(fatal_surges\|sorted(fatal_drops' backend/app/crashguard/services/daily_report.py`
 
-- [ ] **Step 2: 加一个排序 key 辅助函数**
-
-在 `_gen_badge_str` 函数定义之后（Task 2 改完的位置，约第 58 行）加：
-
-```python
-def _native_first_key(item: dict, id_to_issue: dict) -> Tuple[int, float]:
-    """排序 key：4.0 native 优先（0 排前面），同代际内按 events/delta 数值降序。
-
-    second 传入调用方已经算好的排序数值（如 -events 或 -delta），本函数只负责
-    在此基础上加一个"代际"首位 key——同紧急度下 4.0 排 3.x 前面。
-    """
-    issue = id_to_issue.get(item.get("issue_id"))
-    gen = classify_generation(
-        getattr(issue, "service", "") or "" if issue else "",
-        getattr(issue, "last_seen_version", "") or "" if issue else "",
-    )
-    return (0 if gen == "native" else 1, item.get("_secondary_sort", 0.0))
-```
-
-- [ ] **Step 3: 改三处排序调用**
+- [ ] **Step 2: 改三处排序调用（直接内联 lambda，不新建 helper 函数）**
 
 Edit 第 1531 行（新增/`fatal_news`）：
 
@@ -365,9 +346,7 @@ Edit 第 1555 行（下降/`fatal_drops`）：
 
 （下降是升序——delta 越负越靠前，不加负号；这与原逻辑一致，只是加了代际首位 key。）
 
-删除 Step 2 加的 `_native_first_key` helper（改成直接内联 lambda 更符合现有代码风格，避免引入一个不匹配调用签名的半成品函数）——即跳过 Step 2，只做 Step 3 的三处内联修改。
-
-- [ ] **Step 4: 写测试验证同 events 下 native 排前面**
+- [ ] **Step 3: 写测试验证同 events 下 native 排前面**
 
 在 `backend/tests/crashguard/test_daily_report.py` 里找到测试 `fatal_news`/`fatal_surges`/`fatal_drops` 排序相关的既有测试（如果没有，新增一个）：
 
@@ -402,17 +381,17 @@ def test_fatal_news_sorts_native_before_flutter_at_same_events(monkeypatch):
 
 （这个测试直接验证排序逻辑本身而不是整个 `compose_report` 管线，避免为了测一行排序去 mock 一整套 Datadog/DB 依赖——如果仓库里已有覆盖 `compose_report` 端到端的集成测试并且方便加断言，也可以在 `test_daily_report_integration.py` 里加等价断言，两者选一个跑得通的即可。）
 
-- [ ] **Step 5: 跑测试确认通过**
+- [ ] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && pytest tests/crashguard/test_daily_report.py -v -k native_before_flutter`
 Expected: PASS
 
-- [ ] **Step 6: 跑全量 daily_report 测试确认没有回归**
+- [ ] **Step 5: 跑全量 daily_report 测试确认没有回归**
 
 Run: `cd backend && pytest tests/crashguard/test_daily_report.py tests/crashguard/test_daily_report_integration.py -v`
 Expected: all passed
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/app/crashguard/services/daily_report.py backend/tests/crashguard/test_daily_report.py
