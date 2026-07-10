@@ -87,15 +87,18 @@ flutter（3.x）不加任何限制，维持现状。
 
 `hourly_alert`/`core_metric` 的阈值、触发条件完全不变。现有"🆕 4.0 Native 崩溃"置顶段
 （`daily_report.py:1584-1619`）+ 默认展开（`feishu_card.py:601` `EXPANDED_KEYWORDS` 含
-"Native"）已经满足"4.0 置顶 + 默认展开"，不用动。只调整两点：
+"Native"）已经满足"4.0 置顶 + 默认展开"，不用动。只调整一点：
 
-1. 混合的"关注/新增/突增/下降"列表里，同紧急度下 4.0 条目排序权重高于 3.x。
-2. 折叠面板默认展开判定从"看标题关键字"（`feishu_card.py:633`
-   `is_expanded = any(kw in title for kw in EXPANDED_KEYWORDS)`）改成"看面板内容是否含 4.0
-   条目"。**实现上**：由 `daily_report.py` 在构建每个 section 时就带上一个显式的
-   `has_native: bool` 标志一起传给 `feishu_card.py`，不要在 `feishu_card.py` 里对渲染好的
-   文本做 emoji 字符串匹配（那样是 stringly-typed 耦合，`daily_report.py` 构建列表时本来就
-   知道每条的代际）。
+混合的"关注/新增/突增/下降"列表里，同紧急度下 4.0 条目排序权重高于 3.x（次级排序 key，
+主排序仍是 events/涨跌幅）。
+
+**订正（写计划时核对代码发现）**：设计初稿还提议改"折叠面板默认展开判定"（从看标题关键字改成
+看面板内容是否含 4.0），经核实这是在解决一个不存在的问题——`feishu_card.py:633` 的
+`EXPANDED_KEYWORDS` 只匹配"✨ 今日关注点"/"🆕 4.0 Native 崩溃"/TL;DR 这三类大段的标题，
+真正的平台明细段落（`PLATFORM_DISPLAY` 定义的"🍎 iOS"/"📱 Android"）标题里从来不含这些
+关键字，本来就是默认折叠，不存在"因为标题碰巧含新增/突增被误展开"的场景。已有机制（Native
+专属置顶段 + 关注点行内 badge）已经完整覆盖"让 4.0 内容显眼"的诉求，这一点从设计中移除，
+不需要改 `feishu_card.py`。
 
 因为 A 部分上线后短期内正式环境 4.0 崩溃数据会很稀疏，大部分面板短期内会以 3.x 内容为主、
 默认收起，4.0 的可见性主要靠置顶专属段落撑着——这是预期中的效果，不需要额外调整。
