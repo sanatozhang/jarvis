@@ -75,8 +75,14 @@ RUN git config --system --add safe.directory '*' \
 # Install Codex CLI globally
 RUN npm install -g @openai/codex 2>/dev/null || echo "Codex install skipped (optional)"
 
-# Install Claude CLI globally
-RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || echo "Claude install skipped (optional)"
+# Install Claude CLI globally — 锁定具体版本，不用 unpinned latest。
+# 原因（2026-07-13 实测故障）：Anthropic 会不定期上调组织强制的最低 CLI 版本，跑着的旧容器
+# 里装的 old "latest" 会被直接拒绝（exit 1: "older than the minimum version required by your
+# organization"），导致所有分析 + L1.5 condenser 调用瞬间失败。锁定版本本身不能防止这个门槛
+# 未来再涨，但至少保证每次 rebuild 装的是「当时验证过可用」的确定版本，而不是构建时随机的最新版。
+# 门槛再涨时，重新验证一个满足门槛的版本号并更新这里（同时 102 容器内可先 exec npm install -g
+# @anthropic-ai/claude-code@latest 应急，见 [[project_claude_cli_inplace_upgrade_102]]）。
+RUN npm install -g @anthropic-ai/claude-code@2.1.207 2>/dev/null || echo "Claude install skipped (optional)"
 
 # Install Feishu CLI (for Bitable read/write)
 RUN npm install -g @larksuite/cli 2>/dev/null || echo "Feishu CLI install skipped (optional)"
