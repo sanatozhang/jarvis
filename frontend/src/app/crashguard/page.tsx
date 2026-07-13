@@ -206,6 +206,8 @@ function CrashguardPageInner() {
     const n = parseInt(v || "", 10);
     return n === 168 || n === 336 || n === 720 ? (n as 168 | 336 | 720) : 24;
   };
+  // 代际：默认只看 4.0(native)，勾选"显示3.x"才看全部——重点突出4.0，弱化3.x
+  const parseShowFlutter = (v: string | null): boolean => v === "1";
 
   const platformFilter = parsePlatform(searchParams?.get("platform") || null);
   const fatalityFilter = parseFatality(searchParams?.get("fatality") || null);
@@ -213,6 +215,7 @@ function CrashguardPageInner() {
   const sortBy = parseSort(searchParams?.get("sort") || null);
   const page = parsePageNum(searchParams?.get("page") || null);
   const windowHours = parseWindow(searchParams?.get("win") || null);
+  const showFlutter = parseShowFlutter(searchParams?.get("show_flutter") || null);
   // search 不走 URL 立即同步——避免每个字符都 push history；用 debounced 内部 state
   const [search, setSearch] = useState<string>(searchParams?.get("search") || "");
   const debouncedSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -240,6 +243,7 @@ function CrashguardPageInner() {
         page: number;
         search: string;
         win: 24 | 168 | 336 | 720;
+        showFlutter: boolean;
       }>,
     ) => {
       const params = new URLSearchParams(Array.from(searchParams?.entries() || []));
@@ -255,6 +259,7 @@ function CrashguardPageInner() {
       if ("page" in patch) setOrDel("page", patch.page ? String(patch.page) : undefined, patch.page === 1 || !patch.page);
       if ("search" in patch) setOrDel("search", patch.search, !patch.search);
       if ("win" in patch) setOrDel("win", patch.win ? String(patch.win) : undefined, patch.win === 24 || !patch.win);
+      if ("showFlutter" in patch) setOrDel("show_flutter", patch.showFlutter ? "1" : undefined, !patch.showFlutter);
       const qs = params.toString();
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
@@ -267,6 +272,7 @@ function CrashguardPageInner() {
   const setSortBy = (v: CrashSortBy) => updateListQuery({ sort: v, page: 1 });
   const setPage = (v: number) => updateListQuery({ page: v });
   const setWindowHours = (v: 24 | 168 | 336 | 720) => updateListQuery({ win: v, page: 1 });
+  const setShowFlutter = (v: boolean) => updateListQuery({ showFlutter: v, page: 1 });
 
   // search 输入 debounce 300ms → push 到 URL
   useEffect(() => {
@@ -374,6 +380,7 @@ function CrashguardPageInner() {
         platform: platformFilter === "all" ? "" : platformFilter,
         status: statusFilter === "all" ? "" : statusFilter,
         search: searchParams?.get("search") || "",
+        generation: showFlutter ? "" : "native",
         sort_by: sortBy,
         kinds: "all",
         window_hours: windowHours,
@@ -387,6 +394,7 @@ function CrashguardPageInner() {
             platform: platformFilter === "all" ? "" : platformFilter,
             status: statusFilter === "all" ? "" : statusFilter,
             search: searchParams?.get("search") || "",
+            generation: showFlutter ? "" : "native",
             sort_by: sortBy,
             kinds: "all",
             window_hours: windowHours,
@@ -405,7 +413,7 @@ function CrashguardPageInner() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, fatalityFilter, platformFilter, statusFilter, sortBy, windowHours, searchParams]);
+  }, [page, fatalityFilter, platformFilter, statusFilter, sortBy, windowHours, showFlutter, searchParams]);
 
   const loadDetail = async (issueId: string) => {
     setDetailLoading(true);
@@ -872,6 +880,23 @@ function CrashguardPageInner() {
                 { v: "new_first", l: t("新增/回归优先") },
               ]}
             />
+            <label
+              className="flex items-center gap-1.5 rounded px-2 py-0.5 text-xs cursor-pointer"
+              style={{
+                border: `1px solid ${showFlutter ? D.accent : D.border}`,
+                background: showFlutter ? D.accentBg : "transparent",
+                color: showFlutter ? D.text1 : D.text2,
+              }}
+              title={t("默认只看4.0(native)，勾选后同时显示3.x(Flutter)")}
+            >
+              <input
+                type="checkbox"
+                checked={showFlutter}
+                onChange={(e) => setShowFlutter(e.target.checked)}
+                style={{ accentColor: D.accent }}
+              />
+              {t("显示3.x(Flutter)")}
+            </label>
             {/* 分隔 + 时间窗口 */}
             <span className="mx-1" style={{ color: D.text3 }}>|</span>
             <span className="text-xs" style={{ color: D.text3 }}>⏱</span>

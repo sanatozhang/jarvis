@@ -55,7 +55,9 @@ export default function CrashPullRequestsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "draft" | "open" | "merged" | "closed">("all");
-  const [repoFilter, setRepoFilter] = useState<"all" | "flutter" | "android" | "ios" | "app">("all");
+  const [repoFilter, setRepoFilter] = useState<"all" | "flutter" | "android" | "ios">("all");
+  // 默认只看4.0(native)，勾选后同时显示3.x(Flutter)——跟首页/10点飞书日报同一口径
+  const [showFlutter, setShowFlutter] = useState(false);
   const [days, setDays] = useState(30);
   const [syncingIds, setSyncingIds] = useState<Set<number>>(new Set());
   const [syncingAll, setSyncingAll] = useState(false);
@@ -155,6 +157,7 @@ export default function CrashPullRequestsPage() {
       days,
       status: statusFilter === "all" ? undefined : statusFilter,
       repo: repoFilter === "all" ? undefined : repoFilter,
+      generation: showFlutter ? undefined : "native",
       limit: 100,
     })
       .then((r) => {
@@ -172,7 +175,7 @@ export default function CrashPullRequestsPage() {
     return () => {
       cancelled = true;
     };
-  }, [statusFilter, repoFilter, days, reloadKey]);
+  }, [statusFilter, repoFilter, showFlutter, days, reloadKey]);
 
   return (
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text1 }}>
@@ -359,8 +362,8 @@ export default function CrashPullRequestsPage() {
               {k === "all" ? t("全部") : k}
             </button>
           ))}
-          <span style={{ color: D.text2, fontSize: 13, marginLeft: 12 }}>{t("仓库")}：</span>
-          {(["all", "flutter", "android", "ios", "app"] as const).map((k) => (
+          <span style={{ color: D.text2, fontSize: 13, marginLeft: 12 }}>{t("平台")}：</span>
+          {(["all", "flutter", "android", "ios"] as const).map((k) => (
             <button
               key={k}
               onClick={() => setRepoFilter(k)}
@@ -377,6 +380,30 @@ export default function CrashPullRequestsPage() {
               {k}
             </button>
           ))}
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginLeft: 12,
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: `1px solid ${showFlutter ? D.accent : D.border}`,
+              background: showFlutter ? "rgba(14,124,134,0.08)" : "transparent",
+              color: showFlutter ? D.text1 : D.text2,
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+            title={t("默认只看4.0(native)，勾选后同时显示3.x(Flutter)")}
+          >
+            <input
+              type="checkbox"
+              checked={showFlutter}
+              onChange={(e) => setShowFlutter(e.target.checked)}
+              style={{ accentColor: D.accent }}
+            />
+            {t("显示3.x(Flutter)")}
+          </label>
           <span style={{ flex: 1 }} />
           <select
             value={days}

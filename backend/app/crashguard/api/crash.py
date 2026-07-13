@@ -798,6 +798,7 @@ async def get_top(
     platform: str = "",
     status: str = "",
     search: str = "",
+    generation: str = Query("", regex="^(native|flutter)?$"),
     sort_by: str = "events",  # events / impact / users / new_first
     window_hours: int = Query(24, description="时间窗口（小时）：24 / 168 / 336 / 720 = 1d/7d/14d/30d"),
 ) -> Dict[str, Any]:
@@ -808,6 +809,9 @@ async def get_top(
     - platform: "android" / "ios" / "flutter" / "" (=全部)
     - status: "open" / "investigating" / "resolved_by_pr" / "ignored" / "wontfix" / "" (=全部)
     - search: title 子串匹配（大小写不敏感）
+    - generation: "native"(4.0+) / "flutter"(3.x) / "" (=全部)。判不出代际的
+      （service/version 缺失）保守放行，不因分类失败漏报——2026-07-13 首页默认
+      只看 4.0，加这个参数配合前端"显示3.x"勾选框
     - sort_by: events(默认) / impact / users / new_first
     - window_hours: 时间窗口。**24 直接读今日 snapshot；>24 跨多天 sum CrashSnapshot**。
       三维标签（is_new_in_version / is_regression / is_surge）始终按今日 snapshot 固定，
@@ -837,6 +841,7 @@ async def get_top(
     platform_norm = (platform or "").strip().lower()
     status_norm = (status or "").strip().lower()
     search_norm = (search or "").strip().lower()
+    generation_norm = (generation or "").strip().lower()
     sort_norm = (sort_by or "events").strip().lower()
     # 时间窗口归一化：未匹配档位 → 退回 24h（颗粒度对齐 Datadog 首页默认）
     if window_hours not in _ALLOWED_WINDOW_HOURS:
@@ -874,6 +879,11 @@ async def get_top(
                 items = [x for x in items if (x.get("fatality") or "fatal") == fatality_norm]
             if platform_norm:
                 items = [x for x in items if (x.get("platform") or "").lower() == platform_norm]
+            if generation_norm:
+                def _gen_matches(x: Dict[str, Any]) -> bool:
+                    gen = classify_generation(x.get("service") or "", x.get("last_seen_version") or "")
+                    return (not gen) or gen == generation_norm
+                items = [x for x in items if _gen_matches(x)]
             if status_norm:
                 items = [x for x in items if (x.get("status") or "open").lower() == status_norm]
             if search_norm:
@@ -2060,40 +2070,60 @@ async def get_report_detail(
 async def list_pull_requests(
     days: int = Query(30, ge=1, le=180),
     status: Optional[str] = Query(None, regex="^(draft|open|merged|closed)$"),
-    repo: Optional[str] = Query(None, regex="^(flutter|android|ios|app)$"),
+    repo: Optional[str] = Query(None, regex="^(flutter|android|ios)$"),
+    generation: Optional[str] = Query(None, regex="^(native|flutter)$"),
     limit: int = Query(50, ge=1, le=200),
 ) -> Dict[str, Any]:
-    """自动 PR 列表（含 issue 标题 + 平台 + 状态）"""
+    """自动 PR 列表（含 issue 标题 + 平台 + 状态）
+
+    ⚠️ `repo` 过滤走的是反查 CrashIssue.platform（不是 CrashPullRequest.repo 列本身）——
+    那一列存的是 repo_router 解析出的 sub-repo 逻辑名（如 "plaud-native-android"），
+    跟前端传的裸平台名 "android"/"ios" 从设计上就不是同一空间，字符串精确匹配基本
+    命不中（2026-07-13 修复，用户反馈"选 Android/iOS 都不对"）。
+    """
     from datetime import datetime, timedelta
     from sqlalchemy import select, desc
     from app.db.database import get_session
     from app.crashguard.models import CrashPullRequest, CrashIssue, CrashAnalysis
+    from app.crashguard.services.pr_pending_review_alert import _build_generation_lookup
 
     since = datetime.utcnow() - timedelta(days=days)
     async with get_session() as session:
         stmt = select(CrashPullRequest).where(CrashPullRequest.created_at >= since)
         if status:
             stmt = stmt.where(CrashPullRequest.pr_status == status)
-        if repo:
-            stmt = stmt.where(CrashPullRequest.repo == repo)
-        stmt = stmt.order_by(desc(CrashPullRequest.created_at)).limit(limit)
+        stmt = stmt.order_by(desc(CrashPullRequest.created_at))
         rows = (await session.execute(stmt)).scalars().all()
 
-        # 批量补 issue title + analysis feasibility
+        # 批量补 issue title + platform + analysis feasibility
         issue_ids = [r.datadog_issue_id for r in rows]
         analysis_ids = [r.analysis_id for r in rows]
         title_map: Dict[str, str] = {}
+        platform_map: Dict[str, str] = {}
         feas_map: Dict[int, float] = {}
         if issue_ids:
             issues = (await session.execute(
                 select(CrashIssue).where(CrashIssue.datadog_issue_id.in_(issue_ids))
             )).scalars().all()
             title_map = {i.datadog_issue_id: i.title or "" for i in issues}
+            platform_map = {i.datadog_issue_id: (i.platform or "").lower() for i in issues}
         if analysis_ids:
             analyses = (await session.execute(
                 select(CrashAnalysis).where(CrashAnalysis.id.in_(analysis_ids))
             )).scalars().all()
             feas_map = {a.id: float(a.feasibility_score or 0.0) for a in analyses}
+
+        # repo/generation 过滤：都靠反查 CrashIssue（PR 表本身不存这些语义字段）
+        if repo:
+            rows = [r for r in rows if platform_map.get(r.datadog_issue_id, "") == repo]
+        if generation:
+            gen_map = await _build_generation_lookup(session, issue_ids)
+            # 判不出代际（service/version 缺失）保守放行，跟 _family_allowed 同一口径
+            rows = [
+                r for r in rows
+                if not gen_map.get(r.datadog_issue_id) or gen_map.get(r.datadog_issue_id) == generation
+            ]
+        rows = rows[:limit]
 
     items: List[Dict[str, Any]] = []
     for r in rows:

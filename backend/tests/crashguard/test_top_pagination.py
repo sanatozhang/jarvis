@@ -180,6 +180,66 @@ async def test_platform_filter(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generation_filter(tmp_path, monkeypatch):
+    """generation=native 只留 native/未知代际；flutter service 的被过滤掉。
+
+    未知代际（无 service 也无可解析 version）保守放行——不因分类失败漏报。
+    """
+    await _setup(tmp_path, monkeypatch)
+    today = date.today()
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue, CrashSnapshot
+
+    async with get_session() as session:
+        rows = [
+            ("ddi_native", "plaud_android", ""),
+            ("ddi_flutter", "plaud-flutter", ""),
+            ("ddi_unknown", "", ""),
+        ]
+        for iid, service, version in rows:
+            session.add(CrashIssue(
+                datadog_issue_id=iid,
+                platform="android",
+                service=service,
+                last_seen_version=version,
+                title=f"Crash {iid}",
+                kind="crash",
+                fatality="fatal",
+                status="open",
+                first_seen_at=datetime.utcnow() - timedelta(days=1),
+            ))
+            session.add(CrashSnapshot(
+                datadog_issue_id=iid,
+                snapshot_date=today,
+                events_count=10,
+                users_affected=1,
+                sessions_affected=1,
+                crash_free_impact_score=0.1,
+                is_new_in_version=False,
+                is_regression=False,
+                is_surge=False,
+            ))
+        await session.commit()
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app) as client:
+        r = client.get("/api/crash/top?page=1&page_size=40&generation=native")
+        j = r.json()
+        ids = {x["datadog_issue_id"] for x in j["issues"]}
+        assert ids == {"ddi_native", "ddi_unknown"}
+
+        r2 = client.get("/api/crash/top?page=1&page_size=40&generation=flutter")
+        j2 = r2.json()
+        ids2 = {x["datadog_issue_id"] for x in j2["issues"]}
+        assert ids2 == {"ddi_flutter", "ddi_unknown"}
+
+        r3 = client.get("/api/crash/top?page=1&page_size=40")
+        j3 = r3.json()
+        assert {x["datadog_issue_id"] for x in j3["issues"]} == {"ddi_native", "ddi_flutter", "ddi_unknown"}
+
+
+@pytest.mark.asyncio
 async def test_backward_compat_legacy_call(tmp_path, monkeypatch):
     """未传 page → 走旧路径：仅 limit 截断 + dedup，不含 page/total_pages。"""
     await _setup(tmp_path, monkeypatch)

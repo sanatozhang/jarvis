@@ -1212,6 +1212,7 @@ export const fetchCrashTop = (
     platform?: string;
     status?: string;
     search?: string;
+    generation?: "native" | "flutter" | "";
     sort_by?: CrashSortBy;
     window_hours?: CrashWindowHours;
   },
@@ -1225,6 +1226,7 @@ export const fetchCrashTop = (
   if (opts?.platform) q.set("platform", opts.platform);
   if (opts?.status) q.set("status", opts.status);
   if (opts?.search) q.set("search", opts.search);
+  if (opts?.generation) q.set("generation", opts.generation);
   if (opts?.sort_by) q.set("sort_by", opts.sort_by);
   if (opts?.window_hours) q.set("window_hours", String(opts.window_hours));
   return request<CrashTopResponse>(`/crash/top?${q.toString()}`);
@@ -1659,13 +1661,15 @@ export const syncAllCrashPrs = () =>
 export const fetchCrashPullRequests = (opts?: {
   days?: number;
   status?: "draft" | "open" | "merged" | "closed";
-  repo?: "flutter" | "android" | "ios" | "app";
+  repo?: "flutter" | "android" | "ios";
+  generation?: "native" | "flutter" | "";
   limit?: number;
 }) => {
   const qs = new URLSearchParams();
   if (opts?.days) qs.set("days", String(opts.days));
   if (opts?.status) qs.set("status", opts.status);
   if (opts?.repo) qs.set("repo", opts.repo);
+  if (opts?.generation) qs.set("generation", opts.generation);
   if (opts?.limit) qs.set("limit", String(opts.limit));
   const q = qs.toString();
   return request<{ items: CrashPullRequestItem[]; total: number; days: number }>(
