@@ -15,6 +15,11 @@ import pytest
 
 async def _setup(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'prs.db'}")
+    # 见 test_top_pagination.py 里同名 _setup() 的注释：真实 .env 里配了真的 Datadog
+    # key，TestClient(app) 跑完整 lifespan 会在后台异步打真实 Datadog 再写库，
+    # 可能跨测试污染 DB。两个都关掉避免这个竞态。
+    monkeypatch.setenv("CRASHGUARD_DATADOG_API_KEY", "")
+    monkeypatch.setenv("CRASHGUARD_WARMUP_ON_STARTUP", "false")
     from app.config import get_settings
     from app.crashguard.config import get_crashguard_settings
     get_settings.cache_clear()

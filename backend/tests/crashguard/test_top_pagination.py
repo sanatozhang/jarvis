@@ -18,6 +18,14 @@ import pytest
 
 async def _setup(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'top.db'}")
+    # 真实 .env 里配了真的 Datadog key（pydantic-settings env_file 直读，delenv 管不到，
+    # 必须显式 setenv 成空串覆盖）。TestClient(app) 会跑完整 lifespan，
+    # warmup_on_startup 默认 true 会在后台异步打真实 Datadog + GitHub 再写库——
+    # 这个任务经常在测试函数已经返回之后才落地，写进的是"当时全局 current"的 DB
+    # （下一个测试刚 init_db() 换的新 sqlite），造成跨测试污染（曾导致 test_generation_filter
+    # 断言里混进真实 production issue id）。两个都关掉避免这个竞态。
+    monkeypatch.setenv("CRASHGUARD_DATADOG_API_KEY", "")
+    monkeypatch.setenv("CRASHGUARD_WARMUP_ON_STARTUP", "false")
     from app.config import get_settings
     from app.crashguard.config import get_crashguard_settings
     get_settings.cache_clear()

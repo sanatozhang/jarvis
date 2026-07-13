@@ -962,7 +962,6 @@ const EN: Record<string, string> = {
   "Flutter（默认兜底）": "Flutter (default fallback)",
   "无源码（logs-only）": "No codebase (logs-only)",
 
-  // 4.0 native / 3.x flutter 展示切换（2026-07-13）
-  "显示3.x(Flutter)": "Show 3.x (Flutter)",
-  "默认只看4.0(native)，勾选后同时显示3.x(Flutter)": "By default only 4.0 (native) is shown; check to also include 3.x (Flutter)",
+  // 4.0 native / 3.x flutter 代际筛选（2026-07-13）
+  "代际": "Generation",
 };

@@ -282,7 +282,9 @@ async def auto_pr_queue() -> Dict[str, Any]:
 
 
 @router.get("/latest-release")
-async def get_latest_release() -> Dict[str, Any]:
+async def get_latest_release(
+    generation: str = Query("", regex="^(native|flutter)?$"),
+) -> Dict[str, Any]:
     """获取各平台「线上最新版本」+「用户量最大版本」。
 
     最新版本口径：
@@ -293,11 +295,16 @@ async def get_latest_release() -> Dict[str, Any]:
     用户量最大版本口径（仅 android / ios，flutter 也跑在这俩上）：
       - Datadog RUM @type:session 24h 窗口，cardinality(@usr.id) group by (@os.name, @application.version)
       - 失败/无数据时回落 crash_issues.top_app_version 加权聚合
+
+    generation: "native"/"flutter"/""（=全部）—— 首页"显示3.x"勾选框透传，
+    Datadog 路径切 service_filter，DB fallback 路径用 classify_generation 过滤。
     """
     from app.crashguard.services.datadog_client import DatadogClient
     from app.crashguard.services.version_util import (
+        classify_generation,
         derive_top_user_version_from_crashes,
         resolve_effective_latest_release,
+        service_filter_for_generation,
     )
     from app.db.database import get_session
 
@@ -315,6 +322,7 @@ async def get_latest_release() -> Dict[str, Any]:
                 platform=platform,
                 override=override,
                 min_events=300,
+                generation=generation,
             )
 
     # 用户量最大版本：优先 Datadog RUM，失败回落 crash_issues 聚合
@@ -325,7 +333,8 @@ async def get_latest_release() -> Dict[str, Any]:
             client = DatadogClient(
                 api_key=s.datadog_api_key,
                 app_key=s.datadog_app_key,
-                site=s.datadog_site, service_filter=s.datadog_service_filter,
+                site=s.datadog_site,
+                service_filter=service_filter_for_generation(generation, s.datadog_service_filter),
             )
             top_user = await client.top_user_version_by_platform(window_hours=24)
             for p in ("android", "ios"):
@@ -339,7 +348,7 @@ async def get_latest_release() -> Dict[str, Any]:
         for p in ("android", "ios"):
             if top_user.get(p):
                 continue
-            fallback = await derive_top_user_version_from_crashes(session, platform=p)
+            fallback = await derive_top_user_version_from_crashes(session, platform=p, generation=generation)
             if fallback:
                 top_user[p] = fallback
                 top_user_source[p] = "crash_issues_fallback"
@@ -360,15 +369,21 @@ async def get_latest_release() -> Dict[str, Any]:
 
 
 @router.get("/version-distribution")
-async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) -> Dict[str, Any]:
+async def get_version_distribution(
+    window_hours: int = Query(24, ge=1, le=720),
+    generation: str = Query("", regex="^(native|flutter)?$"),
+) -> Dict[str, Any]:
     """各平台 App 版本 session 占比分布（Top 10），用于首页饼图。
 
     返回 {"android": [{"version":"...","sessions":N,"pct":45.3},...], "ios": [...]}
     无 Datadog 配置时回落 crash_issues.top_app_version 加权聚合。
     走 DatadogCache TTL=300s（5min）减少首页二次加载延迟。
+
+    generation: "native"/"flutter"/""（=全部）—— 首页"显示3.x"勾选框透传。
     """
     from app.crashguard.services.datadog_client import DatadogClient
     from app.crashguard.services.datadog_cache import DatadogCache
+    from app.crashguard.services.version_util import service_filter_for_generation
 
     s = get_crashguard_settings()
     if s.datadog_api_key:
@@ -376,7 +391,8 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
             client = DatadogClient(
                 api_key=s.datadog_api_key,
                 app_key=s.datadog_app_key,
-                site=s.datadog_site, service_filter=s.datadog_service_filter,
+                site=s.datadog_site,
+                service_filter=service_filter_for_generation(generation, s.datadog_service_filter),
             )
             data = await client.version_distribution_by_platform(window_hours=window_hours)
             if not data:
@@ -384,7 +400,7 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
             return data
         try:
             data = await DatadogCache.get_or_fetch(
-                key=f"home:version_dist:{window_hours}",
+                key=f"home:version_dist:{window_hours}:{generation}",
                 ttl_seconds=300,
                 fetch_fn=_fetch,
             )
@@ -395,16 +411,17 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
     # Fallback：从 crash_issues.top_app_version 按平台聚合
     from collections import defaultdict
     from app.db.database import get_session
+    from app.crashguard.services.version_util import classify_generation
 
     platform_ver_sessions: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     async with get_session() as session:
         from sqlalchemy import select, and_
         from app.crashguard.models import CrashIssue
         rows = (await session.execute(
-            select(CrashIssue.platform, CrashIssue.top_app_version, CrashIssue.total_events)
+            select(CrashIssue.platform, CrashIssue.top_app_version, CrashIssue.total_events, CrashIssue.service)
             .where(and_(CrashIssue.top_app_version.isnot(None), CrashIssue.top_app_version != ""))
         )).all()
-        for platform, top_ver_str, total_events in rows:
+        for platform, top_ver_str, total_events, service in rows:
             plat = (platform or "").lower()
             if plat not in ("android", "ios"):
                 continue
@@ -413,6 +430,10 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
                 m = __import__("re").match(r"^(.+?)\s*\(([\d.]+)\s*%\)\s*$", part.strip())
                 if m:
                     ver, pct = m.group(1).strip(), float(m.group(2))
+                    if generation:
+                        gen = classify_generation(service or "", ver)
+                        if gen and gen != generation:
+                            continue
                     platform_ver_sessions[plat][ver] += weight * pct / 100
 
     fallback_data: Dict[str, list] = {}
@@ -431,14 +452,20 @@ async def get_version_distribution(window_hours: int = Query(24, ge=1, le=720)) 
 
 
 @router.get("/platform-summary")
-async def get_platform_summary(window_hours: int = Query(24, ge=1, le=720)) -> Dict[str, Any]:
+async def get_platform_summary(
+    window_hours: int = Query(24, ge=1, le=720),
+    generation: str = Query("", regex="^(native|flutter)?$"),
+) -> Dict[str, Any]:
     """各平台 Crash-free Sessions 概要（Datadog RUM 直查）。
 
     返回 {"android": {"total_sessions":N,"crashed_sessions":M,"crash_free_pct":99.6}, "ios": {...}}
     走 DatadogCache TTL=300s（5min）减少首页二次加载延迟。注意：start_ms 走桶式取整，避免相邻秒级请求 miss 缓存。
+
+    generation: "native"/"flutter"/""（=全部）—— 首页"显示3.x"勾选框透传。
     """
     from app.crashguard.services.datadog_client import DatadogClient
     from app.crashguard.services.datadog_cache import DatadogCache
+    from app.crashguard.services.version_util import service_filter_for_generation
     import time as _time
 
     s = get_crashguard_settings()
@@ -449,7 +476,8 @@ async def get_platform_summary(window_hours: int = Query(24, ge=1, le=720)) -> D
         client = DatadogClient(
             api_key=s.datadog_api_key,
             app_key=s.datadog_app_key,
-            site=s.datadog_site, service_filter=s.datadog_service_filter,
+            site=s.datadog_site,
+            service_filter=service_filter_for_generation(generation, s.datadog_service_filter),
         )
         end_ms = int(_time.time() * 1000)
         start_ms = end_ms - int(window_hours) * 3600 * 1000
@@ -460,7 +488,7 @@ async def get_platform_summary(window_hours: int = Query(24, ge=1, le=720)) -> D
 
     try:
         data = await DatadogCache.get_or_fetch(
-            key=f"home:platform_summary:{window_hours}",
+            key=f"home:platform_summary:{window_hours}:{generation}",
             ttl_seconds=300,
             fetch_fn=_fetch,
         )
@@ -471,14 +499,20 @@ async def get_platform_summary(window_hours: int = Query(24, ge=1, le=720)) -> D
 
 
 @router.get("/os-version-distribution")
-async def get_os_version_distribution(window_hours: int = Query(24, ge=1, le=720)) -> Dict[str, Any]:
+async def get_os_version_distribution(
+    window_hours: int = Query(24, ge=1, le=720),
+    generation: str = Query("", regex="^(native|flutter)?$"),
+) -> Dict[str, Any]:
     """各平台 OS 版本 session 占比分布（Top 8），用于首页 OS 版本饼图。
 
     返回 {"android": [{"version":"14","sessions":N,"pct":38.2},...], "ios": [...]}
     无 Datadog 配置时返回空数据。走 DatadogCache TTL=300s。
+
+    generation: "native"/"flutter"/""（=全部）—— 首页"显示3.x"勾选框透传。
     """
     from app.crashguard.services.datadog_client import DatadogClient
     from app.crashguard.services.datadog_cache import DatadogCache
+    from app.crashguard.services.version_util import service_filter_for_generation
 
     s = get_crashguard_settings()
     if not s.datadog_api_key:
@@ -488,7 +522,8 @@ async def get_os_version_distribution(window_hours: int = Query(24, ge=1, le=720
         client = DatadogClient(
             api_key=s.datadog_api_key,
             app_key=s.datadog_app_key,
-            site=s.datadog_site, service_filter=s.datadog_service_filter,
+            site=s.datadog_site,
+            service_filter=service_filter_for_generation(generation, s.datadog_service_filter),
         )
         data = await client.os_version_distribution_by_platform(window_hours=window_hours)
         if not data:
@@ -497,7 +532,7 @@ async def get_os_version_distribution(window_hours: int = Query(24, ge=1, le=720
 
     try:
         data = await DatadogCache.get_or_fetch(
-            key=f"home:os_version_dist:{window_hours}",
+            key=f"home:os_version_dist:{window_hours}:{generation}",
             ttl_seconds=300,
             fetch_fn=_fetch,
         )
@@ -508,13 +543,19 @@ async def get_os_version_distribution(window_hours: int = Query(24, ge=1, le=720
 
 
 @router.get("/device-distribution")
-async def get_device_distribution(window_hours: int = Query(24, ge=1, le=720)) -> Dict[str, Any]:
+async def get_device_distribution(
+    window_hours: int = Query(24, ge=1, le=720),
+    generation: str = Query("", regex="^(native|flutter)?$"),
+) -> Dict[str, Any]:
     """各平台机型 session 占比分布（Top 8），用于首页机型分布图。
 
     返回 {"android": [{"model":"Pixel 7","sessions":N,"pct":18.2},...], "ios": [...]}
     无 Datadog 配置时返回空数据。
+
+    generation: "native"/"flutter"/""（=全部）—— 首页"显示3.x"勾选框透传。
     """
     from app.crashguard.services.datadog_client import DatadogClient
+    from app.crashguard.services.version_util import service_filter_for_generation
 
     s = get_crashguard_settings()
     if not s.datadog_api_key:
@@ -523,7 +564,8 @@ async def get_device_distribution(window_hours: int = Query(24, ge=1, le=720)) -
         client = DatadogClient(
             api_key=s.datadog_api_key,
             app_key=s.datadog_app_key,
-            site=s.datadog_site, service_filter=s.datadog_service_filter,
+            site=s.datadog_site,
+            service_filter=service_filter_for_generation(generation, s.datadog_service_filter),
         )
         data = await client.device_distribution_by_platform(window_hours=window_hours)
         return {"data": data, "source": "datadog_rum", "window_hours": window_hours}
@@ -589,22 +631,27 @@ def _safe_load_variants(raw: str) -> list:
 
 # ── User 维度 crash-free cache（2026-05-21 加）─────────────────────────────
 # /api/crash/top 是高频接口，每次实时拉 user 维度（F&F scalar 30-60s）会拖垮 UX。
-# 5min 进程内 cache，按 window_hours 分桶。crashguard 仅 scheduler 实例跑，
-# 单进程 cache 足够，无需跨实例共享。
-_USER_DIM_CACHE: Dict[int, "tuple[float, Dict[str, int], Dict[str, int]]"] = {}
+# 5min 进程内 cache，按 (window_hours, generation) 分桶。crashguard 仅 scheduler
+# 实例跑，单进程 cache 足够，无需跨实例共享。
+_USER_DIM_CACHE: Dict[tuple, "tuple[float, Dict[str, int], Dict[str, int]]"] = {}
 _USER_DIM_CACHE_TTL_SEC = 300
 
 
 async def _cached_user_dim(
-    window_hours: int, settings,
+    window_hours: int, settings, generation: str = "",
 ) -> "tuple[Dict[str, int], Dict[str, int]]":
     """5min cache 包裹 Datadog F&F scalar user-cardinality 调用。
+
+    generation: "native"/"flutter"/""（=全部）—— 切 service_filter，同一份缓存
+    按 (window_hours, generation) 分桶，不会跟"全部"的结果互相污染。
 
     Returns (total_users_by_plat, crash_users_by_plat) — 失败回退 ({}, {}).
     """
     import time as _t
+    from app.crashguard.services.version_util import service_filter_for_generation
     now = _t.time()
-    cached = _USER_DIM_CACHE.get(int(window_hours))
+    cache_key = (int(window_hours), generation)
+    cached = _USER_DIM_CACHE.get(cache_key)
     if cached and (now - cached[0]) < _USER_DIM_CACHE_TTL_SEC:
         return cached[1], cached[2]
     from app.crashguard.services.datadog_client import DatadogClient
@@ -612,14 +659,56 @@ async def _cached_user_dim(
         api_key=settings.datadog_api_key,
         app_key=settings.datadog_app_key,
         site=settings.datadog_site,
-        service_filter=settings.datadog_service_filter,
+        service_filter=service_filter_for_generation(generation, settings.datadog_service_filter),
     )
     total = await client.count_users_by_platform(window_hours=window_hours) or {}
     crashed = await client.count_crash_users_by_platform(window_hours=window_hours) or {}
     total_upper = {k.upper(): v for k, v in total.items()}
     crashed_upper = {k.upper(): v for k, v in crashed.items()}
-    _USER_DIM_CACHE[int(window_hours)] = (now, total_upper, crashed_upper)
+    _USER_DIM_CACHE[cache_key] = (now, total_upper, crashed_upper)
     return total_upper, crashed_upper
+
+
+# ── Session 维度 crash-free cache（generation 过滤专用，2026-07-13 加）──────
+# CrashMetricSnapshot 持久化表没有代际维度，拆不出 3.x/4.0——generation 有指定时
+# 绕开持久化表，改走跟 user 维度一样的 live Datadog 查询 + 5min cache。
+# generation 为空（显示全部）时不用这个，走原有的 CrashMetricSnapshot sum 路径
+# （性能更好，且是历史行为，不改）。
+_SESSION_DIM_CACHE: Dict[tuple, "tuple[float, Dict[str, Any]]"] = {}
+_SESSION_DIM_CACHE_TTL_SEC = 300
+
+
+async def _cached_session_dim_by_generation(
+    window_hours: int, settings, generation: str,
+) -> Dict[str, Any]:
+    """5min cache 包裹 Datadog crash_free_sessions_by_platform（按代际切 filter）。
+
+    Returns {"android": {...}, "ios": {...}} 按平台的 crash-free sessions 概要，
+    失败回退 {}。
+    """
+    import time as _t
+    from app.crashguard.services.version_util import service_filter_for_generation
+    now = _t.time()
+    cache_key = (int(window_hours), generation)
+    cached = _SESSION_DIM_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _SESSION_DIM_CACHE_TTL_SEC:
+        return cached[1]
+    from app.crashguard.services.datadog_client import DatadogClient
+    client = DatadogClient(
+        api_key=settings.datadog_api_key,
+        app_key=settings.datadog_app_key,
+        site=settings.datadog_site,
+        service_filter=service_filter_for_generation(generation, settings.datadog_service_filter),
+    )
+    end_ms = int(now * 1000)
+    start_ms = end_ms - int(window_hours) * 3600 * 1000
+    try:
+        data = await client.crash_free_sessions_by_platform(start_ms=start_ms, end_ms=end_ms) or {}
+    except Exception:
+        logger.exception("crash_free_sessions_by_platform (generation=%s) failed", generation)
+        data = {}
+    _SESSION_DIM_CACHE[cache_key] = (now, data)
+    return data
 
 
 async def _aggregate_snapshots_window(
@@ -905,23 +994,45 @@ async def get_top(
             else:  # impact（默认或显式）
                 items.sort(key=lambda x: x.get("crash_free_impact_score") or 0.0, reverse=True)
 
-        # Crash-free sessions %（窗口 sum sessions weighted）—— 从 crash_metric_snapshots 滚一遍
-        # 颗粒度：跟 window_hours 对齐；total=0 → None（前端用 — 占位）
-        from datetime import datetime as _dt
-        from app.crashguard.models import CrashMetricSnapshot
-        cf_window_start = _dt.utcnow() - timedelta(hours=window_hours)
-        cf_row = (await session.execute(
-            select(
-                func.coalesce(func.sum(CrashMetricSnapshot.total_sessions), 0),
-                func.coalesce(func.sum(CrashMetricSnapshot.crashed_sessions), 0),
-            ).where(CrashMetricSnapshot.window_start >= cf_window_start)
-        )).first()
-        cf_total = int(cf_row[0] or 0) if cf_row else 0
-        cf_crashed = int(cf_row[1] or 0) if cf_row else 0
-        if cf_total > 0:
-            crash_free_sessions_pct = round((1.0 - cf_crashed / cf_total) * 100.0, 3)
+        # Crash-free sessions %：CrashMetricSnapshot 持久化表没有代际维度，拆不出
+        # 3.x/4.0——generation 有指定时改走跟 users% 一样的 live Datadog 查询 +
+        # 5min cache（_cached_session_dim_by_generation）；generation 为空（显示
+        # 全部）时走原有的 crash_metric_snapshots sum 路径（性能更好，历史行为不变）。
+        from app.crashguard.config import get_crashguard_settings as _gcs
+        _s = _gcs()
+        if generation_norm and _s.datadog_api_key:
+            cf_total = 0
+            cf_crashed = 0
+            try:
+                sess_by_plat = await _cached_session_dim_by_generation(
+                    int(window_hours), _s, generation_norm,
+                )
+                for v in (sess_by_plat or {}).values():
+                    cf_total += int(v.get("total_sessions") or 0)
+                    cf_crashed += int(v.get("crashed_sessions") or 0)
+            except Exception:
+                logger.exception("crash_free_sessions_pct (generation=%s) fetch failed", generation_norm)
+            crash_free_sessions_pct = (
+                round((1.0 - cf_crashed / cf_total) * 100.0, 3) if cf_total > 0 else None
+            )
         else:
-            crash_free_sessions_pct = None
+            # 窗口 sum sessions weighted —— 从 crash_metric_snapshots 滚一遍
+            # 颗粒度：跟 window_hours 对齐；total=0 → None（前端用 — 占位）
+            from datetime import datetime as _dt
+            from app.crashguard.models import CrashMetricSnapshot
+            cf_window_start = _dt.utcnow() - timedelta(hours=window_hours)
+            cf_row = (await session.execute(
+                select(
+                    func.coalesce(func.sum(CrashMetricSnapshot.total_sessions), 0),
+                    func.coalesce(func.sum(CrashMetricSnapshot.crashed_sessions), 0),
+                ).where(CrashMetricSnapshot.window_start >= cf_window_start)
+            )).first()
+            cf_total = int(cf_row[0] or 0) if cf_row else 0
+            cf_crashed = int(cf_row[1] or 0) if cf_row else 0
+            if cf_total > 0:
+                crash_free_sessions_pct = round((1.0 - cf_crashed / cf_total) * 100.0, 3)
+            else:
+                crash_free_sessions_pct = None
 
         # ── Crash-free users %（2026-05-21 主指标切换）──────────────────────
         # 抓手：CrashMetricSnapshot 表是 sessions 维度的，user 维度没入库
@@ -931,11 +1042,9 @@ async def get_top(
         cf_users_total = 0
         cf_users_crashed = 0
         try:
-            from app.crashguard.config import get_crashguard_settings as _gcs
-            _s = _gcs()
             if _s.datadog_api_key:
                 cu_total_by_plat, cu_crashed_by_plat = await _cached_user_dim(
-                    int(window_hours), _s,
+                    int(window_hours), _s, generation_norm,
                 )
                 cf_users_total = sum(int(v or 0) for v in (cu_total_by_plat or {}).values())
                 cf_users_crashed = sum(int(v or 0) for v in (cu_crashed_by_plat or {}).values())

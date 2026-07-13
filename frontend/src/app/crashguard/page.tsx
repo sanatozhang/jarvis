@@ -206,8 +206,10 @@ function CrashguardPageInner() {
     const n = parseInt(v || "", 10);
     return n === 168 || n === 336 || n === 720 ? (n as 168 | 336 | 720) : 24;
   };
-  // 代际：默认只看 4.0(native)，勾选"显示3.x"才看全部——重点突出4.0，弱化3.x
-  const parseShowFlutter = (v: string | null): boolean => v === "1";
+  // 代际：三态——默认只看 4.0(native)，可单独切到只看 3.x(flutter)，或看全部——
+  // 重点突出4.0、弱化3.x，但保留单独查看3.x的入口
+  const parseGeneration = (v: string | null): "native" | "flutter" | "all" =>
+    v === "flutter" || v === "all" ? v : "native";
 
   const platformFilter = parsePlatform(searchParams?.get("platform") || null);
   const fatalityFilter = parseFatality(searchParams?.get("fatality") || null);
@@ -215,7 +217,7 @@ function CrashguardPageInner() {
   const sortBy = parseSort(searchParams?.get("sort") || null);
   const page = parsePageNum(searchParams?.get("page") || null);
   const windowHours = parseWindow(searchParams?.get("win") || null);
-  const showFlutter = parseShowFlutter(searchParams?.get("show_flutter") || null);
+  const genFilter = parseGeneration(searchParams?.get("gen") || null);
   // search 不走 URL 立即同步——避免每个字符都 push history；用 debounced 内部 state
   const [search, setSearch] = useState<string>(searchParams?.get("search") || "");
   const debouncedSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -243,7 +245,7 @@ function CrashguardPageInner() {
         page: number;
         search: string;
         win: 24 | 168 | 336 | 720;
-        showFlutter: boolean;
+        gen: "native" | "flutter" | "all";
       }>,
     ) => {
       const params = new URLSearchParams(Array.from(searchParams?.entries() || []));
@@ -259,7 +261,7 @@ function CrashguardPageInner() {
       if ("page" in patch) setOrDel("page", patch.page ? String(patch.page) : undefined, patch.page === 1 || !patch.page);
       if ("search" in patch) setOrDel("search", patch.search, !patch.search);
       if ("win" in patch) setOrDel("win", patch.win ? String(patch.win) : undefined, patch.win === 24 || !patch.win);
-      if ("showFlutter" in patch) setOrDel("show_flutter", patch.showFlutter ? "1" : undefined, !patch.showFlutter);
+      if ("gen" in patch) setOrDel("gen", patch.gen, patch.gen === "native" || !patch.gen);
       const qs = params.toString();
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
@@ -272,7 +274,7 @@ function CrashguardPageInner() {
   const setSortBy = (v: CrashSortBy) => updateListQuery({ sort: v, page: 1 });
   const setPage = (v: number) => updateListQuery({ page: v });
   const setWindowHours = (v: 24 | 168 | 336 | 720) => updateListQuery({ win: v, page: 1 });
-  const setShowFlutter = (v: boolean) => updateListQuery({ showFlutter: v, page: 1 });
+  const setGenFilter = (v: "native" | "flutter" | "all") => updateListQuery({ gen: v, page: 1 });
 
   // search 输入 debounce 300ms → push 到 URL
   useEffect(() => {
@@ -380,7 +382,7 @@ function CrashguardPageInner() {
         platform: platformFilter === "all" ? "" : platformFilter,
         status: statusFilter === "all" ? "" : statusFilter,
         search: searchParams?.get("search") || "",
-        generation: showFlutter ? "" : "native",
+        generation: genFilter === "all" ? "" : genFilter,
         sort_by: sortBy,
         kinds: "all",
         window_hours: windowHours,
@@ -394,7 +396,7 @@ function CrashguardPageInner() {
             platform: platformFilter === "all" ? "" : platformFilter,
             status: statusFilter === "all" ? "" : statusFilter,
             search: searchParams?.get("search") || "",
-            generation: showFlutter ? "" : "native",
+            generation: genFilter === "all" ? "" : genFilter,
             sort_by: sortBy,
             kinds: "all",
             window_hours: windowHours,
@@ -413,7 +415,7 @@ function CrashguardPageInner() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, fatalityFilter, platformFilter, statusFilter, sortBy, windowHours, showFlutter, searchParams]);
+  }, [page, fatalityFilter, platformFilter, statusFilter, sortBy, windowHours, genFilter, searchParams]);
 
   const loadDetail = async (issueId: string) => {
     setDetailLoading(true);
@@ -777,13 +779,15 @@ function CrashguardPageInner() {
   }, []);
 
   // 「线上最新版本」+ 版本分布饼图 + 机型分布——按平台从后端并发拉
+  // generation 跟 issue 列表用同一个"代际"选择器：默认只看4.0(native)
   useEffect(() => {
     let cancelled = false;
+    const gen = genFilter === "all" ? "" : genFilter;
     Promise.all([
-      fetchCrashLatestRelease(),
-      fetchCrashVersionDistribution(24),
-      fetchCrashOsVersionDistribution(24),
-      fetchCrashPlatformSummary(24),
+      fetchCrashLatestRelease(gen),
+      fetchCrashVersionDistribution(24, gen),
+      fetchCrashOsVersionDistribution(24, gen),
+      fetchCrashPlatformSummary(24, gen),
     ])
       .then(([r, vd, od, ps]) => {
         if (cancelled) return;
@@ -799,7 +803,7 @@ function CrashguardPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [items.length]);
+  }, [items.length, genFilter]);
 
   useEffect(() => {
     if (!reportLoading) return;
@@ -880,23 +884,16 @@ function CrashguardPageInner() {
                 { v: "new_first", l: t("新增/回归优先") },
               ]}
             />
-            <label
-              className="flex items-center gap-1.5 rounded px-2 py-0.5 text-xs cursor-pointer"
-              style={{
-                border: `1px solid ${showFlutter ? D.accent : D.border}`,
-                background: showFlutter ? D.accentBg : "transparent",
-                color: showFlutter ? D.text1 : D.text2,
-              }}
-              title={t("默认只看4.0(native)，勾选后同时显示3.x(Flutter)")}
-            >
-              <input
-                type="checkbox"
-                checked={showFlutter}
-                onChange={(e) => setShowFlutter(e.target.checked)}
-                style={{ accentColor: D.accent }}
-              />
-              {t("显示3.x(Flutter)")}
-            </label>
+            <FilterPill
+              label={t("代际")}
+              value={genFilter}
+              onChange={(v) => setGenFilter(v as any)}
+              options={[
+                { v: "native", l: "4.x" },
+                { v: "flutter", l: "3.x" },
+                { v: "all", l: t("全部") },
+              ]}
+            />
             {/* 分隔 + 时间窗口 */}
             <span className="mx-1" style={{ color: D.text3 }}>|</span>
             <span className="text-xs" style={{ color: D.text3 }}>⏱</span>

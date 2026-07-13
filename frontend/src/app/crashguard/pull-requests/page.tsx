@@ -56,8 +56,8 @@ export default function CrashPullRequestsPage() {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "draft" | "open" | "merged" | "closed">("all");
   const [repoFilter, setRepoFilter] = useState<"all" | "flutter" | "android" | "ios">("all");
-  // 默认只看4.0(native)，勾选后同时显示3.x(Flutter)——跟首页/10点飞书日报同一口径
-  const [showFlutter, setShowFlutter] = useState(false);
+  // 代际：默认只看4.0(native)，可单独切到只看3.x(flutter)，或看全部——跟首页/10点飞书日报同一口径
+  const [genFilter, setGenFilter] = useState<"native" | "flutter" | "all">("native");
   const [days, setDays] = useState(30);
   const [syncingIds, setSyncingIds] = useState<Set<number>>(new Set());
   const [syncingAll, setSyncingAll] = useState(false);
@@ -157,7 +157,7 @@ export default function CrashPullRequestsPage() {
       days,
       status: statusFilter === "all" ? undefined : statusFilter,
       repo: repoFilter === "all" ? undefined : repoFilter,
-      generation: showFlutter ? undefined : "native",
+      generation: genFilter === "all" ? undefined : genFilter,
       limit: 100,
     })
       .then((r) => {
@@ -175,7 +175,7 @@ export default function CrashPullRequestsPage() {
     return () => {
       cancelled = true;
     };
-  }, [statusFilter, repoFilter, showFlutter, days, reloadKey]);
+  }, [statusFilter, repoFilter, genFilter, days, reloadKey]);
 
   return (
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text1 }}>
@@ -380,30 +380,28 @@ export default function CrashPullRequestsPage() {
               {k}
             </button>
           ))}
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              marginLeft: 12,
-              padding: "4px 10px",
-              borderRadius: 6,
-              border: `1px solid ${showFlutter ? D.accent : D.border}`,
-              background: showFlutter ? "rgba(14,124,134,0.08)" : "transparent",
-              color: showFlutter ? D.text1 : D.text2,
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-            title={t("默认只看4.0(native)，勾选后同时显示3.x(Flutter)")}
-          >
-            <input
-              type="checkbox"
-              checked={showFlutter}
-              onChange={(e) => setShowFlutter(e.target.checked)}
-              style={{ accentColor: D.accent }}
-            />
-            {t("显示3.x(Flutter)")}
-          </label>
+          <span style={{ color: D.text2, fontSize: 13, marginLeft: 12 }}>{t("代际")}：</span>
+          {([
+            ["native", "4.x"],
+            ["flutter", "3.x"],
+            ["all", t("全部")],
+          ] as ["native" | "flutter" | "all", string][]).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setGenFilter(k)}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 6,
+                border: `1px solid ${genFilter === k ? D.accent : D.border}`,
+                background: genFilter === k ? D.accent : "transparent",
+                color: genFilter === k ? "white" : D.text1,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
           <span style={{ flex: 1 }} />
           <select
             value={days}

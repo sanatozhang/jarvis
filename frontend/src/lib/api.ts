@@ -1728,8 +1728,10 @@ export interface CrashLatestRelease {
   top_user_versions_source?: Partial<Record<"android" | "ios", string>>;
 }
 
-export const fetchCrashLatestRelease = () =>
-  request<CrashLatestRelease>("/crash/latest-release");
+export const fetchCrashLatestRelease = (generation?: "native" | "flutter" | "") =>
+  request<CrashLatestRelease>(
+    `/crash/latest-release${generation ? `?generation=${generation}` : ""}`
+  );
 
 export interface CrashVersionSlice {
   version: string;
@@ -1746,8 +1748,10 @@ export interface CrashVersionDistribution {
   window_hours: number;
 }
 
-export const fetchCrashVersionDistribution = (window_hours = 24) =>
-  request<CrashVersionDistribution>(`/crash/version-distribution?window_hours=${window_hours}`);
+export const fetchCrashVersionDistribution = (window_hours = 24, generation?: "native" | "flutter" | "") =>
+  request<CrashVersionDistribution>(
+    `/crash/version-distribution?window_hours=${window_hours}${generation ? `&generation=${generation}` : ""}`
+  );
 
 export interface CrashDeviceSlice {
   model: string;
@@ -1761,8 +1765,10 @@ export interface CrashDeviceDistribution {
   window_hours: number;
 }
 
-export const fetchCrashDeviceDistribution = (window_hours = 24) =>
-  request<CrashDeviceDistribution>(`/crash/device-distribution?window_hours=${window_hours}`);
+export const fetchCrashDeviceDistribution = (window_hours = 24, generation?: "native" | "flutter" | "") =>
+  request<CrashDeviceDistribution>(
+    `/crash/device-distribution?window_hours=${window_hours}${generation ? `&generation=${generation}` : ""}`
+  );
 
 export interface CrashOsVersionSlice {
   version: string;
@@ -1776,8 +1782,10 @@ export interface CrashOsVersionDistribution {
   window_hours: number;
 }
 
-export const fetchCrashOsVersionDistribution = (window_hours = 24) =>
-  request<CrashOsVersionDistribution>(`/crash/os-version-distribution?window_hours=${window_hours}`);
+export const fetchCrashOsVersionDistribution = (window_hours = 24, generation?: "native" | "flutter" | "") =>
+  request<CrashOsVersionDistribution>(
+    `/crash/os-version-distribution?window_hours=${window_hours}${generation ? `&generation=${generation}` : ""}`
+  );
 
 export interface CrashPlatformSummary {
   total_sessions: number;
@@ -1791,8 +1799,10 @@ export interface CrashPlatformSummaryResponse {
   window_hours: number;
 }
 
-export const fetchCrashPlatformSummary = (window_hours = 24) =>
-  request<CrashPlatformSummaryResponse>(`/crash/platform-summary?window_hours=${window_hours}`);
+export const fetchCrashPlatformSummary = (window_hours = 24, generation?: "native" | "flutter" | "") =>
+  request<CrashPlatformSummaryResponse>(
+    `/crash/platform-summary?window_hours=${window_hours}${generation ? `&generation=${generation}` : ""}`
+  );
 
 // ---------------------------------------------------------------------------
 // T3 客服反馈闭环：对 AI 的 needs_engineer 标签做事后纠偏

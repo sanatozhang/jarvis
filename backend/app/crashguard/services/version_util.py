@@ -50,6 +50,26 @@ _NATIVE_MIN_VERSION = (4, 0, 0)
 # 代际 badge（行内标注 4.0 native vs 3.x flutter）——daily_report / pr_pending_review_alert 共用。
 GEN_BADGE = {"native": "🆕4.0", "flutter": "🦋3.x"}
 
+# 按代际拆分的 Datadog service filter —— 首页"显示3.x"勾选框的单一过滤入口。
+# 2026-07-13：发现首页除 issue 列表外，crash-free%/版本分布/机型分布/latest-release
+# 全部共用 config.py 里那条混合 filter，勾选框形同虚设。改成在查询源头就选对应
+# service 的 filter，下游不用再额外加 group_by 维度去拆——数据从 Datadog 吐出来
+# 那一刻就已经是单一代际的了。
+_NATIVE_DATADOG_FILTER = "((service:plaud_android AND env:production) OR (service:plaud_ios AND env:production))"
+_FLUTTER_DATADOG_FILTER = "(service:plaud-flutter)"
+
+
+def service_filter_for_generation(generation: str, base_filter: str) -> str:
+    """按 generation("native"/"flutter"/"") 选 Datadog service filter。
+
+    generation 为空/未知 → 原样返回 base_filter（向后兼容，等价于"显示全部"）。
+    """
+    if generation == "native":
+        return _NATIVE_DATADOG_FILTER
+    if generation == "flutter":
+        return _FLUTTER_DATADOG_FILTER
+    return base_filter
+
 
 def classify_generation(service: str = "", version: str = "") -> str:
     """判定崩溃"代际"：'native'（4.0 原生新仓）/ 'flutter'（3.x 旧仓）/ ''（未知）。
@@ -95,10 +115,19 @@ def max_version(versions: Iterable[str]) -> str:
     return max(cleaned, key=_sort_key)
 
 
+def _generation_allows(service: str, version: str, generation: str) -> bool:
+    """判不出代际（service/version 缺失）保守放行，跟其它 generation 过滤口径一致。"""
+    if not generation:
+        return True
+    gen = classify_generation(service, version)
+    return (not gen) or gen == generation
+
+
 async def derive_latest_release_from_crashes(
     session: AsyncSession,
     platform: str,
     min_events: int = 300,
+    generation: str = "",
 ) -> str:
     """根据崩溃数据派生"线上最新版本"。
 
@@ -107,6 +136,8 @@ async def derive_latest_release_from_crashes(
       - 以 last_seen_version 为版本桶，按 total_events_across_versions 加权求和
       - 过滤掉 events < min_events 的版本（噪音/灰度版本）
       - 在剩下版本中取 semver 最大值
+
+    generation: "native"/"flutter"/""（=全部）—— 首页"显示3.x"勾选框透传。
 
     返回 "" 表示无法派生（无数据 / 全部低于阈值）。
     """
@@ -117,7 +148,7 @@ async def derive_latest_release_from_crashes(
 
     # DB 里 platform 可能存大写（ANDROID/IOS）也可能小写（flutter），统一忽略大小写
     stmt = (
-        select(CrashIssue.last_seen_version, CrashIssue.total_events)
+        select(CrashIssue.last_seen_version, CrashIssue.total_events, CrashIssue.service)
         .where(func.lower(CrashIssue.platform) == platform.lower())
     )
     rows = (await session.execute(stmt)).all()
@@ -125,9 +156,11 @@ async def derive_latest_release_from_crashes(
         return ""
 
     bucket: dict[str, int] = {}
-    for ver, events in rows:
+    for ver, events, service in rows:
         v = (ver or "").strip()
         if not v:
+            continue
+        if not _generation_allows(service or "", v, generation):
             continue
         bucket[v] = bucket.get(v, 0) + int(events or 0)
 
@@ -181,6 +214,7 @@ async def resolve_effective_latest_release(
     platform: str,
     override: str = "",
     min_events: int = 300,
+    generation: str = "",
 ) -> str:
     """统一入口：优先用配置 override，否则从崩溃数据派生。
 
@@ -188,6 +222,9 @@ async def resolve_effective_latest_release(
         platform: flutter / ios / android
         override: 配置里手动指定的最新版本（高优）
         min_events: 派生阈值——版本累计 events 低于此值不考虑（默认 300）
+        generation: "native"/"flutter"/""（=全部）—— 首页"显示3.x"勾选框透传。
+            注意：有 override 时直接生效，不受 generation 过滤（手动配置的值
+            视为管理员明确意图，跟"看不看3.x"的视图筛选是两回事）。
 
     Returns:
         最新版本字符串，全部失败时返回 ""。
@@ -195,13 +232,14 @@ async def resolve_effective_latest_release(
     if override and override.strip():
         return override.strip()
     return await derive_latest_release_from_crashes(
-        session=session, platform=platform, min_events=min_events
+        session=session, platform=platform, min_events=min_events, generation=generation,
     )
 
 
 async def derive_top_user_version_from_crashes(
     session: AsyncSession,
     platform: str,
+    generation: str = "",
 ) -> Optional[dict]:
     """
     fallback：从 crash_issues.top_app_version 字段加权聚合「用户量最大版本」。
@@ -213,6 +251,9 @@ async def derive_top_user_version_from_crashes(
     （Datadog Error Tracking 不直接返回 users，Plan 2.5 RUM Events API 才补，
     见 `models.py:71` 注释）。events 数是用户影响范围的合理代理。
 
+    generation: "native"/"flutter"/""（=全部）—— 按该 issue 的 service + 具体版本串
+    联合判定，逐个版本片段过滤，跟首页"显示3.x"勾选框同一口径。
+
     Returns:
         {"version": str, "users": int} 或 None（无数据）。
         ↑ "users" 字段在 events-代理 口径下实际是加权 events 数。
@@ -223,7 +264,7 @@ async def derive_top_user_version_from_crashes(
         return None
 
     stmt = (
-        select(CrashIssue.top_app_version, CrashIssue.total_events)
+        select(CrashIssue.top_app_version, CrashIssue.total_events, CrashIssue.service)
         .where(func.lower(CrashIssue.platform) == platform.lower())
     )
     rows = (await session.execute(stmt)).all()
@@ -232,7 +273,7 @@ async def derive_top_user_version_from_crashes(
 
     bucket: dict[str, float] = {}
     pattern = re.compile(r"^(.+?)\s*\(([\d.]+)%\)\s*$")
-    for top_av, total_events in rows:
+    for top_av, total_events, service in rows:
         top_av = (top_av or "").strip()
         events = int(total_events or 0)
         if not top_av or events <= 0:
@@ -247,6 +288,8 @@ async def derive_top_user_version_from_crashes(
             except ValueError:
                 continue
             if not ver or pct <= 0:
+                continue
+            if not _generation_allows(service or "", ver, generation):
                 continue
             bucket[ver] = bucket.get(ver, 0.0) + events * pct
 

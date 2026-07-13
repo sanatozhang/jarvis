@@ -283,3 +283,93 @@ def test_gen_badge_has_native_and_flutter_entries():
 
     assert GEN_BADGE["native"] == "🆕4.0"
     assert GEN_BADGE["flutter"] == "🦋3.x"
+
+
+# ---------------------------------------------------------------------------
+# service_filter_for_generation —— 首页"显示3.x"勾选框的单一过滤入口
+# ---------------------------------------------------------------------------
+
+
+class TestServiceFilterForGeneration:
+    def test_native_returns_native_only_filter(self):
+        from app.crashguard.services.version_util import service_filter_for_generation
+
+        f = service_filter_for_generation("native", "base")
+        assert "plaud_android" in f
+        assert "plaud_ios" in f
+        assert "plaud-flutter" not in f
+
+    def test_flutter_returns_flutter_only_filter(self):
+        from app.crashguard.services.version_util import service_filter_for_generation
+
+        f = service_filter_for_generation("flutter", "base")
+        assert f == "(service:plaud-flutter)"
+
+    def test_empty_falls_back_to_base_filter(self):
+        from app.crashguard.services.version_util import service_filter_for_generation
+
+        assert service_filter_for_generation("", "base") == "base"
+        assert service_filter_for_generation("unknown", "base") == "base"
+
+
+# ---------------------------------------------------------------------------
+# generation 参数 —— derive_latest_release_from_crashes / derive_top_user_version_from_crashes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_derive_latest_release_generation_filter(patched_session):
+    """generation=native 只留 service=plaud_android 的版本，flutter 版本被剔除。"""
+    from app.crashguard.models import CrashIssue
+
+    async with patched_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="i1", platform="android", service="plaud_android",
+            last_seen_version="4.1.0", total_events=2000,
+        ))
+        s.add(CrashIssue(
+            datadog_issue_id="i2", platform="android", service="plaud-flutter",
+            last_seen_version="3.20.0", total_events=5000,  # 更大但是 flutter，应被剔除
+        ))
+        await s.commit()
+        v = await derive_latest_release_from_crashes(
+            session=s, platform="android", min_events=300, generation="native",
+        )
+    assert v == "4.1.0"
+
+
+@pytest.mark.asyncio
+async def test_derive_latest_release_generation_filter_unknown_passes_through(patched_session):
+    """判不出代际（无 service，版本也不可解析成语义化 semver 用不上）——保守放行。"""
+    from app.crashguard.models import CrashIssue
+
+    async with patched_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="i1", platform="android", service="",
+            last_seen_version="4.5.0", total_events=2000,  # service 空，靠 version>=4.0.0 兜底判成 native
+        ))
+        await s.commit()
+        v = await derive_latest_release_from_crashes(
+            session=s, platform="android", min_events=300, generation="flutter",
+        )
+    # version 兜底判定成 native，跟 generation="flutter" 不符 → 剔除
+    assert v == ""
+
+
+@pytest.mark.asyncio
+async def test_derive_top_user_version_generation_filter(patched_session):
+    """generation=flutter 只留 service=plaud-flutter 的版本片段。"""
+    from app.crashguard.models import CrashIssue
+
+    async with patched_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="i1", platform="android", service="plaud-flutter",
+            top_app_version="3.17.0 (100%)", total_events=1000,
+        ))
+        s.add(CrashIssue(
+            datadog_issue_id="i2", platform="android", service="plaud_android",
+            top_app_version="4.1.0 (100%)", total_events=9000,  # events 更大但是 native，应被剔除
+        ))
+        await s.commit()
+        out = await derive_top_user_version_from_crashes(s, platform="android", generation="flutter")
+    assert out == {"version": "3.17.0", "users": 1000}
