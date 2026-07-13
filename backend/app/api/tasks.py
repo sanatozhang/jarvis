@@ -590,7 +590,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 task_id,
                 status="failed",
                 progress=100,
-                message=f"Analysis timeout (task_timeout={_task_timeout}s)",
+                message=f"分析超时（任务超时={_task_timeout}秒）",
                 error=f"task_timeout_exceeded ({_task_timeout}s)",
             )
             try:
@@ -662,11 +662,11 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
         if is_real_failure:
             error_msg = result.root_cause[:200]
-            await db.update_task(task_id, status="failed", progress=100, message="Analysis failed", error=error_msg)
+            await db.update_task(task_id, status="failed", progress=100, message="分析失败", error=error_msg)
             await db.update_issue_status(issue_id, "failed")
             _update_progress(task_id, TaskProgress(
                 task_id=task_id, issue_id=issue_id, status=TaskStatus.FAILED,
-                progress=100, message="Analysis failed", error=error_msg, updated_at=datetime.utcnow(),
+                progress=100, message="分析失败", error=error_msg, updated_at=datetime.utcnow(),
             ))
             # Auto-notify oncall engineers on analysis failure (gated by ENABLE_ONCALL_NOTIFY)
             import os
@@ -708,11 +708,11 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             except Exception as ne:
                 logger.warning("Failure Feishu alert failed for task %s: %s", task_id, ne)
         else:
-            await db.update_task(task_id, status="done", progress=100, message="Analysis complete")
+            await db.update_task(task_id, status="done", progress=100, message="分析完成")
             await db.update_issue_status(issue_id, "done")
             _update_progress(task_id, TaskProgress(
                 task_id=task_id, issue_id=issue_id, status=TaskStatus.DONE,
-                progress=100, message="Analysis complete", updated_at=datetime.utcnow(),
+                progress=100, message="分析完成", updated_at=datetime.utcnow(),
             ))
 
             # Track: analysis succeeded
@@ -757,7 +757,7 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 issue_id=issue_id,
                 status=TaskStatus.FAILED,
                 progress=0,
-                message="Analysis failed",
+                message="分析失败",
                 error=error_str,
                 updated_at=datetime.utcnow(),
             ),

@@ -469,9 +469,6 @@ async def run_analysis_pipeline(
         await on_progress(25, f"已准备 {len(downloaded_files)} 个文件")
 
     # --- Step 3: Decrypt / process ---
-    if on_progress:
-        await on_progress(30, "解密日志...")
-
     log_paths: list[Path] = []
     log_parse_issues: list[str] = []
 
@@ -507,6 +504,14 @@ async def run_analysis_pipeline(
         except Exception as e:
             logger.warning("Decrypt cache reuse failed (%s) — falling back to fresh decrypt", e)
             log_paths = []
+
+    # 进度提示要反映实际发生的事——命中缓存时不再说"解密日志..."（那个步骤已经跳过了，
+    # 重试/深度分析看到这条会误以为在重新解压 23MB→146MB 的原始日志）。
+    if on_progress:
+        await on_progress(
+            35 if reused_decrypt else 30,
+            "复用已解密日志..." if reused_decrypt else "解密日志...",
+        )
 
     if not reused_decrypt:
         # Option A：解密是 subprocess + 大文件 IO 的同步阻塞调用，丢线程池避免冻结事件循环
