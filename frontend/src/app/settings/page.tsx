@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult } from "@/lib/api";
 import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
@@ -38,6 +38,11 @@ function CrashguardPrefsSection() {
   const [symSaved, setSymSaved] = useState(false);
   const [symError, setSymError] = useState("");
 
+  // QA 内测包抓取开关（服务端）
+  const [qaSettings, setQaSettings] = useState<QaCaptureSettings>({ qa_capture_enabled: false, qa_version_patch_threshold: 100 });
+  const [qaSaving, setQaSaving] = useState(false);
+  const [qaError, setQaError] = useState("");
+
   useEffect(() => {
     const cur = getBatchTopN();
     setN(cur);
@@ -46,7 +51,21 @@ function CrashguardPrefsSection() {
       setSymSettings(s);
       setSymDraft({ symbol_upload_keep_versions: String(s.symbol_upload_keep_versions), github_cache_keep_versions: String(s.github_cache_keep_versions) });
     }).catch(() => {});
+    fetchQaCaptureSettings().then(setQaSettings).catch(() => {});
   }, []);
+
+  const onToggleQaCapture = async (checked: boolean) => {
+    setQaSaving(true);
+    setQaError("");
+    try {
+      const result = await updateQaCaptureSettings(checked);
+      setQaSettings(result);
+    } catch {
+      setQaError(t("保存失败，请重试"));
+    } finally {
+      setQaSaving(false);
+    }
+  };
 
   const onSave = () => {
     const parsed = parseInt(draft, 10);
@@ -145,6 +164,25 @@ function CrashguardPrefsSection() {
               {symError && <span className="text-xs" style={{ color: "#EF4444" }}>{symError}</span>}
             </div>
           </div>
+        </div>
+
+        {/* QA 内测包抓取开关 */}
+        <div style={{ borderTop: `1px solid ${S.borderSm}`, paddingTop: 12 }}>
+          <label className="block text-sm font-medium mb-1" style={{ color: S.text1 }}>{t("抓取 QA 内测包数据")}</label>
+          <p className="text-[11px] mb-2" style={{ color: S.text3 }}>
+            {t("版本号第三段（patch）≥")} {qaSettings.qa_version_patch_threshold} {t("时会被判定为 QA 内测包，默认不进入崩溃列表 / Top N / 自动 PR。临时需要关注这些版本时打开；不再需要时记得关闭。")}
+          </p>
+          <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: S.text1 }}>
+            <input
+              type="checkbox"
+              checked={qaSettings.qa_capture_enabled}
+              disabled={qaSaving}
+              onChange={(e) => onToggleQaCapture(e.target.checked)}
+            />
+            {t("抓取 QA 内测包")}
+            {qaSaving && <span className="text-xs" style={{ color: S.text3 }}>{t("保存中...")}</span>}
+          </label>
+          {qaError && <span className="text-xs" style={{ color: "#EF4444" }}>{qaError}</span>}
         </div>
       </div>
     </section>

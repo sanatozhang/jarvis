@@ -102,3 +102,77 @@ async def test_run_data_phase_end_to_end(tmp_path, monkeypatch):
         )).scalar_one()
         assert snap1.is_new_in_version is True   # 1.4.7 == latest_release
         assert snap1.crash_free_impact_score > 0
+
+
+@pytest.mark.asyncio
+async def test_qa_build_skipped_by_default_and_captured_when_enabled(tmp_path, monkeypatch):
+    """
+    2026-07-13：native 4.0 版本号（如 4.0.100-901）第三段固定是 100，正好落进
+    qa_version_patch_threshold=100 的默认 QA 内测包判定区间，导致这些真实崩溃
+    被 pipeline 100% 丢弹（既不进 crash_issues 也不进 crash_snapshots）。
+
+    qa_capture_enabled 开关：默认 False 维持原有过滤行为；打开后该版本也应正常入库。
+    """
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'qa_pipe.db'}")
+    monkeypatch.setenv("CRASHGUARD_DATADOG_API_KEY", "test-key")
+    monkeypatch.setenv("CRASHGUARD_DATADOG_APP_KEY", "test-app")
+    from app.config import get_settings
+    from app.crashguard.config import get_crashguard_settings
+    get_settings.cache_clear()
+    get_crashguard_settings.cache_clear()
+
+    from app.db.database import init_db, get_session
+    from app.crashguard import models  # noqa
+    from app.crashguard.models import CrashIssue, CrashSnapshot
+    await init_db()
+
+    qa_issue = {
+        "id": "ddi_native_qa",
+        "attributes": {
+            "title": "AppHang",
+            "service": "plaud_ios",
+            "platform": "ios",
+            "first_seen_timestamp": 1714003200000,
+            "last_seen_timestamp": 1714176000000,
+            "first_seen_version": "4.0.0",
+            "last_seen_version": "4.0.100-901",
+            "events_count": 55,
+            "users_affected": 0,
+            "stack_trace": "App Hang",
+            "tags": {},
+        },
+    }
+
+    async def fake_list_issues(self, window_hours=24, page_size=100, tracks="rum", query="*"):
+        return [qa_issue]
+
+    from app.crashguard.services.datadog_client import DatadogClient
+    monkeypatch.setattr(DatadogClient, "list_issues", fake_list_issues)
+
+    from app.crashguard.workers.pipeline import run_data_phase
+    from sqlalchemy import select, func
+    today = date.today()
+
+    # 默认 qa_capture_enabled=False → 被跳过
+    result = await run_data_phase(today=today, latest_release="4.0.100", recent_versions=[])
+    assert result["issues_processed"] == 0
+    assert result["qa_skipped"] == 1
+    async with get_session() as s:
+        n = (await s.execute(select(func.count()).select_from(CrashIssue))).scalar()
+        assert n == 0
+
+    # 打开开关 → 正常入库（用完立刻还原，避免污染后续测试共享的 lru_cache 单例）
+    get_crashguard_settings().qa_capture_enabled = True
+    try:
+        result2 = await run_data_phase(today=today, latest_release="4.0.100", recent_versions=[])
+    finally:
+        get_crashguard_settings().qa_capture_enabled = False
+    assert result2["issues_processed"] == 1
+    assert result2["qa_skipped"] == 0
+    async with get_session() as s:
+        n2 = (await s.execute(select(func.count()).select_from(CrashIssue))).scalar()
+        assert n2 == 1
+        n_snap = (await s.execute(
+            select(func.count()).select_from(CrashSnapshot).where(CrashSnapshot.snapshot_date == today)
+        )).scalar()
+        assert n_snap == 1

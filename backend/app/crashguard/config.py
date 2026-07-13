@@ -484,6 +484,12 @@ class CrashguardSettings(BaseSettings):
     # 例：3.18.101-716 的 patch=101 >= 100 → 内测包；3.18.1-715 的 patch=1 < 100 → 真实用户包
     # 设为 0 表示禁用过滤（保留所有版本）
     qa_version_patch_threshold: int = 100
+    # QA 内测包临时抓取开关（默认 False = 维持过滤，跟历史行为一致）。
+    # 2026-07-13：4.0 native 尚未外发，当前版本号全落在 qa_version_patch_threshold
+    # 判定区间内（如 4.0.100-901），导致 native 崩溃 100% 被当成 QA 噪声丢弹。
+    # 开这个开关时临时豁免 QA 判定，让这些内测包数据也进 crash_issues/snapshot/Top N；
+    # 关闭后恢复原有过滤。前端设置页 `/settings` → Crashguard 区块可切换，无需重启。
+    qa_capture_enabled: bool = False
 
     model_config = {
         "env_prefix": "CRASHGUARD_",
@@ -577,6 +583,7 @@ def _yaml_overrides() -> Dict[str, Any]:
         "enabled", "pr_enabled", "pr_enabled_flutter", "pr_enabled_native",
         "feishu_enabled", "scheduler_enabled",
         "max_top_n", "analyze_top_n",
+        "qa_capture_enabled",
     ):
         if k in cfg:
             flat[k] = cfg[k]

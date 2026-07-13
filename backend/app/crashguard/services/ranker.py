@@ -96,15 +96,18 @@ async def pick_top_n(
         .where(CrashSnapshot.snapshot_date == today)
     )).all()
 
-    # QA 内测包阈值（版本第三段 >= 阈值时跳过）
+    # QA 内测包阈值（版本第三段 >= 阈值时跳过）；qa_capture_enabled=True 时临时豁免
     try:
         from app.crashguard.config import get_crashguard_settings as _cgs
-        _qa_threshold = _cgs().qa_version_patch_threshold
+        _qa_settings = _cgs()
+        _qa_threshold = _qa_settings.qa_version_patch_threshold
+        _qa_capture_enabled = _qa_settings.qa_capture_enabled
     except Exception:
         _qa_threshold = 100
+        _qa_capture_enabled = False
 
     def _is_qa_ver(ver: str) -> bool:
-        if _qa_threshold <= 0:
+        if _qa_capture_enabled or _qa_threshold <= 0:
             return False
         try:
             patch = ver.split("-")[0].split(".")[2]

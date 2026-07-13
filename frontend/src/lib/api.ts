@@ -1934,6 +1934,18 @@ export const updateSymbolSettings = (patch: Partial<SymbolSettings>) =>
     { method: "PATCH", body: JSON.stringify(patch) },
   );
 
+export interface QaCaptureSettings {
+  qa_capture_enabled: boolean;
+  qa_version_patch_threshold: number;
+}
+export const fetchQaCaptureSettings = () =>
+  request<QaCaptureSettings>("/crash/settings/qa-capture");
+export const updateQaCaptureSettings = (qa_capture_enabled: boolean) =>
+  request<QaCaptureSettings>(
+    "/crash/settings/qa-capture",
+    { method: "PATCH", body: JSON.stringify({ qa_capture_enabled }) },
+  );
+
 // ============================================================
 // Release 自动化
 // ============================================================

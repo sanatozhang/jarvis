@@ -136,6 +136,7 @@ function CrashguardPageInner() {
   const [items, setItems] = useState<CrashTopItem[]>([]);
   const [date, setDate] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [panelsLoading, setPanelsLoading] = useState(false);
   const [batching, setBatching] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const [reportLoading, setReportLoading] = useState<{
@@ -783,6 +784,7 @@ function CrashguardPageInner() {
   useEffect(() => {
     let cancelled = false;
     const gen = genFilter === "all" ? "" : genFilter;
+    setPanelsLoading(true);
     Promise.all([
       fetchCrashLatestRelease(gen),
       fetchCrashVersionDistribution(24, gen),
@@ -799,7 +801,10 @@ function CrashguardPageInner() {
         setOsVersionDistribution(od.data ?? {});
         setPlatformSummary(ps.data ?? {});
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setPanelsLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -830,6 +835,25 @@ function CrashguardPageInner() {
     <div className="flex h-full" style={{ background: D.bg, color: D.text1 }}>
       {/* Main pane */}
       <div className="flex-1 flex flex-col min-w-0 overflow-auto">
+        {/* 顶部进度条：切筛选（尤其代际）时一次要打好几个接口，明确告诉用户"在刷新，不是卡住" */}
+        <div className="relative h-[3px] w-full overflow-hidden shrink-0" style={{ background: "transparent" }}>
+          {(loading || panelsLoading) && (
+            <div
+              className="absolute inset-y-0 rounded-full"
+              style={{
+                width: "40%",
+                background: `linear-gradient(90deg, transparent, ${D.accent}, transparent)`,
+                animation: "crashguard-indeterminate 1.2s linear infinite",
+              }}
+            />
+          )}
+        </div>
+        <style jsx global>{`
+          @keyframes crashguard-indeterminate {
+            0% { left: -40%; }
+            100% { left: 100%; }
+          }
+        `}</style>
         {/* Top filter bar (Firebase style) — 三行合一：筛选 + 时间窗口 + 操作按钮 */}
         <div
           className="j-rise flex items-center justify-between gap-3 px-6 py-3 flex-wrap"

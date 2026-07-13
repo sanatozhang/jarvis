@@ -120,8 +120,9 @@ async def run_data_phase(
                 continue
 
             # QA 内测包过滤：版本第三段 >= qa_version_patch_threshold 时跳过
+            # qa_capture_enabled=True 时临时豁免（见 config.py 字段注释）
             version_for_check = norm.get("last_seen_version") or norm.get("first_seen_version") or ""
-            if _is_qa_version(version_for_check, s.qa_version_patch_threshold):
+            if not s.qa_capture_enabled and _is_qa_version(version_for_check, s.qa_version_patch_threshold):
                 qa_skipped += 1
                 logger.debug("skip QA build issue %s ver=%s", norm["datadog_issue_id"][:12], version_for_check)
                 continue
