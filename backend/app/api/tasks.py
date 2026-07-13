@@ -476,6 +476,52 @@ def _resolve_task_timeout(issue_id: str, concurrency_settings) -> int:
         return base
 
 
+async def _maybe_trigger_auto_deep_analysis(*, issue_id: str, username: str) -> bool:
+    """confidence=low 时按开关自动重跑一次深度分析（等价于用户手点"深度分析"）。
+
+    返回 True 表示深度分析已经跑完并会自己走 notify_issue_creator_on_complete，
+    调用处应跳过本轮（低置信度那次）的完成通知，避免用户收到两条消息。
+    """
+    from app.api.settings import AUTO_DEEP_ANALYSIS_KEY
+
+    try:
+        raw = await db.get_oncall_config(AUTO_DEEP_ANALYSIS_KEY, "")
+        if not raw or not json.loads(raw).get("enabled", False):
+            return False
+    except Exception as e:
+        logger.warning("auto_deep_analysis config read failed, skip: %s", e)
+        return False
+
+    # 只挡"真的正在跑"的任务（queued/analyzing），不挡刚存成 done 的当前 task_id 自己
+    # —— get_recent_active_task_for_issue 把 done 也算"非失败"，用它会把自己刚落库的
+    # done 状态误判成"已有任务在跑"，导致自动升级永远不触发。
+    from app.db.database import get_session, TaskRecord
+    from sqlalchemy import select
+    async with get_session() as session:
+        stmt = select(TaskRecord).where(
+            TaskRecord.issue_id == issue_id,
+            TaskRecord.status.in_(["queued", "analyzing"]),
+        )
+        if (await session.execute(stmt)).scalars().first():
+            logger.info("auto_deep_analysis skipped: issue %s already has an in-flight task", issue_id)
+            return False
+
+    deep_task_id = f"task_{uuid.uuid4().hex[:12]}"
+    await db.create_task(task_id=deep_task_id, issue_id=issue_id, agent_type="")
+    await db.update_issue_status(issue_id, "analyzing")
+    await db.log_event(
+        "analysis_start", issue_id=issue_id, username=username,
+        detail={"auto_deep_analysis": True, "task_id": deep_task_id},
+    )
+    logger.info("auto_deep_analysis triggered: issue %s -> task %s", issue_id, deep_task_id)
+
+    await _run_task(
+        task_id=deep_task_id, issue_id=issue_id, agent_override=None,
+        username=username, followup_question="", deep_analysis=True,
+    )
+    return True
+
+
 async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] = None, username: str = "", followup_question: str = "", deep_analysis: bool = False):
     """Run the full analysis pipeline as a background task."""
     import time as _time
@@ -612,6 +658,8 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
         await db.save_analysis(result.model_dump())
 
+        auto_deep_triggered = False
+
         if is_real_failure:
             error_msg = result.root_cause[:200]
             await db.update_task(task_id, status="failed", progress=100, message="Analysis failed", error=error_msg)
@@ -671,14 +719,31 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             duration = int((_time.monotonic() - _start_time) * 1000)
             await db.log_event("analysis_done", issue_id=issue_id, username=username, duration_ms=duration, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
 
-        try:
-            from app.services.notify_orchestrator import notify_issue_creator_on_complete
-            await notify_issue_creator_on_complete(
-                issue_id=issue_id, task_id=task_id,
-                status="failed" if is_real_failure else "done",
-            )
-        except Exception as ne:
-            logger.warning("notify_creator_failed task=%s err=%s", task_id, ne)
+            # confidence=low → 按开关自动升级深度分析；深度分析跑完自己会走下面的
+            # notify_issue_creator_on_complete，这一轮（低置信度那次）不重复通知用户。
+            if not deep_analysis and result.confidence == "low":
+                try:
+                    auto_deep_triggered = await _maybe_trigger_auto_deep_analysis(
+                        issue_id=issue_id, username=username,
+                    )
+                except Exception as ne:
+                    logger.warning("auto_deep_analysis_failed issue=%s task=%s err=%s", issue_id, task_id, ne)
+
+        if not auto_deep_triggered:
+            try:
+                from app.services.notify_orchestrator import notify_issue_creator_on_complete
+                _extra_summary = ""
+                if deep_analysis and not is_real_failure:
+                    _pt = result.problem_type_en or result.problem_type
+                    _rc = (result.root_cause_en or result.root_cause or "")[:300]
+                    _extra_summary = f"{_pt} — {_rc}" if _pt else _rc
+                await notify_issue_creator_on_complete(
+                    issue_id=issue_id, task_id=task_id,
+                    status="failed" if is_real_failure else "done",
+                    extra_summary=_extra_summary,
+                )
+            except Exception as ne:
+                logger.warning("notify_creator_failed task=%s err=%s", task_id, ne)
 
     except Exception as e:
         logger.error("Task %s failed: %s", task_id, e, exc_info=True)

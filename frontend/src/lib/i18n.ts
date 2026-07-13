@@ -269,6 +269,8 @@ const EN: Record<string, string> = {
   "凝缩器": "Condenser",
   "Agent": "Agent",
   "分析可信度较低提示": "Confidence in this analysis is low — consider trying Deep Analysis for a more thorough investigation.",
+  "低置信度分析已收起，点击展开": "Low-confidence result collapsed — click to expand",
+  "收起低置信度分析": "Collapse low-confidence result",
   "重新分析": "Re-analyze",
   "重新让 AI 分析这个 issue（30-90 秒）": "Re-run AI analysis on this issue (30-90s)",
   "批量分析中...": "Batch analyzing...",
@@ -427,6 +429,8 @@ const EN: Record<string, string> = {
   "依赖 & 属性": "Dependencies",
   "已启用": "Enabled",
   "已禁用": "Disabled",
+  "自动升级 Deep Analysis": "Auto-escalate to Deep Analysis",
+  "分析置信度为 low 时自动重跑深度分析，完成后飞书通知创建人": "When analysis confidence is low, automatically re-run Deep Analysis and notify the creator via Feishu once it completes",
 
   // Feedback form
   "请选择问题分类": "Select category",

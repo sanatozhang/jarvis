@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchSymbolSettings, updateSymbolSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type SymbolSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult } from "@/lib/api";
 import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
@@ -509,6 +509,9 @@ export default function SettingsPage() {
   const [condensationSaving, setCondensationSaving] = useState(false);
   const [condensationApiKey, setCondensationApiKey] = useState("");
 
+  const [autoDeepAnalysis, setAutoDeepAnalysis] = useState<AutoDeepAnalysisConfig | null>(null);
+  const [autoDeepAnalysisSaving, setAutoDeepAnalysisSaving] = useState(false);
+
   const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   const isAdmin = username === "sanato";
 
@@ -520,6 +523,7 @@ export default function SettingsPage() {
       .then((data) => setEscalationMembers(data.members.join("\n")))
       .catch(console.error);
     fetchCondensationConfig().then(setCondensation).catch(console.error);
+    fetchAutoDeepAnalysisConfig().then(setAutoDeepAnalysis).catch(console.error);
     if (isAdmin) loadEnv();
   }, []);
 
@@ -596,6 +600,16 @@ export default function SettingsPage() {
       fetchCondensationConfig().then(setCondensation).catch(console.error);
     } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
     finally { setCondensationSaving(false); }
+  };
+
+  const saveAutoDeepAnalysis = async () => {
+    if (!autoDeepAnalysis) return;
+    setAutoDeepAnalysisSaving(true);
+    try {
+      await updateAutoDeepAnalysisConfig({ enabled: autoDeepAnalysis.enabled });
+      setToast(t("已保存"));
+    } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
+    finally { setAutoDeepAnalysisSaving(false); }
   };
 
   const ruleTypes = ["recording_missing", "timestamp_drift", "bluetooth", "cloud_sync", "speaker", "flutter_crash", "file_transfer", "membership_payment", "hardware_firmware", "general"];
@@ -853,6 +867,37 @@ export default function SettingsPage() {
             style={inputStyle}
           />
         </section>
+
+        {/* AUTO DEEP ANALYSIS */}
+        {autoDeepAnalysis && (
+          <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                  {t("自动升级 Deep Analysis")}
+                </h2>
+                <p className="mt-0.5 text-xs" style={{ color: S.text3 }}>
+                  {t("分析置信度为 low 时自动重跑深度分析，完成后飞书通知创建人")}
+                </p>
+              </div>
+              <button onClick={saveAutoDeepAnalysis} disabled={autoDeepAnalysisSaving}
+                className="rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-50 transition-opacity"
+                style={{ background: S.overlay, color: S.text1, border: `1px solid ${S.border}` }}>
+                {autoDeepAnalysisSaving ? t("保存中...") : t("保存配置")}
+              </button>
+            </div>
+            <label className="flex cursor-pointer items-center gap-3">
+              <input type="checkbox" checked={autoDeepAnalysis.enabled}
+                onChange={(e) => setAutoDeepAnalysis({ ...autoDeepAnalysis, enabled: e.target.checked })}
+                className="h-4 w-4 rounded" style={{ accentColor: S.accent }} />
+              <span className="text-sm font-medium" style={{ color: S.text1 }}>{t("自动升级 Deep Analysis")}</span>
+              {autoDeepAnalysis.enabled && (
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                  style={{ background: "rgba(22,163,74,0.1)", color: "#16A34A" }}>{t("已启用")}</span>
+              )}
+            </label>
+          </section>
+        )}
 
         {/* L1.5 CONTEXT CONDENSATION */}
         {condensation && (

@@ -767,6 +767,17 @@ export const updateCondensationConfig = (data: Partial<CondensationConfig> & { a
     body: JSON.stringify(data),
   });
 
+// 自动升级 Deep Analysis：confidence=low 时自动重跑深度分析，完成后飞书通知
+export interface AutoDeepAnalysisConfig {
+  enabled: boolean;
+}
+export const fetchAutoDeepAnalysisConfig = () => request<AutoDeepAnalysisConfig>("/settings/auto-deep-analysis");
+export const updateAutoDeepAnalysisConfig = (data: Partial<AutoDeepAnalysisConfig>) =>
+  request<{ status: string }>("/settings/auto-deep-analysis", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+
 // ============================================================
 // Golden Samples
 // ============================================================

@@ -251,6 +251,11 @@ export function AnalysisResultView({
         const createdAt = (r as { created_at?: string }).created_at;
         const evidenceKey = r.task_id || `ev-${idx}`;
         const evidenceCollapsed = collapsedEvidence[evidenceKey] !== false; // default collapsed
+        // 低置信度普通结果默认整卡折叠（多半已被自动升级为 Deep Analysis，避免占地方）；
+        // 深度分析卡片自己即使 confidence 仍是 low 也不折叠——那已经是最终结论了。
+        const isLowConf = (r.confidence || "").toLowerCase() === "low" && !r.is_deep_analysis;
+        const lowKey = `low-${evidenceKey}`;
+        const lowCollapsed = isLowConf && collapsedEvidence[lowKey] !== false; // default collapsed
         return (
           <div key={r.task_id || idx} className="space-y-3">
             {/* User's follow-up question — right-aligned bubble */}
@@ -348,6 +353,22 @@ export function AnalysisResultView({
                 {r.log_metadata?.code_routing && <CodeRoutingBadge cr={r.log_metadata.code_routing} t={t} />}
               </div>
 
+              {/* 低置信度整卡折叠开关 */}
+              {isLowConf && (
+                <button
+                  onClick={() => setCollapsedEvidence((prev) => ({ ...prev, [lowKey]: !lowCollapsed }))}
+                  className="flex items-center gap-1 text-[11px] font-medium"
+                  style={{ color: "#DC2626", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                  <svg className={`h-3 w-3 transition-transform ${lowCollapsed ? "" : "rotate-90"}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                  {lowCollapsed ? t("低置信度分析已收起，点击展开") : t("收起低置信度分析")}
+                </button>
+              )}
+
+              {!lowCollapsed && (
+              <>
               {/* Per-run usage meter — 本次 tokens · cost (功能 1) */}
               <UsageMeter r={r} />
 
@@ -447,6 +468,8 @@ export function AnalysisResultView({
                     <MarkdownText>{userReply}</MarkdownText>
                   </div>
                 </div>
+              )}
+              </>
               )}
             </div>
           </div>

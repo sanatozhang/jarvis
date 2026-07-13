@@ -73,11 +73,15 @@ async def notify_issue_creator_on_complete(
     issue_id: str,
     task_id: str,
     status: str,
+    extra_summary: str = "",
 ) -> Optional[NotifyResult]:
     """Notify the issue creator (in English) when analysis finishes (done OR failed).
 
     No-op when the issue has no `created_by` (Linear webhook flow etc.) or the
     creator has no feishu_email on file.
+
+    `extra_summary` — when set (Deep Analysis auto-escalation), appended as a
+    dedicated line so the creator gets the actual finding, not just a "done" ping.
     """
     # db.database has no get_issue(); query IssueRecord directly. 用户名做 lower()
     # 归一化——历史工单 created_by 可能存的是 "Yixiu"，users 表主键是小写 "yixiu"，
@@ -113,9 +117,10 @@ async def notify_issue_creator_on_complete(
     desc_short = desc_clean[:300] + ("…" if len(desc_clean) > 300 else "")
     verb = "completed successfully" if status == "done" else "failed"
     category_en = category_label(category_raw, lang="en", short=False) if category_raw else ""
+    label = "Deep Analysis" if extra_summary else "ticket analysis"
 
     lines = [
-        f"✓ Your ticket analysis has {verb}.",
+        f"✓ Your {label} has {verb}.",
         "",
         f"Ticket ID: {issue_id}",
     ]
@@ -123,8 +128,10 @@ async def notify_issue_creator_on_complete(
         lines.append(f"Platform: {platform}")
     if category_en:
         lines.append(f"Category: {category_en}")
+    lines.append(f"Description: {desc_short or '(no description)'}")
+    if extra_summary:
+        lines.append(f"Deep Analysis Result: {extra_summary}")
     lines.extend([
-        f"Description: {desc_short or '(no description)'}",
         f"URL: {detail_url}",
         "",
         "Please review with the ticket description and URL above.",

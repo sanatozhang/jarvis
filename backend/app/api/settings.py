@@ -451,3 +451,38 @@ async def update_condensation_config(req: CondensationConfigUpdate):
     logger.info("Updated condensation config: enabled=%s, provider=%s", config.get("enabled"), config.get("provider"))
 
     return {"status": "updated"}
+
+
+# ---------------------------------------------------------------------------
+# Auto-escalate low-confidence analyses to Deep Analysis
+# ---------------------------------------------------------------------------
+
+AUTO_DEEP_ANALYSIS_KEY = "auto_deep_analysis_config"
+
+_AUTO_DEEP_ANALYSIS_DEFAULTS = {"enabled": False}
+
+
+@router.get("/auto-deep-analysis")
+async def get_auto_deep_analysis_config():
+    """Get the 自动升级 Deep Analysis switch (confidence=low → auto re-run deep analysis)."""
+    raw = await db.get_oncall_config(AUTO_DEEP_ANALYSIS_KEY, "")
+    config = json.loads(raw) if raw else dict(_AUTO_DEEP_ANALYSIS_DEFAULTS)
+    for k, v in _AUTO_DEEP_ANALYSIS_DEFAULTS.items():
+        config.setdefault(k, v)
+    return config
+
+
+class AutoDeepAnalysisConfigUpdate(BaseModel):
+    enabled: bool | None = None
+
+
+@router.put("/auto-deep-analysis")
+async def update_auto_deep_analysis_config(req: AutoDeepAnalysisConfigUpdate):
+    """Update the 自动升级 Deep Analysis switch."""
+    raw = await db.get_oncall_config(AUTO_DEEP_ANALYSIS_KEY, "")
+    config = json.loads(raw) if raw else dict(_AUTO_DEEP_ANALYSIS_DEFAULTS)
+    if req.enabled is not None:
+        config["enabled"] = req.enabled
+    await db.set_oncall_config(AUTO_DEEP_ANALYSIS_KEY, json.dumps(config, ensure_ascii=False))
+    logger.info("Updated auto_deep_analysis config: enabled=%s", config.get("enabled"))
+    return {"status": "updated"}
