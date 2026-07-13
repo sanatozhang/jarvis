@@ -1836,20 +1836,27 @@ async def draft_pr_for_analysis(
             return {"ok": False, "error": f"gate_confidence: {why_g3}", "repo": repo_logical}
 
     # === Gate#2：stack→平台强制路由 ===
+    # 2026-07-13 修复：曾误拿 repo_logical（repo_router 解析出的 sub-repo 逻辑名，
+    # 如 "plaud-native-android"）跟 detect_forced_platform 返回的裸平台名
+    # （"android"/"ios"/"flutter"）比较——repo_router 按版本切仓上线后 repo_logical
+    # 100% 不等于裸平台名，导致这道 gate 把所有 stack 命中强制路由信号的 native
+    # android/ios crash 全部拦截，PR 从未创建过。应该跟 `platform`（裸平台，claimed
+    # 时就已算好）比，跟走哪个 sub-repo 无关。
     if getattr(s, "gate_force_route_enabled", True):
         forced, why_g2 = detect_forced_platform(
             issue.representative_stack or "", platform,
         )
-        if forced and forced != (repo_logical or platform):
+        if forced and forced != platform:
             logger.warning(
-                "gate#2 platform mismatch: claimed=%s but stack forces=%s (ana=%d) → abort",
-                repo_logical or platform, forced, analysis_id,
+                "gate#2 platform mismatch: claimed=%s but stack forces=%s (ana=%d, repo=%s) → abort",
+                platform, forced, analysis_id, repo_logical or platform,
             )
             return {
                 "ok": False,
                 "error": (
                     f"gate_force_route: stack forces platform={forced} "
-                    f"but PR target={repo_logical or platform} ({why_g2})"
+                    f"but claimed platform={platform} "
+                    f"(repo target={repo_logical or platform}) ({why_g2})"
                 ),
                 "repo": repo_logical or platform,
                 "forced_platform": forced,
