@@ -583,11 +583,17 @@ def _github_open_crashguard_pr(
         return None
     short = re.sub(r"[^a-zA-Z0-9]", "", issue_id)[:8] or "noid"
     pat = re.compile(rf"^crashguard/[^/]+/{re.escape(short)}-")
+    # 剥 GH_TOKEN/GITHUB_TOKEN 走 OAuth（和本文件 _run_git 同款）——这里之前漏剥，过期
+    # PAT 被 org 拒绝时这个"权威去重"查询直接失败返回 None（fail-open），2026-07-13
+    # 实测撞过一次：两条几乎同时的开 PR 请求都查不到对方，各自开了一条重复 PR。
+    sub_env = dict(os.environ)
+    for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+        sub_env.pop(k, None)
     try:
         r = subprocess.run(
             ["gh", "pr", "list", "--repo", slug, "--state", "open", "--limit", "200",
              "--json", "headRefName,url"],
-            cwd=repo_path, capture_output=True, text=True, timeout=20,
+            cwd=repo_path, capture_output=True, text=True, timeout=20, env=sub_env,
         )
         if r.returncode != 0:
             logger.warning("github dedup query failed slug=%s: %s", slug, (r.stderr or "")[:160])

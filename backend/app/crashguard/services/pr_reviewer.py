@@ -100,13 +100,21 @@ def parse_blame_author_email(porcelain: str) -> str:
 # 主流程 — 远端拉 diff + blame 聚合
 # ============================================================
 def fetch_pr_diff_via_gh(pr_url: str, timeout: int = 30) -> str:
-    """gh pr diff <url> 远端拉 unified diff，失败返回空串。"""
+    """gh pr diff <url> 远端拉 unified diff，失败返回空串。
+
+    剥 GH_TOKEN/GITHUB_TOKEN 走 OAuth（和 pr_drafter/pr_sync 同款）——个人 fine-grained
+    PAT 超过 org 90 天生命周期策略会被拒绝，之前漏了这个调用点，导致 blame 找 reviewer
+    这一步全部 reason=diff_empty 落到兜底名单（2026-07-13 fact-check）。
+    """
     if not pr_url:
         return ""
+    sub_env = dict(os.environ)
+    for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+        sub_env.pop(k, None)
     try:
         r = subprocess.run(
             ["gh", "pr", "diff", pr_url],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, env=sub_env,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("gh pr diff exception url=%s: %s", pr_url, e)
@@ -646,14 +654,21 @@ def check_review_status_from_gh(pr_url: str, timeout: int = 20) -> bool:
 
     "已 review" 判定：至少 1 条 reviews record 满足 _is_human_reviewer。
     bot review、PR 作者自我 comment、authorAssociation=NONE 均不算。
+
+    剥 GH_TOKEN/GITHUB_TOKEN 走 OAuth（和 fetch_pr_diff_via_gh 同款）——这里之前漏剥，
+    过期 PAT 被 org 拒绝时这个调用直接失败返回 False，等价于"永远检测不到已合并/关闭"，
+    daily_reminder_sweep 会无限期重复提醒（2026-07-13 fact-check）。
     """
     if not pr_url:
         return False
+    sub_env = dict(os.environ)
+    for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+        sub_env.pop(k, None)
     try:
         r = subprocess.run(
             ["gh", "pr", "view", pr_url,
              "--json", "state,mergedAt,closedAt,reviews,author"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, env=sub_env,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("check_review_status exception url=%s: %s", pr_url, e)

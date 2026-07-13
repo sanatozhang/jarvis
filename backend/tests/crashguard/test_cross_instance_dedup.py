@@ -52,6 +52,26 @@ def test_github_dedup_no_slug_returns_none(monkeypatch):
     assert D._github_open_crashguard_pr("/tmp/repo", "29f69d04-xxxx") is None
 
 
+def test_github_dedup_strips_gh_token_env(monkeypatch):
+    """2026-07-13 修复：漏剥 GH_TOKEN/GITHUB_TOKEN，过期 fine-grained PAT 挡掉这个
+    "GitHub 权威去重"查询时会 fail-open 返回 None——今天实测撞过一次，两条几乎同时
+    的开 PR 请求互相查不到对方，各自开了一条重复 PR。"""
+    monkeypatch.setenv("GH_TOKEN", "expired-pat")
+    monkeypatch.setenv("GITHUB_TOKEN", "expired-pat")
+    monkeypatch.setattr(D, "_github_slug", lambda p: "Plaud-AI/plaud-flutter-common")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    D._github_open_crashguard_pr("/tmp/repo", "29f69d04-xxxx")
+    assert captured["env"] is not None
+    assert "GH_TOKEN" not in captured["env"]
+    assert "GITHUB_TOKEN" not in captured["env"]
+
+
 def test_auto_pr_approvers_constant():
     # auto 入口受实例闸约束；human 不受
     assert "auto" in D._AUTO_PR_APPROVERS

@@ -51,6 +51,24 @@ _ASSET_ANDROID_NATIVE_SYMBOLS = "native_symbols.tar.gz"  # libflutter.so / libap
 
 
 def _github_token() -> Optional[str]:
+    """优先用 `gh auth token`（服务器上已登录的 OAuth token，hosts.yml gho_*，长期
+    有效、有 org 权限）；GH_TOKEN/GITHUB_TOKEN env 常是个人 fine-grained PAT，超过
+    Plaud-AI org 90 天生命周期策略会被硬拒绝（2026-07-13 实测：release 列表接口全
+    403），只作 gh 不可用时的最后兜底。和 pr_drafter/pr_sync/pr_reviewer 里"剥
+    GH_TOKEN 走 OAuth"是同一个道理，这里因为走的是 httpx 直连而不是 gh 子进程，
+    没法靠剥 env 让 gh 自己接管，只能反过来主动问 gh 要它当前用的 token。
+    """
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            tok = (r.stdout or "").strip()
+            if tok:
+                return tok
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
     return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
 
 

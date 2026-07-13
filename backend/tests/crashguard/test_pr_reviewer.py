@@ -125,6 +125,25 @@ def test_fetch_pr_diff_empty_url_returns_empty():
     assert fetch_pr_diff_via_gh("") == ""
 
 
+def test_fetch_pr_diff_via_gh_strips_gh_token_env(monkeypatch):
+    """2026-07-13 修复：漏剥 GH_TOKEN/GITHUB_TOKEN，过期 fine-grained PAT 挡掉
+    gh pr diff（org 90 天生命周期策略拒绝），blame 找 reviewer 全落到兜底名单。"""
+    from app.crashguard.services.pr_reviewer import fetch_pr_diff_via_gh
+    monkeypatch.setenv("GH_TOKEN", "expired-pat")
+    monkeypatch.setenv("GITHUB_TOKEN", "expired-pat")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _fake_run(stdout="diff")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        fetch_pr_diff_via_gh("https://github.com/x/y/pull/1")
+    assert captured["env"] is not None
+    assert "GH_TOKEN" not in captured["env"]
+    assert "GITHUB_TOKEN" not in captured["env"]
+
+
 def test_filter_authors_basic_top2_with_pct():
     from app.crashguard.services.pr_reviewer import _filter_authors
     counter = Counter({
@@ -665,6 +684,26 @@ def test_check_review_status_gh_failure_returns_false():
 def test_check_review_status_empty_url_returns_false():
     from app.crashguard.services.pr_reviewer import check_review_status_from_gh
     assert check_review_status_from_gh("") is False
+
+
+def test_check_review_status_strips_gh_token_env(monkeypatch):
+    """2026-07-13 修复：漏剥 GH_TOKEN/GITHUB_TOKEN，过期 PAT 挡掉 gh pr view 时
+    直接返回 False——等价于永远检测不到已合并/关闭，daily_reminder_sweep 会无限期
+    重复提醒。"""
+    from app.crashguard.services.pr_reviewer import check_review_status_from_gh
+    monkeypatch.setenv("GH_TOKEN", "expired-pat")
+    monkeypatch.setenv("GITHUB_TOKEN", "expired-pat")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _fake_run(stdout=json.dumps({"state": "MERGED"}))
+
+    with patch("subprocess.run", side_effect=fake_run):
+        assert check_review_status_from_gh("https://github.com/x/y/pull/1") is True
+    assert captured["env"] is not None
+    assert "GH_TOKEN" not in captured["env"]
+    assert "GITHUB_TOKEN" not in captured["env"]
 
 
 # ---------- Task 6: resolve_and_notify orchestrator ----------
