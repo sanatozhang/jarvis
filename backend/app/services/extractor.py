@@ -30,15 +30,20 @@ def grep_log(
     Run grep on a log file with optional date prefix filter.
     Returns matching lines (up to max_lines).
     If date_filter yields no results, automatically falls back to no date filter.
+
+    Uses `tail`, not `head`: logs append chronologically, so on a pattern with
+    more than max_lines matches, the most recent occurrences are the relevant
+    ones (fb_08344bb236 — an old incident's 200+ matches filled the cap and the
+    device's actual, recent failure never entered the L1 extraction at all).
     """
     try:
         if date_filter:
             # Two-stage grep: filter by date, then by pattern
             cmd = (
-                f'grep "{date_filter}" "{log_path}" | grep -E "{pattern}" | head -n {max_lines}'
+                f'grep "{date_filter}" "{log_path}" | grep -E "{pattern}" | tail -n {max_lines}'
             )
         else:
-            cmd = f'grep -E "{pattern}" "{log_path}" | head -n {max_lines}'
+            cmd = f'grep -E "{pattern}" "{log_path}" | tail -n {max_lines}'
 
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30
@@ -52,7 +57,7 @@ def grep_log(
                 "date_filter '%s' returned no results for pattern '%s', retrying without filter",
                 date_filter, pattern,
             )
-            cmd_fallback = f'grep -E "{pattern}" "{log_path}" | head -n {max_lines}'
+            cmd_fallback = f'grep -E "{pattern}" "{log_path}" | tail -n {max_lines}'
             result2 = subprocess.run(
                 cmd_fallback, shell=True, capture_output=True, text=True, timeout=30
             )
@@ -386,7 +391,11 @@ def extract_for_rules(
                 "pattern": pat.pattern,
                 "date_filter": pat.date_filter,
                 "match_count": len(all_matches),
-                "matches": all_matches[:200],
+                # Keep the most recent 200, not the first 200: log_paths append
+                # chronologically across multi-file tickets too, so slicing from
+                # the front re-introduces the same stale-data bug grep_log just
+                # fixed, one level up.
+                "matches": all_matches[-200:],
             }
 
     # Always extract error summary
