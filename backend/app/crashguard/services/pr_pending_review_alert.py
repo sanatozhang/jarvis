@@ -65,6 +65,20 @@ def _age_days(created_at: datetime) -> int:
     return max(0, delta.days)
 
 
+def _family_allowed(generation: str, s) -> bool:
+    """2026-07-13：3.x(flutter) auto-PR 暂停期间，日报也不再展示 flutter 条目——
+    用户明确要求"后续只需要给我 4.0 的 pr"。未知代际（生成不出 service/version）
+    保守放行，不因分类失败而漏报。复用 pr_enabled_flutter/pr_enabled_native，
+    不新增平行开关：这两个字段本来就是"该 family 的自动 PR 流程是否在跑"的
+    单一真相源，日报/通知都该跟它走，不要另开一套口径。
+    """
+    if generation == "native":
+        return getattr(s, "pr_enabled_native", True)
+    if generation == "flutter":
+        return getattr(s, "pr_enabled_flutter", True)
+    return True
+
+
 async def _build_generation_lookup(session, issue_ids: List[str]) -> Dict[str, str]:
     """批量反查 CrashIssue.service/last_seen_version，分类每个 issue_id 的代际。
 
@@ -394,12 +408,7 @@ async def run_pending_review_alert() -> Dict:
         approved_rows = (await session.execute(approved_stmt)).scalars().all()
         # 昨日实际 merged / closed / created PR 行（供清单渲染）
         breakdown = await _collect_yesterday_breakdown(session)
-        stats = {
-            "yesterday_merged": len(breakdown["merged"]),
-            "yesterday_closed": len(breakdown["closed"]),
-            "yesterday_created": len(breakdown["created"]),
-        }
-        # 反查代际（4.0 native / 3.x flutter），供卡片角标 + 排序用
+        # 反查代际（4.0 native / 3.x flutter），供卡片角标 + 排序用（stats 在按 family 过滤后重算，见下）
         all_issue_ids = (
             [r.datadog_issue_id for r in rows]
             + [r.datadog_issue_id for r in approved_rows]
@@ -408,6 +417,17 @@ async def run_pending_review_alert() -> Dict:
             + [r.datadog_issue_id for r in breakdown["created"]]
         )
         gen_map = await _build_generation_lookup(session, all_issue_ids)
+
+    # 按 family 过滤（见 _family_allowed）：flutter 暂停期间日报只保留 native 条目。
+    rows = [r for r in rows if _family_allowed(gen_map.get(r.datadog_issue_id, ""), s)]
+    approved_rows = [r for r in approved_rows if _family_allowed(gen_map.get(r.datadog_issue_id, ""), s)]
+    for _k in ("merged", "closed", "created"):
+        breakdown[_k] = [r for r in breakdown[_k] if _family_allowed(gen_map.get(r.datadog_issue_id, ""), s)]
+    stats = {
+        "yesterday_merged": len(breakdown["merged"]),
+        "yesterday_closed": len(breakdown["closed"]),
+        "yesterday_created": len(breakdown["created"]),
+    }
 
     total_pending = len(rows)
     total_approved = len(approved_rows)

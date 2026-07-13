@@ -533,3 +533,44 @@ async def test_run_alert_send_failure_returns_reason(patched_session, monkeypatc
     assert res["pending_count"] == 1
     assert res["sent"] is False
     assert res["skip_reason"] == "send_failed"
+
+
+@pytest.mark.asyncio
+async def test_run_pending_review_alert_hides_flutter_when_flutter_family_paused(
+    monkeypatch, patched_session,
+):
+    """2026-07-13：pr_enabled_flutter=False 时日报只保留 native(4.0) 条目，
+    不重新计入 flutter 的 pending/stats——用户明确要求"后续只需要给我 4.0 的 pr"。"""
+    from app.crashguard.models import CrashIssue, CrashPullRequest
+    from app.crashguard.services.pr_pending_review_alert import run_pending_review_alert
+
+    _make_settings(monkeypatch, pr_enabled_flutter=False, pr_enabled_native=True)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.services.feishu_cli.send_interactive_card", send_mock)
+
+    async with patched_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="native-2", platform="ANDROID", service="plaud_android",
+            last_seen_version="4.0.100", title="native crash", stack_fingerprint="fpn2",
+        ))
+        session.add(CrashIssue(
+            datadog_issue_id="flutter-2", platform="ANDROID", service="plaud-flutter",
+            last_seen_version="3.20.0", title="flutter crash", stack_fingerprint="fpf2",
+        ))
+        session.add(CrashPullRequest(
+            analysis_id=3, datadog_issue_id="native-2", repo="plaud-native-android",
+            pr_url="https://github.com/x/y/pull/3", pr_number=3, pr_status="draft",
+        ))
+        session.add(CrashPullRequest(
+            analysis_id=4, datadog_issue_id="flutter-2", repo="plaud-android",
+            pr_url="https://github.com/x/y/pull/4", pr_number=4, pr_status="draft",
+        ))
+        await session.commit()
+
+    result = await run_pending_review_alert()
+    assert result["sent"] is True
+    assert result["pending_count"] == 1
+
+    body = str(send_mock.call_args.kwargs["card"])
+    assert "3" in body  # native PR #3 present
+    assert "pull/4" not in body  # flutter PR #4 excluded

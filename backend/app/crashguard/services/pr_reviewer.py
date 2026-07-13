@@ -855,6 +855,9 @@ async def daily_reminder_sweep() -> Dict:
       - 其余 → 重跑 resolve_and_notify
     """
     from app.crashguard.config import get_crashguard_settings
+    from app.crashguard.services.pr_pending_review_alert import (
+        _build_generation_lookup, _family_allowed,
+    )
     from app.db.database import get_session
     from app.crashguard.models import CrashPullRequest
     from sqlalchemy import select
@@ -868,6 +871,7 @@ async def daily_reminder_sweep() -> Dict:
 
     today = datetime.utcnow().date()
     processed = skipped_same_day = newly_reviewed = notified = 0
+    skipped_family_paused = 0
     pr_ids_to_notify: List[int] = []
 
     skipped_no_assignee = 0
@@ -877,6 +881,9 @@ async def daily_reminder_sweep() -> Dict:
             CrashPullRequest.pr_status.in_(("draft", "open")),
         )
         rows = (await session.execute(stmt)).scalars().all()
+        # 2026-07-13：flutter 暂停期间不再打扰 reviewer——同 pr_pending_review_alert
+        # 用的 pr_enabled_flutter/pr_enabled_native 单一真相源判 family。
+        gen_map = await _build_generation_lookup(session, [r.datadog_issue_id for r in rows])
 
         for pr in rows:
             processed += 1
@@ -884,6 +891,10 @@ async def daily_reminder_sweep() -> Dict:
             # 同日去重
             if pr.last_reminder_at and pr.last_reminder_at.date() == today:
                 skipped_same_day += 1
+                continue
+
+            if not _family_allowed(gen_map.get(pr.datadog_issue_id, ""), s):
+                skipped_family_paused += 1
                 continue
 
             # 必须有明确 assignee（首次 blame 命中 plaud.ai 邮箱并通知成功过）
@@ -921,13 +932,14 @@ async def daily_reminder_sweep() -> Dict:
             logger.exception("daily_sweep notify failed pr=%d: %s", pid, e)
 
     logger.info(
-        "pr_reviewer daily_sweep: processed=%d skipped_same_day=%d "
+        "pr_reviewer daily_sweep: processed=%d skipped_same_day=%d skipped_family_paused=%d "
         "skipped_no_assignee=%d newly_reviewed=%d notified=%d",
-        processed, skipped_same_day, skipped_no_assignee, newly_reviewed, notified,
+        processed, skipped_same_day, skipped_family_paused, skipped_no_assignee, newly_reviewed, notified,
     )
     return {
         "processed": processed,
         "skipped_same_day": skipped_same_day,
+        "skipped_family_paused": skipped_family_paused,
         "skipped_no_assignee": skipped_no_assignee,
         "newly_reviewed": newly_reviewed,
         "notified": notified,

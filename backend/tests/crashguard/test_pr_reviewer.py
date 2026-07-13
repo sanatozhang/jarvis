@@ -948,6 +948,46 @@ async def test_daily_sweep_skips_pr_without_assignee(patched_session):
 
 
 @pytest.mark.asyncio
+async def test_daily_sweep_skips_flutter_when_flutter_family_paused(patched_session):
+    """2026-07-13：pr_enabled_flutter=False 时，flutter PR 不发 reviewer 提醒
+    （3.x 暂停期间不打扰人），但仍照常处理其他 family/未知 family 的 PR。"""
+    from app.crashguard.services import pr_reviewer
+    from app.crashguard.config import get_crashguard_settings
+    from app.crashguard.models import CrashIssue, CrashPullRequest
+    from app.db.database import get_session
+
+    async with get_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="flutter_paused", platform="ANDROID", service="plaud-flutter",
+            last_seen_version="3.20.0", title="flutter crash", stack_fingerprint="fp_fp",
+        ))
+        pr = CrashPullRequest(
+            analysis_id=30, datadog_issue_id="flutter_paused",
+            repo="plaud-android",
+            pr_url="https://github.com/Plaud-AI/plaud-android/pull/300",
+            pr_number=300, pr_status="open",
+            last_reminder_at=datetime.utcnow() - timedelta(days=2),
+            reviewer_emails='["carol@plaud.ai"]',
+        )
+        s.add(pr)
+        await s.commit()
+
+    settings = get_crashguard_settings()
+    settings.pr_enabled_flutter = False
+    settings.pr_enabled_native = True
+    try:
+        with patch.object(pr_reviewer, "check_review_status_from_gh", return_value=False), \
+             patch.object(pr_reviewer, "resolve_and_notify") as m_notify:
+            result = await pr_reviewer.daily_reminder_sweep()
+    finally:
+        settings.pr_enabled_flutter = True
+
+    m_notify.assert_not_called()
+    assert result["skipped_family_paused"] >= 1
+    assert result["notified"] == 0
+
+
+@pytest.mark.asyncio
 async def test_daily_sweep_skips_reviewed_prs(patched_session):
     """已 reviewed 的不应进入扫描结果"""
     from app.crashguard.services import pr_reviewer
