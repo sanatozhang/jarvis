@@ -2499,6 +2499,25 @@ async def draft_prs_multi(
     _sample_ver = _sample_version(issue)
     _res_for_family = _resolve_repo_for_issue((issue.platform or "").lower(), _sample_ver)
     _family = _res_for_family.family if _res_for_family else "flutter"
+
+    # Family-scoped auto-PR switch（2026-07-13）：3.x(flutter) 暂停自动开 PR，
+    # 4.0 native(android/ios) 重新开启，独立于全局 pr_enabled 之外的第二道闸。
+    # 只挡自动触发（approver ∈ _AUTO_PR_APPROVERS）；人工 approve/backfill 不受限——
+    # 工程师显式点了就该照办，不该被"哪个 family 在暂停"这种批量策略拦住。
+    s_gate = get_crashguard_settings()
+    if approver in _AUTO_PR_APPROVERS:
+        _family_enabled = (
+            s_gate.pr_enabled_native if _family == "native"
+            else s_gate.pr_enabled_flutter if _family == "flutter"
+            else True
+        )
+        if not _family_enabled:
+            logger.info(
+                "draft_prs_multi: auto-PR skipped, family=%s disabled (approver=%s, issue=%s)",
+                _family, approver, issue.datadog_issue_id,
+            )
+            return {"ok": False, "error": f"pr_disabled_for_family:{_family}", "prs": []}
+
     candidates = _select_candidates(
         _family,
         _res_for_family,
@@ -2510,7 +2529,6 @@ async def draft_prs_multi(
     )
 
     # === Gate#10：多候选先合议——≥2 个平台时锁 primary，只在 primary 仓开 PR ===
-    s_gate = get_crashguard_settings()
     if (
         getattr(s_gate, "gate_primary_only_enabled", True)
         and len(candidates) >= 2

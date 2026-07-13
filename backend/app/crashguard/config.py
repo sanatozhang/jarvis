@@ -118,6 +118,12 @@ class CrashguardSettings(BaseSettings):
     # Kill switches
     enabled: bool = True
     pr_enabled: bool = True
+    # 按 family（repo_router 解析出的 flutter/native）细分的自动开 PR 开关。
+    # 只对自动触发生效（approver ∈ auto/auto_retry/top_auto）；人工 approve
+    # （human/backfill）不受限——工程师显式点了就该照办。
+    # 2026-07-13：3.x(flutter) 暂停自动开 PR，4.0 native(android/ios) 重新开启。
+    pr_enabled_flutter: bool = True
+    pr_enabled_native: bool = True
     feishu_enabled: bool = True
     # 多实例部署时，仅一台机器开启 scheduler，避免双发（兜底；DB 锁是主要去重）
     scheduler_enabled: bool = True
@@ -568,7 +574,8 @@ def _yaml_overrides() -> Dict[str, Any]:
     cfg = _load_yaml().get("crashguard") or {}
     flat: Dict[str, Any] = {}
     for k in (
-        "enabled", "pr_enabled", "feishu_enabled", "scheduler_enabled",
+        "enabled", "pr_enabled", "pr_enabled_flutter", "pr_enabled_native",
+        "feishu_enabled", "scheduler_enabled",
         "max_top_n", "analyze_top_n",
     ):
         if k in cfg:

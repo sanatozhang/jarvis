@@ -170,7 +170,9 @@ jenkins:
 # ===========================
 crashguard:
   enabled: true                # kill switch — 保持开启，否则整个只读看板/PR列表也会 403
-  pr_enabled: false            # PR 创建总开关 — 2026-07-03 暂停自动化开PR；分析/看板照常
+  pr_enabled: true              # PR 创建总开关 — 2026-07-13 恢复；具体开哪个 family 见下面两行
+  pr_enabled_flutter: false     # 3.x(flutter) 自动开 PR 暂停（重点转到 4.0，人工 approve 不受限）
+  pr_enabled_native: true       # 4.0 native(android/ios) 自动开 PR 重新开启 —— 2026-07-13
   feishu_enabled: true         # 群消息开关
   max_top_n: 20
 
