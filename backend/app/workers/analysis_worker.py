@@ -478,8 +478,9 @@ async def run_analysis_pipeline(
     processed_dir = workspace / "processed"
 
     # 🎁 解密结果按 issue 级缓存：重试/追问会建新 task workspace 并重新解密同一份 23MB→146MB
-    # 原始日志（纯阻塞重活）。这里用 manifest 精确 replay 上次解密产出的 log_paths（不靠盲 glob，
-    # 避免 process_log_file 的选文件/合并逻辑被错位还原），命中即整目录拷回，跳过解密。
+    # 原始日志（纯阻塞重活）。命中即整目录拷回、跳过解密，但 log_paths 现场从磁盘重新枚举
+    # （_resolve_decrypted_log_paths），不 replay manifest 里冻结的文件名列表——manifest
+    # 只用来校验 platform 没变。理由见 _resolve_decrypted_log_paths 的 docstring。
     decrypt_cache_root = Path(settings.storage.workspace_dir) / "_cache" / issue_id
     decrypt_cache_processed = decrypt_cache_root / "processed"
     decrypt_manifest = decrypt_cache_root / "decrypt_manifest.json"
@@ -492,8 +493,7 @@ async def run_analysis_pipeline(
                 await asyncio.to_thread(
                     shutil.copytree, decrypt_cache_processed, processed_dir, dirs_exist_ok=True
                 )
-                cached = [processed_dir / rel for rel in manifest.get("log_paths", [])]
-                cached = [p for p in cached if p.exists()]
+                cached = await asyncio.to_thread(_resolve_decrypted_log_paths, processed_dir)
                 if cached:
                     log_paths = cached
                     reused_decrypt = True
@@ -748,6 +748,23 @@ async def run_analysis_pipeline(
         await on_progress(100, "Analysis complete")
 
     return result
+
+
+def _resolve_decrypted_log_paths(processed_dir: Path) -> List[Path]:
+    """重新从磁盘枚举一个已解密 processed/ 目录下的可用 .log 文件。
+
+    背景（2026-07-14 修，fb_f2fb6cb886）：decrypt cache 命中时原来靠 replay
+    `decrypt_manifest.json` 里冻结的 `log_paths` 文件名列表——decrypt.py 修复
+    "只返回 plaud.log、丢弃 plaud_backup.log" 的 bug 之后，老的 manifest 里仍然
+    只记着 plaud.log 这一个文件名，即使 processed/ 目录里其实两个文件都在，
+    命中缓存的分析永远只会看到 manifest 里那份陈旧清单，修复对已缓存过的
+    工单形同没打。改成每次都直接扫描 processed_dir 磁盘现状，而不是相信一份
+    可能在 decrypt.py 逻辑变更之后就过期的记录——之后 decrypt.py 再变化，缓存
+    命中路径也会自动跟着更新，不需要再手动清缓存。
+    """
+    logs = [p for p in processed_dir.rglob("*.log") if p.is_file() and p.stat().st_size > 0]
+    logs.sort(key=lambda p: (p.name != "plaud.log", -p.stat().st_size))
+    return logs
 
 
 def purge_issue_cache(workspace_dir: str, issue_id: str) -> None:
