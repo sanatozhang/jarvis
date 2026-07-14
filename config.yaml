@@ -111,26 +111,24 @@ storage:
 #
 # github_repo 字段语义：仅用于 crashguard 的「符号 release 源」（PR 目标仓另取 checkout 的
 # git remote，见 repo_updater._github_slug，与此字段无关，勿混用）。
-# native(4.0)符号化走 Datadog 服务端，不走这里：发布流水线
-# (plaud-native-app/jenkins/plaud-native-app-publish-global.sh) 把 iOS dSYM(按 UUID)、
-# Android ProGuard mapping+NDK(按 build_id) 直接传 Datadog（DATADOG_API_KEY 门控），
-# Datadog 后端服务端就把 native 崩溃栈符号化好；crashguard 从 Datadog Error Tracking 读到的
-# native 栈本来就已符号化。crashguard 的 github_symbols.py 本地重符号化是为 flutter 的 Dart
-# AOT(libapp.so) 缺口而建，native 无此缺口。故下面 native band 的 github_repo
-# (plaud-native-android/ios) 目前是 no-op 占位（symbolication 容错，找不到即静默保留原栈）。
-# 若将来真要让 crashguard 本地重符号化 native：需改成发布实际所在仓 Plaud-AI/plaud-native-app、
-# 对齐 iOS 资产名(native 发的是 Plaud-Global.dSYMs.zip 而非 PLAUD.dSYMs.zip)、并开
-# UPLOAD_TO_GITHUB_RELEASE=true（默认关，native 走 Datadog/Firebase/Sentry）。
+# native(4.0)符号化（2026-07-14 修正）：之前以为 Datadog 服务端已符号化 native 栈、
+# github_repo 是 no-op 占位——今天实测证伪（Android r8-map-id 占位符 / iOS 原始地址栈
+# 均未解析）。native 符号包实际发布在独立仓 Plaud-AI/plaud-native-app 的 Release assets
+# 里（plaud-native-android/plaud-native-ios 两个源码仓只有 git build tag，没有 Release/
+# 资产），tag 格式与 flutter 一致（v{semver}+{build}-{date}-{time}-global），Android 资产名
+# 与 flutter 相同（mapping_globalRelease.txt / native_symbols.tar.gz，但 tar 内部目录结构
+# 不同，见 github_symbols.py::_is_native_lib_tar_member），iOS 资产名不同
+# （Plaud-Global.dSYMs.zip，见 github_symbols.py::_ASSET_IOS_DSYM_NATIVE）。
 # ===========================
 repo_routing:
   android:
     bands:
-      - {min_version: "0",     family: flutter, wrapper: "/Users/mac/Downloads/plaud_ai",        sub: "plaud-android",        github_repo: "Plaud-AI/Plaud-App",            symbol_profile: "flutter_android"}
-      - {min_version: "4.0.0", family: native,  wrapper: "/Users/mac/Downloads/plaud-native-app", sub: "plaud-native-android", github_repo: "Plaud-AI/plaud-native-android", symbol_profile: "native_android"}
+      - {min_version: "0",     family: flutter, wrapper: "/Users/mac/Downloads/plaud_ai",        sub: "plaud-android",        github_repo: "Plaud-AI/Plaud-App",         symbol_profile: "flutter_android"}
+      - {min_version: "4.0.0", family: native,  wrapper: "/Users/mac/Downloads/plaud-native-app", sub: "plaud-native-android", github_repo: "Plaud-AI/plaud-native-app",  symbol_profile: "native_android"}
   ios:
     bands:
       - {min_version: "0",     family: flutter, wrapper: "/Users/mac/Downloads/plaud_ai",        sub: "plaud-ios",            github_repo: "Plaud-AI/Plaud-App",        symbol_profile: "flutter_ios"}
-      - {min_version: "4.0.0", family: native,  wrapper: "/Users/mac/Downloads/plaud-native-app", sub: "plaud-native-ios",     github_repo: "Plaud-AI/plaud-native-ios",    symbol_profile: "native_ios"}
+      - {min_version: "4.0.0", family: native,  wrapper: "/Users/mac/Downloads/plaud-native-app", sub: "plaud-native-ios",     github_repo: "Plaud-AI/plaud-native-app", symbol_profile: "native_ios"}
   web:
     bands:
       - {min_version: "0", family: web,     wrapper: "/Users/mac/Downloads/plaud-web", sub: "", github_repo: "Plaud-AI/plaud-web", symbol_profile: "none"}

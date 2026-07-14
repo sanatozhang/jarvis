@@ -205,7 +205,7 @@ async def _symbolicate_with_github(
     """
     from app.crashguard.services.github_symbols import (
         get_ios_dsyms_dir, get_android_mapping, get_android_native_symbols_dir,
-        get_dart_symbols_dir, _DEFAULT_REPO,
+        get_dart_symbols_dir, _DEFAULT_REPO, _ASSET_IOS_DSYM, _ASSET_IOS_DSYM_NATIVE,
     )
     repo = github_repo or _DEFAULT_REPO
     plat = (platform or "").lower()
@@ -221,15 +221,13 @@ async def _symbolicate_with_github(
         is_android = "android" in plat or "flutter" in plat
 
         if is_ios:
-            # NOTE: native_ios sets use_app_dsym=True while flutter_ios sets use_flutter_dsym=True,
-            # but both currently invoke the same getter (get_ios_dsyms_dir → PLAUD.dSYMs.zip).
-            # The flag distinction is intentional but not yet operational: once the native iOS
-            # release publishes a separate app-dSYM asset, split this branch to use it for
-            # native_ios. Until then native_ios reuses the dSYM zip (no-ops on BuildId mismatch).
-            # ⚠️ External TODO: confirm native release asset names/contents with the App team.
-            # Determine whether to run iOS dSYM symbolication
+            # native_ios (use_app_dsym) 和 flutter_ios (use_flutter_dsym) 都走
+            # get_ios_dsyms_dir，但资产名不同：native release 发的是
+            # Plaud-Global.dSYMs.zip，不是 flutter 的 PLAUD.dSYMs.zip（2026-07-14 实测确认，
+            # repo 也不同：native 在独立仓 plaud-native-app，由 github_repo 参数传入）。
             if strategy is None or strategy.get("use_flutter_dsym") or strategy.get("use_app_dsym"):
-                dsyms_dir = await get_ios_dsyms_dir(app_version, repo=repo)
+                ios_asset = _ASSET_IOS_DSYM_NATIVE if (strategy and strategy.get("use_app_dsym")) else _ASSET_IOS_DSYM
+                dsyms_dir = await get_ios_dsyms_dir(app_version, repo=repo, asset_name=ios_asset)
                 if dsyms_dir:
                     stack = await asyncio.to_thread(_symbolicate_ios_with_dir, stack, dsyms_dir)
         elif is_android:

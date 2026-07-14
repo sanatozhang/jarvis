@@ -36,15 +36,18 @@ async def _get_download_lock(tag: str, asset_name: str) -> asyncio.Lock:
             _DOWNLOAD_LOCKS[key] = lock
         return lock
 
-# NOTE: 本地 GitHub 符号化是 FLUTTER 期机制（补 Datadog 解不了的 Dart AOT libapp.so 帧）。
-# native(4.0) 不走这里：native 发布流水线把 iOS dSYM(UUID)/Android mapping+NDK(build_id)
-# 直接传 Datadog，Datadog 服务端已符号化 native 栈；crashguard 读到的 native 栈本就符号化过。
-# 下面的默认仓/资产名都是 flutter 约定；native band 的 github_repo 是 no-op 占位（找不到即
-# 静默保留原栈）。详见 config.yaml repo_routing 段注释与 memory。
+# NOTE（2026-07-14 修正）：之前以为 native(4.0) 符号化全部由 Datadog 服务端完成、
+# crashguard 读到的栈本就符号化过——today 实测证伪（Android r8-map-id 占位符 / iOS
+# 原始地址栈均未解析）。native 符号包实际发布在独立仓 Plaud-AI/plaud-native-app 的
+# Release assets 里（tag 格式与 flutter 一致：v{semver}+{build}-{date}-{time}-global），
+# 资产名 Android 侧（mapping_globalRelease.txt / native_symbols.tar.gz）与 flutter 相同，
+# iOS 侧不同（native 是 Plaud-Global.dSYMs.zip，见 _ASSET_IOS_DSYM_NATIVE）。
+# repo_routing 里 native band 的 github_repo 已指到 plaud-native-app（见 config.yaml）。
 _DEFAULT_REPO = "Plaud-AI/Plaud-App"
 _GITHUB_API = "https://api.github.com"
 
 _ASSET_IOS_DSYM = "PLAUD.dSYMs.zip"
+_ASSET_IOS_DSYM_NATIVE = "Plaud-Global.dSYMs.zip"
 _ASSET_ANDROID_MAPPING = "mapping_globalRelease.txt"
 _ASSET_DART_SYMBOLS = "flutter_symbols.tar.gz"
 _ASSET_ANDROID_NATIVE_SYMBOLS = "native_symbols.tar.gz"  # libflutter.so / libapp.so 带 debug 符号
@@ -294,22 +297,28 @@ def _tag_cache_dir(tag: str) -> Path:
     return _github_cache_dir() / "_by_tag" / safe
 
 
-async def get_ios_dsyms_dir(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
+async def get_ios_dsyms_dir(
+    app_version: str, repo: str = _DEFAULT_REPO, asset_name: str = _ASSET_IOS_DSYM,
+) -> Optional[str]:
     """
     返回 iOS dSYMs 目录路径（含 .dSYM bundles）。
     按 tag 共享 cache：多个 app_version 命中同一 release 时不重复下载/解压。
+
+    asset_name：flutter 用 PLAUD.dSYMs.zip，native 用 Plaud-Global.dSYMs.zip
+    （见 _ASSET_IOS_DSYM_NATIVE），由调用方按 symbol_profile 选择。
     """
     tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
 
-    cache_dir = _tag_cache_dir(tag) / "ios"
+    # 不同 asset_name 解压到不同子目录，避免 flutter/native 复用同一 tag 时互相覆盖
+    cache_dir = _tag_cache_dir(tag) / "ios" / asset_name
     marker = cache_dir / ".extracted"
     if marker.exists():
         return str(cache_dir)
 
-    zip_path = cache_dir / _ASSET_IOS_DSYM
-    result = await _download_asset(tag, _ASSET_IOS_DSYM, zip_path, repo=repo)
+    zip_path = cache_dir / asset_name
+    result = await _download_asset(tag, asset_name, zip_path, repo=repo)
     if not result:
         return None
 
@@ -341,6 +350,22 @@ async def get_android_mapping(app_version: str, repo: str = _DEFAULT_REPO) -> Op
 
     result = await _download_asset(tag, _ASSET_ANDROID_MAPPING, dest, repo=repo)
     return str(result) if result else None
+
+
+def _is_native_lib_tar_member(name: str, allowlist: list) -> bool:
+    """挑出 native_symbols.tar.gz 里带 debug 符号的 arm64 .so。
+
+    flutter 打包路径带一层 global_apk 前缀（global_apk/merged_native_libs/...），
+    native(4.0) 打包脚本没有这层（merged_native_libs/globalRelease/
+    mergeGlobalReleaseNativeLibs/out/lib/arm64-v8a/...）——只认 "merged_native_libs"
+    子串，两种布局都能命中；同 tar 里还有 stripped_native_libs（release 产物，
+    已 strip 掉 debug_info），子串不同不会被误选中。
+    """
+    return (
+        "merged_native_libs" in name
+        and "/arm64-v8a/" in name
+        and any(name.endswith("/" + so) for so in allowlist)
+    )
 
 
 async def get_android_native_symbols_dir(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
@@ -387,12 +412,7 @@ async def get_android_native_symbols_dir(app_version: str, repo: str = _DEFAULT_
         with tarfile.open(tar_path) as tf:
             members_to_extract = []
             for member in tf.getmembers():
-                name = member.name
-                if (
-                    "global_apk/merged_native_libs" in name
-                    and "/arm64-v8a/" in name
-                    and any(name.endswith("/" + so) for so in allowlist)
-                ):
+                if _is_native_lib_tar_member(member.name, allowlist):
                     members_to_extract.append(member)
                     kept += 1
                 else:
