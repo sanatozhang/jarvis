@@ -401,11 +401,12 @@ async def _run_linear_analysis(
 
         for fp in valid_files:
             logger.info("  Processing: %s ...", fp.name)
-            log_path, incorrect, reason = process_log_file(fp, processed_dir)
-            if log_path:
-                log_size = log_path.stat().st_size if log_path.exists() else 0
-                logger.info("  ✓ Decrypted: %s → %s (%d bytes)", fp.name, log_path, log_size)
-                log_paths.append(log_path)
+            new_log_paths, incorrect, reason = process_log_file(fp, processed_dir)
+            if new_log_paths:
+                for log_path in new_log_paths:
+                    log_size = log_path.stat().st_size if log_path.exists() else 0
+                    logger.info("  ✓ Decrypted: %s → %s (%d bytes)", fp.name, log_path, log_size)
+                log_paths.extend(new_log_paths)
             else:
                 logger.warning("  ✗ Failed to process %s: incorrect=%s reason=%s", fp.name, incorrect, reason)
 

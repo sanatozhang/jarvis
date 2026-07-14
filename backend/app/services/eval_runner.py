@@ -137,9 +137,9 @@ async def _prepare_issue_workspace_assets(workspace: Path, issue: Issue) -> List
     platform = (issue.platform or "").strip().lower()
     processed_logs: List[Path] = []
     for raw_path in copied_raw:
-        log_path, incorrect, reason = process_log_file_for_platform(raw_path, processed_dir, platform=platform)
-        if log_path:
-            processed_logs.append(log_path)
+        new_log_paths, incorrect, reason = process_log_file_for_platform(raw_path, processed_dir, platform=platform)
+        if new_log_paths:
+            processed_logs.extend(new_log_paths)
         elif incorrect and reason:
             logger.info("Eval replay skipped unusable log %s: %s", raw_path.name, reason)
 

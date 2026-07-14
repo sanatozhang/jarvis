@@ -516,11 +516,11 @@ async def run_analysis_pipeline(
     if not reused_decrypt:
         # Option A：解密是 subprocess + 大文件 IO 的同步阻塞调用，丢线程池避免冻结事件循环
         for fp in downloaded_files:
-            log_path, incorrect, reason = await asyncio.to_thread(
+            new_log_paths, incorrect, reason = await asyncio.to_thread(
                 process_log_file_for_platform, fp, processed_dir, platform,
             )
-            if log_path:
-                log_paths.append(log_path)
+            if new_log_paths:
+                log_paths.extend(new_log_paths)
             if incorrect and reason:
                 log_parse_issues.append(reason)
 

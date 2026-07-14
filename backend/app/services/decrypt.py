@@ -11,7 +11,7 @@ import logging
 import re
 import zipfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger("jarvis.decrypt")
 
@@ -163,10 +163,17 @@ def _strip_pollution_prefix(data: bytes, source_name: str = "") -> bytes:
     return data[offset:]
 
 
-def decrypt_plaud_file(plaud_path: Path, output_dir: Optional[Path] = None) -> Optional[Path]:
+def decrypt_plaud_file(plaud_path: Path, output_dir: Optional[Path] = None) -> List[Path]:
     """
-    Decrypt a .plaud file → extract ZIP → return path to plaud.log.
-    Returns None on failure.
+    Decrypt a .plaud file → extract ZIP → return paths to ALL .log files inside.
+
+    设备端 .plaud 包常含不止一个日志文件（例如 plaud.log 当前会话 +
+    plaud_backup.log / truncated_backup_<ts>.log 更早滚动出去的缓冲区）。早期版本
+    只要找到 plaud.log 就直接返回，第二个文件被静默丢弃——但真正的故障证据
+    （如 App 冷启动崩溃循环）经常恰好落在被丢弃的那个文件里。这里必须把 ZIP 里
+    所有非空 .log 文件都返回，交给下游 agent 全部 grep，而不是只挑一个代表。
+
+    Returns [] on failure (no valid ZIP / no .log files found).
     """
     if output_dir is None:
         output_dir = plaud_path.parent / f"{plaud_path.stem}_decrypted"
@@ -186,7 +193,7 @@ def decrypt_plaud_file(plaud_path: Path, output_dir: Optional[Path] = None) -> O
         if not decrypted[:2] == b"PK":
             logger.warning("[plaud] ✗ Decrypted data is NOT a valid ZIP (expected PK, got %s) for %s",
                           decrypted[:4].hex() if len(decrypted) >= 4 else "?", plaud_path.name)
-            return None
+            return []
 
         logger.info("[plaud] ✓ Decrypted data is a valid ZIP, extracting...")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -195,31 +202,27 @@ def decrypt_plaud_file(plaud_path: Path, output_dir: Optional[Path] = None) -> O
             logger.info("[plaud] ZIP contains %d files: %s", len(file_list), file_list[:20])
             zf.extractall(output_dir)
 
-        log_file = output_dir / "plaud.log"
-        if log_file.exists():
-            logger.info("[plaud] ✓ Found plaud.log (%d bytes)", log_file.stat().st_size)
-            return log_file
+        all_logs = [p for p in output_dir.rglob("*.log") if p.is_file() and p.stat().st_size > 0]
+        if not all_logs:
+            logger.warning("[plaud] ✗ No .log files found after extraction in %s", output_dir)
+            return []
 
-        # Fallback: find any .log in the extracted files
-        all_logs = list(output_dir.rglob("*.log"))
-        logger.info("[plaud] plaud.log not found, searching for other .log files: found %d", len(all_logs))
+        # plaud.log（当前会话）排第一，其余（备份/滚动日志）按体积从大到小跟上，
+        # 顺序只影响 agent 的浏览优先级，不影响是否被看到。
+        all_logs.sort(key=lambda p: (p.name != "plaud.log", -p.stat().st_size))
         for p in all_logs:
-            if p.is_file() and p.stat().st_size > 0:
-                logger.info("[plaud] ✓ Using fallback log: %s (%d bytes)", p.name, p.stat().st_size)
-                return p
-
-        logger.warning("[plaud] ✗ No .log files found after extraction in %s", output_dir)
-        return None
+            logger.info("[plaud] ✓ Keeping log: %s (%d bytes)", p.name, p.stat().st_size)
+        return all_logs
     except Exception as e:
         logger.error("[plaud] ✗ Decrypt failed for %s: %s", plaud_path.name, e, exc_info=True)
-        return None
+        return []
 
 
 def process_log_file_for_platform(
     file_path: Path,
     work_dir: Path,
     platform: str = "",
-) -> Tuple[Optional[Path], bool, Optional[str]]:
+) -> Tuple[List[Path], bool, Optional[str]]:
     """Dispatch to the correct platform-specific decryption handler.
 
     - app (or empty/unknown): full Plaud .plaud ChaCha20 decryption
@@ -240,7 +243,7 @@ def process_log_file_for_platform(
 def _process_log_web(
     file_path: Path,
     work_dir: Path,
-) -> Tuple[Optional[Path], bool, Optional[str]]:
+) -> Tuple[List[Path], bool, Optional[str]]:
     """Web platform log processing — placeholder.
 
     Web logs do not use .plaud encryption. Currently just passes the file
@@ -256,15 +259,15 @@ def _process_log_web(
 
     # Plain log / unknown — pass through
     if file_path.exists() and file_path.stat().st_size > 0:
-        return file_path, False, None
+        return [file_path], False, None
 
-    return None, True, f"Web 日志文件无法处理: {file_path.name}"
+    return [], True, f"Web 日志文件无法处理: {file_path.name}"
 
 
 def _process_log_desktop(
     file_path: Path,
     work_dir: Path,
-) -> Tuple[Optional[Path], bool, Optional[str]]:
+) -> Tuple[List[Path], bool, Optional[str]]:
     """Desktop platform log processing — placeholder.
 
     Desktop logs do not use .plaud encryption. Currently just passes the file
@@ -280,22 +283,23 @@ def _process_log_desktop(
 
     # Plain log / unknown — pass through
     if file_path.exists() and file_path.stat().st_size > 0:
-        return file_path, False, None
+        return [file_path], False, None
 
-    return None, True, f"Desktop 日志文件无法处理: {file_path.name}"
+    return [], True, f"Desktop 日志文件无法处理: {file_path.name}"
 
 
 def process_log_file(
     file_path: Path,
     work_dir: Path,
-) -> Tuple[Optional[Path], bool, Optional[str]]:
+) -> Tuple[List[Path], bool, Optional[str]]:
     """
     Process a downloaded log file:
-    - .plaud → decrypt (ChaCha20 → ZIP → plaud.log)
+    - .plaud → decrypt (ChaCha20 → ZIP → all .log files inside, e.g. plaud.log +
+      plaud_backup.log)
     - .zip → extract and look for plaud content
     - .log → use directly (or merge if non-plaud format)
 
-    Returns: (log_path, log_parse_incorrect, reason)
+    Returns: (log_paths, log_parse_incorrect, reason)
     """
     name = file_path.name.lower()
     size = file_path.stat().st_size if file_path.exists() else 0
@@ -317,12 +321,13 @@ def process_log_file(
             logger.info("  → File is actually a ZIP (PK magic), processing as ZIP...")
             return _process_zip(file_path, work_dir)
         logger.info("  → Attempting ChaCha20 decryption...")
-        log_path = decrypt_plaud_file(file_path, work_dir / f"{file_path.stem}_decrypted")
-        if log_path:
-            logger.info("  ✓ .plaud decryption succeeded → %s (%d bytes)", log_path.name, log_path.stat().st_size)
-            return log_path, False, None
+        log_paths = decrypt_plaud_file(file_path, work_dir / f"{file_path.stem}_decrypted")
+        if log_paths:
+            logger.info("  ✓ .plaud decryption succeeded → %d file(s): %s",
+                         len(log_paths), [p.name for p in log_paths])
+            return log_paths, False, None
         logger.warning("  ✗ .plaud decryption failed")
-        return None, True, ".plaud 解密失败"
+        return [], True, ".plaud 解密失败"
 
     # --- .zip files ---
     if name.endswith(".zip") or is_zip_file(file_path):
@@ -335,9 +340,9 @@ def process_log_file(
         logger.info("  Strategy: .log extension detected, is_plaud_format=%s", is_plaud)
         if is_plaud:
             logger.info("  ✓ Using .log file directly → %s (%d bytes)", file_path.name, size)
-            return file_path, False, None
+            return [file_path], False, None
         logger.info("  ✓ Using non-plaud .log file (still useful for analysis) → %s (%d bytes)", file_path.name, size)
-        return file_path, True, ".log 文件非 plaud 日志格式"
+        return [file_path], True, ".log 文件非 plaud 日志格式"
 
     # --- Unknown extension: try all strategies ---
     logger.info("  Strategy: unknown extension, trying all detection methods...")
@@ -350,23 +355,24 @@ def process_log_file(
     # Try 2: plain text log detection
     if is_plaud_log_format(file_path):
         logger.info("  ✓ Plaud log format detected, using directly → %s (%d bytes)", file_path.name, size)
-        return file_path, False, None
+        return [file_path], False, None
 
     # Try 3: .plaud decryption as last resort (Linear CDN strips file extensions)
     logger.info("  → Attempting .plaud decryption (last resort)...")
-    log_path = decrypt_plaud_file(file_path, work_dir / f"{file_path.stem}_decrypted")
-    if log_path:
-        logger.info("  ✓ .plaud decryption succeeded → %s (%d bytes)", log_path.name, log_path.stat().st_size)
-        return log_path, False, None
+    log_paths = decrypt_plaud_file(file_path, work_dir / f"{file_path.stem}_decrypted")
+    if log_paths:
+        logger.info("  ✓ .plaud decryption succeeded → %d file(s): %s",
+                     len(log_paths), [p.name for p in log_paths])
+        return log_paths, False, None
 
     logger.warning("  ✗ All strategies failed for %s", file_path.name)
-    return None, True, f"无法识别的文件格式: {file_path.name}"
+    return [], True, f"无法识别的文件格式: {file_path.name}"
 
 
 def _process_zip(
     zip_path: Path,
     work_dir: Path,
-) -> Tuple[Optional[Path], bool, Optional[str]]:
+) -> Tuple[List[Path], bool, Optional[str]]:
     extract_dir = work_dir / f"{zip_path.stem}_unzipped"
     extract_dir.mkdir(parents=True, exist_ok=True)
 
@@ -390,7 +396,7 @@ def _process_zip(
                 logger.warning("[zip] system unzip stderr: %s", result.stderr[:500])
         except Exception as e2:
             logger.error("[zip] ✗ Both extraction methods failed: %s / %s", e, e2)
-            return None, True, f"解压失败: {e} (system unzip also failed: {e2})"
+            return [], True, f"解压失败: {e} (system unzip also failed: {e2})"
 
     # List all extracted files for debugging
     all_files = list(extract_dir.rglob("*"))
@@ -403,26 +409,32 @@ def _process_zip(
     plaud_files = list(extract_dir.rglob("*.plaud"))
     if plaud_files:
         logger.info("[zip] Found %d .plaud files, decrypting first one: %s", len(plaud_files), plaud_files[0].name)
-        log_path = decrypt_plaud_file(plaud_files[0])
-        if log_path:
-            logger.info("[zip] ✓ .plaud inside ZIP decrypted → %s (%d bytes)", log_path.name, log_path.stat().st_size)
-            return log_path, False, None
+        log_paths = decrypt_plaud_file(plaud_files[0])
+        if log_paths:
+            logger.info("[zip] ✓ .plaud inside ZIP decrypted → %d file(s): %s",
+                         len(log_paths), [p.name for p in log_paths])
+            return log_paths, False, None
         logger.warning("[zip] ✗ .plaud inside ZIP decryption failed")
-        return None, True, "zip 内含 .plaud 但解密失败"
+        return [], True, "zip 内含 .plaud 但解密失败"
 
-    # 2. Look for plaud-format .log (device logs)
+    # 2. Look for plaud-format .log (device logs). Keep ALL matches, not just the
+    # first — a zip can legitimately carry a current log + a rotated backup log
+    # side by side (same failure mode as decrypt_plaud_file's plaud.log vs
+    # plaud_backup.log), and dropping the backup silently hides real evidence.
     log_files = list(extract_dir.rglob("*.log"))
     logger.info("[zip] Found %d .log files", len(log_files))
-    for p in log_files:
-        if p.is_file() and is_plaud_log_format(p):
-            logger.info("[zip] ✓ Found plaud-format log: %s (%d bytes)", p.name, p.stat().st_size)
-            return p, False, None
+    plaud_format_logs = [p for p in log_files if p.is_file() and is_plaud_log_format(p)]
+    if plaud_format_logs:
+        logger.info("[zip] ✓ Found %d plaud-format log(s): %s",
+                     len(plaud_format_logs), [p.name for p in plaud_format_logs])
+        return plaud_format_logs, False, None
 
     # 3. Decompress any .log.gz files
     import gzip
     gz_files = list(extract_dir.rglob("*.log.gz"))
     if gz_files:
         logger.info("[zip] Found %d .log.gz files, decompressing...", len(gz_files))
+    decompressed_plaud_logs: List[Path] = []
     for gz_path in gz_files:
         try:
             out_path = gz_path.with_suffix("")
@@ -431,9 +443,11 @@ def _process_zip(
             logger.info("[zip] Decompressed %s → %s (%d bytes)", gz_path.name, out_path.name, out_path.stat().st_size)
             if is_plaud_log_format(out_path):
                 logger.info("[zip] ✓ Decompressed file is plaud-format")
-                return out_path, False, None
+                decompressed_plaud_logs.append(out_path)
         except Exception as e:
             logger.warning("[zip] Failed to decompress %s: %s", gz_path.name, e)
+    if decompressed_plaud_logs:
+        return decompressed_plaud_logs, False, None
 
     # 4. Collect ALL available .log files (even non-plaud format)
     all_logs = sorted(extract_dir.rglob("*.log"), key=lambda p: p.stat().st_size, reverse=True)
@@ -453,7 +467,7 @@ def _process_zip(
                     pass
         if merged.stat().st_size > 0:
             logger.info("[zip] ✓ Merged %d log files → %s (%d bytes)", len(all_logs), merged.name, merged.stat().st_size)
-            return merged, False, None
+            return [merged], False, None
 
     logger.warning("[zip] ✗ No usable log files found after extraction")
-    return None, True, "解压后未发现可用日志文件"
+    return [], True, "解压后未发现可用日志文件"

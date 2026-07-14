@@ -228,9 +228,9 @@ async def _run_api_analysis(
         for sf in saved_files:
             fp = Path(sf["local_path"])
             if fp.exists():
-                log_path, incorrect, reason = process_log_file(fp, processed_dir)
-                if log_path:
-                    log_paths.append(log_path)
+                new_log_paths, incorrect, reason = process_log_file(fp, processed_dir)
+                if new_log_paths:
+                    log_paths.extend(new_log_paths)
 
         has_logs = len(log_paths) > 0
 

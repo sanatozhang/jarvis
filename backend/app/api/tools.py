@@ -54,16 +54,20 @@ async def lost_file_finder(
         work_dir.mkdir()
 
         # Decrypt / extract log (reuses existing pipeline)
-        log_path, parse_error, reason = process_log_file(tmp_path, work_dir)
+        log_paths, parse_error, reason = process_log_file(tmp_path, work_dir)
 
-        if log_path is None:
+        if not log_paths:
             raise HTTPException(
                 status_code=422,
                 detail=f"无法解析上传的文件：{reason or '未知错误'}。请上传 .plaud 或 .log 格式的设备日志。",
             )
 
         try:
-            log_content = log_path.read_text(encoding="utf-8", errors="replace")
+            # .plaud 包常含不止一个日志文件（当前会话 + 备份/滚动缓冲），
+            # 全部拼接后再分析，避免"丢失文件"排查漏看备份日志里的同步记录。
+            log_content = "\n".join(
+                lp.read_text(encoding="utf-8", errors="replace") for lp in log_paths
+            )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"读取日志文件失败：{e}")
 
