@@ -32,9 +32,17 @@ _WEB_WARNING_PATTERNS = [
     r"\bScript\s+error\b",
 ]
 
+# 卡顿(jank_watchdog_block)——jank_ingester.py 生成的标题固定前缀 "Jank @ "（2026-07-20）。
+# 必须能识别，否则 migrations.py::_backfill_kind()（每次启动都跑一遍全表重分类）会把
+# 识别不出来的标题一律归到默认的 "crash"，把卡顿悄悄冲回崩溃统计，每次重启都会发生。
+_JANK_PATTERNS = [
+    r"^Jank\s*@",
+]
+
 _ANR_RE = [re.compile(p, re.IGNORECASE) for p in _ANR_PATTERNS]
 _MEM_RE = [re.compile(p, re.IGNORECASE) for p in _MEMORY_PATTERNS]
 _WEB_RE = [re.compile(p, re.IGNORECASE) for p in _WEB_WARNING_PATTERNS]
+_JANK_RE = [re.compile(p, re.IGNORECASE) for p in _JANK_PATTERNS]
 
 # 只关注 app 端：Flutter / iOS / Android。BROWSER / NODE 等一律 'web_warning' 兜底。
 _APP_PLATFORMS = {"flutter", "ios", "android"}
@@ -48,6 +56,7 @@ def classify_kind(title: str, platform: Optional[str] = None, service: Optional[
     """
     返回 issue 类别:
         - 'anr'           : ANR / 主线程卡顿
+        - 'jank'          : 卡顿(jank_watchdog_block)，见 jank_ingester.py
         - 'memory'        : 内存告警（不是真崩溃）
         - 'web_warning'   : 浏览器告警
         - 'crash'         : 真崩溃（默认）
@@ -61,6 +70,9 @@ def classify_kind(title: str, platform: Optional[str] = None, service: Optional[
     if platform and not is_app_platform(platform):
         return "web_warning"
 
+    for r in _JANK_RE:
+        if r.search(t):
+            return "jank"
     for r in _ANR_RE:
         if r.search(t):
             return "anr"
