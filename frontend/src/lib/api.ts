@@ -1039,7 +1039,7 @@ export interface CrashTopItemAnalysisFlag {
   last_analyzed_at?: string | null;
 }
 
-export type CrashFatality = "fatal" | "non_fatal";
+export type CrashFatality = "fatal" | "non_fatal" | "jank";
 
 export interface CrashTopItem extends CrashTopItemAnalysisFlag {
   datadog_issue_id: string;
@@ -1077,6 +1077,9 @@ export interface CrashTopAggregates {
   new_count: number;
   fatal_count: number;
   non_fatal_count: number;
+  // 卡顿(jank_watchdog_block)独立通道（2026-07-20），跟 fatal/non_fatal 平级
+  jank_count?: number;
+  jank_events?: number;
   total_events: number;
   total_users: number;
   total_sessions: number;

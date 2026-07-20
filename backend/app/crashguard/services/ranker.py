@@ -137,11 +137,13 @@ async def pick_top_n(
         issue_ver = getattr(issue, "last_seen_version", "") or ""
         if _is_qa_ver(issue_ver):
             continue
-        # C 路线：fatality 过滤（fatal / non_fatal / 空=不过滤；unknown 兜底归 fatal）
+        # C 路线：fatality 过滤（fatal / non_fatal / jank / 空=不过滤；unknown 兜底归 fatal）
+        # 2026-07-20：加了 "jank" 之后，legacy fallback 只能兜底真正未知的值——
+        # 不能把 jank 也覆写成 fatal，否则卡顿 issue 会被算进崩溃统计里。
         issue_fatality = (getattr(issue, "fatality", "") or "unknown").lower()
-        if issue_fatality not in ("fatal", "non_fatal"):
+        if issue_fatality not in ("fatal", "non_fatal", "jank"):
             issue_fatality = "fatal"  # legacy fallback
-        if fatality_filter in ("fatal", "non_fatal") and issue_fatality != fatality_filter:
+        if fatality_filter in ("fatal", "non_fatal", "jank") and issue_fatality != fatality_filter:
             continue
         first_ana = getattr(issue, "first_analyzed_at", None)
         last_ana = getattr(issue, "last_analyzed_at", None)

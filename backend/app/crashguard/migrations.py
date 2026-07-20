@@ -74,6 +74,9 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_analyses", "investigation_log", "TEXT", "'[]'"),
     ("crash_analyses", "parent_diagnosis_run_id", "VARCHAR(64)", "''"),
     ("crash_analyses", "recommended_hypothesis", "VARCHAR(64)", "''"),
+    # 2026-07-20：卡顿(jank_watchdog_block)摄入——has_app_frame=False 时设 False，
+    # 永久排除在 AI 分析/PR 候选之外。SQLite 无原生 BOOLEAN，用 INTEGER 0/1 存储。
+    ("crash_issues", "fixable", "BOOLEAN", "1"),
 ]
 
 

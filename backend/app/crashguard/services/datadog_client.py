@@ -2069,6 +2069,99 @@ class DatadogClient:
         city = geo.get("city") or ""
         return ", ".join(p for p in (city, country) if p)
 
+    def _sync_search_logs(
+        self,
+        *,
+        query: str,
+        from_ms: int,
+        to_ms: int,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """同步调用 Logs Events Search API v2，供 asyncio.to_thread 包装。
+
+        jank_watchdog_block 摄入专用（2026-07-20）——Error Tracking issues search
+        走的是官方 SDK（见 list_issues），但 jank 是纯 Logs 事件，Datadog 不做 issue
+        分组，SDK 没有覆盖这条查询，跟 _scalar_user_cardinality 一样手写 urllib 调用
+        （同一套 DD-API-KEY / DD-APPLICATION-KEY header + 重试/限流处理）。
+        """
+        body: Dict[str, Any] = {
+            "filter": {
+                "query": self._inject_service(query),
+                "from": str(int(from_ms)),
+                "to": str(int(to_ms)),
+            },
+            "page": {"limit": limit},
+            "sort": "timestamp",
+        }
+        if cursor:
+            body["page"]["cursor"] = cursor
+
+        url = f"https://api.{self.site}/api/v2/logs/events/search"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={
+                "DD-API-KEY": self.api_key,
+                "DD-APPLICATION-KEY": self.app_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        last_exc: Optional[Exception] = None
+        for attempt in range(2):  # 1 次重试，同 _scalar_user_cardinality 口径
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as exc:
+                if getattr(exc, "code", None) == _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
+                    raise DatadogRateLimitError(
+                        f"Datadog 限流 (429), reason={exc.reason}"
+                    ) from exc
+                if getattr(exc, "code", None) in _RETRY_STATUSES and attempt == 0:
+                    last_exc = exc
+                    time.sleep(2.0)
+                    continue
+                raise
+            except (TimeoutError, OSError) as exc:
+                if attempt == 0:
+                    last_exc = exc
+                    time.sleep(2.0)
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("search_logs: 未知错误")
+
+    async def search_logs_page(
+        self,
+        *,
+        query: str,
+        from_ms: int,
+        to_ms: int,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """拉取一页 Logs Search 结果（分页游标模式，jank_watchdog_block 摄入用）。
+
+        Returns:
+            {"data": [原始 log event dict, ...], "next_cursor": Optional[str]}
+            next_cursor 为 None 表示没有更多页。
+        """
+        now = time.time()
+        if now < self._circuit_open_until:
+            raise CircuitBreakerOpen(
+                f"Datadog 熔断中，将于 {int(self._circuit_open_until - now)}s 后恢复"
+            )
+        payload = await asyncio.to_thread(
+            self._sync_search_logs,
+            query=query, from_ms=from_ms, to_ms=to_ms, cursor=cursor, limit=limit,
+        )
+        data = payload.get("data") or []
+        next_cursor = ((payload.get("meta") or {}).get("page") or {}).get("after")
+        return {"data": data, "next_cursor": next_cursor}
+
 
 def _tag_value(tags: List[str], key: str) -> str:
     """从 ['version:3.15.1-630', 'env:production', ...] 里取某个 key 的 value。"""

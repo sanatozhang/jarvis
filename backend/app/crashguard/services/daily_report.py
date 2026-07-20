@@ -234,6 +234,20 @@ async def compose_report(
             .where(CrashSnapshot.snapshot_date == target_date)
         )).all()
 
+        # 卡顿(kind='jank') 走完全独立的报告通道（见文末"🟠 卡顿"板块），从这里就地
+        # 摘出去，不让它混进下面几十处按 fatal/non_fatal 分类的崩溃统计口径——尤其是
+        # 后面"realtime_today_events 对齐"那段会把不在实时崩溃查询结果里的 issue
+        # events_count 强制清零，jank issue 永远不在那个查询里，留在 today_rows 里
+        # 会被静默清零（2026-07-20）。
+        jank_rows_today = [
+            (snap, issue) for snap, issue in today_rows
+            if (getattr(issue, "kind", "") or "") == "jank"
+        ]
+        today_rows = [
+            (snap, issue) for snap, issue in today_rows
+            if (getattr(issue, "kind", "") or "") != "jank"
+        ]
+
         # 基线 snap → dict（DB fallback：实时拉失败时降级用）
         baseline_rows = (await session.execute(
             select(CrashSnapshot.datadog_issue_id, CrashSnapshot.events_count)
@@ -1034,7 +1048,7 @@ async def compose_report(
         "platforms": {},
     }
 
-    if not today_rows:
+    if not today_rows and not jank_rows_today:
         lines.append("> 今日暂无快照数据。")
         text = "\n".join(lines)
         payload["new_count"] = payload["regression_count"] = payload["surge_count"] = 0
@@ -1081,6 +1095,26 @@ async def compose_report(
         auto_pr_candidates.add(snap.datadog_issue_id)
     for snap, _ in nonfatal_pool_xplat[:AUTO_PR_TOP_N]:
         auto_pr_candidates.add(snap.datadog_issue_id)
+
+    # 卡顿(jank_watchdog_block) 专属准入（2026-07-20）：量级远小于崩溃/ANR，用独立
+    # 更低阈值（jank_attention_min_events / jank_daily_new_issue_min_events），完全不
+    # 复用上面 fatal/non_fatal 的 Top10 逻辑。fixable=False（没有应用自身帧，符号表
+    # 帮不上忙）或栈还没真正符号化的，永久排除，不进 AI 分析/PR 候选。
+    from app.crashguard.services.datadog_client import DatadogClient as _DDClientForJank
+    _UNSYMBOLICATED_STACK_LABELS = {"raw", "aot_pointers_unsymbolicated", "empty"}
+    _jank_attention_min_events = int(getattr(s, "jank_attention_min_events", 5) or 5)
+    _jank_new_issue_min_events = int(getattr(s, "jank_daily_new_issue_min_events", 3) or 3)
+    for snap, issue in jank_rows_today:
+        if not getattr(issue, "fixable", True):
+            continue
+        quality = _DDClientForJank._stack_quality_label(getattr(issue, "representative_stack", "") or "")
+        if quality in _UNSYMBOLICATED_STACK_LABELS:
+            continue
+        first_seen = getattr(issue, "first_seen_at", None)
+        is_new_today = bool(first_seen and first_seen.date() == target_date)
+        min_events = _jank_new_issue_min_events if is_new_today else _jank_attention_min_events
+        if int(snap.events_count or 0) >= min_events:
+            auto_pr_candidates.add(snap.datadog_issue_id)
 
     for plat_key, plat_label in PLATFORM_DISPLAY:
         all_plat_rows = by_platform.get(plat_key, [])
@@ -1649,10 +1683,51 @@ async def compose_report(
         native_lines.append("---")
         native_lines.append("")
 
+    # ── 🟠 卡顿(jank_watchdog_block) 板块 ─────────────────────────────────────
+    # 受"报告只显示异常"约束：今日无新增/持续复现的卡顿则整段不出，不留孤零零的标题。
+    # 门槛跟上面 auto_pr_candidates 的卡顿分支同一套阈值（jank_attention_min_events /
+    # jank_daily_new_issue_min_events），但这里不做 fixable/符号化质量过滤——报告是给
+    # 人看"发生了什么"，不该跟"值不值得自动开 PR"这个更严格的判断绑死。
+    jank_lines: List[str] = []
+    _jank_new_rows: list = []
+    _jank_recurring_rows: list = []
+    for _snap, _issue in jank_rows_today:
+        _ev = int(_snap.events_count or 0)
+        _first_seen = getattr(_issue, "first_seen_at", None)
+        _is_new_today = bool(_first_seen and _first_seen.date() == target_date)
+        if _is_new_today and _ev >= _jank_new_issue_min_events:
+            _jank_new_rows.append((_snap, _issue, _ev))
+        elif not _is_new_today and _ev >= _jank_attention_min_events:
+            _jank_recurring_rows.append((_snap, _issue, _ev))
+
+    if _jank_new_rows or _jank_recurring_rows:
+        jank_lines.append("## 🟠 卡顿")
+        if _jank_new_rows:
+            jank_lines.append(f"> 🆕 今日新增 {len(_jank_new_rows)} 处")
+            for _snap, _issue, _ev in sorted(_jank_new_rows, key=lambda t: -t[2])[:10]:
+                _url = _frontend_issue_url(_snap.datadog_issue_id)
+                _title_short = (_issue.title or "")[:60]
+                jank_lines.append(
+                    f"- 🆕 {(_issue.platform or '').upper()} · **{_ev:,}** events · "
+                    f"[{_title_short}]({_url})"
+                )
+        if _jank_recurring_rows:
+            jank_lines.append(f"> 持续复现 {len(_jank_recurring_rows)} 处")
+            for _snap, _issue, _ev in sorted(_jank_recurring_rows, key=lambda t: -t[2])[:10]:
+                _url = _frontend_issue_url(_snap.datadog_issue_id)
+                _title_short = (_issue.title or "")[:60]
+                jank_lines.append(
+                    f"- {(_issue.platform or '').upper()} · **{_ev:,}** events · "
+                    f"[{_title_short}]({_url})"
+                )
+        jank_lines.append("")
+        jank_lines.append("---")
+        jank_lines.append("")
+
     # 插入位置：title (line 0) + 数据窗口 (line 1) + 空行 (line 2) 后
-    # 顺序：Σ 摘要 → 昨日复盘 → 🆕 4.0 Native（置顶，紧贴 ## ✨关注点 前，段边界才干净）→ ✨ 关注点
+    # 顺序：Σ 摘要 → 昨日复盘 → 🆕 4.0 Native → 🟠 卡顿（紧贴 ## ✨关注点 前，段边界才干净）→ ✨ 关注点
     insert_at = 2
-    lines[insert_at:insert_at] = [sigma, ""] + retro_lines + native_lines + attn_lines
+    lines[insert_at:insert_at] = [sigma, ""] + retro_lines + native_lines + jank_lines + attn_lines
 
     payload["new_count"] = total_new
     payload["regression_count"] = total_surge

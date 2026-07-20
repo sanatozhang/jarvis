@@ -200,6 +200,13 @@ class CrashguardSettings(BaseSettings):
     # 之一才展示；都不满足则该平台不列 driver（避免"头条小涨 + 正文一堆个位数"）。
     daily_surge_driver_min_abs_delta: int = 20
     daily_surge_driver_min_events: int = 50
+    # 卡顿(jank_watchdog_block) 专属准入阈值（2026-07-20）：卡顿量级天生比崩溃分散
+    # （14天样本40条分布在15个聚合桶），换算下来单个具体卡顿点日均事件数远够不到
+    # 上面 daily_attention_min_events(100)/daily_new_issue_min_events(10) 这类阈值，
+    # 直接复用会导致卡顿基本一条都进不了自动分析池，所以单独给一组更低的阈值，
+    # 不动崩溃/ANR 现有口径。
+    jank_attention_min_events: int = 5
+    jank_daily_new_issue_min_events: int = 3
 
     # Feishu
     feishu_target_chat_id: str = ""
@@ -601,6 +608,8 @@ def _yaml_overrides() -> Dict[str, Any]:
             ("daily_new_issue_min_events", "daily_new_issue_min_events"),
             ("daily_surge_driver_min_abs_delta", "daily_surge_driver_min_abs_delta"),
             ("daily_surge_driver_min_events", "daily_surge_driver_min_events"),
+            ("jank_attention_min_events", "jank_attention_min_events"),
+            ("jank_daily_new_issue_min_events", "jank_daily_new_issue_min_events"),
         ]:
             if k_yaml in t:
                 flat[k_py] = t[k_yaml]

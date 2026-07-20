@@ -62,6 +62,10 @@ class CrashIssue(Base):
     prewarm_attempts = Column(Integer, default=0)        # 已尝试预热次数
     prewarm_last_error = Column(Text, default="")        # 最近一次失败原因
     prewarm_last_at = Column(DateTime, nullable=True)    # 最近一次预热时间
+    # 2026-07-20：卡顿(jank_watchdog_block)摄入专用——has_app_frame=False（卡顿完全发生在
+    # 系统框架内部，没有落到我们自己代码的帧）时设为 False，永久排除在 AI 分析/PR 候选之外。
+    # 其余所有 kind（crash/anr/memory/web_warning）默认 True，行为不受影响。
+    fixable = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

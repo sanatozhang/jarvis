@@ -894,7 +894,7 @@ async def get_top(
     """读取指定日期的 issue 列表（首页用，**跳过早晚报 dedup**，列今日全集）。
 
     - kinds: 逗号分隔类别白名单；默认 "all"
-    - fatality: "fatal" / "non_fatal" / "" (=全部)
+    - fatality: "fatal" / "non_fatal" / "jank" / "" (=全部)
     - platform: "android" / "ios" / "flutter" / "" (=全部)
     - status: "open" / "investigating" / "resolved_by_pr" / "ignored" / "wontfix" / "" (=全部)
     - search: title 子串匹配（大小写不敏感）
@@ -964,7 +964,7 @@ async def get_top(
 
         # 后端过滤（仅分页路径用；非分页路径已由 pick_top_n 处理 fatality）
         if paginated:
-            if fatality_norm in ("fatal", "non_fatal"):
+            if fatality_norm in ("fatal", "non_fatal", "jank"):
                 items = [x for x in items if (x.get("fatality") or "fatal") == fatality_norm]
             if platform_norm:
                 items = [x for x in items if (x.get("platform") or "").lower() == platform_norm]
@@ -1077,6 +1077,12 @@ async def get_top(
             "non_fatal_events": sum(
                 int(x.get("events_count") or 0)
                 for x in items if x.get("fatality") == "non_fatal"
+            ),
+            # 卡顿(jank_watchdog_block)独立通道（2026-07-20），跟 fatal/non_fatal 平级
+            "jank_count": sum(1 for x in items if x.get("fatality") == "jank"),
+            "jank_events": sum(
+                int(x.get("events_count") or 0)
+                for x in items if x.get("fatality") == "jank"
             ),
             "total_events": sum(int(x.get("events_count") or 0) for x in items),
             "total_users": sum(int(x.get("users_affected") or 0) for x in items),

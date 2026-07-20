@@ -1,7 +1,9 @@
 """端到端数据流水线测试（不含 AI）"""
 from __future__ import annotations
 
+import asyncio
 from datetime import date
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -68,6 +70,12 @@ async def test_run_data_phase_end_to_end(tmp_path, monkeypatch):
 
     from app.crashguard.services.datadog_client import DatadogClient
     monkeypatch.setattr(DatadogClient, "list_issues", fake_list_issues)
+    # run_data_phase 2026-07-20 起会 fire-and-forget 调 jank_ingester，同一个事件循环
+    # 里后续的 await 会让这个后台 task 有机会跑起来——不 mock 的话会用 "test-key" 真的
+    # 发一次 Datadog Logs Search API 请求。这里跟上面的 list_issues 一样喂假数据。
+    async def fake_search_logs_page(self, *, query, from_ms, to_ms, cursor=None, limit=100):
+        return {"data": [], "next_cursor": None}
+    monkeypatch.setattr(DatadogClient, "search_logs_page", fake_search_logs_page)
 
     from app.crashguard.workers.pipeline import run_data_phase
     today = date.today()
@@ -148,6 +156,10 @@ async def test_qa_build_skipped_by_default_and_captured_when_enabled(tmp_path, m
 
     from app.crashguard.services.datadog_client import DatadogClient
     monkeypatch.setattr(DatadogClient, "list_issues", fake_list_issues)
+    # 同上：避免 fire-and-forget 的 jank_ingester 用 "test-key" 发真实网络请求
+    async def fake_search_logs_page(self, *, query, from_ms, to_ms, cursor=None, limit=100):
+        return {"data": [], "next_cursor": None}
+    monkeypatch.setattr(DatadogClient, "search_logs_page", fake_search_logs_page)
 
     from app.crashguard.workers.pipeline import run_data_phase
     from sqlalchemy import select, func
@@ -176,3 +188,40 @@ async def test_qa_build_skipped_by_default_and_captured_when_enabled(tmp_path, m
             select(func.count()).select_from(CrashSnapshot).where(CrashSnapshot.snapshot_date == today)
         )).scalar()
         assert n_snap == 1
+
+
+@pytest.mark.asyncio
+async def test_run_data_phase_schedules_jank_ingester(tmp_path, monkeypatch):
+    """2026-07-20：run_data_phase 每 4h tick 应该 fire-and-forget 调度一次卡顿摄入，
+    跟现有的 prewarmer 调度同一种写法（不阻塞主流程，失败不影响 issues_processed 结果）。
+    """
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'jank_wire.db'}")
+    monkeypatch.setenv("CRASHGUARD_DATADOG_API_KEY", "test-key")
+    monkeypatch.setenv("CRASHGUARD_DATADOG_APP_KEY", "test-app")
+    from app.config import get_settings
+    from app.crashguard.config import get_crashguard_settings
+    get_settings.cache_clear()
+    get_crashguard_settings.cache_clear()
+
+    from app.db.database import init_db
+    from app.crashguard import models  # noqa
+    await init_db()
+
+    async def fake_list_issues(self, window_hours=24, page_size=100, tracks="rum", query="*"):
+        return []
+
+    from app.crashguard.services.datadog_client import DatadogClient
+    monkeypatch.setattr(DatadogClient, "list_issues", fake_list_issues)
+
+    ingest_mock = AsyncMock(return_value={"scanned": 0, "new_issues": 0, "updated_issues": 0})
+    monkeypatch.setattr(
+        "app.crashguard.services.jank_ingester.ingest_jank_logs", ingest_mock,
+    )
+
+    from app.crashguard.workers.pipeline import run_data_phase
+    today = date.today()
+    await run_data_phase(today=today, latest_release="1.0.0", recent_versions=[])
+    # fire-and-forget task 需要让事件循环转一圈才会真正执行
+    await asyncio.sleep(0)
+
+    ingest_mock.assert_called_once()

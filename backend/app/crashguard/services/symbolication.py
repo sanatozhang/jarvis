@@ -171,6 +171,124 @@ async def symbolicate_stack(
         return stack
 
 
+async def symbolicate_jank_frame(
+    *,
+    platform: str,
+    app_version: str,
+    module: str = "",
+    frame_text: str = "",
+    pc: str = "",
+    module_base: str = "",
+    symbol_profile: str = "",
+    github_repo: str = "",
+) -> str:
+    """
+    jank_watchdog_block 卡顿事件的单帧符号化（2026-07-20）。
+
+    每条卡顿日志只给"应用自身模块"单帧地址（不是整段多帧堆栈），符号化成本很低，
+    复用现有多帧解析函数（伪造成一行"stack"喂给它们），不重复造 dSYM 下载 / ProGuard
+    解析 / atos 调用这些底层机制：
+
+    - iOS：用 `github_symbols.py::get_ios_dsyms_dir()`（同一套 GitHub release 符号包
+      下载，本次会话前半段修的 GH_TOKEN 403 bug 在这里同样生效）+ 复用
+      `_symbolicate_ios_with_dir()` 做单帧 atos 查询。
+    - Android：`app_stack_frame` 大多数情况下已是可读文本（class.method），但实测
+      确有混淆样本（如 "ai.plaud.android.payment.k.a"），统一走现有 ProGuard
+      retrace（`_retrace_proguard` 对映射表里查不到的类名是 no-op，原样返回，
+      不需要先判断"是否混淆"）。
+
+    失败时返回 `frame_text`（Android）或 `"{module} + {pc}"`（iOS）占位，调用方用
+    `DatadogClient._stack_quality_label()` 判断质量是否足够进入 AI 分析。
+    """
+    _probe_tools()
+    plat = (platform or "").lower()
+    try:
+        if "ios" in plat:
+            return await _symbolicate_jank_frame_ios(
+                app_version=app_version, module=module, pc=pc, module_base=module_base,
+                symbol_profile=symbol_profile, github_repo=github_repo,
+            )
+        if "android" in plat:
+            return await _symbolicate_jank_frame_android(
+                app_version=app_version, frame_text=frame_text,
+                symbol_profile=symbol_profile, github_repo=github_repo,
+            )
+    except Exception as exc:
+        logger.warning("symbolicate_jank_frame failed (non-fatal): %s", exc)
+    return frame_text or (f"{module} + {pc}" if module else pc)
+
+
+async def _symbolicate_jank_frame_ios(
+    *,
+    app_version: str,
+    module: str,
+    pc: str,
+    module_base: str,
+    symbol_profile: str,
+    github_repo: str,
+) -> str:
+    from app.crashguard.services.github_symbols import (
+        get_ios_dsyms_dir, _ASSET_IOS_DSYM, _ASSET_IOS_DSYM_NATIVE,
+    )
+
+    placeholder = f"{module} + {pc}" if module else pc
+    if not pc or not module_base:
+        return placeholder
+
+    strategy = _profile_strategy(symbol_profile)
+    ios_asset = _ASSET_IOS_DSYM_NATIVE if strategy.get("use_app_dsym") else _ASSET_IOS_DSYM
+    dsyms_dir = await get_ios_dsyms_dir(app_version, repo=github_repo, asset_name=ios_asset)
+    if not dsyms_dir:
+        return placeholder
+
+    try:
+        offset_decimal = int(pc, 16) - int(module_base, 16)
+    except ValueError:
+        return placeholder
+
+    # 伪造成 _symbolicate_ios_with_dir 认识的单行格式，直接复用它的 dSYM 遍历 + atos 查询，
+    # 不重复实现 "找 dSYM bundle → 调 atos" 这套逻辑。
+    fake_stack = f"0   {module}   {pc}   {module_base} + {offset_decimal}\n"
+    resolved = await asyncio.to_thread(_symbolicate_ios_with_dir, fake_stack, dsyms_dir)
+    if resolved == fake_stack:
+        return placeholder  # 未命中任何 dSYM，原样返回（_symbolicate_ios_with_dir 的失败态）
+
+    prefix = f"0   {module}   "
+    if resolved.startswith(prefix):
+        return resolved[len(prefix):].strip() or placeholder
+    return resolved.strip() or placeholder
+
+
+async def _symbolicate_jank_frame_android(
+    *,
+    app_version: str,
+    frame_text: str,
+    symbol_profile: str,
+    github_repo: str,
+) -> str:
+    from app.crashguard.services.github_symbols import get_android_mapping
+
+    if not frame_text or "." not in frame_text:
+        return frame_text
+
+    strategy = _profile_strategy(symbol_profile)
+    if strategy and not strategy.get("use_proguard"):
+        return frame_text
+
+    mapping_path = await get_android_mapping(app_version, repo=github_repo)
+    if not mapping_path:
+        return frame_text
+
+    # 伪造成 _retrace_proguard 认识的 "at Class.method(...)" 单行格式，复用它的
+    # mapping.txt 解析 + 查表逻辑；映射表里查不到该类名时 _retrace_proguard 原样
+    # 返回，不需要预先判断"这一帧是否混淆"。
+    class_part, _, method_part = frame_text.rpartition(".")
+    fake_line = f"  at {class_part}.{method_part}(Unknown Source)"
+    resolved = await asyncio.to_thread(_retrace_proguard, fake_line, mapping_path)
+    m = _ANDROID_FRAME_RE.search(resolved)
+    return f"{m.group(2)}.{m.group(3)}" if m else frame_text
+
+
 def _symbolicate_stack_sync(stack: str, binary_images: list, platform: str) -> str:
     plat = (platform or "").lower()
     if "ios" in plat or "iphone" in plat or "ipados" in plat:

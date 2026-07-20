@@ -190,8 +190,8 @@ function CrashguardPageInner() {
   // URL → state（深链入口；与 reports 页相同思路）
   const parsePlatform = (v: string | null): string =>
     ["all", "android", "ios", "flutter", "browser"].includes(v || "") ? (v as string) : "all";
-  const parseFatality = (v: string | null): "all" | "fatal" | "non_fatal" =>
-    v === "all" || v === "non_fatal" ? v : "fatal"; // 默认 fatal
+  const parseFatality = (v: string | null): "all" | "fatal" | "non_fatal" | "jank" =>
+    v === "all" || v === "non_fatal" || v === "jank" ? v : "fatal"; // 默认 fatal
   const parseStatus = (v: string | null): "all" | CrashStatus =>
     ["all", "open", "investigating", "resolved_by_pr", "ignored", "wontfix"].includes(v || "")
       ? (v as "all" | CrashStatus)
@@ -240,7 +240,7 @@ function CrashguardPageInner() {
     (
       patch: Partial<{
         platform: string;
-        fatality: "all" | "fatal" | "non_fatal";
+        fatality: "all" | "fatal" | "non_fatal" | "jank";
         status: "all" | CrashStatus;
         sort: CrashSortBy;
         page: number;
@@ -270,7 +270,7 @@ function CrashguardPageInner() {
   );
 
   const setPlatformFilter = (v: string) => updateListQuery({ platform: v, page: 1 });
-  const setFatalityFilter = (v: "all" | "fatal" | "non_fatal") => updateListQuery({ fatality: v, page: 1 });
+  const setFatalityFilter = (v: "all" | "fatal" | "non_fatal" | "jank") => updateListQuery({ fatality: v, page: 1 });
   const setStatusFilter = (v: "all" | CrashStatus) => updateListQuery({ status: v, page: 1 });
   const setSortBy = (v: CrashSortBy) => updateListQuery({ sort: v, page: 1 });
   const setPage = (v: number) => updateListQuery({ page: v });
@@ -343,6 +343,8 @@ function CrashguardPageInner() {
         nonFatalEvents: ag.non_fatal_events ?? 0,
         fatalCount: aggregates.fatal_count,
         nonFatalCount: aggregates.non_fatal_count,
+        jankEvents: aggregates.jank_events ?? 0,
+        jankCount: aggregates.jank_count ?? 0,
         // User 维度（主）
         crashFreeUsersPct: ag.crash_free_users_pct ?? null,
         crashFreeTotalUsers: ag.crash_free_total_users ?? 0,
@@ -358,11 +360,14 @@ function CrashguardPageInner() {
     const surge = items.filter((i) => i.is_surge).length;
     const fatalItems = items.filter((i) => (i.fatality || "fatal") === "fatal");
     const nonFatalItems = items.filter((i) => i.fatality === "non_fatal");
+    const jankItems = items.filter((i) => i.fatality === "jank");
     return {
       events, sessions, p0, surge,
       fatalEvents: fatalItems.reduce((s, i) => s + (i.events_count || 0), 0),
       nonFatalEvents: nonFatalItems.reduce((s, i) => s + (i.events_count || 0), 0),
       fatalCount: fatalItems.length, nonFatalCount: nonFatalItems.length,
+      jankEvents: jankItems.reduce((s, i) => s + (i.events_count || 0), 0),
+      jankCount: jankItems.length,
       crashFreeUsersPct: null as number | null,
       crashFreeTotalUsers: 0,
       crashFreeCrashedUsers: 0,
@@ -876,6 +881,7 @@ function CrashguardPageInner() {
                 { v: "all", l: t("全部") },
                 { v: "fatal", l: t("🔴 严重崩溃") },
                 { v: "non_fatal", l: t("⚠️ 业务失败") },
+                { v: "jank", l: t("🟠 卡顿") },
               ]}
             />
             <FilterPill

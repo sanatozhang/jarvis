@@ -197,6 +197,17 @@ async def run_data_phase(
     except Exception as exc:
         logger.warning("prewarmer schedule failed (non-fatal): %s", exc)
 
+    # 后台摄入卡顿(jank_watchdog_block)日志（fire-and-forget，不阻塞主流程）。
+    # 这是纯 Logs 事件，不经过 Error Tracking，跟上面的 fatal/nonfatal 双路拉取是
+    # 完全独立的数据源，2026-07-20 新增。
+    try:
+        import asyncio as _asyncio
+        from app.crashguard.services.jank_ingester import ingest_jank_logs
+        _asyncio.create_task(ingest_jank_logs())
+        logger.info("jank ingester task scheduled")
+    except Exception as exc:
+        logger.warning("jank ingester schedule failed (non-fatal): %s", exc)
+
     return {
         "issues_processed": issues_processed,
         "snapshots_written": snapshots_written,

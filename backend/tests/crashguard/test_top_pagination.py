@@ -264,3 +264,86 @@ async def test_backward_compat_legacy_call(tmp_path, monkeypatch):
         assert "aggregates" in j
         # page/total_pages 只在分页路径下返回
         assert "total_pages" not in j
+
+
+async def _seed_jank_issue(today: date, issue_id: str, events: int, fixable: bool = True):
+    from app.db.database import get_session
+    from app.crashguard.models import CrashIssue, CrashSnapshot
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id=issue_id,
+            platform="ios",
+            title=f"Jank @ {issue_id}",
+            kind="jank",
+            fatality="jank",
+            fixable=fixable,
+            status="open",
+        ))
+        session.add(CrashSnapshot(
+            datadog_issue_id=issue_id, snapshot_date=today,
+            events_count=events, users_affected=1, sessions_affected=1,
+            crash_free_impact_score=1.0,
+        ))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_fatality_jank_filter_returns_only_jank(tmp_path, monkeypatch):
+    """2026-07-20：fatality=jank 应该只返回卡顿 issue，且不会退化成"不过滤"
+    （之前 fatality_norm in ("fatal","non_fatal") 的硬编码白名单漏了 "jank"，
+    传 jank 时整个过滤条件被跳过，返回全部数据）。
+    """
+    await _setup(tmp_path, monkeypatch)
+    today = date.today()
+    await _seed_issues(today, 3, fatality="fatal")
+    await _seed_jank_issue(today, "jank:1", events=10)
+    await _seed_jank_issue(today, "jank:2", events=20)
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app) as client:
+        r = client.get("/api/crash/top?page=1&page_size=40&fatality=jank")
+        j = r.json()
+        ids = {it["datadog_issue_id"] for it in j["issues"]}
+        assert ids == {"jank:1", "jank:2"}
+        assert j["total"] == 2
+        agg = j["aggregates"]
+        assert agg["jank_count"] == 2
+        assert agg["jank_events"] == 30
+
+
+@pytest.mark.asyncio
+async def test_fatal_filter_excludes_jank(tmp_path, monkeypatch):
+    """fatality=fatal 不应该混进卡顿 issue。"""
+    await _setup(tmp_path, monkeypatch)
+    today = date.today()
+    await _seed_issues(today, 3, fatality="fatal")
+    await _seed_jank_issue(today, "jank:1", events=10)
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app) as client:
+        r = client.get("/api/crash/top?page=1&page_size=40&fatality=fatal")
+        j = r.json()
+        ids = {it["datadog_issue_id"] for it in j["issues"]}
+        assert "jank:1" not in ids
+        assert len(ids) == 3
+
+
+@pytest.mark.asyncio
+async def test_unfiltered_aggregates_report_jank_separately_from_fatal(tmp_path, monkeypatch):
+    """不加 fatality 过滤时，jank 的 events 不应该被计入 fatal_count/fatal_events。"""
+    await _setup(tmp_path, monkeypatch)
+    today = date.today()
+    await _seed_issues(today, 3, fatality="fatal", base_events=100)
+    await _seed_jank_issue(today, "jank:1", events=10)
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app) as client:
+        r = client.get("/api/crash/top?page=1&page_size=40")
+        j = r.json()
+        agg = j["aggregates"]
+        assert agg["fatal_count"] == 3
+        assert agg["jank_count"] == 1
+        assert agg["jank_events"] == 10

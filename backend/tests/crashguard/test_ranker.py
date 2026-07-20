@@ -290,3 +290,52 @@ async def test_pick_top_n_order_by_events(tmp_path, monkeypatch):
         top = await pick_top_n(s, today=today, n=10, order_by="events")
         ids = [t["datadog_issue_id"] for t in top]
         assert ids == ["b", "a", "c"], f"expected events DESC, got {ids}"
+
+
+@pytest.mark.asyncio
+async def test_pick_top_n_fatality_jank_preserved_not_overwritten_to_fatal(tmp_path, monkeypatch):
+    """2026-07-20 回归测试：legacy fallback（未知 fatality 兜底归 fatal）不能把 "jank"
+    也吞掉——否则卡顿 issue 会被误算进崩溃统计，且 fatality="jank" 这个筛选值会失效
+    （filter 会因为 issue_fatality 被覆写成 "fatal" 而永远匹配不到 "jank"）。
+    """
+    from datetime import date
+    from app.db.database import get_session, init_db
+    from app.crashguard import models  # noqa
+    from app.crashguard.models import CrashSnapshot, CrashIssue
+    from app.crashguard.services.ranker import pick_top_n
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'rank_jank.db'}")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    await init_db()
+
+    today = date.today()
+
+    async with get_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="jank:1", platform="ios", title="Jank @ Plaud-Global",
+            kind="jank", fatality="jank",
+        ))
+        s.add(CrashSnapshot(datadog_issue_id="jank:1", snapshot_date=today, events_count=10))
+        s.add(CrashIssue(
+            datadog_issue_id="crash:1", platform="ios", title="Real crash", fatality="fatal",
+        ))
+        s.add(CrashSnapshot(datadog_issue_id="crash:1", snapshot_date=today, events_count=10))
+        await s.commit()
+
+    async with get_session() as s:
+        # 不过滤 → 两条都在，且 jank 的 fatality 字段必须原样保留 "jank"，不能被覆写成 "fatal"
+        all_rows = await pick_top_n(s, today=today, n=10, kinds=())
+        by_id = {r["datadog_issue_id"]: r for r in all_rows}
+        assert by_id["jank:1"]["fatality"] == "jank"
+        assert by_id["crash:1"]["fatality"] == "fatal"
+
+    async with get_session() as s:
+        # fatality="jank" → 只返回卡顿
+        jank_only = await pick_top_n(s, today=today, n=10, kinds=(), fatality="jank")
+        assert [r["datadog_issue_id"] for r in jank_only] == ["jank:1"]
+
+    async with get_session() as s:
+        # fatality="fatal" → 卡顿不能混进来
+        fatal_only = await pick_top_n(s, today=today, n=10, kinds=(), fatality="fatal")
+        assert [r["datadog_issue_id"] for r in fatal_only] == ["crash:1"]
