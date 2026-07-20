@@ -419,3 +419,83 @@ def test_inject_service_empty_filter_is_debug_escape_hatch():
 
     client = DatadogClient(api_key="x", app_key="y", service_filter="")
     assert client._inject_service("@type:error") == "@type:error"
+
+
+# ---------------------------------------------------------------------------
+# get_issue_detail — 符号化失败不应被静默吞掉、也不应被误判为"已完成"
+#
+# 2026-07-20 背景：102 上实测确认，即便找到了 RUM 事件（frame_buckets 非空、
+# 分布字段能正常写入），如果末尾 symbolicate_stack() 抛异常（比如 GH_TOKEN 403），
+# 原代码 `except Exception: symbolicated = best_stack` 会静默吞掉、不留日志；
+# 而且返回的 stack_quality 是用符号化前的 best_stack 算的，永远不反映符号化
+# 是否真的生效。下游 distribution_prewarmer 只看 top_os 是否有值就判定"已完成"，
+# 于是这批"找到事件但符号化失败"的 issue 被永久标记为成功，代表性堆栈却停留在
+# 原始地址，再也没有重新符号化的机会。
+# ---------------------------------------------------------------------------
+
+def _make_rum_event(stack: str, *, os_name: str = "ios", app_version: str = "3.18.0-708",
+                     binary_images: Optional[list] = None) -> SimpleNamespace:
+    inner = {
+        "error": {"stack": stack, "binary_images": binary_images or []},
+        "os": {"name": os_name},
+        "application": {"version": app_version},
+    }
+    return SimpleNamespace(
+        attributes=SimpleNamespace(attributes=inner, _data_store={}, timestamp=1700000000000),
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_issue_detail_logs_and_reports_when_symbolication_raises(monkeypatch, caplog):
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    raw_stack = "0   App   0x0000000112fec700 0x11214c000 + 15337216"
+    event = _make_rum_event(raw_stack)
+
+    client = DatadogClient(api_key="x", app_key="y")
+    monkeypatch.setattr(DatadogClient, "_sync_search_rum_events", lambda self, *a, **k: [event])
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("GH_TOKEN 403 (simulated)")
+
+    monkeypatch.setattr(
+        "app.crashguard.services.symbolication.symbolicate_stack", _boom,
+    )
+
+    import logging
+    caplog.set_level(logging.WARNING, logger="crashguard.datadog_client")
+
+    detail = await client.get_issue_detail("issue-raw-ios")
+
+    assert detail is not None
+    # 符号化失败时原样返回未解析栈——这是既有容错行为，不应改变
+    assert detail["full_stack"] == raw_stack
+    # 但必须留痕，不能静默吞掉
+    assert any("symbolicat" in rec.message.lower() for rec in caplog.records)
+    # stack_quality 反映符号化后的真实质量（原始地址栈 → "raw"），而不是符号化前的快照
+    assert detail["stack_quality"] == "raw"
+
+
+@pytest.mark.asyncio
+async def test_get_issue_detail_stack_quality_reflects_successful_symbolication(monkeypatch):
+    """对照组：符号化成功时 stack_quality 应反映符号化后的结果（symbolicated_native）。"""
+    from app.crashguard.services.datadog_client import DatadogClient
+
+    raw_stack = "0   App   0x0000000112fec700 0x11214c000 + 15337216"
+    symbolicated_stack = "0   App   -[PLRecordManager stopRecording] PLRecordManager.swift:120"
+    event = _make_rum_event(raw_stack)
+
+    client = DatadogClient(api_key="x", app_key="y")
+    monkeypatch.setattr(DatadogClient, "_sync_search_rum_events", lambda self, *a, **k: [event])
+
+    async def _fake_symbolicate(*a, **kw):
+        return symbolicated_stack
+
+    monkeypatch.setattr(
+        "app.crashguard.services.symbolication.symbolicate_stack", _fake_symbolicate,
+    )
+
+    detail = await client.get_issue_detail("issue-fixed-ios")
+
+    assert detail["full_stack"] == symbolicated_stack
+    assert detail["stack_quality"] == "symbolicated_native"

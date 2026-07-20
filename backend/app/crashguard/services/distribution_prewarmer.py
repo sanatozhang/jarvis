@@ -31,6 +31,18 @@ logger = logging.getLogger("crashguard.prewarmer")
 
 _MAX_PREWARM_ATTEMPTS = 3  # 单 issue 失败 3 次后不再重试，避免无效循环
 
+# stack_quality 标签里代表"仍未真正符号化"的集合（与 datadog_client._stack_quality_label
+# 保持一致口径）。has_dist（top_os 有值）只代表 RUM 分布数据写入成功，不代表代表性
+# 堆栈真的被符号化了——2026-07-20 修复：102 上实测一批 iOS ANR issue 分布数据写入
+# 成功但符号化环节撞上 GH_TOKEN 403 静默失败，栈永远停在原始地址，却因为 has_dist=True
+# 被无条件跳过、永久锁死。
+_RAW_STACK_QUALITY_LABELS = {"raw", "aot_pointers_unsymbolicated", "empty"}
+
+
+def _stack_needs_symbolication(stack: str) -> bool:
+    from app.crashguard.services.datadog_client import DatadogClient
+    return DatadogClient._stack_quality_label(stack) in _RAW_STACK_QUALITY_LABELS
+
 
 async def prewarm_today_distributions(
     today: date,
@@ -71,9 +83,12 @@ async def prewarm_today_distributions(
     exhausted = 0
     for snap, issue in rows:
         has_dist = bool((getattr(issue, "top_os", "") or "").strip())
+        stack_needs_retry = _stack_needs_symbolication(getattr(issue, "representative_stack", "") or "")
         attempts = int(getattr(issue, "prewarm_attempts", 0) or 0)
         if only_missing:
-            if has_dist:
+            # has_dist 只代表分布数据（top_os 等）写入成功，不等于"栈已符号化"——
+            # 两者是 get_issue_detail 内两个独立步骤，符号化那步可能静默失败。
+            if has_dist and not stack_needs_retry:
                 continue
             exhausted_retries = attempts >= _MAX_PREWARM_ATTEMPTS
             # issue.last_seen_at 每次 pipeline 拉到新事件都会更新；如果它比上次

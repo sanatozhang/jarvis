@@ -454,12 +454,21 @@ class DatadogClient:
                 symbol_profile=(_res.symbol_profile if _res else ""),
                 github_repo=(_res.github_repo if _res else ""),
             )
-        except Exception:
+        except Exception as exc:
+            # 2026-07-20 修复：之前这里静默吞掉异常，102 上实测过一批 iOS ANR issue
+            # 因为符号化环节撞上 GH_TOKEN 403 而原样回退，却完全没有日志——调用方
+            # 无从得知符号化其实失败了。留痕，方便定位类似问题。
+            logger.warning(
+                "get_issue_detail: symbolication failed for issue=%s platform=%s ver=%s: %s",
+                issue_id, platform_str, app_ver, exc,
+            )
             symbolicated = best_stack
 
         return {
             "full_stack": symbolicated,
-            "stack_quality": self._stack_quality_label(best_stack),
+            # 用符号化后的结果算 quality，而不是符号化前的 best_stack——否则这个字段
+            # 永远反映不出符号化到底有没有生效（同一次 2026-07-20 修复）。
+            "stack_quality": self._stack_quality_label(symbolicated),
             "error_message": self._extract_path(inner, "error", "message") or "",
             "error_type": self._extract_path(inner, "error", "type") or "",
             "error_source_type": self._extract_path(inner, "error", "source_type") or "",

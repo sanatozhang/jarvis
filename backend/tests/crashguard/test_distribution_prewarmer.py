@@ -52,16 +52,14 @@ def _patch_always_fail_client(monkeypatch):
 
     我们只关心哪些 issue 被选为 candidate（会触发一次 get_issue_detail 调用并
     bump prewarm_attempts），不关心失败本身的原因。
+
+    注意：只 patch 实例方法 get_issue_detail，不要把整个 DatadogClient 类换成
+    MagicMock——_stack_needs_symbolication() 也会用到 DatadogClient 上真实的
+    _stack_quality_label 静态方法，换成 MagicMock 会让它跟着失真（返回值不是
+    字符串，`in _RAW_STACK_QUALITY_LABELS` 恒为 False，误判"不需要重试"）。
     """
-    fake_client = MagicMock()
-    fake_client.get_issue_detail = AsyncMock(return_value=None)
-    # DatadogClient 是函数体内局部 import（`from ...datadog_client import DatadogClient`），
-    # 不是 distribution_prewarmer 模块级属性，要 patch 到它真正的来源模块。
-    monkeypatch.setattr(
-        "app.crashguard.services.datadog_client.DatadogClient",
-        MagicMock(return_value=fake_client),
-    )
-    return fake_client
+    from app.crashguard.services.datadog_client import DatadogClient
+    monkeypatch.setattr(DatadogClient, "get_issue_detail", AsyncMock(return_value=None))
 
 
 @pytest.mark.asyncio
@@ -144,3 +142,86 @@ async def test_exhausted_stale_issue_stays_skipped(patched_session, monkeypatch)
     assert row.prewarm_attempts == 3
     assert result["failed"] == 0
     assert result["exhausted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_issue_with_distribution_but_raw_stack_is_still_a_candidate(patched_session, monkeypatch):
+    """2026-07-20 修复：has_dist=True(top_os 已有值) 不该等于"已完成"。
+
+    102 实测：一批 iOS ANR issue 的 get_issue_detail 找到了 RUM 事件（分布数据
+    写入成功、top_os 有值），但末尾符号化环节撞上 GH_TOKEN 403 静默失败，
+    representative_stack 停留在原始地址（"App 0x... + offset"）。旧逻辑只看
+    has_dist 就跳过，这批 issue 被永久锁死。has_dist 和"栈是否真的符号化"是
+    两回事，不该混为一谈。
+    """
+    from app.db.database import get_session
+    from app.crashguard.models import CrashSnapshot, CrashIssue
+    from app.crashguard.services.distribution_prewarmer import prewarm_today_distributions
+
+    _patch_settings(monkeypatch)
+    _patch_always_fail_client(monkeypatch)
+
+    today = date.today()
+    recent_attempt = datetime.utcnow() - timedelta(hours=1)  # 刚试过，非耗尽也非陈旧
+
+    async with get_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="issue_raw_but_has_dist", platform="ios", title="ANR",
+            last_seen_at=datetime.utcnow(),
+            prewarm_attempts=1, prewarm_last_at=recent_attempt, prewarm_last_error="",
+            top_os="iOS 26.4.2 (100.0%)",  # 分布数据已写入 —— 旧逻辑会因此直接跳过
+            representative_stack="0   App   0x0000000112fec700 0x11214c000 + 15337216",
+        ))
+        s.add(CrashSnapshot(
+            datadog_issue_id="issue_raw_but_has_dist", snapshot_date=today,
+            events_count=4, users_affected=2,
+        ))
+        await s.commit()
+
+    result = await prewarm_today_distributions(today=today, max_issues=30)
+
+    # 候选被选中（即便 has_dist=True）→ get_issue_detail 被调用一次 → attempts 1→2
+    async with get_session() as s:
+        from sqlalchemy import select
+        row = (await s.execute(
+            select(CrashIssue).where(CrashIssue.datadog_issue_id == "issue_raw_but_has_dist")
+        )).scalar_one()
+    assert row.prewarm_attempts == 2
+    assert result["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_issue_with_distribution_and_symbolicated_stack_is_skipped(patched_session, monkeypatch):
+    """对照组：has_dist=True 且栈已经真的符号化 → 应继续跳过，不做无意义重试。"""
+    from app.db.database import get_session
+    from app.crashguard.models import CrashSnapshot, CrashIssue
+    from app.crashguard.services.distribution_prewarmer import prewarm_today_distributions
+
+    _patch_settings(monkeypatch)
+    _patch_always_fail_client(monkeypatch)
+
+    today = date.today()
+
+    async with get_session() as s:
+        s.add(CrashIssue(
+            datadog_issue_id="issue_properly_symbolicated", platform="ios", title="ANR",
+            last_seen_at=datetime.utcnow(),
+            prewarm_attempts=1, prewarm_last_at=datetime.utcnow() - timedelta(hours=1), prewarm_last_error="",
+            top_os="iOS 26.4.2 (100.0%)",
+            representative_stack="0   App   -[PLRecordManager stopRecording] PLRecordManager.swift:120",
+        ))
+        s.add(CrashSnapshot(
+            datadog_issue_id="issue_properly_symbolicated", snapshot_date=today,
+            events_count=4, users_affected=2,
+        ))
+        await s.commit()
+
+    result = await prewarm_today_distributions(today=today, max_issues=30)
+
+    async with get_session() as s:
+        from sqlalchemy import select
+        row = (await s.execute(
+            select(CrashIssue).where(CrashIssue.datadog_issue_id == "issue_properly_symbolicated")
+        )).scalar_one()
+    assert row.prewarm_attempts == 1  # 未被重跑
+    assert result["failed"] == 0
