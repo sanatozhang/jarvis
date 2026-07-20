@@ -120,12 +120,49 @@ async def _collect_attention_ids(today: date) -> List[str]:
             if _add(iid or ""):
                 return ordered
 
+        # ①.5 卡顿(jank)专属准入（2026-07-20）：不能让它跟 fatal/non_fatal 混在一起按
+        # 纯 events DESC 排——卡顿量级天生远小于崩溃（个位数~几十 events），跟动辄几百
+        # 上千 events 的真崩溃比数字必输，永远抢不到名额，导致符合条件的卡顿实际上从来
+        # 不会被自动分析/开 PR。门槛跟 daily_report.py::compose_report 完全同款
+        # （fixable=True 且已真正符号化，事件数达到 jank_attention_min_events /
+        # jank_daily_new_issue_min_events），独立保底入选，不跟崩溃抢名额排序逻辑。
+        from app.crashguard.models import CrashIssue as _CrashIssueForJank
+        from app.crashguard.services.datadog_client import DatadogClient as _DDClientForJank
+
+        _UNSYMBOLICATED_LABELS = {"raw", "aot_pointers_unsymbolicated", "empty"}
+        jank_rows = (await session.execute(
+            select(CrashSnapshot, _CrashIssueForJank)
+            .join(_CrashIssueForJank, _CrashIssueForJank.datadog_issue_id == CrashSnapshot.datadog_issue_id)
+            .where(CrashSnapshot.snapshot_date == today, _CrashIssueForJank.kind == "jank")
+            .order_by(CrashSnapshot.events_count.desc())
+        )).all()
+        jank_new_min = int(getattr(s_cfg, "jank_daily_new_issue_min_events", 3) or 3)
+        jank_min = int(getattr(s_cfg, "jank_attention_min_events", 5) or 5)
+        for snap, issue in jank_rows:
+            if not getattr(issue, "fixable", True):
+                continue
+            quality = _DDClientForJank._stack_quality_label(getattr(issue, "representative_stack", "") or "")
+            if quality in _UNSYMBOLICATED_LABELS:
+                continue
+            first_seen = getattr(issue, "first_seen_at", None)
+            is_new_today = bool(first_seen and first_seen.date() == today)
+            min_events = jank_new_min if is_new_today else jank_min
+            if int(snap.events_count or 0) < min_events:
+                continue
+            if _add(snap.datadog_issue_id):
+                return ordered
+
         # ② fatal + non_fatal 合并按 events DESC 全局排序 —— fatality="" 不过滤
         top_all = await pick_top_n(
             session, today=today, n=cap, kinds=(), fatality="", dedup_days=0,
             include_platforms=fixable_platforms, order_by=_ORDER_BY,
         )
         for item in top_all:
+            # 卡顿只走上面①.5 专属准入（fixable/符号化质量/独立阈值门槛），不能
+            # 在这里裸拼 events——量级天生远小于崩溃，赢不了排序，但如果当天恰好
+            # 崩溃很少，可能会绕过①.5 的门槛意外被选中（2026-07-20 测试实测过）。
+            if (item.get("kind") or "") == "jank":
+                continue
             iid = item.get("datadog_issue_id") or ""
             if _add(iid):
                 return ordered
