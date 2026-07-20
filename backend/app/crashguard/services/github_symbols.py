@@ -60,11 +60,21 @@ def _github_token() -> Optional[str]:
     403），只作 gh 不可用时的最后兜底。和 pr_drafter/pr_sync/pr_reviewer 里"剥
     GH_TOKEN 走 OAuth"是同一个道理，这里因为走的是 httpx 直连而不是 gh 子进程，
     没法靠剥 env 让 gh 自己接管，只能反过来主动问 gh 要它当前用的 token。
+
+    2026-07-20 修复：上面这段调 `gh auth token` 子进程时忘了剥离
+    GH_TOKEN/GITHUB_TOKEN env——`gh` 二进制本身会尊重这两个 env var，于是又把
+    过期 PAT 取了回来，102 上实测所有符号包下载全 403。和其余 3 个 gh 子进程调用
+    点（pr_drafter._github_open_crashguard_pr / pr_reviewer.fetch_pr_diff_via_gh /
+    check_review_status_from_gh）保持同款处理：调用前从子进程 env 里剥掉这两个 key。
     """
     try:
         import subprocess
+        sub_env = dict(os.environ)
+        for k in ("GH_TOKEN", "GITHUB_TOKEN"):
+            sub_env.pop(k, None)
         r = subprocess.run(
             ["gh", "auth", "token"], capture_output=True, text=True, timeout=10,
+            env=sub_env,
         )
         if r.returncode == 0:
             tok = (r.stdout or "").strip()

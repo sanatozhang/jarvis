@@ -75,7 +75,17 @@ async def prewarm_today_distributions(
         if only_missing:
             if has_dist:
                 continue
-            if attempts >= _MAX_PREWARM_ATTEMPTS:
+            exhausted_retries = attempts >= _MAX_PREWARM_ATTEMPTS
+            # issue.last_seen_at 每次 pipeline 拉到新事件都会更新；如果它比上次
+            # prewarm 尝试的时间更新，说明这不是一个"查无可查"的静止 issue，而是
+            # 持续复现、只是之前 N 次 RUM 搜索恰好没捞到样本——不该被永久放弃增强
+            # （2026-07-20 修复：102 上一个 iOS issue 从 05-29 起卡在 attempts=3，
+            # 但此后每天都有新事件，代表性堆栈永远停在 8 字节占位符）。
+            has_new_evidence = bool(
+                issue.last_seen_at and issue.prewarm_last_at
+                and issue.last_seen_at > issue.prewarm_last_at
+            )
+            if exhausted_retries and not has_new_evidence:
                 exhausted += 1
                 continue
         candidates.append(issue.datadog_issue_id)

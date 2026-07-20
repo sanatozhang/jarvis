@@ -50,3 +50,30 @@ def test_github_token_falls_back_to_env_when_gh_missing(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert G._github_token() == "expired-pat"
+
+
+def test_github_token_strips_gh_token_env_before_invoking_gh(monkeypatch):
+    """2026-07-20 修复：_github_token() 调 `gh auth token` 时未剥离
+    GH_TOKEN/GITHUB_TOKEN env——真实的 `gh` 二进制会尊重这两个 env var，
+    于是又把过期 fine-grained PAT 取了回来，102 上实测所有 release 下载
+    403（org 90 天生命周期策略拒绝）。此前的 mock（本文件其余用例）直接
+    返回假 token，没有模拟"真实 gh 读 env"这个行为，所以没测出这个坑。
+    这里断言传给 subprocess.run 的 env 里不含这两个 key（与
+    test_cross_instance_dedup.py::test_github_dedup_strips_gh_token_env
+    同款断言风格）。
+    """
+    from app.crashguard.services import github_symbols as G
+
+    monkeypatch.setenv("GH_TOKEN", "expired-pat")
+    monkeypatch.setenv("GITHUB_TOKEN", "expired-pat")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return SimpleNamespace(returncode=0, stdout="gho_liveoauthtoken\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert G._github_token() == "gho_liveoauthtoken"
+    assert captured["env"] is not None
+    assert "GH_TOKEN" not in captured["env"]
+    assert "GITHUB_TOKEN" not in captured["env"]
