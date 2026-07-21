@@ -1,6 +1,7 @@
 "use client";
 
 import { useContext, useEffect, useState } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useT, useLang, LangToggleContext } from "@/lib/i18n";
 import { fetchCrashEnabled } from "@/lib/api";
@@ -133,7 +134,7 @@ export default function Sidebar() {
         }).map((item) => {
           const active = isActive(item.href);
           return (
-            <a
+            <Link
               key={item.href}
               href={item.href}
               className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150"
@@ -175,7 +176,7 @@ export default function Sidebar() {
                   <i style={{ display: "block", width: 2, height: 6, background: "var(--j-accent)", borderRadius: 1 }} />
                 </span>
               )}
-            </a>
+            </Link>
           );
         })}
       </nav>
@@ -227,7 +228,7 @@ export default function Sidebar() {
         )}
 
         {/* System status */}
-        <a
+        <Link
           href="/settings"
           className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
           style={{ color: "var(--j-graphite)" }}
@@ -255,7 +256,7 @@ export default function Sidebar() {
             className="h-2 w-2 rounded-full"
             style={{ background: "#16A34A", boxShadow: "0 0 6px rgba(22,163,74,0.4)" }}
           />
-        </a>
+        </Link>
 
         {/* Theme toggle — light / dark console mode */}
         <ThemeToggle />

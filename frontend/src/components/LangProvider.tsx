@@ -3,20 +3,25 @@
 import { useState, useEffect } from "react";
 import { LangContext, LangToggleContext, type Lang } from "@/lib/i18n";
 
-// 英文优先策略：每次访问默认 English；切换按钮在当前 session 内有效，
-// 但**不持久化**——下次刷新自动回到英文。
+// 默认 English；切换后持久化到 localStorage，刷新/切 tab 都保留选择。
 export default function LangProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLang] = useState<Lang>("en");
 
   useEffect(() => {
-    // 一次性 migration：清除老用户可能残留的 appllo_lang 偏好
     try {
-      localStorage.removeItem("appllo_lang");
+      const saved = localStorage.getItem("appllo_lang");
+      if (saved === "en" || saved === "cn") setLang(saved);
     } catch {}
   }, []);
 
   const toggle = () => {
-    setLang((prev) => (prev === "cn" ? "en" : "cn"));
+    setLang((prev) => {
+      const next = prev === "cn" ? "en" : "cn";
+      try {
+        localStorage.setItem("appllo_lang", next);
+      } catch {}
+      return next;
+    });
   };
 
   return (
