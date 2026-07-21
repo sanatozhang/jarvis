@@ -96,25 +96,6 @@ async def pick_top_n(
         .where(CrashSnapshot.snapshot_date == today)
     )).all()
 
-    # QA 内测包阈值（版本第三段 >= 阈值时跳过）；qa_capture_enabled=True 时临时豁免
-    try:
-        from app.crashguard.config import get_crashguard_settings as _cgs
-        _qa_settings = _cgs()
-        _qa_threshold = _qa_settings.qa_version_patch_threshold
-        _qa_capture_enabled = _qa_settings.qa_capture_enabled
-    except Exception:
-        _qa_threshold = 100
-        _qa_capture_enabled = False
-
-    def _is_qa_ver(ver: str) -> bool:
-        if _qa_capture_enabled or _qa_threshold <= 0:
-            return False
-        try:
-            patch = ver.split("-")[0].split(".")[2]
-            return int(patch) >= _qa_threshold
-        except (IndexError, ValueError):
-            return False
-
     enriched: List[Dict[str, Any]] = []
     allowed_kinds = set(kinds) if kinds else None
     fatality_filter = (fatality or "").strip().lower()
@@ -132,10 +113,6 @@ async def pick_top_n(
         if include_set and issue_platform not in include_set:
             continue
         if exclude_set and issue_platform in exclude_set:
-            continue
-        # QA 内测包过滤：版本第三段 >= qa_version_patch_threshold
-        issue_ver = getattr(issue, "last_seen_version", "") or ""
-        if _is_qa_ver(issue_ver):
             continue
         # C 路线：fatality 过滤（fatal / non_fatal / jank / 空=不过滤；unknown 兜底归 fatal）
         # 2026-07-20：加了 "jank" 之后，legacy fallback 只能兜底真正未知的值——

@@ -85,3 +85,68 @@ def test_tag_deep_agent_type():
     assert tag_deep_agent_type("claude_code", deep=False) == "claude_code"
     assert tag_deep_agent_type("claude_code_deep", deep=True) == "claude_code_deep"  # 幂等
     assert tag_deep_agent_type("", deep=True) == ""  # 空不加后缀
+
+
+# ── Fix 2: system_failure（如撞 max_turns 超时）也自动升级一次深度分析 ─────────
+# 2026-07-21：之前只有「分析成功但 confidence=low」会自动升级，agent 自报
+# system_failure（is_real_failure 强制判失败）走的是另一条分支，永远不会触发，
+# 哪怕最终 confidence 也是 low。用户反馈一个撞 max_turns 的工单卡在这里没人管。
+
+from app.models.schemas import AnalysisResult, Confidence
+
+
+def _make_system_failure_result(issue_id: str, task_id: str, deep: bool = False) -> AnalysisResult:
+    return AnalysisResult(
+        task_id=task_id,
+        issue_id=issue_id,
+        problem_type="分析超时",
+        problem_type_en="Analysis Timeout",
+        root_cause="本次工单的日志分析在得出结论前就因达到最大对话轮数（30轮）而被系统终止",
+        confidence=Confidence.LOW,
+        confidence_reason="分析过程未完成，没有获得任何日志证据支撑的结论",
+        system_failure=True,
+        is_deep_analysis=deep,
+    )
+
+
+async def test_system_failure_triggers_auto_deep_analysis_once(client, db_session):
+    """非深度分析跑撞 system_failure → 应该自动重跑一次深度分析（同 confidence=low 那条分支对称）。"""
+    await seed_issue(db_session, "issue_sysfail")
+
+    with patch(
+        "app.api.tasks.run_analysis_pipeline",
+        new_callable=AsyncMock,
+        side_effect=lambda **kw: _make_system_failure_result(
+            "issue_sysfail", kw["task_id"], deep=kw.get("deep_analysis", False),
+        ),
+    ), patch(
+        "app.api.tasks._maybe_trigger_auto_deep_analysis", new_callable=AsyncMock,
+    ) as mock_auto_deep:
+        resp = await client.post(
+            "/api/tasks",
+            json={"issue_id": "issue_sysfail", "deep_analysis": False, "username": "testuser"},
+        )
+        assert resp.status_code == 200
+        mock_auto_deep.assert_awaited_once()
+        assert mock_auto_deep.await_args.kwargs["issue_id"] == "issue_sysfail"
+
+
+async def test_system_failure_does_not_retrigger_during_deep_analysis(client, db_session):
+    """深度分析本身又撞 system_failure → 不再自动重跑，避免无限重试。"""
+    await seed_issue(db_session, "issue_sysfail_deep")
+
+    with patch(
+        "app.api.tasks.run_analysis_pipeline",
+        new_callable=AsyncMock,
+        side_effect=lambda **kw: _make_system_failure_result(
+            "issue_sysfail_deep", kw["task_id"], deep=kw.get("deep_analysis", False),
+        ),
+    ), patch(
+        "app.api.tasks._maybe_trigger_auto_deep_analysis", new_callable=AsyncMock,
+    ) as mock_auto_deep:
+        resp = await client.post(
+            "/api/tasks",
+            json={"issue_id": "issue_sysfail_deep", "deep_analysis": True, "username": "testuser"},
+        )
+        assert resp.status_code == 200
+        mock_auto_deep.assert_not_awaited()

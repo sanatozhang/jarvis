@@ -687,6 +687,18 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
                 except Exception as ne:
                     logger.warning("Failed to notify oncall on analysis failure: %s", ne)
 
+            # system_failure（如撞 max_turns 超时未出结论）→ 按开关自动重跑一次深度
+            # 分析，同「confidence=low」那条分支一样靠 not deep_analysis 防止二次
+            # 深度分析再次失败时无限重试；深度分析跑完自己会走下面的
+            # notify_issue_creator_on_complete，这一轮（失败那次）不重复通知用户。
+            if not deep_analysis and getattr(result, "system_failure", False):
+                try:
+                    auto_deep_triggered = await _maybe_trigger_auto_deep_analysis(
+                        issue_id=issue_id, username=username,
+                    )
+                except Exception as ne:
+                    logger.warning("auto_deep_analysis_failed issue=%s task=%s err=%s", issue_id, task_id, ne)
+
             # Track: analysis failed
             duration = int((_time.monotonic() - _start_time) * 1000)
             _fail_detail = {"reason": result.problem_type, "error": error_msg[:200]}
