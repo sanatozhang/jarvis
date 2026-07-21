@@ -11,6 +11,8 @@ set -euo pipefail
 #   重启:      ./deploy.sh restart
 #   查看日志:  ./deploy.sh logs
 #   更新:      ./deploy.sh update
+#   强制重建:  ./deploy.sh rebuild [backend|frontend]
+#   清理镜像:  ./deploy.sh cleanup [images|all]
 #   状态:      ./deploy.sh status
 # ============================================================
 
@@ -82,34 +84,83 @@ dc() {
     fi
 }
 
-# ---- Prune 3 件套：容器 + dangling + 超期 image ----
-# v2 修复版：上一版用 `image prune -af` 把所有未引用 image 清光，**包括 build 中间层缓存**，
-# 导致每次 deploy 后下次必 cold build。这里只清"真垃圾"：
-#   1) Exited 容器（钉住 <none> image 的元凶）
-#   2) dangling image（不带 -a，保留中间层缓存供下次 build 复用）
-#   3) 14 天前的所有未引用 image（防止极老镜像无限堆积）
-prune_dangling() {
-    # 1) 清掉所有 Exited 容器（解除对 <none> image 的引用）
+# ---- Cleanup helpers ----
+# 默认部署路径只清 stopped containers。classic builder 没有 buildx 独立缓存时，
+# dangling images 往往就是下一次构建要复用的中间层；自动 image prune 会把
+# backend 重新打回 cold build。需要回收磁盘时显式跑 `./deploy.sh cleanup`。
+prune_stopped_containers() {
     local stopped
     stopped=$(docker ps -aq --filter "status=exited" --filter "status=created" | wc -l | tr -d ' ')
     if [ "$stopped" -gt 0 ]; then
         log "Pruning $stopped stopped container(s)..."
         docker container prune -f >/dev/null 2>&1 || true
     fi
+}
 
-    # 2) 只清 dangling image（保留中间层缓存 → 下次 build 命中加速）
+prune_dangling() {
+    prune_stopped_containers
+
     local dangling
     dangling=$(docker images -f dangling=true -q | wc -l | tr -d ' ')
-    if [ "$dangling" -gt 0 ]; then
-        log "Pruning $dangling dangling image(s)..."
-        docker image prune -f >/dev/null 2>&1 || true
+    if [ "${JARVIS_PRUNE_IMAGES:-0}" = "1" ]; then
+        if [ "$dangling" -gt 0 ]; then
+            log "Pruning $dangling dangling image(s) because JARVIS_PRUNE_IMAGES=1..."
+            docker image prune -f >/dev/null 2>&1 || true
+        fi
+        docker image prune -af --filter "until=336h" >/dev/null 2>&1 || true
+        docker builder prune -af --filter until=168h >/dev/null 2>&1 || true
+    elif [ "$dangling" -gt 0 ]; then
+        log "Keeping $dangling dangling image/cache layer(s) for faster rebuilds."
+        log "Run './deploy.sh cleanup images' when disk space matters more than build speed."
     fi
+}
 
-    # 3) 清掉 14 天前的所有未引用 image（防膨胀长尾，不影响最近缓存）
-    docker image prune -af --filter "until=336h" >/dev/null 2>&1 || true
+cmd_cleanup() {
+    local mode="${1:-images}"
 
-    # 4) 清掉 7 天前的 build cache（buildx 用户才有效，旧 docker 无 op）
-    docker builder prune -af --filter until=168h >/dev/null 2>&1 || true
+    prune_stopped_containers
+
+    case "$mode" in
+        images)
+            log "Pruning dangling images and images unused for 14+ days..."
+            docker image prune -f >/dev/null 2>&1 || true
+            docker image prune -af --filter "until=336h" >/dev/null 2>&1 || true
+            ;;
+        all)
+            log "Pruning containers, images, and builder cache..."
+            docker image prune -f >/dev/null 2>&1 || true
+            docker image prune -af --filter "until=336h" >/dev/null 2>&1 || true
+            docker builder prune -af --filter until=168h >/dev/null 2>&1 || true
+            ;;
+        *)
+            err "Unknown cleanup mode '$mode'. Use: images or all"
+            exit 1
+            ;;
+    esac
+
+    log "✅ Cleanup complete."
+}
+
+restart_after_update() {
+    local backend_changed="$1"
+    local frontend_changed="$2"
+    local restart_needed="$3"
+
+    if [ "$backend_changed" -eq 1 ] && [ "$frontend_changed" -eq 1 ]; then
+        log "Applying updated images/configuration..."
+        dc up -d
+    elif [ "$backend_changed" -eq 1 ]; then
+        log "Restarting backend with updated image..."
+        dc up -d backend
+    elif [ "$frontend_changed" -eq 1 ]; then
+        log "Restarting frontend with updated image..."
+        dc up -d frontend
+    elif [ "$restart_needed" -eq 1 ]; then
+        log "Restarting backend to reload mounted configuration..."
+        dc restart backend
+    else
+        log "No deploy-affecting changes detected — leaving running containers untouched."
+    fi
 }
 
 # ---- Setup (first time) ----
@@ -148,7 +199,7 @@ cmd_setup() {
 
     # Ensure data directories exist (for bind mounts)
     mkdir -p data workspaces
-    
+
     # Stop bare-metal services if running (avoid port conflicts)
     if [ -f .pids/backend.pid ] && kill -0 "$(cat .pids/backend.pid 2>/dev/null)" 2>/dev/null; then
         warn "Stopping bare-metal services first..."
@@ -225,11 +276,39 @@ cmd_logs() {
     dc logs -f --tail=100 "${@:-}"
 }
 
-# ---- Update (pull + rebuild + restart + prune) ----
+# ---- Force rebuild (explicit escape hatch) ----
+cmd_rebuild() {
+    local service="${1:-}"
+
+    if [ -n "$service" ]; then
+        case "$service" in
+            backend|frontend)
+                log "Force rebuilding $service image..."
+                dc build "$service"
+                log "Restarting $service with rebuilt image..."
+                dc up -d "$service"
+                ;;
+            *)
+                err "Unknown service '$service'. Use: backend or frontend"
+                exit 1
+                ;;
+        esac
+    else
+        log "Force rebuilding all images (backend + frontend)..."
+        dc build
+        log "Restarting with rebuilt images..."
+        dc up -d --force-recreate
+    fi
+
+    prune_dangling
+    log "✅ Rebuilt and restarted."
+}
+
+# ---- Update (pull + rebuild only affected images + restart + prune) ----
 cmd_update() {
     log "Updating Jarvis..."
 
-    local backend_changed=0 frontend_changed=0
+    local backend_changed=0 frontend_changed=0 restart_needed=0
 
     if [ -d .git ]; then
         log "Pulling latest code..."
@@ -239,23 +318,30 @@ cmd_update() {
         local after
         after=$(git rev-parse HEAD)
 
-        if [ "$before" != "$after" ]; then
-            # 检测哪个部分有变更，只重建需要的镜像
-            if git diff --name-only "$before" "$after" | grep -qE '^backend/'; then
-                backend_changed=1
-            fi
-            if git diff --name-only "$before" "$after" | grep -qE '^frontend/'; then
-                frontend_changed=1
-            fi
-            # 根目录文件变更（docker-compose.yml 等）→ 全量重建
-            if git diff --name-only "$before" "$after" | grep -qvE '^(backend|frontend)/'; then
-                backend_changed=1
-                frontend_changed=1
-            fi
+        if [ "$before" = "$after" ]; then
+            log "Already up to date — skipping rebuild. Use './deploy.sh rebuild' to force."
         else
-            log "Already up to date — force rebuilding current images..."
-            backend_changed=1
-            frontend_changed=1
+            local changed_files
+            changed_files="$(git diff --name-only "$before" "$after")"
+
+            # 镜像内容相关变更：只重建对应服务。
+            if printf '%s\n' "$changed_files" | grep -qE '^backend/(Dockerfile|requirements.*\.txt|app/|scripts/)'; then
+                backend_changed=1
+            fi
+            if printf '%s\n' "$changed_files" | grep -qE '^frontend/'; then
+                frontend_changed=1
+            fi
+
+            # Compose 部署结构变化可能影响两个服务：保守全量重建。
+            if printf '%s\n' "$changed_files" | grep -qE '^docker-compose.*\.ya?ml$'; then
+                backend_changed=1
+                frontend_changed=1
+            fi
+
+            # 运行期配置或规则通过 bind mount 进入容器，不需要重建镜像，但需要重启生效。
+            if printf '%s\n' "$changed_files" | grep -qE '^(config\.ya?ml|\.env|\.env\..*|backend/rules/)'; then
+                restart_needed=1
+            fi
         fi
     else
         backend_changed=1
@@ -275,14 +361,14 @@ cmd_update() {
         log "No file changes detected — skipping rebuild."
     fi
 
-    log "Restarting with new images..."
-    dc down
-    dc up -d
+    restart_after_update "$backend_changed" "$frontend_changed" "$restart_needed"
 
     # 治本闭环：rebuild 后旧 image 变 dangling，长期堆磁盘
-    prune_dangling
+    if [ "$backend_changed" -eq 1 ] || [ "$frontend_changed" -eq 1 ]; then
+        prune_dangling
+    fi
 
-    log "✅ Updated and restarted."
+    log "✅ Update complete."
 }
 
 # ---- Status ----
@@ -432,7 +518,7 @@ check_deps
 
 # Daemon check only for commands that actually need Docker running
 case "${1:-help}" in
-    setup|start|restart|update|status|logs|stop) check_docker_daemon ;;
+    setup|start|restart|update|rebuild|cleanup|status|logs|stop) check_docker_daemon ;;
 esac
 
 case "${1:-help}" in
@@ -442,6 +528,8 @@ case "${1:-help}" in
     restart) cmd_restart ;;
     logs)    shift; cmd_logs "$@" ;;
     update)  cmd_update ;;
+    rebuild) shift; cmd_rebuild "${1:-}" ;;
+    cleanup) shift; cmd_cleanup "${1:-}" ;;
     status)  cmd_status ;;
     dev)     cmd_dev ;;
     *)
@@ -455,7 +543,9 @@ case "${1:-help}" in
         echo "  stop      Stop all services"
         echo "  restart   Restart all services"
         echo "  logs      View logs (add 'backend' or 'frontend' to filter)"
-        echo "  update    Pull code + rebuild + restart"
+        echo "  update    Pull code + rebuild only affected images"
+        echo "  rebuild   Force rebuild all images, or one service: rebuild backend|frontend"
+        echo "  cleanup   Prune images manually: cleanup images|all"
         echo "  status    Check service status"
         echo "  dev       Start in local dev mode (no Docker)"
         ;;
