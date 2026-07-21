@@ -28,15 +28,67 @@ RULES_DIR = BACKEND_ROOT / "rules"
 _yaml_config: Dict[str, Any] = {}
 
 
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """递归合并两个 dict：override 的标量值覆盖 base；嵌套 dict 递归合并（而非整段替换）。"""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _load_yaml() -> Dict[str, Any]:
+    """加载 config.yaml（git 版本控制的默认值/模板）叠加 config.local.yaml（每台服务器
+    各自的运行时覆盖，不进 git，见根目录 config.local.yaml.example）。
+
+    背景：`/settings` 页面里"无需重启即可持久化"的开关（如 crashguard.qa_capture_enabled）
+    以前直接写回 config.yaml——但 config.yaml 是 git 追踪文件，docker 部署时又把它挂载成
+    只读（避免容器写入把 git 工作区弄脏），导致写入静默失败（try/except 吞掉了
+    OSError: Read-only file system），设置页显示"已保存"但重启/重新部署后又变回默认值
+    （2026-07-21 生产环境实测发现）。config.local.yaml 专门承接这类运行时覆盖，各服务器
+    独立、部署时 `git pull` 不会碰它。
+    """
     global _yaml_config
     if _yaml_config:
         return _yaml_config
+    merged: Dict[str, Any] = {}
     yaml_path = PROJECT_ROOT / "config.yaml"
     if yaml_path.exists():
         with open(yaml_path, "r", encoding="utf-8") as f:
-            _yaml_config = yaml.safe_load(f) or {}
+            merged = yaml.safe_load(f) or {}
+    local_path = PROJECT_ROOT / "config.local.yaml"
+    if local_path.exists():
+        with open(local_path, "r", encoding="utf-8") as f:
+            local_overrides = yaml.safe_load(f) or {}
+        merged = _deep_merge(merged, local_overrides)
+    _yaml_config = merged
     return _yaml_config
+
+
+def write_local_override(section: str, updates: Dict[str, Any]) -> None:
+    """把 {section: {...updates}} 合并写入 config.local.yaml（每台服务器独立、不进 git）。
+
+    读-合并-写，保留该文件里已有的其它覆盖项 / 其它 section（不是整份重写覆盖）。
+    写完立即失效 `_load_yaml()` 的模块级缓存，同进程内后续读取也能拿到最新值
+    （调用方通常还会直接改运行中 Settings 单例的属性，这里的缓存失效是为了让
+    `_load_yaml()` 本身保持一致，防止后续某处重新触发加载时读到写入前的旧缓存）。
+    """
+    global _yaml_config
+    local_path = PROJECT_ROOT / "config.local.yaml"
+    existing: Dict[str, Any] = {}
+    if local_path.exists():
+        with open(local_path, "r", encoding="utf-8") as f:
+            existing = yaml.safe_load(f) or {}
+    section_dict = existing.get(section)
+    if not isinstance(section_dict, dict):
+        section_dict = {}
+    section_dict.update(updates)
+    existing[section] = section_dict
+    with open(local_path, "w", encoding="utf-8") as f:
+        yaml.dump(existing, f, allow_unicode=True, default_flow_style=False)
+    _yaml_config = {}
 
 
 # ---------------------------------------------------------------------------

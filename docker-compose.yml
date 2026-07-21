@@ -8,6 +8,19 @@ services:
       # 注意：config.yaml 挂载到 /config.yaml（根目录），因为容器内 PROJECT_ROOT=/
       # backend/app/config.py: Path(__file__).parent.parent.parent 在容器内解析为 /，而非 /app
       - ./config.yaml:/config.yaml:ro
+      # config.local.yaml：每台服务器独立的运行时覆盖（/settings 页面的开关写这里），
+      # 不进 git，必须可写——config.yaml 保持 :ro 是因为它是 git 追踪文件，容器写入
+      # 会静默失败且弄脏工作区（2026-07-21 生产环境实测踩过，qa_capture_enabled 切换
+      # "看起来生效"实际从未落盘）。宿主机文件不存在时 deploy.sh 会自动 touch 一份。
+      - ./config.local.yaml:/config.local.yaml
+      # .env 同理挂到根目录（/.env），且必须可写（不是 :ro）——`/api/env` 设置页
+      # 读写的是这个实际文件路径，而不只是下面 env_file: 注入的进程环境变量。之前
+      # 没挂载这个文件时，容器内 PROJECT_ROOT/.env 压根不存在：GET 页面读到的全是
+      # 空值，PATCH 写入会在容器自己的临时文件系统里创建一个宿主机完全看不到的
+      # "幽灵文件"，重启即彻底丢失（2026-07-21 生产环境实测发现，比 config.yaml
+      # 只读挂载那个 bug 更隐蔽——那个至少异常可查，这个连报错都没有）。.env 本身
+      # 不进 git（见 .gitignore），挂可写不会有 git 工作区冲突的顾虑。
+      - ./.env:/.env
       # 同理，data 和 workspaces 也挂载到根目录下
       - ./data:/data                         # 数据库实际路径为 /data/appllo.db
       - ./workspaces:/workspaces             # 工作区实际路径为 /workspaces/

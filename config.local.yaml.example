@@ -1,0 +1,19 @@
+# 每台服务器独立的运行时配置覆盖模板。
+#
+# 用途：`/settings` 页面里"无需重启即可持久化"的开关（如 crashguard.qa_capture_enabled、
+# crashguard.symbol_upload_keep_versions）写在这里，不写 config.yaml —— config.yaml 是
+# git 版本控制的默认值模板，docker 部署里还挂载成只读，容器写不了；`git pull` 也不该
+# 覆盖某台服务器上通过设置页做的临时调整。
+#
+# 首次部署：复制这份文件为 config.local.yaml（同目录，已加入 .gitignore，不会被提交）。
+#   cp config.local.yaml.example config.local.yaml
+# 也可以留空不建这个文件——config.py::_load_yaml() 会优雅跳过，等第一次通过设置页
+# 保存某个开关时自动创建。
+#
+# 加载顺序：config.yaml（默认值）先加载，config.local.yaml 里的内容按 section 递归
+# 合并覆盖在上面（不是整份替换）。字段结构和 config.yaml 完全一致，按需增删。
+
+# crashguard:
+#   qa_capture_enabled: false
+#   symbol_upload_keep_versions: 5
+#   github_cache_keep_versions: 5

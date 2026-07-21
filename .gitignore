@@ -26,6 +26,11 @@ out/
 .env.local
 .env.*.local
 
+# Per-server runtime config overrides (settings-page writes go here, not config.yaml —
+# see backend/app/config.py::write_local_override). Deliberately not versioned: each
+# server's toggles are independent and must survive `git pull` during deploys.
+config.local.yaml
+
 # IDE
 .vscode/
 .idea/

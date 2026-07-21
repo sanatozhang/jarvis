@@ -18,12 +18,13 @@ pytest tests/crashguard/ -v
 
 API 文档：`http://localhost:8000/docs`
 
-## 配置分层（env > yaml > defaults）
+## 配置分层（env > yaml(local override) > yaml(默认) > defaults）
 
 | 来源 | 文件 | 用途 |
 |------|------|------|
 | env / `.env` | 项目根 `.env` | secrets：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`LINEAR_API_KEY`、`DATABASE_URL`、`CRASHGUARD_DATADOG_API_KEY` 等 |
-| yaml | `config.yaml`（项目根） | agent 选择 / 路由 / 并发 / 模型名 / Crashguard 段 |
+| yaml（每台服务器独立，**不进 git**） | `config.local.yaml`（项目根，`.gitignore` 排除，模板见 `config.local.yaml.example`） | `/settings` 页面"无需重启即可持久化"的开关（如 crashguard `qa_capture_enabled`、`symbol_upload_keep_versions`）写在这里；`app/config.py::write_local_override()` 读-合并-写。**不要**手动把这些字段加进 `config.yaml`——deploy 时的 `git pull` 不该覆盖某台服务器的临时调整（2026-07-21：曾把这类开关直接写 `config.yaml`，但 docker 部署把它挂载成只读，写入静默失败，重启后又变回默认值，见 commit 附近历史） |
+| yaml（默认值，git 版本控制） | `config.yaml`（项目根） | agent 选择 / 路由 / 并发 / 模型名 / Crashguard 段的默认值/模板 |
 | defaults | `backend/app/config.py` | Pydantic `Settings`，`get_settings()` 缓存单例 |
 
 ⚠️ 容器内 `__file__` 三级 `parent` 解出来是 `/` 不是 `/app`，所以 docker-compose 挂载点用 `/config.yaml`、`/data/`、`/workspaces/`，不是 `/app/...`。修挂载点前看根 CLAUDE.md「Docker 已知问题 #1」。

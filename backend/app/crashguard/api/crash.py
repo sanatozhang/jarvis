@@ -3304,11 +3304,11 @@ class SymbolSettingsPatch(BaseModel):
 @router.patch("/settings/symbols")
 async def update_symbol_settings(body: SymbolSettingsPatch) -> Dict[str, Any]:
     """
-    更新符号化相关设置并持久化到 config.yaml crashguard 段。
-    同时更新运行时配置，无需重启。
+    更新符号化相关设置并持久化到 config.local.yaml crashguard 段（每台服务器独立，
+    不进 git——config.yaml 本身是只读挂载的 git 追踪文件，写它会静默失败，见
+    app/config.py::write_local_override 的说明）。同时更新运行时配置，无需重启。
     """
-    import yaml as _yaml
-    from app.config import PROJECT_ROOT as _PROJECT_ROOT
+    from app.config import write_local_override
 
     s = get_crashguard_settings()
     changed: Dict[str, Any] = {}
@@ -3320,14 +3320,10 @@ async def update_symbol_settings(body: SymbolSettingsPatch) -> Dict[str, Any]:
         changed["github_cache_keep_versions"] = body.github_cache_keep_versions
 
     if changed:
-        yaml_path = _PROJECT_ROOT / "config.yaml"
         try:
-            raw = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-            cg = raw.setdefault("crashguard", {})
-            cg.update(changed)
-            yaml_path.write_text(_yaml.dump(raw, allow_unicode=True, default_flow_style=False), encoding="utf-8")
+            write_local_override("crashguard", changed)
         except Exception as exc:
-            logger.warning("failed to persist symbol settings to config.yaml: %s", exc)
+            logger.warning("failed to persist symbol settings to config.local.yaml: %s", exc)
 
     return {
         "symbol_upload_keep_versions": s.symbol_upload_keep_versions,
@@ -3356,22 +3352,21 @@ class QaCaptureSettingsPatch(BaseModel):
 async def update_qa_capture_setting(body: QaCaptureSettingsPatch) -> Dict[str, Any]:
     """
     切换是否抓取 QA 内测包数据（版本第三段 >= qa_version_patch_threshold 的版本）。
-    开启后 pipeline / Top N 排序不再跳过这些版本；持久化到 config.yaml，无需重启。
+    开启后 pipeline / Top N 排序不再跳过这些版本；持久化到 config.local.yaml（每台
+    服务器独立，不进 git——config.yaml 本身是只读挂载的 git 追踪文件，写它会被
+    docker 的 `:ro` 挂载静默拒绝，见 app/config.py::write_local_override 的说明。
+    2026-07-21 生产环境实测：qa_capture_enabled 切换后"看起来生效"其实只是当次
+    进程内存生效，重启/重新部署后又变回默认值 False），无需重启。
     """
-    import yaml as _yaml
-    from app.config import PROJECT_ROOT as _PROJECT_ROOT
+    from app.config import write_local_override
 
     s = get_crashguard_settings()
     s.qa_capture_enabled = body.qa_capture_enabled
 
-    yaml_path = _PROJECT_ROOT / "config.yaml"
     try:
-        raw = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-        cg = raw.setdefault("crashguard", {})
-        cg["qa_capture_enabled"] = body.qa_capture_enabled
-        yaml_path.write_text(_yaml.dump(raw, allow_unicode=True, default_flow_style=False), encoding="utf-8")
+        write_local_override("crashguard", {"qa_capture_enabled": body.qa_capture_enabled})
     except Exception as exc:
-        logger.warning("failed to persist qa_capture_enabled to config.yaml: %s", exc)
+        logger.warning("failed to persist qa_capture_enabled to config.local.yaml: %s", exc)
 
     return {
         "qa_capture_enabled": s.qa_capture_enabled,

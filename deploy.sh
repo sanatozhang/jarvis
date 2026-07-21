@@ -70,6 +70,11 @@ check_docker_daemon() {
 
 # ---- Docker compose wrapper (supports v1 and v2) ----
 dc() {
+    # config.local.yaml：每台服务器独立的运行时配置覆盖（见根目录 .example），docker-compose.yml
+    # 里挂载成可写单文件——bind mount 源在宿主机不存在时 docker 会自动建成 root 属主的空文件，
+    # 容器内进程能否写入不确定，这里在每次调用 docker compose 前显式 touch 兜底（包括全新服务器
+    # 首次 up 的场景），确保属主可预期。
+    [ -f config.local.yaml ] || touch config.local.yaml
     if docker compose version >/dev/null 2>&1; then
         docker compose "$@"
     else
