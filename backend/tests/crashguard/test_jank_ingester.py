@@ -17,34 +17,62 @@ import app.crashguard.models  # noqa: F401 — 注册 crash_* 表到 Base.metada
 
 # ── compute_jank_aggregation_key ─────────────────────────────────────────────
 
-def test_ios_key_uses_module_and_pc():
+def test_ios_key_uses_module_and_offset():
     from app.crashguard.services.jank_ingester import compute_jank_aggregation_key
 
     key = compute_jank_aggregation_key(
         platform="ios", has_app_frame=True,
-        app_stack_module="Plaud-Global", app_stack_pc="0x0000000103e42dd4",
+        app_stack_module="Plaud-Global", app_stack_module_offset="0x0000000000e31758",
     )
     assert len(key) == 16
-    # 同一地址必须算出同一个键（同一处卡顿反复出现要落到同一个 issue）
+    # 同一偏移必须算出同一个键（同一处卡顿反复出现要落到同一个 issue）
     key2 = compute_jank_aggregation_key(
         platform="ios", has_app_frame=True,
-        app_stack_module="Plaud-Global", app_stack_pc="0x0000000103e42dd4",
+        app_stack_module="Plaud-Global", app_stack_module_offset="0x0000000000e31758",
     )
     assert key == key2
 
 
-def test_ios_key_differs_for_different_pc():
+def test_ios_key_differs_for_different_offset():
     from app.crashguard.services.jank_ingester import compute_jank_aggregation_key
 
     key1 = compute_jank_aggregation_key(
         platform="ios", has_app_frame=True,
-        app_stack_module="Plaud-Global", app_stack_pc="0x0000000103e42dd4",
+        app_stack_module="Plaud-Global", app_stack_module_offset="0x0000000000e31758",
     )
     key2 = compute_jank_aggregation_key(
         platform="ios", has_app_frame=True,
-        app_stack_module="Plaud-Global", app_stack_pc="0x0000000105cec708",
+        app_stack_module="Plaud-Global", app_stack_module_offset="0x0000000000f42869",
     )
     assert key1 != key2
+
+
+def test_ios_key_stable_across_aslr_pc_drift():
+    """回归测试：ASLR 导致同一处代码每次启动 app_stack_pc（绝对地址）都不同，
+    但 app_stack_module + app_stack_module_offset（相对偏移）必须稳定不变，
+    算出同一个聚合键——否则同一处卡顿会被碎片化成多个 issue（102 生产环境实测：
+    同一 offset 0x0000000000e31758 对应了 16 个不同的 module_base/pc 组合）。
+
+    compute_jank_aggregation_key() 的签名里已经不再接受 app_stack_pc 参数，
+    所以这里直接验证：调用方即便拿到不同的 app_stack_pc，也只会把稳定的
+    app_stack_module_offset 传进来参与聚合键计算，二者必然得到同一个键。
+    """
+    from app.crashguard.services.jank_ingester import compute_jank_aggregation_key
+
+    # 模拟两次不同启动：module_base 不同 → app_stack_pc 不同，但 offset 相同
+    pc_boot1 = "0x0000000103e42dd4"  # module_base_1 + 0x0000000000e31758
+    pc_boot2 = "0x0000000105cec708"  # module_base_2 + 0x0000000000e31758（不同 module_base）
+    assert pc_boot1 != pc_boot2  # 前提：两次启动确实产生了不同的绝对地址
+
+    key_boot1 = compute_jank_aggregation_key(
+        platform="ios", has_app_frame=True,
+        app_stack_module="Plaud-Global", app_stack_module_offset="0x0000000000e31758",
+    )
+    key_boot2 = compute_jank_aggregation_key(
+        platform="ios", has_app_frame=True,
+        app_stack_module="Plaud-Global", app_stack_module_offset="0x0000000000e31758",
+    )
+    assert key_boot1 == key_boot2
 
 
 def test_android_key_uses_frame_text():
@@ -99,6 +127,7 @@ def test_parse_ios_event_with_app_frame():
         "has_app_frame": True,
         "app_stack_module": "Plaud-Global",
         "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
         "app_stack_module_base": "0x0000000102f1c000",
         "app_stack_frame": "Plaud-Global ???",
         "stack_top_module": "QuartzCore",
@@ -112,6 +141,45 @@ def test_parse_ios_event_with_app_frame():
     assert parsed["frame_label"] == "Plaud-Global"
     assert parsed["issue_id"].startswith("jank:")
     assert parsed["app_version"] == "4.0.201-941"
+    assert parsed["app_stack_module_offset"] == "0x0000000000e31758"
+    # app_stack_pc 仍然要提取出来（符号化 atos/dSYM 查询要用绝对地址），只是不参与聚合键
+    assert parsed["app_stack_pc"] == "0x0000000103e42dd4"
+
+
+def test_parse_ios_event_issue_id_stable_across_aslr_pc_drift():
+    """回归测试：同一 offset、不同 pc/module_base（模拟不同启动的 ASLR 随机化）
+    必须解析出同一个 issue_id；不同 offset 必须解析出不同的 issue_id。"""
+    from app.crashguard.services.jank_ingester import _parse_jank_event
+
+    base_attrs = {
+        "os": {"name": "iOS"},
+        "has_app_frame": True,
+        "app_stack_module": "Plaud-Global",
+        "stack_trace": "0   Plaud-Global ...",
+        "version": "4.0.201-941",
+    }
+
+    parsed_boot1 = _parse_jank_event(_raw_event({
+        **base_attrs,
+        "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "app_stack_module_offset": "0x0000000000e31758",
+    }))
+    parsed_boot2 = _parse_jank_event(_raw_event({
+        **base_attrs,
+        "app_stack_pc": "0x0000000105cec708",  # 不同启动，ASLR 导致绝对地址不同
+        "app_stack_module_base": "0x0000000104fdb000",  # module_base 也不同
+        "app_stack_module_offset": "0x0000000000e31758",  # 但相对偏移相同
+    }))
+    parsed_different_offset = _parse_jank_event(_raw_event({
+        **base_attrs,
+        "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "app_stack_module_offset": "0x0000000000f42869",  # 不同的代码位置
+    }))
+
+    assert parsed_boot1["issue_id"] == parsed_boot2["issue_id"]
+    assert parsed_boot1["issue_id"] != parsed_different_offset["issue_id"]
 
 
 def test_parse_android_event_with_app_frame():
@@ -129,6 +197,36 @@ def test_parse_android_event_with_app_frame():
     assert parsed is not None
     assert parsed["platform"] == "android"
     assert parsed["frame_label"] == "ai.plaud.android.payment.k.a"
+
+
+def test_parse_event_extracts_page_field():
+    """`page` 是 Datadog 卡顿看板按页面分组统计的原生维度（生产环境实测 100% 有
+    值），必须被 _parse_jank_event 提取出来，供 _upsert_jank_event 累计 top_page 分布。"""
+    from app.crashguard.services.jank_ingester import _parse_jank_event
+
+    parsed = _parse_jank_event(_raw_event({
+        "os": {"name": "Android", "version": "14"},
+        "has_app_frame": True,
+        "app_stack_frame": "ai.plaud.android.payment.k.a",
+        "stack_trace": "  at ...",
+        "version": "4.0.201-941",
+        "page": "fileDetail",
+    }))
+    assert parsed is not None
+    assert parsed["page"] == "fileDetail"
+
+
+def test_parse_event_missing_page_defaults_to_empty_string():
+    from app.crashguard.services.jank_ingester import _parse_jank_event
+
+    parsed = _parse_jank_event(_raw_event({
+        "os": {"name": "iOS"},
+        "has_app_frame": False,
+        "stack_top_module": "QuartzCore",
+        "stack_top_symbol": "CA::Layer::layout_if_needed",
+    }))
+    assert parsed is not None
+    assert parsed["page"] == ""
 
 
 def test_parse_event_without_app_frame_falls_back_to_top_symbol():
@@ -181,11 +279,21 @@ def _patch_settings(monkeypatch):
     return s
 
 
+_FAKE_FULL_STACK = (
+    "0   Plaud-Global   SomeClass.someMethod\n"
+    "1   Foundation   0x0000000182ff006c   0x0000000182fc7000 + 165996\n"
+)
+
+
 def _patch_no_op_symbolication_deps(monkeypatch):
     """符号化路径不是本测试重点：resolve/symbolicate 都 no-op，只验证摄入/upsert 逻辑。"""
     monkeypatch.setattr(
         "app.crashguard.services.symbolication.symbolicate_jank_frame",
         AsyncMock(return_value="SomeClass.someMethod"),
+    )
+    monkeypatch.setattr(
+        "app.crashguard.services.symbolication.symbolicate_jank_stack",
+        AsyncMock(return_value=_FAKE_FULL_STACK),
     )
     monkeypatch.setattr("app.config.get_repo_routing", lambda: {})
     monkeypatch.setattr(
@@ -209,6 +317,7 @@ async def test_ingest_creates_new_fixable_issue_and_symbolicates(patched_session
         "has_app_frame": True,
         "app_stack_module": "Plaud-Global",
         "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
         "app_stack_module_base": "0x0000000102f1c000",
         "stack_trace": "0   Plaud-Global 0x... + 123",
         "version": "4.0.201-941",
@@ -232,7 +341,11 @@ async def test_ingest_creates_new_fixable_issue_and_symbolicates(patched_session
     assert issue.fixable is True
     assert issue.platform == "ios"
     assert issue.total_events == 1
-    assert issue.representative_stack == "SomeClass.someMethod"  # 符号化写回
+    # 完整多帧堆栈符号化结果写回 representative_stack（不是单帧覆盖）
+    assert issue.representative_stack == _FAKE_FULL_STACK
+    assert issue.representative_stack.count("\n") > 1
+    # 单帧符号化结果非占位符 → 标题回写为可读函数名
+    assert issue.title == "Jank @ SomeClass.someMethod"
     assert issue.prewarm_attempts == 1
     assert snap.events_count == 1
     assert snap.snapshot_date == date(2026, 7, 20)
@@ -312,6 +425,50 @@ async def test_ingest_increments_existing_issue_and_snapshot(patched_session, mo
 
 
 @pytest.mark.asyncio
+async def test_ingest_accumulates_top_page_distribution_across_events(patched_session, monkeypatch):
+    """3 条同一聚合键（同 app_stack_frame）、不同 page 的事件依次摄入后，issue.top_page
+    应该按出现频次排序，且百分比精确匹配 round(count/total*100, 1)（2/3 → 66.7%）。"""
+    from app.crashguard.services.jank_ingester import ingest_jank_logs
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+    from sqlalchemy import select
+
+    _patch_settings(monkeypatch)
+    _patch_no_op_symbolication_deps(monkeypatch)
+
+    def _event(page: str) -> dict:
+        return _raw_event({
+            "os": {"name": "Android"},
+            "has_app_frame": True,
+            "app_stack_frame": "ai.plaud.android.payment.k.a",
+            "stack_trace": "  at ...",
+            "version": "4.0.201-941",
+            "page": page,
+        })
+
+    search_mock = AsyncMock(side_effect=[
+        {"data": [_event("home"), _event("home")], "next_cursor": None},
+        {"data": [_event("login")], "next_cursor": None},
+    ])
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page", search_mock,
+    )
+
+    await ingest_jank_logs(now=datetime(2026, 7, 20, 8, 0, 0))
+    await ingest_jank_logs(now=datetime(2026, 7, 20, 9, 0, 0))
+
+    async with get_session() as s:
+        issue = (await s.execute(select(CrashIssue))).scalar_one()
+
+    expected_home_pct = round(2 / 3 * 100, 1)
+    assert issue.top_page == f"home ({expected_home_pct}%), login (33.3%)"
+    # tags.page_counts 是底层持久化的原始计数，独立于格式化后的 top_page 字符串
+    import json
+    tags = json.loads(issue.tags)
+    assert tags["page_counts"] == {"home": 2, "login": 1}
+
+
+@pytest.mark.asyncio
 async def test_ingest_paginates_until_no_next_cursor(patched_session, monkeypatch):
     from app.crashguard.services.jank_ingester import ingest_jank_logs
     from app.crashguard.models import CrashIssue
@@ -321,15 +478,26 @@ async def test_ingest_paginates_until_no_next_cursor(patched_session, monkeypatc
     _patch_settings(monkeypatch)
     _patch_no_op_symbolication_deps(monkeypatch)
 
-    def _event(pc: str) -> dict:
+    def _event(offset: str, pc: str = "0x1") -> dict:
         return _raw_event({
             "os": {"name": "iOS"}, "has_app_frame": True,
             "app_stack_module": "Plaud-Global", "app_stack_pc": pc,
+            "app_stack_module_offset": offset,
             "app_stack_module_base": "0x0", "version": "4.0.0-1",
         })
 
-    page1 = {"data": [_event("0x1")], "next_cursor": "cursor-2"}
-    page2 = {"data": [_event("0x2")], "next_cursor": None}
+    # 第一页：两个不同 offset（两处不同的卡顿代码位置）→ 两个不同 issue
+    # 第二页：offset 和第一页第一条相同，但 pc（绝对地址，模拟不同启动/ASLR）不同
+    # → 必须命中已有 issue 而不是新建（这是本次 offset-based 聚合修复的核心行为）
+    page1 = {
+        "data": [_event("0x0000000000e31758", pc="0x0000000103e42dd4"),
+                 _event("0x0000000000f42869", pc="0x0000000103e42dd5")],
+        "next_cursor": "cursor-2",
+    }
+    page2 = {
+        "data": [_event("0x0000000000e31758", pc="0x0000000105cec708")],
+        "next_cursor": None,
+    }
     search_mock = AsyncMock(side_effect=[page1, page2])
     monkeypatch.setattr(
         "app.crashguard.services.datadog_client.DatadogClient.search_logs_page", search_mock,
@@ -337,8 +505,9 @@ async def test_ingest_paginates_until_no_next_cursor(patched_session, monkeypatc
 
     result = await ingest_jank_logs(now=datetime(2026, 7, 20, 12, 0, 0))
 
-    assert result["scanned"] == 2
-    assert result["new_issues"] == 2  # 两个不同 pc → 两个不同 issue
+    assert result["scanned"] == 3
+    assert result["new_issues"] == 2   # 两个不同 offset → 两个不同 issue
+    assert result["updated_issues"] == 1  # 第二页复用 offset → 命中已有 issue，即便 pc 不同
     assert search_mock.call_count == 2
     # 第二次调用应该带上第一页返回的 cursor
     assert search_mock.call_args_list[1].kwargs["cursor"] == "cursor-2"
@@ -417,6 +586,7 @@ async def test_ingest_continues_when_symbolication_raises(patched_session, monke
     event = _raw_event({
         "os": {"name": "iOS"}, "has_app_frame": True,
         "app_stack_module": "Plaud-Global", "app_stack_pc": "0x1",
+        "app_stack_module_offset": "0x0000000000e31758",
         "app_stack_module_base": "0x0", "version": "4.0.0-1",
     })
     monkeypatch.setattr(
@@ -433,3 +603,61 @@ async def test_ingest_continues_when_symbolication_raises(patched_session, monke
     assert "symbol package download exploded" in issue.prewarm_last_error
     # representative_stack 保留摄入时的原始占位（未被符号化覆盖）
     assert issue.representative_stack == ""
+
+
+@pytest.mark.asyncio
+async def test_ingest_keeps_placeholder_title_and_stack_when_symbolication_fails(
+    patched_session, monkeypatch,
+):
+    """单帧符号化返回占位符（未命中 dSYM，模拟失败态，但不抛异常）→ 标题保留摄入时
+    原始占位（"Jank @ Plaud-Global"），representative_stack 保留原始 stack_trace
+    （不是空、不是报错、也不会被占位符覆盖）——这是本次修复的最低要求。"""
+    from app.crashguard.services.jank_ingester import ingest_jank_logs
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+    from sqlalchemy import select
+
+    _patch_settings(monkeypatch)
+    monkeypatch.setattr("app.config.get_repo_routing", lambda: {})
+    monkeypatch.setattr(
+        "app.services.repo_router.resolve", lambda platform, version, routing: None,
+    )
+
+    original_stack_trace = "0   Plaud-Global 0x0000000103e42dd4 0x0000000102f1c000 + 15887828\n"
+
+    # 单帧符号化未命中 dSYM → 占位符（不抛异常）
+    monkeypatch.setattr(
+        "app.crashguard.services.symbolication.symbolicate_jank_frame",
+        AsyncMock(return_value="Plaud-Global + 0x0000000103e42dd4"),
+    )
+    # 完整堆栈符号化同样未命中 → 原样返回传入的 stack_trace（模拟 symbolicate_jank_stack
+    # 自身的失败降级行为，而不是真的调用它）
+    monkeypatch.setattr(
+        "app.crashguard.services.symbolication.symbolicate_jank_stack",
+        AsyncMock(return_value=original_stack_trace),
+    )
+
+    event = _raw_event({
+        "os": {"name": "iOS"}, "has_app_frame": True,
+        "app_stack_module": "Plaud-Global", "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "stack_trace": original_stack_trace,
+        "version": "4.0.201-941",
+    })
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page",
+        AsyncMock(return_value={"data": [event], "next_cursor": None}),
+    )
+
+    await ingest_jank_logs(now=datetime(2026, 7, 20, 12, 0, 0))
+
+    async with get_session() as s:
+        issue = (await s.execute(select(CrashIssue))).scalar_one()
+
+    # 摄入时建 issue 用的原始占位标题（frame_label = module 名）保持不变
+    assert issue.title == "Jank @ Plaud-Global"
+    # representative_stack 保留原始完整 stack_trace，不是空、不是报错
+    assert issue.representative_stack == original_stack_trace
+    assert issue.prewarm_attempts == 1
+    assert issue.prewarm_last_error == ""

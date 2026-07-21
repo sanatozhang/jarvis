@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.crashguard.config import get_crashguard_settings
@@ -586,13 +587,27 @@ async def health() -> Dict[str, Any]:
     }
 
 
-def _datadog_url_for(issue_id: str, window_hours: int = 24) -> str:
-    """Datadog Error Tracking issue 跳转链接（RUM track 路径）。
+def _datadog_url_for(
+    issue_id: str,
+    window_hours: int = 24,
+    kind: str = "",
+    title: str = "",
+    platform: str = "",
+) -> str:
+    """Datadog 跳转链接。
+
+    崩溃/ANR（`kind` != "jank"）走 Error Tracking issue 页（`issue_id` 是真实 Datadog
+    issue ID）。卡顿（`kind == "jank"`）**不经过 Error Tracking**——`issue_id` 是
+    `jank_ingester.py::compute_jank_aggregation_key()` 算出来的本地聚合键（sha1 前16位
+    的 "jank:xxxx"），Datadog 侧根本没有这个 issue，跳错产品线的 URL 会直接 404。
+    卡顿改跳 Logs Explorer，用同一条摄入 query + 平台 + 聚合用的帧标签（存在
+    `title` 里，格式 "Jank @ {frame_label}"）拼一个近似定位的搜索链接。
 
     window_hours: 显式传入时附 `from_ts/to_ts`（毫秒），让 Datadog UI 默认窗口对齐我们的口径；
     不传则 Datadog 自动 fallback "Past 14 Days"（UI 默认）—— 这就是你看到 14 天数据的原因。
     """
     import time as _time
+    import urllib.parse as _urlparse
     s = get_crashguard_settings()
     site = (s.datadog_site or "datadoghq.com").strip()
     if site == "datadoghq.com":
@@ -601,12 +616,26 @@ def _datadog_url_for(issue_id: str, window_hours: int = 24) -> str:
         host = site
     else:
         host = f"app.{site}"
+
+    to_ms = int(_time.time() * 1000)
+    from_ms = to_ms - int(window_hours) * 3600 * 1000 if window_hours and window_hours > 0 else None
+
+    if (kind or "").strip().lower() == "jank":
+        query = "@category:performance jank_watchdog_block"
+        if platform:
+            query += f" @os.name:{platform.strip().lower()}"
+        frame_label = title.split("Jank @ ", 1)[-1].strip() if title.startswith("Jank @ ") else ""
+        if frame_label and frame_label != "?":
+            query += f' "{frame_label}"'
+        base = f"https://{host}/logs?query={_urlparse.quote(query)}"
+        if from_ms is not None:
+            return f"{base}&from_ts={from_ms}&to_ts={to_ms}&live=true"
+        return base
+
     # 2026-05-28：路径从 /rum/error-tracking/issue/ 改为 /error-tracking/issue/，
     # 减少一次 Datadog 自身 301 重定向。两者落地是同一 issue，但后者是 Datadog UI 的真实路径。
     base = f"https://{host}/error-tracking/issue/{issue_id}"
-    if window_hours and window_hours > 0:
-        to_ms = int(_time.time() * 1000)
-        from_ms = to_ms - int(window_hours) * 3600 * 1000
+    if from_ms is not None:
         return f"{base}?from_ts={from_ms}&to_ts={to_ms}&live=true"
     return base
 
@@ -980,6 +1009,7 @@ async def get_top(
                     x for x in items
                     if search_norm in (x.get("title") or "").lower()
                     or search_norm in (x.get("datadog_issue_id") or "").lower()
+                    or search_norm in (x.get("top_page") or "").lower()
                 ]
             # 排序
             if sort_norm == "events":
@@ -1134,7 +1164,10 @@ async def get_top(
                 })
 
     for item in page_items:
-        item["datadog_url"] = _datadog_url_for(item["datadog_issue_id"], window_hours=window_hours)
+        item["datadog_url"] = _datadog_url_for(
+            item["datadog_issue_id"], window_hours=window_hours,
+            kind=item.get("kind", ""), title=item.get("title", ""), platform=item.get("platform", ""),
+        )
         pr = pr_map.get(item["datadog_issue_id"])
         item["has_pr"] = pr is not None
         item["pr_url"] = pr["pr_url"] if pr else ""
@@ -1311,16 +1344,22 @@ async def get_issue_detail(
 
     return {
         "datadog_issue_id": issue.datadog_issue_id,
-        "datadog_url": _datadog_url_for(issue.datadog_issue_id, window_hours=window_hours),
+        "datadog_url": _datadog_url_for(
+            issue.datadog_issue_id, window_hours=window_hours,
+            kind=issue.kind or "", title=issue.title or "", platform=issue.platform or "",
+        ),
         "window_hours": window_hours,
         "stack_fingerprint": issue.stack_fingerprint,
         "title": issue.title or "",
         "platform": issue.platform or "",
         "service": issue.service or "",
+        "fatality": issue.fatality or "",
+        "kind": issue.kind or "",
         "generation": classify_generation(issue.service or "", issue.last_seen_version or ""),
         "top_os": getattr(issue, "top_os", "") or "",
         "top_device": getattr(issue, "top_device", "") or "",
         "top_app_version": getattr(issue, "top_app_version", "") or "",
+        "top_page": getattr(issue, "top_page", "") or "",
         "first_seen_at": issue.first_seen_at.isoformat() if issue.first_seen_at else None,
         "last_seen_at": issue.last_seen_at.isoformat() if issue.last_seen_at else None,
         "first_seen_version": issue.first_seen_version or "",
@@ -1377,6 +1416,127 @@ async def analyze_issue(
         logger.exception("start_analysis failed for %s", issue_id)
         raise HTTPException(status_code=500, detail=f"start_analysis failed: {e}")
     return {"run_id": run_id, "status": "pending", "user_prompt": user_prompt}
+
+
+@router.get("/resolve-jank")
+async def resolve_jank(
+    session_id: Optional[str] = Query(None, description="Datadog RUM/Logs session_id，主要输入"),
+    platform: Optional[str] = Query(None, description="兜底：跟 module/offset 搭配直接算键"),
+    module: Optional[str] = Query(None, description="兜底：app_stack_module"),
+    offset: Optional[str] = Query(None, description="兜底：app_stack_module_offset"),
+    format: str = Query("redirect", pattern="^(redirect|json)$"),
+):
+    """用 Datadog session_id（或 platform+module+offset 直算兜底）反查卡顿 issue 并跳转。
+
+    无状态实时反查：不落映射表，每次都实时查 Datadog Logs API 把该 session 的
+    jank_watchdog_block 日志拉回来，用当前生效的聚合算法（compute_jank_aggregation_key /
+    _parse_jank_event，复用 jank_ingester.py，不重新实现一遍）算出 issue_id 再跳转。
+    这样保证跳转目标永远是"当前算法"算出来的键，不会有本地缓存/映射表过期问题。
+    """
+    from collections import Counter
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    from app.crashguard.models import CrashIssue
+    from app.crashguard.services.jank_ingester import (
+        _JANK_LOG_QUERY,
+        _parse_jank_event,
+        compute_jank_aggregation_key,
+    )
+    from app.db.database import get_session
+
+    s = get_crashguard_settings()
+    base = s.frontend_base_url.rstrip("/")
+    notfound_url = f"{base}/crashguard?fatality=jank&notfound=1"
+
+    def _redirect_or_json(count: int, matches: List[Dict[str, Any]], error: Optional[str] = None):
+        if format == "json":
+            payload: Dict[str, Any] = {"count": count, "matches": matches}
+            if error:
+                payload["error"] = error
+            return payload
+        if count == 0:
+            return RedirectResponse(url=notfound_url, status_code=302)
+        # 命中 1 个直接跳；命中 N>1 个跳命中事件数最多的那个（matches 已按 events 降序排）
+        top_issue_id = matches[0]["issue_id"]
+        return RedirectResponse(
+            url=f"{base}/crashguard?fatality=jank&issue={top_issue_id}", status_code=302,
+        )
+
+    # 直算兜底路径：没有 session_id，但给了 platform+module+offset —— 跳过 Datadog 查询
+    if not session_id:
+        if platform and module and offset:
+            key = compute_jank_aggregation_key(
+                platform=platform, has_app_frame=True,
+                app_stack_module=module, app_stack_module_offset=offset,
+            )
+            issue_id = f"jank:{key}"
+            async with get_session() as db_session:
+                issue = (await db_session.execute(
+                    select(CrashIssue).where(CrashIssue.datadog_issue_id == issue_id)
+                )).scalar_one_or_none()
+            match = {
+                "issue_id": issue_id,
+                "title": issue.title if issue else "",
+                "page": issue.top_page if issue else "",
+                "events": 1,
+            }
+            return _redirect_or_json(1, [match])
+        raise HTTPException(
+            status_code=400,
+            detail="must provide session_id or (platform+module+offset)",
+        )
+
+    # session_id 路径：实时查 Datadog Logs API
+    issue_event_counts: Counter = Counter()
+    try:
+        from app.crashguard.services.datadog_client import DatadogClient
+
+        client = DatadogClient(
+            api_key=s.datadog_api_key, app_key=s.datadog_app_key,
+            site=s.datadog_site, service_filter=s.datadog_service_filter,
+        )
+        now = datetime.utcnow()
+        to_ms = int(now.timestamp() * 1000)
+        from_ms = to_ms - 30 * 24 * 3600 * 1000  # Datadog Logs 实际保留期 30 天，不用查更久
+        page = await client.search_logs_page(
+            query=f"{_JANK_LOG_QUERY} @session_id:{session_id}",
+            from_ms=from_ms, to_ms=to_ms, cursor=None, limit=50,
+        )
+        events = page.get("data") or []
+        for event in events:
+            parsed = _parse_jank_event(event)
+            if parsed is None:
+                continue
+            issue_event_counts[parsed["issue_id"]] += 1
+    except Exception as e:
+        logger.warning("resolve_jank: Datadog query failed for session_id=%s: %s", session_id, e)
+        return _redirect_or_json(0, [], error=str(e))
+
+    if not issue_event_counts:
+        return _redirect_or_json(0, [])
+
+    if len(issue_event_counts) > 1:
+        logger.info(
+            "resolve_jank: session_id=%s matched %d distinct jank issues (multi code path)",
+            session_id, len(issue_event_counts),
+        )
+
+    matches: List[Dict[str, Any]] = []
+    async with get_session() as db_session:
+        for issue_id, events_count in issue_event_counts.most_common():
+            issue = (await db_session.execute(
+                select(CrashIssue).where(CrashIssue.datadog_issue_id == issue_id)
+            )).scalar_one_or_none()
+            matches.append({
+                "issue_id": issue_id,
+                "title": issue.title if issue else "",
+                "page": issue.top_page if issue else "",
+                "events": events_count,
+            })
+
+    return _redirect_or_json(len(matches), matches)
 
 
 @router.get("/analyses/{run_id}")

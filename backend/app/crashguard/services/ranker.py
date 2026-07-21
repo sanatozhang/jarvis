@@ -66,7 +66,7 @@ async def pick_top_n(
 
     返回字段: datadog_issue_id, title, platform, events_count, users_affected,
              crash_free_impact_score, is_new_in_version, is_regression, is_surge,
-             tier ('P0' / 'P1')
+             top_page（卡顿页面分布，供 get_top() search 过滤用）, tier ('P0' / 'P1')
     """
     from app.crashguard.models import CrashSnapshot, CrashIssue, CrashDailyReport
 
@@ -163,6 +163,7 @@ async def pick_top_n(
             "is_surge": bool(snap.is_surge),
             "status": issue.status or "open",
             "assignee": getattr(issue, "assignee", "") or "",
+            "top_page": getattr(issue, "top_page", "") or "",
             "first_seen_version": issue.first_seen_version or "",
             "last_seen_version": issue.last_seen_version or "",
             "first_analyzed_at": first_ana.isoformat() if first_ana else None,

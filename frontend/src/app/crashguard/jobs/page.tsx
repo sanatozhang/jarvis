@@ -53,14 +53,14 @@ function _fmtTime(s: string | null): string {
   return formatSGT(s);
 }
 
-function _fmtAgo(s: string | null, now: Date): string {
+function _fmtAgo(s: string | null, now: Date, t: (k: string) => string): string {
   if (!s) return "—";
   const dt = new Date(s + (s.endsWith("Z") ? "" : "Z"));
   const diffSec = Math.floor((now.getTime() - dt.getTime()) / 1000);
-  if (diffSec < 60) return `${diffSec} 秒前`;
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
-  return `${Math.floor(diffSec / 86400)} 天前`;
+  if (diffSec < 60) return `${diffSec} ${t("秒前")}`;
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} ${t("分钟前")}`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} ${t("小时前")}`;
+  return `${Math.floor(diffSec / 86400)} ${t("天前")}`;
 }
 
 export default function CrashguardJobsPage() {
@@ -126,8 +126,8 @@ export default function CrashguardJobsPage() {
 
   const runAllUnhealthy = async () => {
     const unhealthy = items.filter((it) => it.health !== "ok");
-    if (!unhealthy.length) { setToast("✓ 所有任务状态正常，无需触发"); return; }
-    setToast(`⏳ 正在触发 ${unhealthy.length} 个异常任务…`);
+    if (!unhealthy.length) { setToast(`✓ ${t("所有任务状态正常，无需触发")}`); return; }
+    setToast(`⏳ ${t("正在触发")} ${unhealthy.length} ${t("个异常任务…")}`);
     const results: string[] = [];
     for (const it of unhealthy) {
       setRunning((m) => ({ ...m, [it.name]: true }));
@@ -137,19 +137,19 @@ export default function CrashguardJobsPage() {
         const label = s.skipped ? `skipped` : s.alerted ? `alerted ✅` : s.error ? `error` : "ok";
         results.push(`${it.name} → ${label}`);
       } catch (e: any) {
-        results.push(`${it.name} → 失败`);
+        results.push(`${it.name} → ${t("失败")}`);
       } finally {
         setRunning((m) => ({ ...m, [it.name]: false }));
       }
     }
-    setToast(`✓ 完成：${results.join(" · ")}`);
+    setToast(`✓ ${t("完成：")}${results.join(" · ")}`);
     await load();
   };
 
   const runNow = async (jobName: string) => {
     if (running[jobName]) return;
     const it = items.find((x) => x.name === jobName);
-    if (!it) { setToast(`✗ 未知任务 ${jobName}`); return; }
+    if (!it) { setToast(`✗ ${t("未知任务")} ${jobName}`); return; }
     setRunning((m) => ({ ...m, [jobName]: true }));
     setToast(null);
     try {
@@ -163,7 +163,7 @@ export default function CrashguardJobsPage() {
       setToast(`✓ ${jobName} → ${label}`);
       await load();  // 刷新状态表
     } catch (e: any) {
-      setToast(`✗ ${jobName} 失败：${String(e?.message || e).slice(0, 120)}`);
+      setToast(`✗ ${jobName} ${t("失败：")}${String(e?.message || e).slice(0, 120)}`);
     } finally {
       setRunning((m) => ({ ...m, [jobName]: false }));
     }
@@ -215,7 +215,7 @@ export default function CrashguardJobsPage() {
                     transition: "opacity 0.15s",
                   }}
                 >
-                  {anyRunning ? "⏳ 触发中…" : unhealthyCount > 0 ? `⚡ 一键修复（${unhealthyCount} 个异常）` : "✅ 全部正常"}
+                  {anyRunning ? `⏳ ${t("触发中…")}` : unhealthyCount > 0 ? `⚡ ${t("一键修复")}（${unhealthyCount} ${t("个异常")}）` : `✅ ${t("全部正常")}`}
                 </button>
               );
             })()}
@@ -365,11 +365,11 @@ export default function CrashguardJobsPage() {
                           fontWeight: 600,
                         }}
                       >
-                        ● {HEALTH_LABEL[it.health]}
+                        ● {t(HEALTH_LABEL[it.health])}
                       </span>
                     </td>
                     <td style={{ padding: "12px 14px" }}>
-                      <div style={{ fontSize: 12 }}>{_fmtAgo(it.last_fired_at, now)}</div>
+                      <div style={{ fontSize: 12 }}>{_fmtAgo(it.last_fired_at, now, t)}</div>
                       <div style={{ fontSize: 11, color: D.text3 }}>{_fmtTime(it.last_fired_at)} SGT</div>
                       {it.last_status === "failed" && it.last_error && (
                         <div style={{ fontSize: 11, color: D.danger, marginTop: 2, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

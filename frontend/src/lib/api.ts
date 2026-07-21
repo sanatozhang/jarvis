@@ -1049,6 +1049,7 @@ export interface CrashTopItem extends CrashTopItemAnalysisFlag {
   service: string;
   kind?: string;
   fatality?: CrashFatality;
+  top_page?: string;
   events_count: number;
   users_affected: number;
   sessions_affected: number;
@@ -1175,6 +1176,9 @@ export interface CrashIssueDetail {
   top_os?: string;
   top_device?: string;
   top_app_version?: string;
+  top_page?: string;
+  fatality?: CrashFatality;
+  kind?: string;
   snapshot: CrashSnapshot | Record<string, never>;
   analysis: CrashAnalysis | Record<string, never>;
   pull_requests?: CrashIssuePr[];

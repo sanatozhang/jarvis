@@ -101,11 +101,11 @@ export default function CrashPullRequestsPage() {
     const d = new Date(iso);
     const diff = Date.now() - d.getTime();
     const mins = Math.floor(diff / 60000);
-    if (mins < 1) return "刚刚";
-    if (mins < 60) return `${mins}分钟前`;
+    if (mins < 1) return t("刚刚");
+    if (mins < 60) return `${mins}${t("分钟前")}`;
     const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `${hrs}小时前`;
-    return `${Math.floor(hrs / 24)}天前`;
+    if (hrs < 24) return `${hrs}${t("小时前")}`;
+    return `${Math.floor(hrs / 24)}${t("天前")}`;
   };
 
   // 自动 PR 队列状态（每 15s 刷新）
@@ -134,17 +134,17 @@ export default function CrashPullRequestsPage() {
   }, [queue?.running?.length]);
 
   const onBackfill = async () => {
-    if (!confirm("将对所有未建过 PR 的 success 分析（feasibility≥阈值）补建 draft PR。继续？")) return;
+    if (!confirm(t("将对所有未建过 PR 的 success 分析（feasibility≥阈值）补建 draft PR。继续？"))) return;
     setBackfilling(true);
     setBackfillMsg(null);
     try {
       const r = await backfillAutoPr({ days: 14, dry_run: false, limit: 0 });
       setBackfillMsg(
-        `扫描 ${r.scanned} · 触发 ${r.triggered} · 重复跳过 ${r.skipped_dup} · 失败 ${r.failed.length}`
+        `${t("扫描")} ${r.scanned} · ${t("触发")} ${r.triggered} · ${t("重复跳过")} ${r.skipped_dup} · ${t("失败")} ${r.failed.length}`
       );
       setReloadKey((k) => k + 1);
     } catch (e) {
-      setBackfillMsg(`补建失败：${String(e)}`);
+      setBackfillMsg(`${t("补建失败：")}${String(e)}`);
     } finally {
       setBackfilling(false);
     }
@@ -182,7 +182,7 @@ export default function CrashPullRequestsPage() {
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 32px" }}>
         <div className="j-rise" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0 }}>🔧 自动 PR 列表</h1>
+            <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0 }}>🔧 {t("自动 PR 列表")}</h1>
             <p style={{ color: D.text2, fontSize: 13, marginTop: 4 }}>
               {t("最近")} {days} {t("天")} · {items.length} {t("个 PR")}
             </p>
@@ -265,7 +265,7 @@ export default function CrashPullRequestsPage() {
                       : 0;
                     const mins = Math.floor(elapsedSec / 60);
                     const secs = elapsedSec % 60;
-                    const elapsedStr = mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`;
+                    const elapsedStr = mins > 0 ? `${mins}${t("分")}${secs}${t("秒")}` : `${secs}${t("秒")}`;
                     return (
                       <div key={i}
                         style={{

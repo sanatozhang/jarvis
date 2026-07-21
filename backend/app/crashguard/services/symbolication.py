@@ -289,6 +289,108 @@ async def _symbolicate_jank_frame_android(
     return f"{m.group(2)}.{m.group(3)}" if m else frame_text
 
 
+async def symbolicate_jank_stack(
+    *,
+    platform: str,
+    app_version: str,
+    stack_trace: str,
+    stack_modules: str = "",
+    stack_pcs: str = "",
+    stack_module_bases: str = "",
+    symbol_profile: str = "",
+    github_repo: str = "",
+) -> str:
+    """
+    jank_watchdog_block 卡顿事件的**完整多帧堆栈**符号化（2026-07-21）。
+
+    背景：`symbolicate_jank_frame()` 只符号化"应用自身模块"单帧，返回一个函数名
+    字符串——过去 `_symbolicate_new_jank_issue` 把这个单帧结果整个覆盖到
+    `representative_stack`，导致详情页丢失摄入时原本存的完整多行堆栈（用户反馈的
+    "堆栈只显示一行" bug）。这个函数改用 Datadog 提供的 pipe 分隔等长数组字段
+    （`stack_modules`/`stack_pcs`/`stack_module_bases`，102 生产环境实测三者等长，
+    约 20 帧，系统框架帧也有非空 base）逐帧拼出 `_symbolicate_ios_with_dir` 认识
+    的多行格式，一次性符号化整段堆栈——app 自己模块的帧能查到符号就替换，系统框架
+    帧查不到会原样保留地址（`_symbolicate_ios_with_dir` 本身就是逐行降级、不会报错）。
+
+    Android 目前没有多帧地址符号化需求：`_upsert_jank_event` 摄入时存的
+    `representative_stack` 本来就是完整的原始 `stack_trace`（人类可读文本），不需要
+    额外处理，直接原样返回。
+
+    容错策略（刻意简单，不做部分符号化的复杂合并）：任何字段缺失 / 数组长度不一致 /
+    dSYM 拿不到 / 计算 offset 出错 / 任何异常 → 整体原样返回 `stack_trace`。原始未
+    符号化文本总比报错或空白好——这是本次修复的最低要求：至少不能比现在更差（现在
+    好歹是完整的多行原始文本）。
+    """
+    _probe_tools()
+    plat = (platform or "").lower()
+    if "ios" not in plat:
+        return stack_trace
+    try:
+        return await _symbolicate_jank_stack_ios(
+            app_version=app_version,
+            stack_trace=stack_trace,
+            stack_modules=stack_modules,
+            stack_pcs=stack_pcs,
+            stack_module_bases=stack_module_bases,
+            symbol_profile=symbol_profile,
+            github_repo=github_repo,
+        )
+    except Exception as exc:
+        logger.warning("symbolicate_jank_stack failed (non-fatal): %s", exc)
+        return stack_trace
+
+
+async def _symbolicate_jank_stack_ios(
+    *,
+    app_version: str,
+    stack_trace: str,
+    stack_modules: str,
+    stack_pcs: str,
+    stack_module_bases: str,
+    symbol_profile: str,
+    github_repo: str,
+) -> str:
+    from app.crashguard.services.github_symbols import (
+        get_ios_dsyms_dir, _ASSET_IOS_DSYM, _ASSET_IOS_DSYM_NATIVE,
+    )
+
+    if not stack_modules or not stack_pcs or not stack_module_bases:
+        return stack_trace
+
+    modules = stack_modules.split("|")
+    pcs = stack_pcs.split("|")
+    bases = stack_module_bases.split("|")
+    if not modules or not (len(modules) == len(pcs) == len(bases)):
+        return stack_trace
+
+    strategy = _profile_strategy(symbol_profile)
+    ios_asset = _ASSET_IOS_DSYM_NATIVE if strategy.get("use_app_dsym") else _ASSET_IOS_DSYM
+    # 复用 symbolicate_jank_frame 同一份 (tag, asset_name) 磁盘缓存：get_ios_dsyms_dir
+    # 内部先查本地 ".extracted" marker，命中即返回，不重复下载——这里和调用方后续
+    # 可能再调一次 symbolicate_jank_frame 拿标题不会产生二次网络 I/O。
+    dsyms_dir = await get_ios_dsyms_dir(app_version, repo=github_repo, asset_name=ios_asset)
+    if not dsyms_dir:
+        return stack_trace
+
+    lines: list = []
+    for i, (module, pc, base) in enumerate(zip(modules, pcs, bases)):
+        module = module.strip()
+        pc = pc.strip()
+        base = base.strip()
+        if not module or not pc or not base:
+            # 逐帧回退会导致行对不齐、复杂度不值得——直接整体回退到原始文本
+            return stack_trace
+        try:
+            offset_decimal = int(pc, 16) - int(base, 16)
+        except ValueError:
+            return stack_trace
+        lines.append(f"{i}   {module}   {pc}   {base} + {offset_decimal}\n")
+
+    fake_multiline_stack = "".join(lines)
+    resolved = await asyncio.to_thread(_symbolicate_ios_with_dir, fake_multiline_stack, dsyms_dir)
+    return resolved or stack_trace
+
+
 def _symbolicate_stack_sync(stack: str, binary_images: list, platform: str) -> str:
     plat = (platform or "").lower()
     if "ios" in plat or "iphone" in plat or "ipados" in plat:

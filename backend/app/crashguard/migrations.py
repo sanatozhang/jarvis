@@ -77,6 +77,8 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     # 2026-07-20：卡顿(jank_watchdog_block)摄入——has_app_frame=False 时设 False，
     # 永久排除在 AI 分析/PR 候选之外。SQLite 无原生 BOOLEAN，用 INTEGER 0/1 存储。
     ("crash_issues", "fixable", "BOOLEAN", "1"),
+    # 2026-07-20：卡顿 Datadog `page` 字段分布，格式同 top_os/top_device/top_app_version
+    ("crash_issues", "top_page", "VARCHAR(256)", "''"),
 ]
 
 

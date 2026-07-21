@@ -124,8 +124,9 @@ function timeAgo(iso?: string): string {
 }
 
 export default function CrashguardPage() {
+  const t = useT();
   return (
-    <Suspense fallback={<div style={{ padding: 32, color: "#5B6470" }}>加载中...</div>}>
+    <Suspense fallback={<div style={{ padding: 32, color: "#5B6470" }}>{t("加载中...")}</div>}>
       <CrashguardPageInner />
     </Suspense>
   );
@@ -157,8 +158,6 @@ function CrashguardPageInner() {
   const [totalCount, setTotalCount] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
   const PAGE_SIZE = 40;
-  // tier filter 留在客户端（UI 显示用；当前页结果上的二次过滤）
-  const [tierFilter, setTierFilter] = useState<"all" | "P0" | "P1">("all");
   const [autoPrQueue, setAutoPrQueue] = useState<AutoPrQueueResponse | null>(null);
   const [latestRelease, setLatestRelease] = useState<{ flutter: string; android: string; ios: string } | null>(null);
   const [latestReleaseSource, setLatestReleaseSource] = useState<{ flutter: string; android: string; ios: string } | null>(null);
@@ -211,6 +210,9 @@ function CrashguardPageInner() {
   // 重点突出4.0、弱化3.x，但保留单独查看3.x的入口
   const parseGeneration = (v: string | null): "native" | "flutter" | "all" =>
     v === "flutter" || v === "all" ? v : "native";
+  // tier 是客户端二次过滤（不触发重新拉取），但同样要能通过 URL 分享
+  const parseTier = (v: string | null): "all" | "P0" | "P1" =>
+    v === "P0" || v === "P1" ? v : "all";
 
   const platformFilter = parsePlatform(searchParams?.get("platform") || null);
   const fatalityFilter = parseFatality(searchParams?.get("fatality") || null);
@@ -219,6 +221,7 @@ function CrashguardPageInner() {
   const page = parsePageNum(searchParams?.get("page") || null);
   const windowHours = parseWindow(searchParams?.get("win") || null);
   const genFilter = parseGeneration(searchParams?.get("gen") || null);
+  const tierFilter = parseTier(searchParams?.get("tier") || null);
   // search 不走 URL 立即同步——避免每个字符都 push history；用 debounced 内部 state
   const [search, setSearch] = useState<string>(searchParams?.get("search") || "");
   const debouncedSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -247,6 +250,7 @@ function CrashguardPageInner() {
         search: string;
         win: 24 | 168 | 336 | 720;
         gen: "native" | "flutter" | "all";
+        tier: "all" | "P0" | "P1";
       }>,
     ) => {
       const params = new URLSearchParams(Array.from(searchParams?.entries() || []));
@@ -263,6 +267,7 @@ function CrashguardPageInner() {
       if ("search" in patch) setOrDel("search", patch.search, !patch.search);
       if ("win" in patch) setOrDel("win", patch.win ? String(patch.win) : undefined, patch.win === 24 || !patch.win);
       if ("gen" in patch) setOrDel("gen", patch.gen, patch.gen === "native" || !patch.gen);
+      if ("tier" in patch) setOrDel("tier", patch.tier, patch.tier === "all" || !patch.tier);
       const qs = params.toString();
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
@@ -276,6 +281,7 @@ function CrashguardPageInner() {
   const setPage = (v: number) => updateListQuery({ page: v });
   const setWindowHours = (v: 24 | 168 | 336 | 720) => updateListQuery({ win: v, page: 1 });
   const setGenFilter = (v: "native" | "flutter" | "all") => updateListQuery({ gen: v, page: 1 });
+  const setTierFilter = (v: "all" | "P0" | "P1") => updateListQuery({ tier: v });
 
   // search 输入 debounce 300ms → push 到 URL
   useEffect(() => {
@@ -565,7 +571,7 @@ function CrashguardPageInner() {
     setDiagConfirming(hypothesisId);
     try {
       const { phase2_run_id } = await confirmDiagnosisHypothesis(runId, hypothesisId);
-      setToast({ msg: `Phase 2 已触发，run_id: ${phase2_run_id.slice(0, 8)}`, type: "success" });
+      setToast({ msg: `${t("Phase 2 已触发")}，run_id: ${phase2_run_id.slice(0, 8)}`, type: "success" });
       const list = await fetchCrashAnalyses(issueId).catch(() => ({ analyses: [] }));
       setAnalyses((list as any).analyses || []);
     } catch (e: any) {
@@ -738,8 +744,8 @@ function CrashguardPageInner() {
         const bg = (r as any).ai_background;
         setToast({
           msg: isEmpty
-            ? `已拉取 ${r.issues_processed} 条 issue${bg ? "，AI 分析后台运行中" : ""}`
-            : `已自动同步最新数据 (${r.issues_processed} 条)`,
+            ? `${t("已拉取")} ${r.issues_processed} ${t("条 issue")}${bg ? `，${t("AI 分析后台运行中")}` : ""}`
+            : `${t("已自动同步最新数据")} (${r.issues_processed} ${t("条")})`,
           type: "success",
         });
         await loadTop();
@@ -756,7 +762,7 @@ function CrashguardPageInner() {
         if (name === "AbortError" || /abort/i.test(msg) || msg === "Failed to fetch") {
           return;
         }
-        setToast({ msg: `自动拉取失败：${msg}`, type: "error" });
+        setToast({ msg: `${t("自动拉取失败：")}${msg}`, type: "error" });
       })
       .finally(() => {
         clearInterval(timer);
@@ -1176,7 +1182,7 @@ function CrashguardPageInner() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={t("搜索 issue 标题或 ID")}
+              placeholder={t("搜索 issue 标题 / ID / 页面名")}
               className="rounded px-3 py-1.5 text-xs w-72"
               style={{
                 background: D.surface,
@@ -1293,6 +1299,10 @@ function CrashguardPageInner() {
                               {it.fatality === "non_fatal" ? (
                                 <Badge fg={D.warn} bg={D.warnBg}>
                                   ⚠️ {t("业务失败")}
+                                </Badge>
+                              ) : it.fatality === "jank" ? (
+                                <Badge fg={D.warn} bg={D.warnBg}>
+                                  🟠 {t("卡顿")}
                                 </Badge>
                               ) : (
                                 <Badge fg={D.danger} bg={D.dangerBg}>
@@ -2243,6 +2253,16 @@ function DetailDrawer({
                 <KV k={t("总事件数")} v={detail.total_events.toLocaleString()} />
                 <KV k={t("首次出现")} v={`${detail.first_seen_at?.replace("T", " ").slice(0, 16) || "—"}`} />
                 <KV k={t("最近出现")} v={`${detail.last_seen_at?.replace("T", " ").slice(0, 16) || "—"}`} />
+                {detail.fatality === "jank" && (
+                  <KV
+                    k={t("类型")}
+                    v={
+                      <Badge fg={D.warn} bg={D.warnBg}>
+                        🟠 {t("卡顿")}
+                      </Badge>
+                    }
+                  />
+                )}
               </div>
               {/* 机型分布（保留文本一行，不上饼图） */}
               {detail.top_device && (
@@ -2252,8 +2272,8 @@ function DetailDrawer({
               )}
             </Section>
 
-            {/* OS 分布 + App 版本分布 → 双饼图并列 */}
-            {(detail.top_os || detail.top_app_version) && (
+            {/* OS 分布 + App 版本分布 + 页面分布 → 饼图并列 */}
+            {(detail.top_os || detail.top_app_version || detail.top_page) && (
               <Section title={t("分布")}>
                 <div className="grid grid-cols-2 gap-3">
                   {detail.top_os && (
@@ -2266,6 +2286,12 @@ function DetailDrawer({
                     <PieChart
                       title={`🏷️ ${t("App 版本分布")}`}
                       slices={parseDistribution(detail.top_app_version)}
+                    />
+                  )}
+                  {detail.top_page && (
+                    <PieChart
+                      title={`📍 ${t("页面分布")}`}
+                      slices={parseDistribution(detail.top_page)}
                     />
                   )}
                 </div>
@@ -2714,7 +2740,7 @@ function DetailDrawer({
             {/* 深度诊断区块 */}
             <div style={{ marginTop: 24, borderTop: "1px solid #E5E7EB", paddingTop: 16 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>🔍 深度诊断</span>
+                <span style={{ fontWeight: 600, fontSize: 14 }}>🔍 {t("深度诊断")}</span>
                 {!diagStatus && !diagLoading && (
                   <button
                     onClick={() => onStartDeepAnalysis(detail.datadog_issue_id || "")}
@@ -2723,18 +2749,18 @@ function DetailDrawer({
                       background: "#1D4ED8", color: "#fff", border: "none", cursor: "pointer",
                     }}
                   >
-                    启动（15-30 分钟）
+                    {t("启动（15-30 分钟）")}
                   </button>
                 )}
-                {diagLoading && <span style={{ fontSize: 12, color: "#5B6470" }}>启动中…</span>}
+                {diagLoading && <span style={{ fontSize: 12, color: "#5B6470" }}>{t("启动中…")}</span>}
               </div>
 
               {diagStatus && (diagStatus.status === "pending" || diagStatus.status === "running") && (
                 <div style={{ fontSize: 12, color: "#5B6470" }}>
-                  ⏳ AI 正在调查中… 每 8 秒自动刷新
+                  ⏳ {t("AI 正在调查中… 每 8 秒自动刷新")}
                   {(diagStatus.investigation_log?.length ?? 0) > 0 && (
                     <details style={{ marginTop: 6 }}>
-                      <summary style={{ cursor: "pointer" }}>调查日志（{diagStatus.investigation_log.length} 步）</summary>
+                      <summary style={{ cursor: "pointer" }}>{t("调查日志")}（{diagStatus.investigation_log.length} {t("步")}）</summary>
                       <ul style={{ paddingLeft: 16, marginTop: 4 }}>
                         {diagStatus.investigation_log.map((s, i) => (
                           <li key={i} style={{ marginBottom: 2 }}>{s}</li>
@@ -2748,7 +2774,7 @@ function DetailDrawer({
               {diagStatus?.status === "success" && (
                 <div>
                   <div style={{ fontSize: 12, color: "#5B6470", marginBottom: 8 }}>
-                    总体置信度: {((diagStatus.overall_confidence ?? 0) * 100).toFixed(0)}% · 类型: {diagStatus.crash_type}
+                    {t("总体置信度")}: {((diagStatus.overall_confidence ?? 0) * 100).toFixed(0)}% · {t("类型")}: {diagStatus.crash_type}
                   </div>
                   {diagStatus.hypotheses.map((h) => (
                     <div
@@ -2766,7 +2792,7 @@ function DetailDrawer({
                             <span style={{
                               marginLeft: 6, fontSize: 10, background: "#1D4ED8", color: "#fff",
                               padding: "1px 6px", borderRadius: 4,
-                            }}>推荐</span>
+                            }}>{t("推荐")}</span>
                           )}
                         </div>
                         <span style={{ fontSize: 12, color: "#5B6470" }}>{((h.confidence ?? 0) * 100).toFixed(0)}%</span>
@@ -2788,19 +2814,19 @@ function DetailDrawer({
                           opacity: diagConfirming === h.id ? 0.6 : 1,
                         }}
                       >
-                        {diagConfirming === h.id ? "触发中…" : "✓ 确认此假设 → 生成修复 PR"}
+                        {diagConfirming === h.id ? t("触发中…") : `✓ ${t("确认此假设 → 生成修复 PR")}`}
                       </button>
                     </div>
                   ))}
 
                   {(diagStatus.data_gaps?.length ?? 0) > 0 && (
                     <div style={{ marginTop: 8, padding: "8px 12px", background: "#FEF3C7", borderRadius: 6 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>⚠️ 数据缺口（需要更多监控数据）</span>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>⚠️ {t("数据缺口（需要更多监控数据）")}</span>
                       {diagStatus.data_gaps.map((gap, i) => (
                         <div key={i} style={{ fontSize: 11, marginTop: 4 }}>
                           <div>• {gap.description}</div>
                           {gap.collection_method && (
-                            <div style={{ color: "#5B6470" }}>采集方式：{gap.collection_method}</div>
+                            <div style={{ color: "#5B6470" }}>{t("采集方式：")}{gap.collection_method}</div>
                           )}
                         </div>
                       ))}
@@ -2811,7 +2837,7 @@ function DetailDrawer({
 
               {diagStatus?.status === "failed" && (
                 <div style={{ fontSize: 12, color: "#DC2626" }}>
-                  诊断失败: {diagStatus.error || "未知错误"}
+                  {t("诊断失败")}: {diagStatus.error || t("未知错误")}
                 </div>
               )}
             </div>
@@ -2836,6 +2862,7 @@ function parseDistribution(text: string): { label: string; pct: number }[] {
 const PIE_PALETTE = ["#0E7C86", "#7C3AED", "#16A34A", "#DC2626", "#2563EB", "#D97706", "#9CA3AF"];
 
 function PieChart({ title, slices }: { title: string; slices: { label: string; pct: number }[] }) {
+  const t = useT();
   const size = 120;
   const cx = size / 2;
   const cy = size / 2;
@@ -2844,7 +2871,7 @@ function PieChart({ title, slices }: { title: string; slices: { label: string; p
   // 凑满 100%（剩余 → "其他"）
   const display = [...slices];
   if (total > 0 && total < 99.5) {
-    display.push({ label: "其他", pct: Math.max(0, 100 - total) });
+    display.push({ label: t("其他"), pct: Math.max(0, 100 - total) });
   }
   let cum = 0;
   const paths = display.map((s, i) => {
@@ -2914,14 +2941,14 @@ function VersionPieCard({
     return (
       <div className="rounded-lg p-4 flex flex-col gap-1" style={{ background: D.surface, border: `1px solid ${D.border}` }}>
         <div className="text-xs font-semibold" style={{ color }}>{title}</div>
-        <div className="text-xs" style={{ color: D.text3 }}>暂无数据</div>
+        <div className="text-xs" style={{ color: D.text3 }}>{t("暂无数据")}</div>
       </div>
     );
   }
 
   const total = slices.reduce((a, s) => a + s.pct, 0);
   const display = [...slices];
-  if (total < 99.5) display.push({ version: "其他", sessions: 0, pct: Math.max(0, 100 - total) });
+  if (total < 99.5) display.push({ version: t("其他"), sessions: 0, pct: Math.max(0, 100 - total) });
 
   let cum = 0;
   const paths = display.map((s, i) => {
@@ -2961,7 +2988,7 @@ function VersionPieCard({
             </li>
           ))}
           {paths.length > 5 && (
-            <li className="text-[10px]" style={{ color: D.text3 }}>+{paths.length - 5} 个版本</li>
+            <li className="text-[10px]" style={{ color: D.text3 }}>+{paths.length - 5} {t("个版本")}</li>
           )}
         </ul>
       </div>
@@ -2979,6 +3006,7 @@ function MiniPie({
   size?: number;
   palette: string[];
 }) {
+  const t = useT();
   const cx = size / 2;
   const cy = size / 2;
   const r = size / 2 - 1;
@@ -2987,7 +3015,7 @@ function MiniPie({
   }
   const total = slices.reduce((a, s) => a + s.pct, 0);
   const display = [...slices];
-  if (total < 99.5) display.push({ label: "其他", pct: Math.max(0, 100 - total) });
+  if (total < 99.5) display.push({ label: t("其他"), pct: Math.max(0, 100 - total) });
   let cum = 0;
   const paths = display.map((s, i) => {
     const startAngle = (cum / 100) * 2 * Math.PI - Math.PI / 2;

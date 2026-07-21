@@ -180,7 +180,7 @@ function CrashReportsHistoryInner() {
           setDetailMd(r.markdown);
         }
       } catch (e) {
-        setDetailMd(`_加载失败：${String(e)}_`);
+        setDetailMd(`_${t("加载失败：")}${String(e)}_`);
       } finally {
         setDetailLoading(false);
       }
@@ -352,12 +352,12 @@ function CrashReportsHistoryInner() {
               {k === "all"
                 ? t("全部")
                 : k === "morning"
-                ? "🌅 日报"
+                ? `🌅 ${t("日报")}`
                 : k === "evening"
-                ? "🌇 日内增量"
+                ? `🌇 ${t("日内增量")}`
                 : k === "hourly_alert"
-                ? "🚨 实时告警"
-                : "📉 核心指标"}
+                ? `🚨 ${t("实时告警")}`
+                : `📉 ${t("核心指标")}`}
             </button>
           ))}
           <span style={{ flex: 1 }} />
@@ -559,11 +559,12 @@ function CrashReportsHistoryInner() {
 }
 
 export default function CrashReportsHistoryPage() {
+  const t = useT();
   return (
     <Suspense
       fallback={
         <div style={{ background: D.bg, minHeight: "100vh", color: D.text2, padding: 24 }}>
-          加载中…
+          {t("加载中…")}
         </div>
       }
     >

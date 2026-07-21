@@ -53,6 +53,10 @@ class CrashIssue(Base):
     top_os = Column(String(256), default="")             # 例: "Android 14 (40%), Android 13 (20%)"
     top_device = Column(String(256), default="")         # 例: "Samsung SM-S911B (40%), Sony SO-52C (20%)"
     top_app_version = Column(String(128), default="")    # 例: "3.16.0-634 (60%), 3.15.1-631 (30%)"
+    # 2026-07-20：卡顿(jank_watchdog_block) Datadog `page` 字段分布——由
+    # jank_ingester._upsert_jank_event 维护（累计计数存 tags.page_counts，
+    # 每次 upsert 后重算 top-3 写这里），支持前端搜索框按页面名过滤 issue。
+    top_page = Column(String(256), default="")            # 例: "fileDetail (60%), home (40%)"
     # 2026-05-28：Datadog 同 issue_id 内不同代码路径的堆栈变体（JSON）
     #   [{"top_frame": "State.setState (...)", "count": 149, "pct": 74.5,
     #     "representative_stack": "...", "sample_app_version": "3.19.0-717",
