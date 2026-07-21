@@ -59,10 +59,20 @@ def _load_yaml() -> Dict[str, Any]:
         with open(yaml_path, "r", encoding="utf-8") as f:
             merged = yaml.safe_load(f) or {}
     local_path = PROJECT_ROOT / "config.local.yaml"
-    if local_path.exists():
-        with open(local_path, "r", encoding="utf-8") as f:
-            local_overrides = yaml.safe_load(f) or {}
-        merged = _deep_merge(merged, local_overrides)
+    # is_file()（不只 exists()）+ try/except：bind mount 源路径若在宿主机意外建成目录
+    # （2026-07-21 生产环境踩过——docker 单文件 bind mount 在源路径不存在时的自动创建
+    # 行为不总是建普通文件），open() 会抛 IsADirectoryError，绝不能让这个基础设施层面
+    # 的意外崩掉整个 app 启动；读取失败就跳过覆盖，退化成只用 config.yaml 默认值。
+    if local_path.is_file():
+        try:
+            with open(local_path, "r", encoding="utf-8") as f:
+                local_overrides = yaml.safe_load(f) or {}
+            merged = _deep_merge(merged, local_overrides)
+        except Exception as exc:
+            import logging
+            logging.getLogger("jarvis.config").warning(
+                "failed to load config.local.yaml overrides, falling back to config.yaml defaults: %s", exc,
+            )
     _yaml_config = merged
     return _yaml_config
 
@@ -78,7 +88,7 @@ def write_local_override(section: str, updates: Dict[str, Any]) -> None:
     global _yaml_config
     local_path = PROJECT_ROOT / "config.local.yaml"
     existing: Dict[str, Any] = {}
-    if local_path.exists():
+    if local_path.is_file():
         with open(local_path, "r", encoding="utf-8") as f:
             existing = yaml.safe_load(f) or {}
     section_dict = existing.get(section)
