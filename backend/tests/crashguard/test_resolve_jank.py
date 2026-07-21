@@ -248,3 +248,44 @@ async def test_query_uses_session_id_facet_not_session_dot_id(patched_session, m
     query = kwargs.get("query", "")
     assert f"@session_id:{SESSION_ID}" in query
     assert "@session.id:" not in query
+
+
+# ── 9. 回归：to_ms 不受本地时区影响 ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_to_ms_independent_of_local_timezone(patched_session, monkeypatch):
+    """回归测试（2026-07-21 生产环境实测发现）：容器 TZ=Asia/Shanghai 时，旧实现
+    `int(datetime.utcnow().timestamp() * 1000)` 把 naive UTC 时刻按本地时区解释，
+    算出的 to_ms 提前 8 小时——导致刚发生的 session 反查不到任何事件（真实复现：
+    6 小时前的一条卡顿日志用真实 session_id 查询返回 count=0，直接查 Datadog 却能
+    查到）。用 time.time()（TZ 无关）交叉验证 resolver 传给 Datadog 的 to_ms 正确。
+    """
+    import os
+    import time as _time
+
+    from app.crashguard.api.crash import resolve_jank
+
+    _patch_settings(monkeypatch)
+    search_mock = AsyncMock(return_value={"data": [], "next_cursor": None})
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page", search_mock,
+    )
+
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Shanghai"
+    _time.tzset()
+    try:
+        before = _time.time()
+        await resolve_jank(session_id=SESSION_ID, format="json")
+        after = _time.time()
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        _time.tzset()
+
+    _, kwargs = search_mock.call_args
+    actual_to_ms = kwargs["to_ms"]
+    # to_ms 必须落在 [before, after] 真实墙钟时间对应的毫秒区间内，容差 2 秒足够宽松
+    assert before * 1000 - 2000 <= actual_to_ms <= after * 1000 + 2000

@@ -529,18 +529,62 @@ async def test_ingest_persists_and_reuses_cursor(patched_session, monkeypatch):
         "app.crashguard.services.datadog_client.DatadogClient.search_logs_page", search_mock,
     )
 
+    from datetime import timezone as _tz
+
     first_now = datetime(2026, 7, 20, 12, 0, 0)
     await ingest_jank_logs(now=first_now)
     first_call_from_ms = search_mock.call_args_list[0].kwargs["from_ms"]
-    # 首次运行无历史 cursor，应该用默认回看窗口
-    expected_first_from = int(first_now.timestamp() * 1000) - 4 * 3600 * 1000
+    # 首次运行无历史 cursor，应该用默认回看窗口。now 是 naive datetime 代表 UTC 时刻，
+    # 必须显式标注 tzinfo=utc 再 .timestamp()，否则在非 UTC 时区的机器上跑测试会算错
+    # （这正是 2026-07-21 生产环境 TZ=Asia/Shanghai 上发现的 8 小时窗口偏移 bug）。
+    expected_first_from = int(first_now.replace(tzinfo=_tz.utc).timestamp() * 1000) - 4 * 3600 * 1000
     assert first_call_from_ms == expected_first_from
 
     second_now = datetime(2026, 7, 20, 16, 0, 0)
     await ingest_jank_logs(now=second_now)
     second_call_from_ms = search_mock.call_args_list[1].kwargs["from_ms"]
     # 第二次应该复用第一次的 to_ms 作为 from_ms（cursor 持久化），而不是重新回看4h
-    assert second_call_from_ms == int(first_now.timestamp() * 1000)
+    assert second_call_from_ms == int(first_now.replace(tzinfo=_tz.utc).timestamp() * 1000)
+
+
+@pytest.mark.asyncio
+async def test_ingest_to_ms_independent_of_local_timezone(patched_session, monkeypatch):
+    """回归测试（2026-07-21 生产环境实测发现）：容器 TZ=Asia/Shanghai 时，旧实现
+    `int(now.timestamp() * 1000)` 对 naive datetime 按本地时区解释，算出的 to_ms
+    比真实 UTC 时刻提前 8 小时，导致最近 8 小时的卡顿事件被排除在查询窗口外。
+    用 calendar.timegm()（不受本地时区影响的独立 oracle）交叉验证 to_ms 正确。
+    """
+    import calendar
+    import os
+    import time as _time
+
+    from app.crashguard.services.jank_ingester import ingest_jank_logs
+
+    _patch_settings(monkeypatch)
+    _patch_no_op_symbolication_deps(monkeypatch)
+
+    search_mock = AsyncMock(return_value={"data": [], "next_cursor": None})
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page", search_mock,
+    )
+
+    now = datetime(2026, 7, 20, 12, 0, 0)
+    expected_to_ms = calendar.timegm(now.timetuple()) * 1000  # TZ 无关的 UTC epoch oracle
+
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Shanghai"
+    _time.tzset()
+    try:
+        await ingest_jank_logs(now=now)
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        _time.tzset()
+
+    actual_to_ms = search_mock.call_args_list[0].kwargs["to_ms"]
+    assert actual_to_ms == expected_to_ms
 
 
 @pytest.mark.asyncio

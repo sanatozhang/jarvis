@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy import select
@@ -401,7 +401,10 @@ async def ingest_jank_logs(now: Optional[datetime] = None) -> Dict[str, Any]:
         return {"scanned": 0, "new_issues": 0, "updated_issues": 0}
 
     now = now or datetime.utcnow()
-    to_ms = int(now.timestamp() * 1000)
+    # 注意：now 是 naive datetime（代表 UTC 时刻），不能直接 .timestamp()——那会按本地
+    # 时区解释，容器 TZ=Asia/Shanghai 时算出的 to_ms 会提前 8 小时，导致最近 8 小时的
+    # 卡顿事件被排除在窗口外（2026-07-21 生产环境实测发现）。显式标注 tzinfo=utc 再转换。
+    to_ms = int(now.replace(tzinfo=timezone.utc).timestamp() * 1000)
     cursor_ms = await _load_cursor_ms()
     from_ms = cursor_ms if cursor_ms is not None else (to_ms - _DEFAULT_LOOKBACK_HOURS * 3600 * 1000)
 

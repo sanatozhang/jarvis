@@ -1434,7 +1434,7 @@ async def resolve_jank(
     这样保证跳转目标永远是"当前算法"算出来的键，不会有本地缓存/映射表过期问题。
     """
     from collections import Counter
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from sqlalchemy import select
 
@@ -1498,7 +1498,10 @@ async def resolve_jank(
             site=s.datadog_site, service_filter=s.datadog_service_filter,
         )
         now = datetime.utcnow()
-        to_ms = int(now.timestamp() * 1000)
+        # naive datetime 直接 .timestamp() 会按本地时区解释，容器 TZ=Asia/Shanghai 时
+        # to_ms 会提前 8 小时，导致最近 8 小时的 session 查不到任何事件（2026-07-21 实测
+        # 发现：真实存在的 session_id 反查返回 0 条）。显式标注 tzinfo=utc 再转换。
+        to_ms = int(now.replace(tzinfo=timezone.utc).timestamp() * 1000)
         from_ms = to_ms - 30 * 24 * 3600 * 1000  # Datadog Logs 实际保留期 30 天，不用查更久
         page = await client.search_logs_page(
             query=f"{_JANK_LOG_QUERY} @session_id:{session_id}",
