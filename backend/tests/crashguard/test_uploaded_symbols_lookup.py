@@ -1,6 +1,9 @@
 """github_symbols.py 已上传包查找基础设施单测（2026-07-22）。"""
 from __future__ import annotations
 
+import zipfile
+from pathlib import Path
+
 
 def test_uploaded_package_dir_returns_none_when_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -44,3 +47,72 @@ async def test_get_extract_lock_returns_different_instance_for_different_key():
     lock1 = await G._get_extract_lock("ios", "dsym", "4.0.201-941")
     lock2 = await G._get_extract_lock("android", "native_symbols", "4.0.201-941")
     assert lock1 is not lock2
+
+
+def _write_fake_dsym_zip(zip_path: Path, binary_name: str) -> None:
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(f"{binary_name}.app.dSYM/Contents/Resources/DWARF/{binary_name}", "fake dwarf")
+
+
+async def test_get_ios_dsyms_dir_prefers_uploaded_package_over_github(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    upload_dir = tmp_path / "symbols" / "ios" / "dsym" / "4.0.201-941"
+    upload_dir.mkdir(parents=True)
+    _write_fake_dsym_zip(upload_dir / "PLAUD.dSYMs.zip", "Plaud-Global")
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("should not hit GitHub when an uploaded package matches exactly")
+
+    monkeypatch.setattr(G, "find_release_tag", boom)
+
+    result = await G.get_ios_dsyms_dir("4.0.201-941")
+    assert result is not None
+    assert (Path(result) / "Plaud-Global.app.dSYM" / "Contents" / "Resources" / "DWARF" / "Plaud-Global").exists()
+
+
+async def test_get_ios_dsyms_dir_reuses_extracted_cache_on_second_call(monkeypatch, tmp_path):
+    """第二次调用命中 .extracted marker，不重新解压 zip（幂等，避免重复 I/O）。"""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    upload_dir = tmp_path / "symbols" / "ios" / "dsym" / "4.0.201-941"
+    upload_dir.mkdir(parents=True)
+    _write_fake_dsym_zip(upload_dir / "PLAUD.dSYMs.zip", "Plaud-Global")
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("should not hit GitHub when an uploaded package matches exactly")
+
+    monkeypatch.setattr(G, "find_release_tag", boom)
+
+    first = await G.get_ios_dsyms_dir("4.0.201-941")
+
+    import zipfile as _zf
+    original_zipfile = _zf.ZipFile
+
+    def boom_zipfile(*args, **kwargs):
+        raise AssertionError("should not re-extract on second call")
+
+    monkeypatch.setattr(_zf, "ZipFile", boom_zipfile)
+    second = await G.get_ios_dsyms_dir("4.0.201-941")
+    monkeypatch.setattr(_zf, "ZipFile", original_zipfile)
+
+    assert first == second
+
+
+async def test_get_ios_dsyms_dir_falls_back_to_github_when_no_uploaded_package(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    called = {}
+
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+        called["hit"] = True
+        return None
+
+    monkeypatch.setattr(G, "find_release_tag", fake_find_release_tag)
+
+    result = await G.get_ios_dsyms_dir("4.0.999-1")
+    assert result is None
+    assert called.get("hit") is True

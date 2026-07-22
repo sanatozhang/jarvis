@@ -347,16 +347,62 @@ async def _get_extract_lock(platform: str, symbol_type: str, app_version: str) -
         return lock
 
 
+async def _find_uploaded_ios_dsyms_dir(app_version: str) -> Optional[str]:
+    """查已上传的 iOS dSYM 包（platform=ios, symbol_type=dsym），精确 app_version 匹配。
+
+    上传目录里通常是原始 zip（首次使用时解压到 .extracted/ 子目录，marker 文件标记，
+    之后直接返回缓存目录，不重复解压）；也兼容"目录里已经是解压后的 .dSYM bundle"的
+    情况（万一未来上传接口改成直接存目录）。按 (platform, symbol_type, app_version)
+    加锁防止并发解压互相踩踏。
+    """
+    src_dir = _uploaded_package_dir("ios", "dsym", app_version)
+    if not src_dir:
+        return None
+
+    extracted_dir = src_dir / ".extracted"
+    marker = extracted_dir / ".done"
+    if marker.exists():
+        return str(extracted_dir)
+
+    zips = list(src_dir.glob("*.zip"))
+    if not zips:
+        if any(src_dir.rglob("*.dSYM")):
+            return str(src_dir)
+        return None
+
+    lock = await _get_extract_lock("ios", "dsym", app_version)
+    async with lock:
+        if marker.exists():  # 锁内复检：等锁期间可能已被前一个 task 解压完
+            return str(extracted_dir)
+        try:
+            extracted_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(zips[0]) as zf:
+                zf.extractall(extracted_dir)
+            marker.touch()
+            logger.info(
+                "uploaded iOS dSYMs extracted to %s (app_version=%s)", extracted_dir, app_version,
+            )
+            return str(extracted_dir)
+        except Exception as exc:
+            logger.warning("failed to extract uploaded iOS dSYMs for %s: %s", app_version, exc)
+            return None
+
+
 async def get_ios_dsyms_dir(
     app_version: str, repo: str = _DEFAULT_REPO, asset_name: str = _ASSET_IOS_DSYM,
 ) -> Optional[str]:
     """
     返回 iOS dSYMs 目录路径（含 .dSYM bundles）。
-    按 tag 共享 cache：多个 app_version 命中同一 release 时不重复下载/解压。
+    优先查打包机已上传的包（精确 app_version 匹配），查不到再走 GitHub release 下载
+    （按 tag 共享 cache：多个 app_version 命中同一 release 时不重复下载/解压）。
 
     asset_name：flutter 用 PLAUD.dSYMs.zip，native 用 Plaud-Global.dSYMs.zip
     （见 _ASSET_IOS_DSYM_NATIVE），由调用方按 symbol_profile 选择。
     """
+    uploaded = await _find_uploaded_ios_dsyms_dir(app_version)
+    if uploaded:
+        return uploaded
+
     tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
