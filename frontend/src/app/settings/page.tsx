@@ -190,7 +190,7 @@ function CrashguardPrefsSection() {
 }
 
 
-const PLATFORMS = ["android", "ios", "web", "desktop"] as const;
+const PLATFORMS = ["android", "ios", "web", "desktop", "mcp"] as const;
 type Platform = typeof PLATFORMS[number];
 
 const EMPTY_BAND: RepoBand = { min_version: "", family: "", wrapper: "", sub: "", github_repo: "", symbol_profile: "" };
@@ -202,6 +202,7 @@ function RepoRoutingSection() {
   const [serviceFilter, setServiceFilter] = useState("");
   const [supportWeb, setSupportWeb] = useState(false);
   const [supportDesktop, setSupportDesktop] = useState(false);
+  const [supportMcp, setSupportMcp] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -218,6 +219,7 @@ function RepoRoutingSection() {
       setServiceFilter(data.service_filter || "");
       setSupportWeb(!!data.support_web);
       setSupportDesktop(!!data.support_desktop);
+      setSupportMcp(!!data.support_mcp);
     }).catch(console.error);
   }, []);
 
@@ -242,7 +244,7 @@ function RepoRoutingSection() {
     setSaving(true);
     setSaveError("");
     try {
-      await updateRepoRouting({ routing, service_filter: serviceFilter, support_web: supportWeb, support_desktop: supportDesktop });
+      await updateRepoRouting({ routing, service_filter: serviceFilter, support_web: supportWeb, support_desktop: supportDesktop, support_mcp: supportMcp });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e: any) {
@@ -337,6 +339,16 @@ function RepoRoutingSection() {
                 style={{ accentColor: S.accent }}
               />
               {t("支持 Desktop 工单")}
+            </label>
+            <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: S.text1 }}>
+              <input
+                type="checkbox"
+                checked={supportMcp}
+                onChange={(e) => setSupportMcp(e.target.checked)}
+                className="h-4 w-4 rounded"
+                style={{ accentColor: S.accent }}
+              />
+              {t("支持 MCP 工单")}
             </label>
           </div>
           <p className="mt-1.5 text-[11px]" style={{ color: S.text3 }}>

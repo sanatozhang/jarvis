@@ -56,9 +56,10 @@ async def auth_config():
     settings = get_settings()
     return {
         "sso_enabled": settings.sso.enabled,
-        # 平台支持开关（公开读，无需鉴权）：submit 页据此决定 web/desktop 是否可选。
+        # 平台支持开关（公开读，无需鉴权）：submit 页据此决定 web/desktop/mcp 是否可选。
         "support_web": settings.support_web,
         "support_desktop": settings.support_desktop,
+        "support_mcp": settings.support_mcp,
     }
 
 

@@ -42,9 +42,9 @@ def parse_version(v: Optional[str]) -> Optional[tuple[int, int, int]]:
 
 def normalize_platform(raw: str, os_name: str = "") -> Optional[str]:
     """把 jarvis 的 'app' / crashguard 的 'flutter' 按 os_name 细分到 android/ios；
-    web/desktop/android/ios 原样小写。无法归一 → None。"""
+    web/desktop/android/ios/mcp 原样小写。无法归一 → None。"""
     p = (raw or "").strip().lower()
-    if p in ("android", "ios", "web", "desktop"):
+    if p in ("android", "ios", "web", "desktop", "mcp"):
         return p
     if p in ("app", "flutter"):
         o = (os_name or "").strip().lower()

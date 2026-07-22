@@ -2070,6 +2070,7 @@ export interface RepoRoutingConfig {
   service_filter: string;
   support_web: boolean;
   support_desktop: boolean;
+  support_mcp: boolean;
 }
 
 export interface RepoRoutingPreviewResult {
@@ -2086,7 +2087,7 @@ export interface RepoRoutingPreviewResult {
 export const getRepoRouting = () =>
   request<RepoRoutingConfig>("/settings/repo-routing");
 
-export const updateRepoRouting = (body: { routing: Record<string, { bands: RepoBand[] }>; service_filter?: string; support_web?: boolean; support_desktop?: boolean }) =>
+export const updateRepoRouting = (body: { routing: Record<string, { bands: RepoBand[] }>; service_filter?: string; support_web?: boolean; support_desktop?: boolean; support_mcp?: boolean }) =>
   request<{ ok: boolean }>("/settings/repo-routing", {
     method: "PUT",
     body: JSON.stringify(body),

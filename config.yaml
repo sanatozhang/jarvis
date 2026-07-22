@@ -135,6 +135,9 @@ repo_routing:
   desktop:
     bands:
       - {min_version: "0", family: desktop, wrapper: "/Users/mac/Downloads/fe-nexus",  sub: "", github_repo: "Plaud-AI/fe-nexus",  symbol_profile: "none"}
+  mcp:
+    bands:
+      - {min_version: "0", family: mcp,     wrapper: "/Users/mac/Downloads/plaud-devkits", sub: "", github_repo: "Plaud-AI/plaud-devkits", symbol_profile: "none"}
 
 # ===========================
 # Release 自动化 (Jenkins)

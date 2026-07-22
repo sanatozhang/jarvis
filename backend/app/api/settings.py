@@ -178,6 +178,7 @@ class RepoRoutingUpdate(BaseModel):
     service_filter: str | None = None
     support_web: bool | None = None
     support_desktop: bool | None = None
+    support_mcp: bool | None = None
 
 
 class PreviewReq(BaseModel):
@@ -195,6 +196,7 @@ async def get_repo_routing_cfg():
         "service_filter": get_crashguard_settings().datadog_service_filter,
         "support_web": s.support_web,
         "support_desktop": s.support_desktop,
+        "support_mcp": s.support_mcp,
     }
 
 
@@ -251,6 +253,8 @@ async def update_repo_routing(req: RepoRoutingUpdate):
         override["support_web"] = req.support_web
     if req.support_desktop is not None:
         override["support_desktop"] = req.support_desktop
+    if req.support_mcp is not None:
+        override["support_mcp"] = req.support_mcp
     await db.set_oncall_config(REPO_ROUTING_OVERRIDE_KEY, json.dumps(override, ensure_ascii=False))
     _apply_repo_routing(override)
     logger.info("Repo-routing override persisted + applied: routing keys=%s", list(req.routing.keys()))
@@ -290,6 +294,8 @@ def _apply_repo_routing(override: dict) -> None:
         s.support_web = bool(override["support_web"])
     if "support_desktop" in override:
         s.support_desktop = bool(override["support_desktop"])
+    if "support_mcp" in override:
+        s.support_mcp = bool(override["support_mcp"])
 
 
 async def apply_repo_routing_overrides_from_db() -> dict:

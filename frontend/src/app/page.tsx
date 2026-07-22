@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
+import { useCurrentUser } from "@/components/AuthProvider";
 import { Toast } from "@/components/Toast";
 import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
 import { trackEvent } from "@/lib/track";
@@ -24,7 +25,6 @@ import {
   fetchIssueDetail,
   fetchIssueAnalyses,
   submitEngineerLabelFeedback,
-  loginUser,
   subscribeTaskProgress,
   fetchTaskResult,
   formatLocalTime,
@@ -233,20 +233,16 @@ export default function HomePage() {
     }
   }, []);
 
-  const [username, setUsername] = useState<string | null>(null);
-  const [usernameInput, setUsernameInput] = useState("");
-  const [emailInput, setEmailInput] = useState("");
-  const [setupError, setSetupError] = useState("");
-  const [showUsernameSetup, setShowUsernameSetup] = useState(false);
+  // 首次注册（用户名 + @plaud.ai 邮箱）弹窗已提升到 AuthGate（挂在所有页面外层，
+  // 而不只是首页），这里改为从共享 AuthProvider context 读，注册完成后自动更新。
+  const currentUser = useCurrentUser();
+  const username = currentUser?.username || "";
 
   const [assignee, setAssignee] = useState<string | null>(null);
   const [assigneeInput, setAssigneeInput] = useState("");
   const [showAssigneeEdit, setShowAssigneeEdit] = useState(false);
 
   useEffect(() => {
-    const savedName = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
-    if (savedName) { setUsername(savedName); setUsernameInput(savedName); }
-    else { setUsername(""); setShowUsernameSetup(true); }
     const fromUrl = getUrlParam("assignee");
     const fromStorage = typeof window !== "undefined" ? localStorage.getItem("appllo_assignee") || "" : "";
     const a = fromUrl || fromStorage;
@@ -254,32 +250,6 @@ export default function HomePage() {
     setAssigneeInput(a);
     if (a) { setUrlParam("assignee", a); localStorage.setItem("appllo_assignee", a); }
   }, []);
-
-  const saveUsername = async (name: string, email?: string) => {
-    const v = name.trim().toLowerCase();
-    if (!v) return;
-    const e = (email || "").trim().toLowerCase();
-    // 新用户首次注册必须提供 @plaud.ai 邮箱；老用户（已有 localStorage）可以无 email 续用
-    const isFirstSetup = showUsernameSetup;
-    if (isFirstSetup) {
-      if (!e) { setSetupError(t("请输入邮箱")); return; }
-      if (!/^[a-zA-Z0-9._%+-]+@plaud\.ai$/.test(e)) {
-        setSetupError(t("邮箱必须以 @plaud.ai 结尾")); return;
-      }
-    }
-    try {
-      const user = await loginUser(v, e || undefined);
-      setUsername(v); setUsernameInput(v);
-      localStorage.setItem("appllo_username", v);
-      localStorage.setItem("appllo_role", user.role);
-      if (user.feishu_email) localStorage.setItem("appllo_feishu_email", user.feishu_email);
-      setSetupError("");
-      setShowUsernameSetup(false);
-    } catch (err: any) {
-      const msg = err?.message || String(err);
-      setSetupError(msg.includes("plaud.ai") ? t("邮箱必须以 @plaud.ai 结尾") : msg);
-    }
-  };
 
   const applyAssignee = () => {
     const v = assigneeInput.trim();
@@ -1581,63 +1551,6 @@ export default function HomePage() {
               </section>
             </div>
         </aside>
-      )}
-
-      {/* ── First-time username setup ── */}
-      {showUsernameSetup && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center" style={{ background: "rgba(0,0,0,0.75)" }}>
-          <div className="w-full max-w-sm rounded-2xl p-6" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
-            <div className="mb-5 text-center">
-              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full"
-                style={{ background: S.accent }}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                  <circle cx="10.5" cy="10.5" r="6" stroke="#0A0B0E" strokeWidth="2.5" />
-                  <path d="M15 15L20.5 20.5" stroke="#0A0B0E" strokeWidth="2.5" strokeLinecap="round" />
-                  <path d="M10.5 7V8.5M10.5 12.5V14M8 10.5H6.5M14.5 10.5H13" stroke="#0A0B0E" strokeWidth="1.5" strokeLinecap="round" />
-                  <circle cx="10.5" cy="10.5" r="1.2" fill="#0A0B0E" />
-                </svg>
-              </div>
-              <h3 className="text-base font-semibold" style={{ color: S.text1 }}>{t("欢迎使用 Apollo")}</h3>
-              <p className="mt-1 text-sm" style={{ color: S.text2 }}>{t("请使用 @plaud.ai 邮箱注册")}</p>
-            </div>
-            <input
-              autoFocus
-              value={usernameInput}
-              onChange={(e) => setUsernameInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && usernameInput.trim() && emailInput.trim()) {
-                  saveUsername(usernameInput, emailInput);
-                }
-              }}
-              placeholder={t("用户名")}
-              className="mb-3 w-full rounded-lg px-4 py-2.5 text-center text-sm outline-none font-sans"
-              style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }}
-            />
-            <input
-              type="email"
-              value={emailInput}
-              onChange={(e) => setEmailInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && usernameInput.trim() && emailInput.trim()) {
-                  saveUsername(usernameInput, emailInput);
-                }
-              }}
-              placeholder={t("邮箱（@plaud.ai）")}
-              className="mb-2 w-full rounded-lg px-4 py-2.5 text-center text-sm outline-none font-sans"
-              style={{ background: S.overlay, border: `1px solid ${S.border}`, color: S.text1 }}
-            />
-            {setupError && (
-              <p className="mb-3 text-center text-xs" style={{ color: "#DC2626" }}>{setupError}</p>
-            )}
-            <button
-              onClick={() => saveUsername(usernameInput, emailInput)}
-              disabled={!usernameInput.trim() || !emailInput.trim()}
-              className="w-full rounded-lg py-2.5 text-sm font-semibold transition-colors disabled:opacity-30"
-              style={{ background: S.accent, color: "#FFFFFF" }}>
-              {t("开始使用")}
-            </button>
-          </div>
-        </div>
       )}
 
       {/* Deep-analysis confirmation dialog */}
