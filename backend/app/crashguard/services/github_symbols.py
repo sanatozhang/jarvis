@@ -543,10 +543,54 @@ async def get_android_native_symbols_dir(app_version: str, repo: str = _DEFAULT_
         return None
 
 
+async def _find_uploaded_dart_symbols_dir(app_version: str) -> Optional[str]:
+    """查已上传的 Dart debug symbols 包（platform=flutter, symbol_type=dart_symbols）。
+
+    比照 iOS dSYM 的 tar.gz 解压模式：首次使用时解压到 .extracted/，marker 标记后
+    复用；按 (platform, symbol_type, app_version) 加锁防并发解压互相踩踏。
+    """
+    src_dir = _uploaded_package_dir("flutter", "dart_symbols", app_version)
+    if not src_dir:
+        return None
+
+    extracted_dir = src_dir / ".extracted"
+    marker = extracted_dir / ".done"
+    if marker.exists():
+        return str(extracted_dir)
+
+    tars = list(src_dir.glob("*.tar.gz")) or list(src_dir.glob("*.tgz"))
+    if not tars:
+        if any(src_dir.rglob("*.symbols")):
+            return str(src_dir)
+        return None
+
+    lock = await _get_extract_lock("flutter", "dart_symbols", app_version)
+    async with lock:
+        if marker.exists():
+            return str(extracted_dir)
+        try:
+            extracted_dir.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(tars[0]) as tf:
+                tf.extractall(extracted_dir)
+            marker.touch()
+            logger.info(
+                "uploaded Dart symbols extracted to %s (app_version=%s)", extracted_dir, app_version,
+            )
+            return str(extracted_dir)
+        except Exception as exc:
+            logger.warning("failed to extract uploaded Dart symbols for %s: %s", app_version, exc)
+            return None
+
+
 async def get_dart_symbols_dir(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
     """
-    返回 Dart debug symbols 目录路径（flutter_symbols.tar.gz 解压后）。按 tag 共享。
+    返回 Dart debug symbols 目录路径（flutter_symbols.tar.gz 解压后）。
+    优先查打包机已上传的包（精确 app_version 匹配），查不到再走 GitHub（按 tag 共享）。
     """
+    uploaded = await _find_uploaded_dart_symbols_dir(app_version)
+    if uploaded:
+        return uploaded
+
     tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
