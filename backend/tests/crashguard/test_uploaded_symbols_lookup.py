@@ -116,3 +116,37 @@ async def test_get_ios_dsyms_dir_falls_back_to_github_when_no_uploaded_package(m
     result = await G.get_ios_dsyms_dir("4.0.999-1")
     assert result is None
     assert called.get("hit") is True
+
+
+async def test_get_android_mapping_prefers_uploaded_over_github(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    upload_dir = tmp_path / "symbols" / "android" / "proguard_mapping" / "4.0.201-941"
+    upload_dir.mkdir(parents=True)
+    (upload_dir / "mapping_globalRelease.txt").write_text("com.a.b -> a.b.C:\n")
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("should not hit GitHub when uploaded mapping matches exactly")
+
+    monkeypatch.setattr(G, "find_release_tag", boom)
+
+    result = await G.get_android_mapping("4.0.201-941")
+    assert result == str(upload_dir / "mapping_globalRelease.txt")
+
+
+async def test_get_android_mapping_falls_back_to_github_when_no_uploaded_package(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    called = {}
+
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+        called["hit"] = True
+        return None
+
+    monkeypatch.setattr(G, "find_release_tag", fake_find_release_tag)
+
+    result = await G.get_android_mapping("4.0.999-1")
+    assert result is None
+    assert called.get("hit") is True

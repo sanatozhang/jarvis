@@ -431,10 +431,27 @@ async def get_ios_dsyms_dir(
         return None
 
 
+def _find_uploaded_android_mapping(app_version: str) -> Optional[str]:
+    """查已上传的 Android ProGuard mapping（platform=android, symbol_type=proguard_mapping）。
+
+    上传的就是原始 .txt，找到该目录下第一个 .txt 文件直接返回路径，不需要解压/加锁。
+    """
+    src_dir = _uploaded_package_dir("android", "proguard_mapping", app_version)
+    if not src_dir:
+        return None
+    txts = sorted(src_dir.glob("*.txt"))
+    return str(txts[0]) if txts else None
+
+
 async def get_android_mapping(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
     """
-    返回 Android ProGuard mapping 文件路径。按 tag 共享 cache。
+    返回 Android ProGuard mapping 文件路径。
+    优先查打包机已上传的包（精确 app_version 匹配），查不到再走 GitHub（按 tag 共享 cache）。
     """
+    uploaded = _find_uploaded_android_mapping(app_version)
+    if uploaded:
+        return uploaded
+
     tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
