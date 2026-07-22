@@ -51,6 +51,9 @@ services:
       - "${CODE_REPO_ANDROID:-/dev/null}:${CODE_REPO_ANDROID:-/tmp/.no_code_android}"
       - "${CODE_REPO_IOS:-/dev/null}:${CODE_REPO_IOS:-/tmp/.no_code_ios}"
       - "${CODE_REPO_PATH:-/dev/null}:${CODE_REPO_PATH:-/tmp/.no_code_path}"
+      # mcp 平台（repo_router family=mcp，Plaud-AI/plaud-devkits）同款透传挂载；
+      # 未设 CODE_REPO_MCP 时回落 /dev/null，跟其它平台一致不报错。
+      - "${CODE_REPO_MCP:-/dev/null}:${CODE_REPO_MCP:-/tmp/.no_code_mcp}"
       # git push 需要 ssh key —— 透传宿主的 .ssh（只读防误改）
       - "${HOME}/.ssh:/root/.ssh:ro"
     env_file:
