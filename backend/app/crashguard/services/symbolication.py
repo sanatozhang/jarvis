@@ -1146,7 +1146,15 @@ def _find_user_so(build_id: str, platform: str) -> Optional[str]:
 def _symbolicate_ios_with_dir(stack: str, dsyms_dir: str) -> str:
     """
     用 GitHub release 里解压出的 dSYMs 目录对 iOS stack 做符号化。
-    遍历目录下所有 .dSYM bundle，逐一尝试 atos（macOS）或 llvm-symbolizer（Linux）解析帧。
+
+    只对 module 名与某个 dSYM 的实际二进制名匹配的帧发起查询——2026-07-22 生产环境
+    实测发现：不做这层过滤时，libsystem_kernel.dylib / BoardServices / ActivityKit
+    等系统库帧（dSYM 包里根本没有对应符号）会被逐一拿去跟 App 自己的 dSYM 硬凑；
+    llvm-symbolizer 的地址换算公式 `0x100000000 + (addr - base)` 换出来的地址几乎
+    总能落在 App 巨大的符号表某个函数范围内，于是每一帧都"成功"吐出一个看似合理
+    实则完全无关的 Plaud 符号——表现为"整段堆栈看起来像没符号化"（实际是错误符号化，
+    比原样保留地址更具误导性）。Android 侧的 `_symbolicate_android_with_dir` 一直有
+    BuildId 精确匹配做 gating，这里之前没有对应校验。
     """
     if not _ATOS and not _IS_LLVM_SYMBOLIZER:
         return stack
@@ -1154,12 +1162,23 @@ def _symbolicate_ios_with_dir(stack: str, dsyms_dir: str) -> str:
     import re as _re
     # 匹配尚未符号化的 iOS 帧：函数名为十六进制地址或 "???"
     _unsym_re = _re.compile(
-        r"^(\s*\d+\s+\S+\s+)(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+\+\s+(\d+)(.*)",
+        r"^(\s*\d+\s+)(\S+)(\s+)(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+\+\s+(\d+)(.*)",
         _re.MULTILINE,
     )
 
     dsyms = list(Path(dsyms_dir).rglob("*.dSYM"))
     if not dsyms:
+        return stack
+
+    # module 名（大小写不敏感）→ DWARF 路径。DWARF 文件名就是该 dSYM bundle 对应的
+    # 二进制名（Contents/Resources/DWARF/<binary_name>），天然可以跟堆栈里的 module
+    # 字段对上——同一个 dSYMs.zip 里可能有多个 bundle（主 App + extension），逐个收集。
+    dwarf_by_module: dict = {}
+    for dsym in dsyms:
+        dwarf = _find_dwarf_in_dsym(str(dsym))
+        if dwarf:
+            dwarf_by_module[Path(dwarf).name.lower()] = dwarf
+    if not dwarf_by_module:
         return stack
 
     lines = stack.splitlines(keepends=True)
@@ -1169,19 +1188,19 @@ def _symbolicate_ios_with_dir(stack: str, dsyms_dir: str) -> str:
         if not m:
             result.append(line)
             continue
-        addr = m.group(2)
-        base = m.group(3)
-        resolved = False
-        for dsym in dsyms:
-            dwarf = _find_dwarf_in_dsym(str(dsym))
-            if not dwarf:
-                continue
-            sym = _atos_lookup(dwarf, base, addr)
-            if sym:
-                result.append(f"{m.group(1)}{sym}{m.group(5)}\n")
-                resolved = True
-                break
-        if not resolved:
+        module = m.group(2)
+        dwarf = dwarf_by_module.get(module.lower())
+        if not dwarf:
+            # module 不属于本次下载的任何 dSYM（多半是系统库）——原样保留地址，
+            # 不要瞎猜，宁可不符号化也不要给错的符号。
+            result.append(line)
+            continue
+        addr = m.group(4)
+        base = m.group(5)
+        sym = _atos_lookup(dwarf, base, addr)
+        if sym:
+            result.append(f"{m.group(1)}{module}{m.group(3)}{sym}{m.group(7)}\n")
+        else:
             result.append(line)
     return "".join(result)
 
