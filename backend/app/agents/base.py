@@ -38,6 +38,10 @@ class AgentConfig:
     allowed_tools: List[str] = field(default_factory=list)
     approval_mode: str = "auto-edit"
     log_read_cap: Optional[int] = None  # deep 模式：日志读取次数上限（PreToolUse hook 执行）
+    # workspace/code 符号链接指向 workspace 外部的真实代码仓库路径时，Claude CLI 的目录沙箱
+    # 默认拒绝访问链接目标（非交互 -p 模式下无法弹权限确认，直接静默 deny）。需要显式
+    # --add-dir 授权该路径，否则 needs_code 规则挂了 code/ 也读不到内容（2026-07-22 实测）。
+    add_dir: str = ""
     # ── claude_api specific ──
     base_url: str = ""               # e.g. http://34.216.169.232:30001/vertex
     api_key: str = ""                # ANTHROPIC_API_KEY (filled by orchestrator from env)

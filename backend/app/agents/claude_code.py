@@ -422,6 +422,9 @@ class ClaudeCodeAgent(BaseAgent):
             cmd.append("--allowedTools")
             cmd.extend(self.config.allowed_tools)
 
+        if self.config.add_dir:
+            cmd.extend(["--add-dir", self.config.add_dir])
+
         return cmd
 
     def _parse_claude_output(self, workspace: Path, raw_output: str) -> AnalysisResult:

@@ -716,6 +716,7 @@ async def run_analysis_pipeline(
         condensation_context=condensation_result.get("structured_context") if condensation_result else None,
         pipeline_timeout=pipeline_timeout,
         deep_analysis=deep_analysis,
+        code_repo=code_repo,
     )
 
     result.task_id = task_id

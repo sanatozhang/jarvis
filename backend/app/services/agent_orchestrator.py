@@ -201,6 +201,7 @@ class AgentOrchestrator:
         logs_corrupted: bool = False,
         pipeline_timeout: Optional[int] = None,
         deep_analysis: bool = False,
+        code_repo: Optional[str] = None,
     ) -> AnalysisResult:
         """
         Full analysis pipeline with automatic model fallback:
@@ -278,6 +279,12 @@ class AgentOrchestrator:
         # 现在 prompt 已 build，可以根据大小选 agent
         prompt_chars = int(prompt_meta.get("final_prompt_chars") or len(prompt))
         agent = self.select_agent(rule_type, override=agent_override, prompt_chars=prompt_chars, deep_analysis=deep_analysis)
+
+        # workspace/code 只有在某条命中规则 needs_code=true 时才会被 prepare_workspace 建立符号链接
+        # （见 rule_engine.py prepare_workspace）；只有这时才需要 --add-dir 授权读取链接目标，
+        # 否则 Claude CLI 的目录沙箱会静默拒绝 code/ 里的一切 Read/Bash 访问（2026-07-22 实测）。
+        if code_repo and any(r.meta.needs_code for r in rules):
+            agent.config.add_dir = code_repo
 
         # RC1/RC3 兜底合约：让 agent 自身超时严格小于外层 pipeline 硬墙（task_timeout）。
         # 否则二者相等（都 600s）时外层 wait_for 先 cancel → agent 走 CancelledError 直接 raise，
