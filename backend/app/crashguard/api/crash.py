@@ -3385,7 +3385,7 @@ async def upload_symbol_package(
     keep_versions: Optional[int] = Query(None, ge=1, le=50, description="同平台+同类型保留的最新版本数，不传则取服务端配置（symbol_upload_keep_versions，默认 10）"),
 ) -> Dict[str, Any]:
     """
-    上传符号包（dSYM / dart_symbols / proguard_mapping）。
+    上传符号包（dSYM / dart_symbols / proguard_mapping / native_symbols）。
 
     存储路径: /data/symbols/<platform>/<symbol_type>/<app_version>/
 
@@ -3403,7 +3403,8 @@ async def upload_symbol_package(
     effective_keep = keep_versions if keep_versions is not None else _cfg_keep
 
     VALID_PLATFORMS = {"ios", "android", "flutter"}
-    VALID_TYPES = {"dsym", "dart_symbols", "proguard_mapping"}
+    VALID_TYPES = {"dsym", "dart_symbols", "proguard_mapping", "native_symbols"}
+    _ARCHIVE_TYPES = {"dsym", "dart_symbols", "native_symbols"}  # 这三种上传的是压缩包，需要完整性校验
 
     if platform not in VALID_PLATFORMS:
         raise HTTPException(status_code=400, detail=f"platform must be one of {VALID_PLATFORMS}")
@@ -3420,6 +3421,19 @@ async def upload_symbol_package(
     content = await file.read()
     with open(dest_path, "wb") as f:
         f.write(content)
+
+    if symbol_type in _ARCHIVE_TYPES:
+        import zipfile as _zipfile
+        import tarfile as _tarfile
+
+        if not (_zipfile.is_zipfile(dest_path) or _tarfile.is_tarfile(dest_path)):
+            _os.unlink(dest_path)
+            if _os.path.isdir(dest_dir) and not _os.listdir(dest_dir):
+                _os.rmdir(dest_dir)
+            raise HTTPException(
+                status_code=400,
+                detail=f"uploaded file is not a valid zip/tar.gz archive (symbol_type={symbol_type})",
+            )
 
     size_bytes = len(content)
     pkg_id = str(_uuid.uuid4())
