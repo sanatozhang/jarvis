@@ -515,6 +515,16 @@ async def _find_uploaded_android_native_symbols_dir(app_version: str) -> Optiona
             extracted_dir.mkdir(parents=True, exist_ok=True)
             with tarfile.open(tars[0]) as tf:
                 members = [m for m in tf.getmembers() if _is_native_lib_tar_member(m.name, allowlist)]
+                if not members:
+                    # 上传的 tar 里一个匹配白名单的 member 都没有（如打包侧目录布局出错）——
+                    # 不能悄悄返回一个空目录当成"命中"，否则调用方永远不会回落到 GitHub。
+                    # 不 touch marker、不返回目录，当成 miss 处理。
+                    logger.warning(
+                        "uploaded native_symbols.tar.gz for app_version=%s had 0 members "
+                        "matching allowlist %s — treating as miss, falling back to GitHub",
+                        app_version, allowlist,
+                    )
+                    return None
                 tf.extractall(extracted_dir, members=members)
             marker.touch()
             logger.info(

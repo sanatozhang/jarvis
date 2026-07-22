@@ -483,6 +483,9 @@ class CrashguardSettings(BaseSettings):
     # 方式对它们不适用。
     jank_backfill_cron: str = "*/5 * * * *"
     jank_backfill_lookback_hours: int = 24
+    # 超过这个次数还没成功就不再自动重试，避免无限期打 GitHub 那条容易挂的下载路径；
+    # 人工补传符号包后可以手动触发一次分析来打破这个上限
+    jank_backfill_max_attempts: int = 12
 
     # 是否启用 stock Flutter engine 遍历下载（默认关闭）
     # Plaud 用自定义 fork engine，stock 公网符号库永远不匹配，遍历下载只是磁盘污染。

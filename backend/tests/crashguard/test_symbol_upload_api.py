@@ -89,3 +89,41 @@ async def test_upload_proguard_mapping_skips_archive_check(patched_session, monk
         platform="android", app_version="4.0.201-941", symbol_type="proguard_mapping", file=upload, keep_versions=10,
     )
     assert result["symbol_type"] == "proguard_mapping"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_reupload_does_not_overwrite_previously_valid_file(patched_session, monkeypatch, tmp_path):
+    """同 platform/symbol_type/app_version/filename 先成功上传一个有效 zip，再用同名文件
+    上传损坏内容——损坏上传必须被 400 拒绝，且不能破坏掉之前那份已验证有效的文件
+    （写入应该先落临时路径校验通过后才原子替换，不能先覆盖 dest_path 再校验）。"""
+    import zipfile
+
+    from app.crashguard.api.crash import upload_symbol_package
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as zf:
+        zf.writestr("foo.dSYM/x", b"debug-info")
+    valid_bytes = zip_buf.getvalue()
+    upload1 = UploadFile(io.BytesIO(valid_bytes), filename="Plaud.dSYMs.zip")
+
+    await upload_symbol_package(
+        platform="ios", app_version="4.0.201-941", symbol_type="dsym", file=upload1, keep_versions=10,
+    )
+    dest_path = tmp_path / "symbols" / "ios" / "dsym" / "4.0.201-941" / "Plaud.dSYMs.zip"
+    assert dest_path.exists()
+    assert dest_path.read_bytes() == valid_bytes
+
+    upload2 = UploadFile(io.BytesIO(b"not a zip at all"), filename="Plaud.dSYMs.zip")
+    with pytest.raises(HTTPException) as exc_info:
+        await upload_symbol_package(
+            platform="ios", app_version="4.0.201-941", symbol_type="dsym", file=upload2, keep_versions=10,
+        )
+    assert exc_info.value.status_code == 400
+
+    # 原来有效的文件必须原样保留——没被损坏上传的内容覆盖，也没被删除
+    assert dest_path.exists()
+    assert dest_path.read_bytes() == valid_bytes
+    # 也不能残留 .part 临时文件
+    assert not (tmp_path / "symbols" / "ios" / "dsym" / "4.0.201-941" / "Plaud.dSYMs.zip.part").exists()

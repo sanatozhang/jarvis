@@ -188,3 +188,54 @@ async def test_backfill_ignores_events_with_no_matching_db_issue(patched_session
     assert result["scanned_events"] == 1
     assert result["candidates"] == 0
     assert result["resymbolized"] == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_issue_at_or_above_max_attempts(patched_session, monkeypatch):
+    """一个仍是占位符标题、但 prewarm_attempts 已达上限的 issue 不应被再次重试——
+    不计入 candidates，也不调用 _symbolicate_new_jank_issue（否则无限期打
+    GitHub 那条容易挂的下载路径）。"""
+    from app.crashguard.services.jank_ingester import backfill_stuck_jank_issues, compute_jank_aggregation_key
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+
+    s = _patch_settings(monkeypatch)
+    s.jank_backfill_max_attempts = 12
+
+    agg_key = compute_jank_aggregation_key(
+        platform="ios", has_app_frame=True,
+        app_stack_module="Plaud-Global", app_stack_module_offset="0x0000000000e31758",
+    )
+    issue_id = f"jank:{agg_key}"
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id=issue_id, title="Jank @ Plaud-Global",  # 占位符：仍未成功符号化
+            platform="ios", kind="jank", fatality="jank", fixable=True,
+            representative_stack="0   Plaud-Global 0x... + 1",
+            prewarm_attempts=12,  # 已达上限
+        ))
+        await session.commit()
+
+    event = _raw_event({
+        "os": {"name": "iOS"}, "has_app_frame": True,
+        "app_stack_module": "Plaud-Global", "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "stack_trace": "0   Plaud-Global 0x... + 1",
+        "version": "4.0.201-941",
+    })
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page",
+        AsyncMock(return_value={"data": [event], "next_cursor": None}),
+    )
+    resymbolize_mock = AsyncMock()
+    monkeypatch.setattr(
+        "app.crashguard.services.jank_ingester._symbolicate_new_jank_issue", resymbolize_mock,
+    )
+
+    result = await backfill_stuck_jank_issues(now=datetime(2026, 7, 22, 12, 0, 0))
+
+    assert result["candidates"] == 0
+    assert result["resymbolized"] == 0
+    resymbolize_mock.assert_not_called()

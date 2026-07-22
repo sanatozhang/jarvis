@@ -481,6 +481,7 @@ async def backfill_stuck_jank_issues(now: Optional[datetime] = None) -> Dict[str
 
     now = now or datetime.utcnow()
     lookback_hours = int(getattr(s, "jank_backfill_lookback_hours", 24) or 24)
+    max_attempts = int(getattr(s, "jank_backfill_max_attempts", 12) or 12)
     to_ms = int(now.replace(tzinfo=timezone.utc).timestamp() * 1000)
     from_ms = to_ms - lookback_hours * 3600 * 1000
 
@@ -527,6 +528,8 @@ async def backfill_stuck_jank_issues(now: Optional[datetime] = None) -> Dict[str
             else parsed["app_stack_frame"]
         )
         if not _jank_issue_looks_stuck(row.title or "", original_frame):
+            continue
+        if int(row.prewarm_attempts or 0) >= max_attempts:
             continue
         candidates += 1
         await _symbolicate_new_jank_issue(row.datadog_issue_id, parsed)

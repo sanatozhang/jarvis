@@ -251,3 +251,40 @@ async def test_get_android_native_symbols_dir_falls_back_to_github_when_no_uploa
     result = await G.get_android_native_symbols_dir("4.0.999-1")
     assert result is None
     assert called.get("hit") is True
+
+
+def _write_fake_native_symbols_tar_no_matches(tar_path: Path) -> None:
+    """只含 wrong-arch (armeabi-v7a) 条目，没有任何 arm64-v8a/merged_native_libs 匹配项——
+    模拟打包侧目录布局出错导致上传的 tar 里一个都过滤不出来的场景。"""
+    names_and_content = {
+        "merged_native_libs/globalRelease/out/lib/armeabi-v7a/libflutter.so": b"wrong-arch-1",
+        "merged_native_libs/globalRelease/out/lib/armeabi-v7a/libapp.so": b"wrong-arch-2",
+    }
+    with tarfile.open(tar_path, "w:gz") as tf:
+        for name, content in names_and_content.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+
+
+async def test_get_android_native_symbols_dir_falls_back_to_github_when_uploaded_tar_has_no_matching_members(monkeypatch, tmp_path):
+    """已上传的 native_symbols.tar.gz 里 0 个 member 匹配白名单（如打包侧目录布局出错）——
+    不能悄悄返回一个空目录当成"命中"，必须当 miss 处理并落到 GitHub 兜底路径。"""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    upload_dir = tmp_path / "symbols" / "android" / "native_symbols" / "4.0.201-941"
+    upload_dir.mkdir(parents=True)
+    _write_fake_native_symbols_tar_no_matches(upload_dir / "native_symbols.tar.gz")
+
+    called = {}
+
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+        called["hit"] = True
+        return None
+
+    monkeypatch.setattr(G, "find_release_tag", fake_find_release_tag)
+
+    result = await G.get_android_native_symbols_dir("4.0.201-941")
+    assert result is None
+    assert called.get("hit") is True

@@ -3419,21 +3419,26 @@ async def upload_symbol_package(
     dest_path = _os.path.join(dest_dir, original_name)
 
     content = await file.read()
-    with open(dest_path, "wb") as f:
+    # 先写临时路径，完整性校验通过后再原子替换 dest_path——避免同名文件的损坏重传，
+    # 在被 400 拒绝之前就已经把之前上传成功的那份好文件冲掉（见 2026-07-22 review）。
+    tmp_path = dest_path + ".part"
+    with open(tmp_path, "wb") as f:
         f.write(content)
 
     if symbol_type in _ARCHIVE_TYPES:
         import zipfile as _zipfile
         import tarfile as _tarfile
 
-        if not (_zipfile.is_zipfile(dest_path) or _tarfile.is_tarfile(dest_path)):
-            _os.unlink(dest_path)
+        if not (_zipfile.is_zipfile(tmp_path) or _tarfile.is_tarfile(tmp_path)):
+            _os.unlink(tmp_path)
             if _os.path.isdir(dest_dir) and not _os.listdir(dest_dir):
                 _os.rmdir(dest_dir)
             raise HTTPException(
                 status_code=400,
                 detail=f"uploaded file is not a valid zip/tar.gz archive (symbol_type={symbol_type})",
             )
+
+    _os.replace(tmp_path, dest_path)
 
     size_bytes = len(content)
     pkg_id = str(_uuid.uuid4())
