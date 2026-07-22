@@ -441,8 +441,12 @@ class ClaudeCodeAgent(BaseAgent):
     #   1. 只拦"进行中/占位"标记，不拦诚实的 low-confidence 终版（低置信≠没分析完）。
     #   2. block 次数封顶 2 次（.stop_block_count），超过即放行 → 交给 salvage，不烧光 turn 预算。
     #   3. 任何内部异常一律 fail-open（允许退出），绝不因校验脚本自身问题卡死模型。
+    # ws 从 argv[1] 传入（绝对路径），不用 os.getcwd()——--add-dir 授权 code/ 后模型可能
+    # 在 Bash 里 cd 进 code/ 探索源码，session 的 shell cwd 会漂移到 workspace 之外，
+    # 这时任何依赖 $(pwd)/cwd 的 hook 都会拿到错误路径而失灵（2026-07-22 实测：cd 进
+    # code/ 后所有 Read/Grep/Bash 都被"脚本不存在"卡住，40 轮 max_turns 耗尽）。
     _STOP_CHECK_SCRIPT = r'''import json, os, sys
-ws = os.getcwd()
+ws = sys.argv[1]
 p = os.path.join(ws, "output", "result.json")
 counter = os.path.join(ws, ".claude", ".stop_block_count")
 
@@ -513,10 +517,12 @@ allow()
                 ClaudeCodeAgent._STOP_CHECK_SCRIPT, encoding="utf-8"
             )
             # hook：优先跑校验脚本；python3 缺失/异常退出码非 0 时回退到旧的存在性检查
+            # 全部用 workspace 绝对路径，不依赖 $(pwd)（session cwd 可能已漂移到 code/）。
+            ws_abs = str(workspace)
             hook_cmd = (
-                "python3 \"$(pwd)/.claude/check_result.py\"; rc=$?; "
+                f'python3 "{ws_abs}/.claude/check_result.py" "{ws_abs}"; rc=$?; '
                 "if [ $rc -ne 0 ]; then "
-                "if [ -f \"$(pwd)/output/result.json\" ]; then exit 0; "
+                f'if [ -f "{ws_abs}/output/result.json" ]; then exit 0; '
                 "else echo '{\"decision\":\"block\",\"reason\":\"output/result.json 还没写！请立即用 Write 工具写入符合 schema 的 JSON，写完再尝试 stop。\"}'; fi; "
                 "fi"
             )
@@ -592,7 +598,8 @@ allow()
                 settings = {}
 
             hooks = settings.setdefault("hooks", {})
-            hook_cmd = f'LOG_READ_CAP={cap} python3 "$(pwd)/.claude/check_log_read.py"'
+            # 绝对路径，不依赖 $(pwd)——原因见 _write_stop_hook 顶部注释（cwd 可能已漂移到 code/）。
+            hook_cmd = f'LOG_READ_CAP={cap} python3 "{workspace}/.claude/check_log_read.py"'
             hooks["PreToolUse"] = [
                 {
                     "matcher": "Read|Grep|Bash",
