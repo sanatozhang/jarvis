@@ -473,6 +473,17 @@ class CrashguardSettings(BaseSettings):
     symbol_upload_keep_versions: int = 10
     # GitHub release 缓存最多保留多少个版本目录（超出按 mtime 淘汰）
     github_cache_keep_versions: int = 10
+
+    # === jank 回填（占位符堆栈重新符号化，2026-07-22）===
+    # 定期扫一遍最近窗口内的卡顿(jank)原始日志，若匹配到的 fixable jank issue 仍是
+    # 占位符标题(从未成功符号化)，用这条最新事件的 module/pc/base 重新尝试符号化——
+    # 常见触发场景：issue 创建时符号包还没上传/GitHub 下载失败(VPN 链路不稳)，后来
+    # 符号包补传了但旧 issue 不会自动重试。仅 jank：crash/ANR 的 representative_stack
+    # 一旦被(错误)覆写，原始地址信息已从 DB 消失，这种"重放最近一次原始事件"的回填
+    # 方式对它们不适用。
+    jank_backfill_cron: str = "*/5 * * * *"
+    jank_backfill_lookback_hours: int = 24
+
     # 是否启用 stock Flutter engine 遍历下载（默认关闭）
     # Plaud 用自定义 fork engine，stock 公网符号库永远不匹配，遍历下载只是磁盘污染。
     # Plan C（GitHub release 的 native_symbols.tar.gz）已覆盖 fork engine 场景。

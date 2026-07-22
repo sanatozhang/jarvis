@@ -445,3 +445,95 @@ async def ingest_jank_logs(now: Optional[datetime] = None) -> Dict[str, Any]:
         scanned, new_issues, updated_issues,
     )
     return {"scanned": scanned, "new_issues": new_issues, "updated_issues": updated_issues}
+
+
+def _jank_issue_looks_stuck(row_title: str, original_frame_text: str) -> bool:
+    """判断一条已存在的 jank issue 标题是否仍是摄入时的占位符（从未被成功符号化）。
+
+    复用 _jank_frame_looks_symbolized 的启发式：标题去掉 "Jank @ " 前缀后如果等于
+    这次事件的原始 module/frame 文本，说明标题从摄入那一刻起就没被替换过。
+    """
+    prefix = "Jank @ "
+    current_frame = row_title[len(prefix):] if row_title.startswith(prefix) else ""
+    return not _jank_frame_looks_symbolized(current_frame, original_frame_text)
+
+
+async def backfill_stuck_jank_issues(now: Optional[datetime] = None) -> Dict[str, Any]:
+    """回填仍是占位符堆栈的 fixable jank issue（2026-07-22）。
+
+    实现：拉一遍最近 lookback 窗口内的 jank 原始日志（与 ingest_jank_logs 同一个
+    Datadog 查询、同一套分页逻辑），按 issue_id 只保留每个聚合键最近一次出现的原始
+    事件（Datadog 按 timestamp 升序返回，后出现的事件覆盖字典里先出现的）。再用这份
+    "最新鲜"的 module/pc/base，对仍是占位符标题的 fixable jank issue 重新跑一遍
+    _symbolicate_new_jank_issue 同款逻辑。
+
+    范围限定 jank only：crash/ANR 的 representative_stack 一旦被（错误）覆写，原始
+    地址信息已从 DB 消失，这种"重放最近一次原始事件"的回填方式对它们不适用（历史
+    坏数据留作后续单独处理，见
+    docs/superpowers/specs/2026-07-22-symbol-upload-priority-design.md）。
+    """
+    from app.crashguard.models import CrashIssue
+
+    s = get_crashguard_settings()
+    if not s.datadog_api_key:
+        logger.info("jank backfill skipped: datadog_api_key 未配置")
+        return {"scanned_events": 0, "candidates": 0, "resymbolized": 0}
+
+    now = now or datetime.utcnow()
+    lookback_hours = int(getattr(s, "jank_backfill_lookback_hours", 24) or 24)
+    to_ms = int(now.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    from_ms = to_ms - lookback_hours * 3600 * 1000
+
+    client = DatadogClient(
+        api_key=s.datadog_api_key, app_key=s.datadog_app_key,
+        site=s.datadog_site, service_filter=s.datadog_service_filter,
+    )
+
+    latest_by_issue: Dict[str, Dict[str, Any]] = {}
+    scanned_events = 0
+    cursor: Optional[str] = None
+    for _ in range(_MAX_PAGES_PER_TICK):
+        page = await client.search_logs_page(
+            query=_JANK_LOG_QUERY, from_ms=from_ms, to_ms=to_ms, cursor=cursor, limit=100,
+        )
+        events = page.get("data") or []
+        for event in events:
+            scanned_events += 1
+            parsed = _parse_jank_event(event)
+            if parsed and parsed["has_app_frame"]:
+                latest_by_issue[parsed["issue_id"]] = parsed
+        cursor = page.get("next_cursor")
+        if not cursor or not events:
+            break
+
+    if not latest_by_issue:
+        return {"scanned_events": scanned_events, "candidates": 0, "resymbolized": 0}
+
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(CrashIssue).where(
+                CrashIssue.kind == "jank",
+                CrashIssue.fixable == True,  # noqa: E712
+                CrashIssue.datadog_issue_id.in_(list(latest_by_issue.keys())),
+            )
+        )).scalars().all()
+
+    candidates = 0
+    resymbolized = 0
+    for row in rows:
+        parsed = latest_by_issue[row.datadog_issue_id]
+        original_frame = (
+            parsed["app_stack_module"] if "ios" in (parsed["platform"] or "").lower()
+            else parsed["app_stack_frame"]
+        )
+        if not _jank_issue_looks_stuck(row.title or "", original_frame):
+            continue
+        candidates += 1
+        await _symbolicate_new_jank_issue(row.datadog_issue_id, parsed)
+        resymbolized += 1
+
+    logger.info(
+        "jank backfill done: scanned_events=%d candidates=%d resymbolized=%d",
+        scanned_events, candidates, resymbolized,
+    )
+    return {"scanned_events": scanned_events, "candidates": candidates, "resymbolized": resymbolized}
