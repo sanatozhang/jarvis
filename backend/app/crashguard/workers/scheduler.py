@@ -36,6 +36,7 @@ _job_health_last_fired: str = ""    # 兜底告警 tick 进程级幂等
 _top_crash_auto_pr_last_fired: str = ""  # Top crash 自动 PR 进程级幂等
 _backfill_last_fired: str = ""      # 周度 baseline 回填 tick 进程级幂等
 _deep_analyze_auto_last_fired: str = ""  # Phase 1 深度诊断自动 tick 进程级幂等
+_jank_backfill_last_fired: str = ""  # 卡顿回填 tick 进程级幂等
 
 
 async def _run_analyze_tick(max_per_tick: int) -> dict:
@@ -316,6 +317,24 @@ async def _tick_once() -> None:
                     res.get("picked", 0), res.get("completed", 0), res.get("remaining", 0),
                 )
         _enqueue_job("analyze_tick", _analyze_job)
+
+    # 卡顿(jank)占位符堆栈回填：符号包补传后自动重试符号化（独立 cron，默认 */5）
+    global _jank_backfill_last_fired
+    jank_backfill_cron = getattr(s, "jank_backfill_cron", "") or ""
+    if jank_backfill_cron and _jank_backfill_last_fired != tag and _cron_matches(jank_backfill_cron, now):
+        _jank_backfill_last_fired = tag
+        async def _jank_backfill_job():
+            async with record_heartbeat("jank_backfill") as hb:
+                from app.crashguard.services.jank_ingester import backfill_stuck_jank_issues
+                res = await backfill_stuck_jank_issues()
+                hb.set_summary(res)
+                if res.get("candidates", 0) == 0:
+                    hb.status = "skipped"
+                logger.info(
+                    "crashguard jank_backfill fired: scanned_events=%d candidates=%d resymbolized=%d",
+                    res.get("scanned_events", 0), res.get("candidates", 0), res.get("resymbolized", 0),
+                )
+        _enqueue_job("jank_backfill", _jank_backfill_job)
 
     # Hourly alert（SHoW 对比；独立 cron，默认每小时第 5 分钟）
     global _hourly_alert_last_fired
