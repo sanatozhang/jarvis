@@ -226,7 +226,12 @@ async def test_get_android_native_symbols_dir_prefers_uploaded_over_github(monke
 
     result = await G.get_android_native_symbols_dir("4.0.201-941")
     assert result is not None
-    names = {p.name for p in Path(result).rglob("*.so")}
+    # 检查文件总数：fixture 写了 4 个 tar member，但过滤后只应有 2 个
+    # (merged_native_libs/arm64-v8a/libflutter.so 和 merged_native_libs/arm64-v8a/libapp.so)
+    # 另外 2 个被过滤掉（armeabi-v7a 和 stripped_native_libs）
+    extracted = list(Path(result).rglob("*.so"))
+    assert len(extracted) == 2, f"Expected 2 .so files after filtering, got {len(extracted)}: {extracted}"
+    names = {p.name for p in extracted}
     # 只保留 arm64-v8a + merged_native_libs 下的（与现有 _is_native_lib_tar_member 一致）
     assert names == {"libflutter.so", "libapp.so"}
 
