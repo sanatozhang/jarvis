@@ -195,3 +195,54 @@ async def test_get_dart_symbols_dir_falls_back_to_github_when_no_uploaded_packag
     result = await G.get_dart_symbols_dir("4.0.999-1")
     assert result is None
     assert called.get("hit") is True
+
+
+def _write_fake_native_symbols_tar(tar_path: Path) -> None:
+    names_and_content = {
+        "merged_native_libs/globalRelease/out/lib/arm64-v8a/libflutter.so": b"flutter-debug",
+        "merged_native_libs/globalRelease/out/lib/arm64-v8a/libapp.so": b"app-debug",
+        "merged_native_libs/globalRelease/out/lib/armeabi-v7a/libflutter.so": b"skip-arch",
+        "stripped_native_libs/globalRelease/out/lib/arm64-v8a/libapp.so": b"skip-stripped",
+    }
+    with tarfile.open(tar_path, "w:gz") as tf:
+        for name, content in names_and_content.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+
+
+async def test_get_android_native_symbols_dir_prefers_uploaded_over_github(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    upload_dir = tmp_path / "symbols" / "android" / "native_symbols" / "4.0.201-941"
+    upload_dir.mkdir(parents=True)
+    _write_fake_native_symbols_tar(upload_dir / "native_symbols.tar.gz")
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("should not hit GitHub when uploaded native_symbols matches exactly")
+
+    monkeypatch.setattr(G, "find_release_tag", boom)
+
+    result = await G.get_android_native_symbols_dir("4.0.201-941")
+    assert result is not None
+    names = {p.name for p in Path(result).rglob("*.so")}
+    # 只保留 arm64-v8a + merged_native_libs 下的（与现有 _is_native_lib_tar_member 一致）
+    assert names == {"libflutter.so", "libapp.so"}
+
+
+async def test_get_android_native_symbols_dir_falls_back_to_github_when_no_uploaded_package(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    called = {}
+
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+        called["hit"] = True
+        return None
+
+    monkeypatch.setattr(G, "find_release_tag", fake_find_release_tag)
+
+    result = await G.get_android_native_symbols_dir("4.0.999-1")
+    assert result is None
+    assert called.get("hit") is True

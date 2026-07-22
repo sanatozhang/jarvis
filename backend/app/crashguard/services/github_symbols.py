@@ -481,13 +481,63 @@ def _is_native_lib_tar_member(name: str, allowlist: list) -> bool:
     )
 
 
+async def _find_uploaded_android_native_symbols_dir(app_version: str) -> Optional[str]:
+    """查已上传的 Android native_symbols.tar.gz（platform=android, symbol_type=native_symbols）。
+
+    解压逻辑与现有 GitHub 那份一致：只保留 arm64-v8a + merged_native_libs 下的
+    libflutter.so / libapp.so（复用 _is_native_lib_tar_member，不重复实现体积决策）。
+    """
+    src_dir = _uploaded_package_dir("android", "native_symbols", app_version)
+    if not src_dir:
+        return None
+
+    extracted_dir = src_dir / ".extracted"
+    marker = extracted_dir / ".done"
+    if marker.exists():
+        return str(extracted_dir)
+
+    tars = list(src_dir.glob("*.tar.gz")) or list(src_dir.glob("*.tgz"))
+    if not tars:
+        return None
+
+    lock = await _get_extract_lock("android", "native_symbols", app_version)
+    async with lock:
+        if marker.exists():
+            return str(extracted_dir)
+        try:
+            from app.crashguard.config import get_crashguard_settings as _gs
+            allowlist = getattr(_gs(), "android_extract_so_allowlist", None) \
+                or ["libflutter.so", "libapp.so"]
+        except Exception:
+            allowlist = ["libflutter.so", "libapp.so"]
+
+        try:
+            extracted_dir.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(tars[0]) as tf:
+                members = [m for m in tf.getmembers() if _is_native_lib_tar_member(m.name, allowlist)]
+                tf.extractall(extracted_dir, members=members)
+            marker.touch()
+            logger.info(
+                "uploaded Android native symbols extracted to %s (app_version=%s, kept=%d)",
+                extracted_dir, app_version, len(members),
+            )
+            return str(extracted_dir)
+        except Exception as exc:
+            logger.warning("failed to extract uploaded Android native symbols for %s: %s", app_version, exc)
+            return None
+
+
 async def get_android_native_symbols_dir(app_version: str, repo: str = _DEFAULT_REPO) -> Optional[str]:
     """
     返回 Android native_symbols 目录路径（带 debug 符号的 libflutter.so / libapp.so 等）。
-    按 tag 共享 cache：661MB 文件不会被多个 app_version 重复下载。
+    优先查打包机已上传的包（精确 app_version 匹配），查不到再走 GitHub（按 tag 共享 cache）。
 
     这是 Plan C for Android native crash 的关键 — Plaud 自己打包了带符号版本的 .so 文件。
     """
+    uploaded = await _find_uploaded_android_native_symbols_dir(app_version)
+    if uploaded:
+        return uploaded
+
     tag = await find_release_tag(app_version, repo=repo)
     if not tag:
         return None
