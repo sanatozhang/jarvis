@@ -307,6 +307,46 @@ def _tag_cache_dir(tag: str) -> Path:
     return _github_cache_dir() / "_by_tag" / safe
 
 
+# ── 已上传符号包查找（打包机上传优先，GitHub 兜底）───────────────────────────
+# 与 api/crash.py::upload_symbol_package 的落盘路径保持完全一致：
+# <DATA_DIR>/symbols/<platform>/<symbol_type>/<app_version>/<原始文件名>
+
+_EXTRACT_LOCKS: "dict[tuple[str, str, str], asyncio.Lock]" = {}
+_EXTRACT_LOCK_GUARD = asyncio.Lock()
+
+
+def _uploaded_symbols_root() -> Path:
+    """与 api/crash.py::upload_symbol_package 的 dest_dir 解析方式保持一致
+    （同样直接用 DATA_DIR 环境变量，默认 /data，不做额外可写性探测）。"""
+    return Path(os.environ.get("DATA_DIR", "/data")) / "symbols"
+
+
+def _uploaded_package_dir(platform: str, symbol_type: str, app_version: str) -> Optional[Path]:
+    """精确匹配 (platform, symbol_type, app_version) 的已上传包目录。
+
+    只做精确字符串匹配，不做模糊/最近版本回退——查不到就让调用方原样走 GitHub 逻辑
+    （GitHub 那条路径自己已有 fallback，这里重蹈"错误 dSYM 硬套"覆辙的代价太高）。
+    """
+    d = _uploaded_symbols_root() / platform / symbol_type / app_version
+    if not d.exists() or not d.is_dir():
+        return None
+    if not any(d.iterdir()):
+        return None
+    return d
+
+
+async def _get_extract_lock(platform: str, symbol_type: str, app_version: str) -> asyncio.Lock:
+    """按 (platform, symbol_type, app_version) 复用同一把锁，防止并发解压同一个上传包
+    互相踩踏（同款模式见 _get_download_lock，用于 GitHub 下载侧）。"""
+    async with _EXTRACT_LOCK_GUARD:
+        key = (platform, symbol_type, app_version)
+        lock = _EXTRACT_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _EXTRACT_LOCKS[key] = lock
+        return lock
+
+
 async def get_ios_dsyms_dir(
     app_version: str, repo: str = _DEFAULT_REPO, asset_name: str = _ASSET_IOS_DSYM,
 ) -> Optional[str]:
