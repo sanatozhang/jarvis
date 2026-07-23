@@ -88,6 +88,21 @@ def _parse_jank_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     stack_top_symbol = (attrs.get("stack_top_symbol") or "").strip()
     stack_trace = attrs.get("stack_trace") or ""
     app_version = (attrs.get("version") or "").strip()
+    # 构建标识（2026-07-23）：符号包按 Datadog 区分构建的 key 精确匹配，双端不同——
+    #   iOS/iPadOS：事件带 @version（如 "4.0.201-945"），无 build UUID；
+    #   Android   ：事件没有 @version，只有 @build_id（datadog gradle plugin 注入的 UUID，
+    #               如 "196bae40-11fd-3a88-bfb8-e2dc315b3bbb"）+ @build_version（纯数字）。
+    # 生产实测覆盖率：iOS version 100%/build_id 0%，Android build_id 100%/version 0%。
+    build_id = (attrs.get("build_id") or "").strip()
+    build_version = str(attrs.get("build_version") or "").strip()
+    # symbol_key：喂给符号化层做符号包目录精确匹配的 key。Android 用 build_id，其余用 version。
+    if "android" in platform and build_id:
+        symbol_key = build_id
+    else:
+        symbol_key = app_version
+    # display_version：仅用于 UI 版本列/快照展示（Android @version 为空时回退 build_version，
+    # 避免详情页版本列全空）。不参与符号化，也不参与 repo_router 路由。
+    display_version = app_version or build_version
     # Datadog 卡顿看板按页面分组统计用的原生维度，生产环境实测 100% 有值。
     page = (attrs.get("page") or "").strip()
 
@@ -135,6 +150,10 @@ def _parse_jank_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "stack_module_offsets": stack_module_offsets,
         "stack_module_bases": stack_module_bases,
         "app_version": app_version,
+        "build_id": build_id,
+        "build_version": build_version,
+        "symbol_key": symbol_key,
+        "display_version": display_version,
         "frame_label": frame_label,
         "page": page,
     }
@@ -204,16 +223,16 @@ async def _upsert_jank_event(parsed: Dict[str, Any], today) -> bool:
                 fatality="jank",
                 fixable=parsed["has_app_frame"],
                 first_seen_at=now,
-                first_seen_version=parsed["app_version"],
+                first_seen_version=parsed["display_version"],
                 last_seen_at=now,
-                last_seen_version=parsed["app_version"],
+                last_seen_version=parsed["display_version"],
                 total_events=1,
                 representative_stack=(parsed["stack_trace"] or "")[:32000],
             )
             session.add(row)
         else:
             row.last_seen_at = now
-            row.last_seen_version = parsed["app_version"] or row.last_seen_version
+            row.last_seen_version = parsed["display_version"] or row.last_seen_version
             row.total_events = int(row.total_events or 0) + 1
 
         # 无论新建还是命中已有 issue，都要把这条事件的 page 计入分布——新建 issue 的
@@ -229,7 +248,7 @@ async def _upsert_jank_event(parsed: Dict[str, Any], today) -> bool:
         if snap is None:
             session.add(CrashSnapshot(
                 datadog_issue_id=issue_id, snapshot_date=today,
-                app_version=parsed["app_version"], events_count=1,
+                app_version=parsed["display_version"], events_count=1,
             ))
         else:
             snap.events_count = int(snap.events_count or 0) + 1
@@ -290,7 +309,7 @@ async def _symbolicate_new_jank_issue(issue_id: str, parsed: Dict[str, Any]) -> 
     try:
         symbolized_frame = await symbolicate_jank_frame(
             platform=parsed["platform"],
-            app_version=parsed["app_version"],
+            app_version=parsed["symbol_key"],
             module=parsed["app_stack_module"],
             frame_text=parsed["app_stack_frame"],
             pc=parsed["app_stack_pc"],
@@ -308,7 +327,7 @@ async def _symbolicate_new_jank_issue(issue_id: str, parsed: Dict[str, Any]) -> 
         try:
             full_stack = await symbolicate_jank_stack(
                 platform=parsed["platform"],
-                app_version=parsed["app_version"],
+                app_version=parsed["symbol_key"],
                 stack_trace=parsed["stack_trace"],
                 stack_modules=parsed.get("stack_modules", ""),
                 stack_pcs=parsed.get("stack_pcs", ""),

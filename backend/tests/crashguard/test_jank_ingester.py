@@ -199,6 +199,49 @@ def test_parse_android_event_with_app_frame():
     assert parsed["frame_label"] == "ai.plaud.android.payment.k.a"
 
 
+def test_parse_android_event_uses_build_id_as_symbol_key():
+    """2026-07-23 生产实测：Android jank 事件没有 @version，只有 @build_id(UUID) +
+    @build_version(数字)。符号包按 Datadog 区分构建的 build_id 精确匹配，所以 android 的
+    symbol_key 必须取 build_id（不是空的 version），否则 mapping 永远查不到、混淆帧永远解不开。
+    display_version 回退 build_version 供 UI 展示。"""
+    from app.crashguard.services.jank_ingester import _parse_jank_event
+
+    parsed = _parse_jank_event(_raw_event({
+        "os": {"name": "Android", "version": "14"},
+        "has_app_frame": True,
+        "app_stack_frame": "J.N.M01adZlM",
+        "stack_trace": "  at ...",
+        "version": None,
+        "build_id": "196bae40-11fd-3a88-bfb8-e2dc315b3bbb",
+        "build_version": "946",
+    }))
+    assert parsed is not None
+    assert parsed["app_version"] == ""            # android 事件确实没有 @version
+    assert parsed["build_id"] == "196bae40-11fd-3a88-bfb8-e2dc315b3bbb"
+    assert parsed["symbol_key"] == "196bae40-11fd-3a88-bfb8-e2dc315b3bbb"  # 查符号用 build_id
+    assert parsed["display_version"] == "946"     # UI 版本列回退 build_version
+
+
+def test_parse_ios_event_symbol_key_is_version():
+    """iOS jank 事件带 @version、无 build UUID —— symbol_key 取 version（与打包机
+    上传 dSYM 时用的 .app CFBundleShortVersion-CFBundleVersion 一致）。"""
+    from app.crashguard.services.jank_ingester import _parse_jank_event
+
+    parsed = _parse_jank_event(_raw_event({
+        "os": {"name": "iOS", "version": "17.5"},
+        "has_app_frame": True,
+        "app_stack_module": "Plaud-Global",
+        "app_stack_module_offset": "0x1016f562c",
+        "app_stack_frame": "Plaud-Global",
+        "stack_trace": "0  Plaud-Global ...",
+        "version": "4.0.201-945",
+        "build_version": "945",
+    }))
+    assert parsed is not None
+    assert parsed["symbol_key"] == "4.0.201-945"
+    assert parsed["display_version"] == "4.0.201-945"
+
+
 def test_parse_event_extracts_page_field():
     """`page` 是 Datadog 卡顿看板按页面分组统计的原生维度（生产环境实测 100% 有
     值），必须被 _parse_jank_event 提取出来，供 _upsert_jank_event 累计 top_page 分布。"""
