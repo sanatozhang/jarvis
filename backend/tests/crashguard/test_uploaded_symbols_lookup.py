@@ -120,6 +120,29 @@ async def test_get_ios_dsyms_dir_falls_back_to_github_when_no_uploaded_package(m
     assert called.get("hit") is True
 
 
+async def test_get_ios_dsyms_dir_disallows_fallback_for_native_asset(monkeypatch, tmp_path):
+    """2026-07-23 生产实测：native app 自己的二进制(Plaud-Global.dSYMs.zip)每个 build
+    内存布局/符号表都不同，不像 Flutter 的 libflutter.so 是多 build 共享(BuildId 可验证)。
+    找不到精确版本 release 时落到"最近 global release"对 native 会静默解出错误符号——
+    3 个不同 build 的 jank issue 全部被误判成同一个不相关的 "main"。"""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from app.crashguard.services import github_symbols as G
+
+    captured = {}
+
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+        captured["allow_fallback"] = allow_fallback
+        return None
+
+    monkeypatch.setattr(G, "find_release_tag", fake_find_release_tag)
+
+    await G.get_ios_dsyms_dir("4.0.100-946", asset_name=G._ASSET_IOS_DSYM_NATIVE)
+    assert captured["allow_fallback"] is False
+
+    await G.get_ios_dsyms_dir("3.18.0-708", asset_name=G._ASSET_IOS_DSYM)
+    assert captured["allow_fallback"] is True
+
+
 async def test_get_android_mapping_prefers_uploaded_over_github(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from app.crashguard.services import github_symbols as G

@@ -403,7 +403,14 @@ async def get_ios_dsyms_dir(
     if uploaded:
         return uploaded
 
-    tag = await find_release_tag(app_version, repo=repo)
+    # native app 自己的二进制(Plaud-Global.dSYMs.zip)每次 build 都是独立的内存布局/
+    # 符号表，不像 Flutter 的 libflutter.so 是多 build 共享的 fork engine（那边靠 BuildId
+    # 验证跨 build 复用安全）。找不到精确版本的 release 时落到"最近 global release"对
+    # native 是不安全的——用错 build 的 dSYM 查地址不会报错，只会静默解出一个"看起来
+    # 合理但实际上完全错误"的符号（2026-07-23 生产实测：3 个不同 build、不同地址的
+    # jank issue 全部被误判成同一个 "main"，因为都 fallback 到了同一个无关 release）。
+    allow_fallback = asset_name != _ASSET_IOS_DSYM_NATIVE
+    tag = await find_release_tag(app_version, repo=repo, allow_fallback=allow_fallback)
     if not tag:
         return None
 
