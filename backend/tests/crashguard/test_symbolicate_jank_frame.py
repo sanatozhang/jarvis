@@ -26,7 +26,9 @@ async def test_ios_symbolicates_when_dsym_resolves(monkeypatch):
 
     def fake_resolve(stack: str, dsyms_dir: str) -> str:
         assert dsyms_dir == "/fake/dsyms"
-        assert stack == "0   Plaud-Global   0x0000000103e42dd4   0x0000000102f1c000 + 15887828\n"
+        # _strip_ptr_auth() 掩掉 arm64e PAC 签名位后用 hex() 重新格式化，不保留前导零
+        # （数值不变，格式化方式变了——见 symbolication.py::_strip_ptr_auth 说明）。
+        assert stack == "0   Plaud-Global   0x103e42dd4   0x102f1c000 + 15887828\n"
         return "0   Plaud-Global   -[PLRecordManager stopRecording] PLRecordManager.swift:120\n"
 
     monkeypatch.setattr(sym, "_symbolicate_ios_with_dir", fake_resolve)
@@ -100,6 +102,28 @@ async def test_ios_missing_pc_or_base_skips_download(monkeypatch):
     )
     assert result == "Plaud-Global + "
     download_mock.assert_not_called()
+
+
+def test_strip_ptr_auth_recovers_real_offset_from_production_sample():
+    """2026-07-23 生产实测：frame 1+ 的返回地址被 arm64e PAC 签名位污染，高 24 bit
+    是随机值，掩掉后的低 40 bit 才是真实地址——用同一条日志里 Datadog 客户端自己算好
+    的 module_offset 字段交叉验证，掩码前后差 10^19 量级，掩码后完全对得上。"""
+    from app.crashguard.services.symbolication import _strip_ptr_auth
+
+    # frame 0（watchdog 直接采样的 PC 寄存器）：地址本来就干净，掩码是 no-op。
+    assert _strip_ptr_auth("0x000000019e364860") == "0x19e364860"
+
+    # frame 1+（栈回溯得到的返回地址）：高 24 bit 被 PAC 污染。
+    pc = _strip_ptr_auth("0xdf0c800199fde290")
+    base = _strip_ptr_auth("0x0000000199c05000")
+    assert int(pc, 16) - int(base, 16) == 4035216  # 掩码前是 ~1.6×10^19 的天文数字
+
+    # 单帧路径（app_stack_pc / app_stack_module_offset）：同一事件另一个字段独立
+    # 给出的 offset，跟 pc-base 算出来的结果精确对上。
+    pc2 = _strip_ptr_auth("0x0f03800101592f24")
+    base2 = _strip_ptr_auth("0x0000000100670000")
+    raw_offset_field = _strip_ptr_auth("0x0f03800000f22f24")
+    assert int(pc2, 16) - int(base2, 16) == int(raw_offset_field, 16) == 15871780
 
 
 # ── Android ──────────────────────────────────────────────────────────────────
@@ -230,11 +254,13 @@ async def test_stack_symbolicates_app_frame_and_keeps_system_frames(monkeypatch)
 
     monkeypatch.setattr(gh, "get_ios_dsyms_dir", AsyncMock(return_value="/fake/dsyms"))
 
+    # _strip_ptr_auth() 掩掉 arm64e PAC 签名位后用 hex() 重新格式化，不保留前导零
+    # （数值不变，格式化方式变了——见 symbolication.py::_strip_ptr_auth 说明）。
     expected_fake_stack = (
-        "0   libsystem_kernel.dylib   0x0000000234b25cd4   0x0000000234b25000 + 3284\n"
-        "1   Plaud-Global   0x0000000103e42dd4   0x0000000102f1c000 + 15887828\n"
-        "2   Foundation   0x0000000182ff006c   0x0000000182fc7000 + 168044\n"
-        "3   CoreFoundation   0x0000000185d9839c   0x0000000185d35000 + 406428\n"
+        "0   libsystem_kernel.dylib   0x234b25cd4   0x234b25000 + 3284\n"
+        "1   Plaud-Global   0x103e42dd4   0x102f1c000 + 15887828\n"
+        "2   Foundation   0x182ff006c   0x182fc7000 + 168044\n"
+        "3   CoreFoundation   0x185d9839c   0x185d35000 + 406428\n"
     )
 
     def fake_resolve(stack: str, dsyms_dir: str) -> str:

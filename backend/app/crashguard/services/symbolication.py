@@ -171,6 +171,33 @@ async def symbolicate_stack(
         return stack
 
 
+# arm64e 指针认证(PAC) 签名位掩码——见 _strip_ptr_auth() 说明。
+_PTR_AUTH_MASK = 0xFFFFFFFFFF  # 保留低 40 bit
+
+
+def _strip_ptr_auth(addr_hex: str) -> str:
+    """去掉 arm64e 指针认证(PAC)签名位对栈回溯地址高位的污染（2026-07-23 生产实测）。
+
+    现场证据：同一条 jank 日志里，frame 0（watchdog 直接采样的 PC 寄存器值）地址干净
+    （如 `0x000000019e364860`），但从 frame 1 起（栈回溯得到的返回地址，如
+    `0xdf0c800199fde290`）高 24 bit 变成随机值——高 24 bit 掩掉之后剩下的低 40 bit
+    （`0x0199fde290`）和该帧的 `stack_module_offsets`/`app_stack_module_offset`
+    字段（同一日志里另外单独给的、Datadog 客户端自己算好的 offset）完全对得上，
+    算出的 offset 落在几 KB～几十 MB 的合理范围；不掩码则会算出 10^19 量级的
+    天文数字（`int(pc,16) - int(base,16)` 双方都是 Python 任意精度整数，不会自动
+    截断/环绕，所以看到的是巨大正数而非报错）。
+
+    这是 arm64e 设备上自研栈回溯 + 符号化的已知通病（Apple 官方 atos/
+    symbolicatecrash 处理系统崩溃报告时也会做同样的 strip），根因在客户端/SDK
+    序列化返回地址时没有先 strip PAC 签名位，不是本模块符号化逻辑本身的 bug；
+    在服务端掩码是通用、无副作用的规避方式（对本来就干净的地址是 no-op）。
+    """
+    try:
+        return hex(int(addr_hex, 16) & _PTR_AUTH_MASK)
+    except (ValueError, TypeError):
+        return addr_hex
+
+
 async def symbolicate_jank_frame(
     *,
     platform: str,
@@ -241,6 +268,8 @@ async def _symbolicate_jank_frame_ios(
     if not dsyms_dir:
         return placeholder
 
+    pc = _strip_ptr_auth(pc)
+    module_base = _strip_ptr_auth(module_base)
     try:
         offset_decimal = int(pc, 16) - int(module_base, 16)
     except ValueError:
@@ -375,8 +404,8 @@ async def _symbolicate_jank_stack_ios(
     lines: list = []
     for i, (module, pc, base) in enumerate(zip(modules, pcs, bases)):
         module = module.strip()
-        pc = pc.strip()
-        base = base.strip()
+        pc = _strip_ptr_auth(pc.strip())
+        base = _strip_ptr_auth(base.strip())
         if not module or not pc or not base:
             # 逐帧回退会导致行对不齐、复杂度不值得——直接整体回退到原始文本
             return stack_trace
