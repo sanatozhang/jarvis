@@ -451,6 +451,16 @@ export default function OncallPage() {
               {t("去飞书")}
             </a>
           )}
+          {tk.group_link && (
+            <a href={tk.group_link} target="_blank" rel="noreferrer" title={tk.group_name}
+              className="rounded-lg px-3 py-1.5 text-[11px] font-medium flex items-center gap-1"
+              style={{ color: "#15803D", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)", textDecoration: "none" }}>
+              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a1.994 1.994 0 01-1.414-.586m0 0L11 14h4a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2v4l1.586-1.586z" />
+              </svg>
+              {t("打开飞书群")}
+            </a>
+          )}
           {isPending && (
             <button onClick={() => handleStartFeishu(tk.record_id)}
               disabled={startingFeishu === tk.record_id}

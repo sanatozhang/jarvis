@@ -157,6 +157,8 @@ export interface Issue {
   root_cause_summary: string;
   created_at_ms: number;
   log_files: { name: string; token: string; size: number }[];
+  group_name?: string;
+  group_link?: string;
 }
 
 export interface IssueListResponse {

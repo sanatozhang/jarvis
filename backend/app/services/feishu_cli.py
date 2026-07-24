@@ -438,6 +438,17 @@ class FeishuCLI:
         result_summary = self._get_text(fields.get("处理结果", ""))
         root_cause_summary = self._get_text(fields.get("一句话归因", ""))
 
+        group_name = ""
+        group_link = ""
+        groups = fields.get("群组") or []
+        if isinstance(groups, list) and groups:
+            first_group = groups[0]
+            if isinstance(first_group, dict):
+                group_name = first_group.get("name", "")
+                chat_id = first_group.get("id", "")
+                if chat_id:
+                    group_link = f"https://applink.feishu.cn/client/chat/open?openChatId={chat_id}"
+
         assignee_names = []
         assignee_emails = []
         for a in (fields.get("问题指派人") or []):
@@ -472,6 +483,8 @@ class FeishuCLI:
             root_cause_summary=root_cause_summary,
             created_at_ms=created_at_ms,
             log_files=log_files,
+            group_name=group_name,
+            group_link=group_link,
         )
 
     @staticmethod

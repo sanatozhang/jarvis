@@ -74,6 +74,8 @@ class Issue(BaseModel):
     created_at_ms: int = 0      # 创建日期 (Unix ms from Feishu)
     occurred_at: Optional[datetime] = None
     log_files: List[LogFile] = Field(default_factory=list)
+    group_name: str = ""        # 群组 (Feishu chat name), from the "群组" Bitable field
+    group_link: str = ""        # Feishu applink deep link to open the group directly
 
 
 class IssueListResponse(BaseModel):
