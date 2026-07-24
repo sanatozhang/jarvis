@@ -40,23 +40,34 @@ def test_jank_kind_uses_logs_explorer_url_not_error_tracking():
     assert "14cf9239734ba243" not in url
 
 
-def test_jank_url_contains_query_platform_and_frame_label():
+def test_jank_url_contains_query_platform_and_raw_datadog_attrs():
+    """2026-07-24：query 里的帧过滤必须用摄入时落库的原始 Datadog 字段
+    （dd_query_attrs），不能再用 title 里符号化后才产生的衍生文本——那段文本
+    从未出现在 Datadog 原始日志里，全文短语搜索必然搜不到（真实 case：
+    jank:23a3eeec7986072c 的 title 被符号化成一个 Swift mangled witness 符号，
+    塞进 query 后完全查不到任何日志）。
+    """
     from app.crashguard.api.crash import _datadog_url_for
     import urllib.parse as _urlparse
 
     url = _datadog_url_for(
         "jank:deadbeef", window_hours=24,
         kind="jank", title="Jank @ RootView.commonAlertButtons", platform="ios",
+        dd_query_attrs={"app_stack_module": "RootView", "app_stack_module_offset": "0x1234"},
     )
     query_str = url.split("query=", 1)[1].split("&", 1)[0]
     decoded = _urlparse.unquote(query_str)
     assert "jank_watchdog_block" in decoded
     assert "@os.name:ios" in decoded
-    assert "RootView.commonAlertButtons" in decoded
+    assert '@app_stack_module:"RootView"' in decoded
+    assert '@app_stack_module_offset:"0x1234"' in decoded
+    # title 里符号化后的衍生文本不应该出现在 query 里
+    assert "RootView.commonAlertButtons" not in decoded
 
 
-def test_jank_url_omits_frame_label_when_placeholder():
-    """frame_label 是符号化失败占位符 "?" 时不应该把 "?" 塞进 query（会让搜索无意义地过窄）。"""
+def test_jank_url_omits_frame_filter_when_dd_query_attrs_missing():
+    """老 issue（摄入于本次修复之前）tags 里没有 dd_query_attrs 时，优雅回退成
+    不带帧过滤的基础 query，而不是拼一段永远搜不到的 title 短语。"""
     from app.crashguard.api.crash import _datadog_url_for
 
     url = _datadog_url_for(
@@ -65,6 +76,8 @@ def test_jank_url_omits_frame_label_when_placeholder():
     )
     import urllib.parse as _urlparse
     decoded = _urlparse.unquote(url.split("query=", 1)[1].split("&", 1)[0])
+    assert "@app_stack_module" not in decoded
+    assert "@app_stack_frame" not in decoded
     assert '"?"' not in decoded
 
 

@@ -159,6 +159,29 @@ def _parse_jank_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _jank_datadog_query_attrs(parsed: Dict[str, Any]) -> Dict[str, str]:
+    """挑出这个 issue 聚合键用到的原始 Datadog 字段，供"查看 Datadog"链接做精确匹配。
+
+    必须和 compute_jank_aggregation_key() 用的字段严格一致——这些字段是摄入时
+    Datadog 原始日志本身携带的属性，保证在 Datadog 里 100% 能搜到；符号化后才
+    产生的衍生文本（title 里的可读函数名）从未出现在原始日志里，搜索永远命中不了。
+    """
+    platform = (parsed.get("platform") or "").strip().lower()
+    if (
+        parsed.get("has_app_frame")
+        and "ios" in platform
+        and parsed.get("app_stack_module")
+        and parsed.get("app_stack_module_offset")
+    ):
+        return {
+            "app_stack_module": parsed["app_stack_module"],
+            "app_stack_module_offset": parsed["app_stack_module_offset"],
+        }
+    if parsed.get("has_app_frame") and parsed.get("app_stack_frame"):
+        return {"app_stack_frame": parsed["app_stack_frame"]}
+    return {}
+
+
 def _accumulate_page_count(row: Any, page: str) -> None:
     """把一条事件的 `page` 计入 `row.tags["page_counts"]`，重算 `row.top_page`。
 
@@ -228,6 +251,7 @@ async def _upsert_jank_event(parsed: Dict[str, Any], today) -> bool:
                 last_seen_version=parsed["display_version"],
                 total_events=1,
                 representative_stack=(parsed["stack_trace"] or "")[:32000],
+                tags=json.dumps({"dd_query_attrs": _jank_datadog_query_attrs(parsed)}, ensure_ascii=False),
             )
             session.add(row)
         else:
@@ -266,12 +290,20 @@ def _jank_frame_looks_symbolized(result: str, original_frame_text: str) -> bool:
 
     占位符特征：等于原始输入文本，或形如 "{module} + {pc}"（含 " + 0x"）——
     两种失败态都在 symbolicate_jank_frame() 的落地路径里出现过。
+
+    2026-07-24：新增第三种"不算成功"——DWARF 标注 `<compiler-generated>`（无真实
+    源码位置）。这类地址虽然确实落在 App 自己的 dSYM 里（module gating 通过），
+    但解析出来的是编译器为泛型/协议一致性生成的 witness thunk（如 Swift 标准库
+    `String: Hashable` 的 `_rawHashValue`），跟 App 业务代码毫无关系，写进 title
+    只会是一串无意义的 mangled 符号，不比原始占位符更有用。
     """
     if not result:
         return False
     if result == original_frame_text:
         return False
     if " + 0x" in result:
+        return False
+    if "<compiler-generated>" in result:
         return False
     return True
 
@@ -540,22 +572,59 @@ async def backfill_stuck_jank_issues(now: Optional[datetime] = None) -> Dict[str
 
     candidates = 0
     resymbolized = 0
+    backfilled_query_attrs = 0
     for row in rows:
         parsed = latest_by_issue[row.datadog_issue_id]
+
+        # 2026-07-24：老 issue（本次修复之前摄入）tags 里没有 dd_query_attrs，
+        # "查看 Datadog" 链接会回退成不带帧过滤的基础 query。顺路把它补上——不需要
+        # 重新符号化，只是把这次重新拉到的原始事件字段落库，成本极低。
+        row_tags = _safe_load_tags(row.tags)
+        if not row_tags.get("dd_query_attrs"):
+            await _backfill_dd_query_attrs(row.datadog_issue_id, row_tags, parsed)
+            backfilled_query_attrs += 1
+
         original_frame = (
             parsed["app_stack_module"] if "ios" in (parsed["platform"] or "").lower()
             else parsed["app_stack_frame"]
         )
-        if not _jank_issue_looks_stuck(row.title or "", original_frame):
-            continue
-        if int(row.prewarm_attempts or 0) >= max_attempts:
-            continue
-        candidates += 1
-        await _symbolicate_new_jank_issue(row.datadog_issue_id, parsed)
-        resymbolized += 1
+        if _jank_issue_looks_stuck(row.title or "", original_frame) and int(row.prewarm_attempts or 0) < max_attempts:
+            candidates += 1
+            await _symbolicate_new_jank_issue(row.datadog_issue_id, parsed)
+            resymbolized += 1
 
     logger.info(
-        "jank backfill done: scanned_events=%d candidates=%d resymbolized=%d",
-        scanned_events, candidates, resymbolized,
+        "jank backfill done: scanned_events=%d candidates=%d resymbolized=%d backfilled_query_attrs=%d",
+        scanned_events, candidates, resymbolized, backfilled_query_attrs,
     )
-    return {"scanned_events": scanned_events, "candidates": candidates, "resymbolized": resymbolized}
+    return {
+        "scanned_events": scanned_events, "candidates": candidates, "resymbolized": resymbolized,
+        "backfilled_query_attrs": backfilled_query_attrs,
+    }
+
+
+def _safe_load_tags(raw: Optional[str]) -> Dict[str, Any]:
+    try:
+        tags = json.loads(raw) if raw else {}
+        return tags if isinstance(tags, dict) else {}
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
+async def _backfill_dd_query_attrs(
+    issue_id: str, row_tags: Dict[str, Any], parsed: Dict[str, Any],
+) -> None:
+    """独立开自己的 session 读-改-写单行，避免跨 session 复用 detached ORM 对象
+    （`backfill_stuck_jank_issues` 读 rows 用的 session 早已 close，不能指望 add_all
+    重新挂上去准确触发 UPDATE 而不是误插入）。"""
+    from app.crashguard.models import CrashIssue
+
+    row_tags["dd_query_attrs"] = _jank_datadog_query_attrs(parsed)
+    async with get_session() as session:
+        row = (await session.execute(
+            select(CrashIssue).where(CrashIssue.datadog_issue_id == issue_id)
+        )).scalar_one_or_none()
+        if row is None:
+            return
+        row.tags = json.dumps(row_tags, ensure_ascii=False)
+        await session.commit()

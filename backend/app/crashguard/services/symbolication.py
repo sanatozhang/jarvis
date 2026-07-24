@@ -727,7 +727,7 @@ def _atos_lookup(dwarf_path: str, load_addr: str, addr: str) -> Optional[str]:
             ibase = int(load_addr, 16) if load_addr else 0
             dwarf_addr = 0x100000000 + (iaddr - ibase)
             result = subprocess.run(
-                [_ADDR2LINE, "--obj", dwarf_path, hex(dwarf_addr)],
+                [_ADDR2LINE, "--obj", dwarf_path, "--demangle", hex(dwarf_addr)],
                 capture_output=True, text=True, timeout=10,
             )
             out = result.stdout.strip()

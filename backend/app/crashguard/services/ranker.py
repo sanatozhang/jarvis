@@ -141,6 +141,7 @@ async def pick_top_n(
             "status": issue.status or "open",
             "assignee": getattr(issue, "assignee", "") or "",
             "top_page": getattr(issue, "top_page", "") or "",
+            "tags": issue.tags or "{}",
             "first_seen_version": issue.first_seen_version or "",
             "last_seen_version": issue.last_seen_version or "",
             "first_analyzed_at": first_ana.isoformat() if first_ana else None,

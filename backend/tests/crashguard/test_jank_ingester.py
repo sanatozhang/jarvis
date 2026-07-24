@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -294,6 +295,81 @@ def test_parse_event_missing_os_returns_none():
     assert _parse_jank_event(_raw_event({"os": {"name": ""}})) is None
 
 
+# ── _jank_datadog_query_attrs（Datadog 跳转链接精确过滤字段）────────────────────
+
+def test_jank_datadog_query_attrs_ios_uses_module_and_offset():
+    """iOS 用 module + module_offset——跟 compute_jank_aggregation_key() 同源，
+    这两个字段是 Datadog 原始日志本身携带的属性，保证在 Datadog 里能精确搜到。"""
+    from app.crashguard.services.jank_ingester import (
+        _jank_datadog_query_attrs, _parse_jank_event,
+    )
+
+    parsed = _parse_jank_event(_raw_event({
+        "os": {"name": "iOS"},
+        "has_app_frame": True,
+        "app_stack_module": "Plaud-Global",
+        "app_stack_module_offset": "0x0000000000e31758",
+        "stack_trace": "0 Plaud-Global ...",
+        "version": "4.0.201-941",
+    }))
+    attrs = _jank_datadog_query_attrs(parsed)
+    assert attrs == {
+        "app_stack_module": "Plaud-Global",
+        "app_stack_module_offset": "0x0000000000e31758",
+    }
+
+
+def test_jank_datadog_query_attrs_android_uses_app_stack_frame():
+    from app.crashguard.services.jank_ingester import (
+        _jank_datadog_query_attrs, _parse_jank_event,
+    )
+
+    parsed = _parse_jank_event(_raw_event({
+        "os": {"name": "Android"},
+        "has_app_frame": True,
+        "app_stack_frame": "ai.plaud.android.payment.k.a",
+        "stack_trace": "  at ...",
+        "version": None,
+    }))
+    attrs = _jank_datadog_query_attrs(parsed)
+    assert attrs == {"app_stack_frame": "ai.plaud.android.payment.k.a"}
+
+
+def test_jank_datadog_query_attrs_empty_when_no_app_frame():
+    from app.crashguard.services.jank_ingester import (
+        _jank_datadog_query_attrs, _parse_jank_event,
+    )
+
+    parsed = _parse_jank_event(_raw_event({
+        "os": {"name": "iOS"},
+        "has_app_frame": False,
+        "stack_top_module": "QuartzCore",
+        "stack_top_symbol": "layout",
+    }))
+    assert _jank_datadog_query_attrs(parsed) == {}
+
+
+# ── _jank_frame_looks_symbolized：编译器生成帧不算符号化成功 ─────────────────────
+
+def test_jank_frame_looks_symbolized_rejects_compiler_generated():
+    """2026-07-24 真实 case：jank:23a3eeec7986072c 的地址虽然落在 App 自己的 dSYM
+    里（module gating 通过），但 llvm-symbolizer 解析出的是 Swift 编译器为
+    `String: Hashable` 生成的 witness thunk（`$sSSSHsSH13_rawHashValue4seedS2i_tFTW
+    /<compiler-generated>:0:0`）——纯编译器胶水代码，跟 App 业务代码无关，不该被
+    当成"符号化成功"写进 title。"""
+    from app.crashguard.services.jank_ingester import _jank_frame_looks_symbolized
+
+    result = "$sSSSHsSH13_rawHashValue4seedS2i_tFTW /<compiler-generated>:0:0"
+    assert _jank_frame_looks_symbolized(result, "Plaud-Global") is False
+
+
+def test_jank_frame_looks_symbolized_accepts_real_source_location():
+    from app.crashguard.services.jank_ingester import _jank_frame_looks_symbolized
+
+    result = "SomeClass.someMethod /path/to/SomeClass.swift:42:8"
+    assert _jank_frame_looks_symbolized(result, "Plaud-Global") is True
+
+
 # ── ingest_jank_logs（完整摄入循环） ──────────────────────────────────────────
 
 @pytest.fixture
@@ -392,6 +468,58 @@ async def test_ingest_creates_new_fixable_issue_and_symbolicates(patched_session
     assert issue.prewarm_attempts == 1
     assert snap.events_count == 1
     assert snap.snapshot_date == date(2026, 7, 20)
+
+    # 摄入时把聚合键同源的原始字段落进 tags，供 _datadog_url_for 做精确匹配
+    # （不能靠符号化后的 title，那段文本从未出现在 Datadog 原始日志里）
+    tags = json.loads(issue.tags)
+    assert tags["dd_query_attrs"] == {
+        "app_stack_module": "Plaud-Global",
+        "app_stack_module_offset": "0x0000000000e31758",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ingest_does_not_promote_compiler_generated_frame_to_title(
+    patched_session, monkeypatch,
+):
+    """2026-07-24 回归：即便地址落在 App 自己的 dSYM 里（module gating 通过），
+    llvm-symbolizer 解析出的编译器生成帧（`<compiler-generated>`）也不该覆盖
+    title——保留摄入时的占位标题，好过写进一串无意义的 mangled 符号。"""
+    from app.crashguard.services.jank_ingester import ingest_jank_logs
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+    from sqlalchemy import select
+
+    _patch_settings(monkeypatch)
+    _patch_no_op_symbolication_deps(monkeypatch)
+    monkeypatch.setattr(
+        "app.crashguard.services.symbolication.symbolicate_jank_frame",
+        AsyncMock(return_value="$sSSSHsSH13_rawHashValue4seedS2i_tFTW /<compiler-generated>:0:0"),
+    )
+
+    event = _raw_event({
+        "os": {"name": "iOS"},
+        "has_app_frame": True,
+        "app_stack_module": "Plaud-Global",
+        "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "stack_trace": "0   Plaud-Global 0x... + 123",
+        "version": "4.0.201-941",
+    })
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page",
+        AsyncMock(return_value={"data": [event], "next_cursor": None}),
+    )
+
+    await ingest_jank_logs(now=datetime(2026, 7, 20, 12, 0, 0))
+
+    async with get_session() as s:
+        issue = (await s.execute(select(CrashIssue))).scalar_one()
+
+    assert issue.title == "Jank @ Plaud-Global"
+    assert issue.prewarm_attempts == 1
+    assert issue.prewarm_last_error == ""
 
 
 @pytest.mark.asyncio

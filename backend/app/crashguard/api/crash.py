@@ -593,6 +593,7 @@ def _datadog_url_for(
     kind: str = "",
     title: str = "",
     platform: str = "",
+    dd_query_attrs: Optional[Dict[str, str]] = None,
 ) -> str:
     """Datadog 跳转链接。
 
@@ -600,8 +601,13 @@ def _datadog_url_for(
     issue ID）。卡顿（`kind == "jank"`）**不经过 Error Tracking**——`issue_id` 是
     `jank_ingester.py::compute_jank_aggregation_key()` 算出来的本地聚合键（sha1 前16位
     的 "jank:xxxx"），Datadog 侧根本没有这个 issue，跳错产品线的 URL 会直接 404。
-    卡顿改跳 Logs Explorer，用同一条摄入 query + 平台 + 聚合用的帧标签（存在
-    `title` 里，格式 "Jank @ {frame_label}"）拼一个近似定位的搜索链接。
+    卡顿改跳 Logs Explorer，用同一条摄入 query + 平台 + `dd_query_attrs`（摄入时落库、
+    与聚合键同源的原始 Datadog 字段，如 `app_stack_module`/`app_stack_frame`）拼一个
+    精确定位的搜索链接。
+
+    2026-07-24：不再使用 `title` 拼词——title 里的帧文本是符号化之后才产生的本地衍生
+    数据，从未出现在 Datadog 原始日志里，拿去做全文短语搜索必然搜不到（老 issue 没有
+    `dd_query_attrs` 时才回退成不带帧过滤的基础 query，好过拼一段注定搜不到的短语）。
 
     window_hours: 显式传入时附 `from_ts/to_ts`（毫秒），让 Datadog UI 默认窗口对齐我们的口径；
     不传则 Datadog 自动 fallback "Past 14 Days"（UI 默认）—— 这就是你看到 14 天数据的原因。
@@ -624,9 +630,10 @@ def _datadog_url_for(
         query = "@category:performance jank_watchdog_block"
         if platform:
             query += f" @os.name:{platform.strip().lower()}"
-        frame_label = title.split("Jank @ ", 1)[-1].strip() if title.startswith("Jank @ ") else ""
-        if frame_label and frame_label != "?":
-            query += f' "{frame_label}"'
+        for key, value in (dd_query_attrs or {}).items():
+            value = (value or "").strip().replace('"', "")
+            if value:
+                query += f' @{key}:"{value}"'
         base = f"https://{host}/logs?query={_urlparse.quote(query)}"
         if from_ms is not None:
             return f"{base}&from_ts={from_ms}&to_ts={to_ms}&live=true"
@@ -1163,10 +1170,17 @@ async def get_top(
                     "analysis_confidence": ana.confidence or "",
                 })
 
+    import json as _json
+
     for item in page_items:
+        try:
+            item_tags = _json.loads(item.get("tags") or "{}")
+        except (ValueError, TypeError):
+            item_tags = {}
         item["datadog_url"] = _datadog_url_for(
             item["datadog_issue_id"], window_hours=window_hours,
             kind=item.get("kind", ""), title=item.get("title", ""), platform=item.get("platform", ""),
+            dd_query_attrs=item_tags.get("dd_query_attrs") or {},
         )
         pr = pr_map.get(item["datadog_issue_id"])
         item["has_pr"] = pr is not None
@@ -1347,6 +1361,7 @@ async def get_issue_detail(
         "datadog_url": _datadog_url_for(
             issue.datadog_issue_id, window_hours=window_hours,
             kind=issue.kind or "", title=issue.title or "", platform=issue.platform or "",
+            dd_query_attrs=tags.get("dd_query_attrs") or {},
         ),
         "window_hours": window_hours,
         "stack_fingerprint": issue.stack_fingerprint,

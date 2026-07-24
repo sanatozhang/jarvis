@@ -103,6 +103,66 @@ async def test_backfill_resymbolizes_stuck_issue_using_fresh_event(patched_sessi
 
 
 @pytest.mark.asyncio
+async def test_backfill_fills_missing_dd_query_attrs_without_resymbolizing(patched_session, monkeypatch):
+    """2026-07-24：老 issue（本次修复之前摄入，tags 里没有 dd_query_attrs）即便标题
+    已经符号化成功、不需要重新符号化，也该顺路把 dd_query_attrs 补上，让"查看 Datadog"
+    链接从"回退成基础 query"变成"精确匹配"——不需要触发昂贵的重新符号化。"""
+    from app.crashguard.services.jank_ingester import backfill_stuck_jank_issues, compute_jank_aggregation_key
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+    import json as _json
+
+    _patch_settings(monkeypatch)
+
+    agg_key = compute_jank_aggregation_key(
+        platform="ios", has_app_frame=True,
+        app_stack_module="Plaud-Global", app_stack_module_offset="0x0000000000e31758",
+    )
+    issue_id = f"jank:{agg_key}"
+
+    async with get_session() as session:
+        session.add(CrashIssue(
+            # 标题已经是符号化成功的样子（不是占位符）——老数据没有 tags.dd_query_attrs
+            datadog_issue_id=issue_id, title="Jank @ AlreadyResolved.method",
+            platform="ios", kind="jank", fatality="jank", fixable=True,
+            representative_stack="already resolved stack", tags="{}",
+        ))
+        await session.commit()
+
+    event = _raw_event({
+        "os": {"name": "iOS"}, "has_app_frame": True,
+        "app_stack_module": "Plaud-Global", "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "stack_trace": "0   Plaud-Global 0x... + 1",
+        "version": "4.0.201-941",
+    })
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page",
+        AsyncMock(return_value={"data": [event], "next_cursor": None}),
+    )
+    resymbolize_mock = AsyncMock()
+    monkeypatch.setattr(
+        "app.crashguard.services.jank_ingester._symbolicate_new_jank_issue", resymbolize_mock,
+    )
+
+    result = await backfill_stuck_jank_issues(now=datetime(2026, 7, 22, 12, 0, 0))
+
+    assert result["backfilled_query_attrs"] == 1
+    assert result["resymbolized"] == 0
+    resymbolize_mock.assert_not_called()
+
+    async with get_session() as session:
+        from sqlalchemy import select
+        row = (await session.execute(select(CrashIssue).where(CrashIssue.datadog_issue_id == issue_id))).scalar_one()
+    tags = _json.loads(row.tags)
+    assert tags["dd_query_attrs"] == {
+        "app_stack_module": "Plaud-Global",
+        "app_stack_module_offset": "0x0000000000e31758",
+    }
+
+
+@pytest.mark.asyncio
 async def test_backfill_skips_issue_already_symbolized(patched_session, monkeypatch):
     from app.crashguard.services.jank_ingester import backfill_stuck_jank_issues, compute_jank_aggregation_key
     from app.crashguard.models import CrashIssue
