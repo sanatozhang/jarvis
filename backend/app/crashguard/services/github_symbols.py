@@ -10,10 +10,15 @@ Datadog 版本格式: {semver}-{build}（如 3.18.0-708）
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import plistlib
+import re
+import struct
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Optional
 
@@ -127,7 +132,323 @@ def _version_to_tag_prefix(app_version: str) -> Optional[str]:
     return f"v{parts[0]}+{parts[1]}-"
 
 
-async def find_release_tag(app_version: str, allow_fallback: bool = True, repo: str = _DEFAULT_REPO) -> Optional[str]:
+# ── native(4.0) 按真实 build 号精确匹配 GitHub release（2026-07-24）─────────────
+#
+# 背景：native app 仓库（Plaud-AI/plaud-native-app）的 tag 后缀 `+NNN` 不是真实
+# app build 号（几十个 build 才冻结换一次，如 +813/+910/+999），不能像 flutter 仓库
+# 那样直接拿 tag 后缀当 build 号用（_version_to_tag_prefix 那套）。真实 build 号
+# （单调递增，如 908→914→…→950→952）要么在 Android .aab 资产名里，要么在 dSYM 包
+# 自带的 Contents/Info.plist 的 CFBundleVersion 里——iOS 与 Android 在同一个
+# release 内共用同一个真实 build 号（已用 gh api + 本地 atos 交叉验证）。
+
+_AAB_NAME_RE = re.compile(r"^PLAUD_v[\d.]+_(\d+)_.*\.aab$")
+_DSYM_INFO_PLIST_RE = re.compile(r"\.app\.dSYM/Contents/Info\.plist$")
+_EOCD_SIGNATURE = b"PK\x05\x06"
+_CD_SIGNATURE = b"PK\x01\x02"
+_LOCAL_SIGNATURE = b"PK\x03\x04"
+
+
+def _parse_semver_build(app_version: str) -> Optional["tuple[str, str]"]:
+    """'4.0.100-950' → ('4.0.100', '950')。
+
+    Android jank 的 symbol_key 是 build_id UUID（如 '196bae40-…-e2dc315b3bbb'），
+    最后一段含十六进制字母，`.isdigit()` 天然为 False → 返回 None，不会被误当成
+    build 号进入匹配逻辑（与 _version_to_tag_prefix 用同一套判定，保持一致）。
+    """
+    if not app_version:
+        return None
+    parts = app_version.rsplit("-", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+    return parts[0], parts[1]
+
+
+def _aab_build_from_assets(assets: list) -> Optional[str]:
+    """从 release 的 assets[].name 里抠出 Android .aab 文件名自带的真实 build 号。
+
+    零额外请求——release 列表接口本身已经带 assets，这是最便宜的 build 号来源。
+    但不是每个 release 都有这个资产（实测 3/18 个 release 没有 aab），没有就交给
+    调用方去尝试更贵的 dSYM Info.plist Range 读取路径。
+    """
+    for asset in assets or []:
+        name = asset.get("name", "") if isinstance(asset, dict) else ""
+        m = _AAB_NAME_RE.match(name)
+        if m:
+            return m.group(1)
+    return None
+
+
+async def _http_range_get(client, url: str, headers: dict, start: int, end: int) -> Optional[bytes]:
+    """GET 一段字节范围 [start, end]（闭区间）。
+
+    用 streaming 请求：服务端返回 206 才读 body；返回 200（不支持 Range，会给整个
+    文件）时立刻中止连接、不读 body，返回 None——绝不整包下载兜底，这是本模块的
+    硬约束（相比整包省 4 个数量级流量）。
+    """
+    range_headers = {**headers, "Range": f"bytes={start}-{end}"}
+    async with client.stream("GET", url, headers=range_headers) as resp:
+        if resp.status_code == 200:
+            await resp.aclose()
+            return None
+        if resp.status_code != 206:
+            return None
+        return await resp.aread()
+
+
+async def _read_dsym_build_via_range(
+    asset_id, asset_size: int, repo: str, headers: dict,
+) -> Optional[str]:
+    """对 dSYM zip 做标准 HTTP Range 读，只取出 `*.app.dSYM/Contents/Info.plist`
+    这一个 zip member（653 字节级别），不下载整个 ~90MB 包。
+
+    步骤：① 末尾一段找 EOCD + 中央目录（entries 不多时通常一次覆盖，覆盖不到再单独
+    Range 取中央目录）② 在中央目录里定位目标 member 的 local header 偏移/压缩大小
+    ③ 一次 Range 读出 local header + 压缩数据，本地 zlib 解压 + plistlib 解析拿
+    CFBundleVersion。任一步失败或服务端不支持 Range → 干净返回 None。
+    """
+    if not asset_id or not asset_size or asset_size <= 0:
+        return None
+    try:
+        import httpx
+        asset_api_url = f"{_GITHUB_API}/repos/{repo}/releases/assets/{asset_id}"
+        dl_headers = {**headers, "Accept": "application/octet-stream"}
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            tail_size = min(65536, asset_size)
+            tail_start = asset_size - tail_size
+            tail = await _http_range_get(client, asset_api_url, dl_headers, tail_start, asset_size - 1)
+            if not tail:
+                return None
+
+            eocd_idx = tail.rfind(_EOCD_SIGNATURE)
+            if eocd_idx == -1:
+                return None
+            eocd = tail[eocd_idx:eocd_idx + 22]
+            if len(eocd) < 22:
+                return None
+            cd_size, cd_offset = struct.unpack("<II", eocd[12:20])
+
+            if cd_offset >= tail_start:
+                cd_bytes = tail[cd_offset - tail_start: cd_offset - tail_start + cd_size]
+            else:
+                cd_bytes = await _http_range_get(
+                    client, asset_api_url, dl_headers, cd_offset, cd_offset + cd_size - 1,
+                )
+                if not cd_bytes:
+                    return None
+
+            pos = 0
+            target: Optional[dict] = None
+            while pos + 46 <= len(cd_bytes):
+                if cd_bytes[pos:pos + 4] != _CD_SIGNATURE:
+                    break
+                (compression,) = struct.unpack("<H", cd_bytes[pos + 10:pos + 12])
+                (compressed_size,) = struct.unpack("<I", cd_bytes[pos + 20:pos + 24])
+                name_len, extra_len, comment_len = struct.unpack("<HHH", cd_bytes[pos + 28:pos + 34])
+                (local_header_offset,) = struct.unpack("<I", cd_bytes[pos + 42:pos + 46])
+                name_start = pos + 46
+                name = cd_bytes[name_start:name_start + name_len].decode("utf-8", errors="replace")
+                if _DSYM_INFO_PLIST_RE.search(name):
+                    target = {
+                        "compression": compression,
+                        "compressed_size": compressed_size,
+                        "local_header_offset": local_header_offset,
+                        "name_len": name_len,
+                    }
+                    break
+                pos = name_start + name_len + extra_len + comment_len
+
+            if not target:
+                return None
+
+            lh_offset = target["local_header_offset"]
+            # 一次 Range 读出 local header（固定 30 字节）+ filename + extra（用中央目录
+            # 的 name_len 做基准，extra 段给 256 字节安全余量，不够就放弃，不二次整包兜底）
+            margin = 256
+            read_len = 30 + target["name_len"] + margin + target["compressed_size"]
+            local_and_data = await _http_range_get(
+                client, asset_api_url, dl_headers, lh_offset, lh_offset + read_len - 1,
+            )
+            if not local_and_data or len(local_and_data) < 30 or local_and_data[:4] != _LOCAL_SIGNATURE:
+                return None
+            lh_name_len, lh_extra_len = struct.unpack("<HH", local_and_data[26:30])
+            data_start = 30 + lh_name_len + lh_extra_len
+            data_end = data_start + target["compressed_size"]
+            if data_end > len(local_and_data):
+                return None
+            raw = local_and_data[data_start:data_end]
+
+            if target["compression"] == 0:
+                plist_bytes = raw
+            elif target["compression"] == 8:
+                try:
+                    plist_bytes = zlib.decompressobj(-15).decompress(raw)
+                except Exception:
+                    return None
+            else:
+                return None
+
+            try:
+                plist = plistlib.loads(plist_bytes)
+            except Exception:
+                return None
+            build = plist.get("CFBundleVersion")
+            return str(build) if build else None
+    except Exception as exc:
+        logger.warning("_read_dsym_build_via_range failed for asset %s: %r", asset_id, exc)
+        return None
+
+
+async def _resolve_release_build(release: dict, repo: str, headers: dict) -> Optional[str]:
+    """解析一个 release 的真实 app build 号：优先免费的 aab 文件名，没有再 Range 读 dSYM。"""
+    assets = release.get("assets") or []
+    build = _aab_build_from_assets(assets)
+    if build:
+        return build
+    dsym_asset = next((a for a in assets if a.get("name") == _ASSET_IOS_DSYM_NATIVE), None)
+    if not dsym_asset:
+        return None
+    return await _read_dsym_build_via_range(
+        dsym_asset.get("id"), int(dsym_asset.get("size") or 0), repo, headers,
+    )
+
+
+def _build_index_path(repo: str) -> Path:
+    safe = repo.replace("/", "_")
+    p = _github_cache_dir() / "_build_index"
+    p.mkdir(parents=True, exist_ok=True)
+    return p / f"{safe}.json"
+
+
+def _load_build_index(repo: str) -> dict:
+    path = _build_index_path(repo)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _save_build_index(repo: str, index: dict) -> None:
+    try:
+        _build_index_path(repo).write_text(json.dumps(index))
+    except Exception as exc:
+        logger.warning("failed to persist build index for %s: %r", repo, exc)
+
+
+def _dsym_bundle_build(dsym_dir: "Path | str") -> Optional[str]:
+    """从解压后的 dSYM 目录里找 `*.app.dSYM/Contents/Info.plist`，读 CFBundleVersion。
+
+    用作解压后的运行期校验闸门：把"iOS/Android 同 release 共用 build"这条实证假设
+    变成硬校验，任何反例都安全退化为 miss，绝不给错误符号（见 2026-07-23 生产实测：
+    错 build 的 dSYM 会静默解出一个"看起来合理但完全错误"的符号）。
+    """
+    try:
+        for plist_path in Path(dsym_dir).rglob("Contents/Info.plist"):
+            bundle_dir = plist_path.parent.parent
+            if not bundle_dir.name.endswith(".app.dSYM"):
+                continue
+            try:
+                with open(plist_path, "rb") as f:
+                    plist = plistlib.load(f)
+                build = plist.get("CFBundleVersion")
+                if build:
+                    return str(build)
+            except Exception:
+                continue
+        return None
+    except Exception as exc:
+        logger.warning("_dsym_bundle_build failed for %s: %r", dsym_dir, exc)
+        return None
+
+
+async def _find_release_tag_by_build(app_version: str, repo: str) -> Optional[str]:
+    """按真实 app build 号（而非 tag 后缀）精确匹配 GitHub release。
+
+    永远不做跨 build 回落——找不到就干净返回 None（如 4.0.201-951：该 semver 系列
+    在 GitHub 上真实 build 上限只到 917，是打包侧真实 gap，不该被误判成"能符号化"）。
+    命中写 `.release_tag` 正向缓存；**不缓存 miss**（避免"还没发布"的 build 以后
+    补发了也被永久钉死）。每个 release 的 build 解析结果另写永久 `_build_index`
+    缓存，避免重复 API/Range 请求。
+    """
+    parsed = _parse_semver_build(app_version)
+    if not parsed:
+        return None
+    semver, target_build = parsed
+
+    cache_dir = _github_cache_dir() / app_version
+    tag_cache = cache_dir / ".release_tag"
+    if tag_cache.exists():
+        cached = tag_cache.read_text().strip()
+        if cached:
+            return cached
+
+    token = _github_token()
+    headers: dict = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    build_index = _load_build_index(repo)
+    index_dirty = False
+    tag_prefix = f"v{semver}+"
+
+    def _flush_index() -> None:
+        if index_dirty:
+            _save_build_index(repo, build_index)
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=20) as client:
+            for page in range(1, 4):
+                resp = await client.get(
+                    f"{_GITHUB_API}/repos/{repo}/releases",
+                    headers=headers,
+                    params={"per_page": 100, "page": page},
+                )
+                resp.raise_for_status()
+                releases = resp.json()
+                if not releases:
+                    break
+                for release in releases:
+                    tag = release.get("tag_name", "")
+                    if not tag.startswith(tag_prefix) or not tag.endswith("-global"):
+                        continue
+                    release_build = build_index.get(tag)
+                    if release_build is None:
+                        release_build = await _resolve_release_build(release, repo, headers)
+                        if release_build:
+                            build_index[tag] = release_build
+                            index_dirty = True
+                    if release_build == target_build:
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        tag_cache.write_text(tag)
+                        logger.info(
+                            "found GitHub release %s for version %s via build match (build=%s)",
+                            tag, app_version, target_build,
+                        )
+                        _flush_index()
+                        try:
+                            from app.crashguard.config import get_crashguard_settings as _gs
+                            _keep = _gs().github_cache_keep_versions
+                        except Exception:
+                            _keep = _GITHUB_CACHE_KEEP_VERSIONS
+                        _cleanup_github_cache(_keep)
+                        return tag
+    except Exception as exc:
+        logger.warning("find_release_tag(match_by_build) failed for %s: %s", app_version, exc)
+        _flush_index()
+        return None
+
+    _flush_index()
+    return None
+
+
+async def find_release_tag(
+    app_version: str,
+    allow_fallback: bool = True,
+    repo: str = _DEFAULT_REPO,
+    match_by_build: bool = False,
+) -> Optional[str]:
     """
     查找对应 app_version 的 GitHub release tag（仅 global flavor）。
 
@@ -136,7 +457,15 @@ async def find_release_tag(app_version: str, allow_fallback: bool = True, repo: 
     libapp.so 每 build 重新 AOT 编译，BuildId 不同。fallback 用最近 release 的 libflutter.so，
     BuildId 仍能匹配，能解出 Dart engine / GC 帧；libapp.so 自然 BuildId 不对会跳过——安全。
     结果缓存到本地，避免每次调 API。
+
+    match_by_build=True 时改走"按真实 app build 号精确匹配"（native app 仓库的 tag
+    后缀是粗粒度冻结号，不是真实 build 号，见 _find_release_tag_by_build），永远
+    忽略 allow_fallback，不做任何跨 build 回落——flutter 调用点不传这个参数，
+    以下 tag 前缀匹配逻辑逐字节不变。
     """
+    if match_by_build:
+        return await _find_release_tag_by_build(app_version, repo=repo)
+
     prefix = _version_to_tag_prefix(app_version)
     if not prefix:
         return None
@@ -409,33 +738,53 @@ async def get_ios_dsyms_dir(
     # native 是不安全的——用错 build 的 dSYM 查地址不会报错，只会静默解出一个"看起来
     # 合理但实际上完全错误"的符号（2026-07-23 生产实测：3 个不同 build、不同地址的
     # jank issue 全部被误判成同一个 "main"，因为都 fallback 到了同一个无关 release）。
-    allow_fallback = asset_name != _ASSET_IOS_DSYM_NATIVE
-    tag = await find_release_tag(app_version, repo=repo, allow_fallback=allow_fallback)
+    #
+    # 2026-07-24 修复：native 分支进一步改按真实 app build 号精确匹配 release
+    # （而不是"猜 tag 后缀 == build 号"，那套对 native 仓库根本对不上），并在解压后
+    # 加一道运行期校验闸门——见下方 _dsym_bundle_build。
+    is_native = asset_name == _ASSET_IOS_DSYM_NATIVE
+    allow_fallback = not is_native
+    tag = await find_release_tag(
+        app_version, repo=repo, allow_fallback=allow_fallback, match_by_build=is_native,
+    )
     if not tag:
         return None
 
     # 不同 asset_name 解压到不同子目录，避免 flutter/native 复用同一 tag 时互相覆盖
     cache_dir = _tag_cache_dir(tag) / "ios" / asset_name
     marker = cache_dir / ".extracted"
-    if marker.exists():
-        return str(cache_dir)
+    if not marker.exists():
+        zip_path = cache_dir / asset_name
+        result = await _download_asset(tag, asset_name, zip_path, repo=repo)
+        if not result:
+            return None
 
-    zip_path = cache_dir / asset_name
-    result = await _download_asset(tag, asset_name, zip_path, repo=repo)
-    if not result:
-        return None
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(cache_dir)
+            zip_path.unlink(missing_ok=True)
+            marker.touch()
+            logger.info("iOS dSYMs extracted to %s (tag=%s, shared by app_version=%s)",
+                        cache_dir, tag, app_version)
+        except Exception as exc:
+            logger.warning("failed to extract iOS dSYMs: %s", exc)
+            return None
 
-    try:
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(cache_dir)
-        zip_path.unlink(missing_ok=True)
-        marker.touch()
-        logger.info("iOS dSYMs extracted to %s (tag=%s, shared by app_version=%s)",
-                    cache_dir, tag, app_version)
-        return str(cache_dir)
-    except Exception as exc:
-        logger.warning("failed to extract iOS dSYMs: %s", exc)
-        return None
+    if is_native:
+        parsed = _parse_semver_build(app_version)
+        if not parsed:
+            return None
+        _, target_build = parsed
+        actual_build = _dsym_bundle_build(cache_dir)
+        if actual_build != target_build:
+            logger.warning(
+                "iOS native dSYM build mismatch after extraction: expected build=%s, got=%s "
+                "(tag=%s, app_version=%s) — refusing to symbolicate to avoid false-positive symbols",
+                target_build, actual_build, tag, app_version,
+            )
+            return None
+
+    return str(cache_dir)
 
 
 def _find_uploaded_android_mapping(app_version: str) -> Optional[str]:
@@ -459,7 +808,10 @@ async def get_android_mapping(app_version: str, repo: str = _DEFAULT_REPO) -> Op
     if uploaded:
         return uploaded
 
-    tag = await find_release_tag(app_version, repo=repo)
+    # native(4.0) 走按真实 build 号精确匹配（同 iOS native 分支根因，见
+    # get_ios_dsyms_dir 上方注释）；flutter（repo==_DEFAULT_REPO）行为不变。
+    is_native = repo != _DEFAULT_REPO
+    tag = await find_release_tag(app_version, repo=repo, match_by_build=is_native)
     if not tag:
         return None
 
@@ -555,7 +907,9 @@ async def get_android_native_symbols_dir(app_version: str, repo: str = _DEFAULT_
     if uploaded:
         return uploaded
 
-    tag = await find_release_tag(app_version, repo=repo)
+    # native(4.0) 走按真实 build 号精确匹配，理由同 get_android_mapping。
+    is_native = repo != _DEFAULT_REPO
+    tag = await find_release_tag(app_version, repo=repo, match_by_build=is_native)
     if not tag:
         return None
 

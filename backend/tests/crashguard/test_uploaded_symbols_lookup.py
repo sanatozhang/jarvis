@@ -109,7 +109,7 @@ async def test_get_ios_dsyms_dir_falls_back_to_github_when_no_uploaded_package(m
 
     called = {}
 
-    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO, match_by_build=False):
         called["hit"] = True
         return None
 
@@ -130,7 +130,7 @@ async def test_get_ios_dsyms_dir_disallows_fallback_for_native_asset(monkeypatch
 
     captured = {}
 
-    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO, match_by_build=False):
         captured["allow_fallback"] = allow_fallback
         return None
 
@@ -166,7 +166,7 @@ async def test_get_android_mapping_falls_back_to_github_when_no_uploaded_package
 
     called = {}
 
-    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO, match_by_build=False):
         called["hit"] = True
         return None
 
@@ -209,7 +209,7 @@ async def test_get_dart_symbols_dir_falls_back_to_github_when_no_uploaded_packag
 
     called = {}
 
-    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO, match_by_build=False):
         called["hit"] = True
         return None
 
@@ -265,7 +265,7 @@ async def test_get_android_native_symbols_dir_falls_back_to_github_when_no_uploa
 
     called = {}
 
-    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO, match_by_build=False):
         called["hit"] = True
         return None
 
@@ -302,7 +302,7 @@ async def test_get_android_native_symbols_dir_falls_back_to_github_when_uploaded
 
     called = {}
 
-    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO):
+    async def fake_find_release_tag(app_version, allow_fallback=True, repo=G._DEFAULT_REPO, match_by_build=False):
         called["hit"] = True
         return None
 
