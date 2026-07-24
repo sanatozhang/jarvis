@@ -5,9 +5,9 @@ import { useEffect, useRef, useState } from "react";
 import { Toast } from "@/components/Toast";
 import {
   getOncallSchedule, getOncallCurrent, updateOncallSchedule,
-  getOncallTickets, resolveOncallTicket, getOncallStats, getOncallFeishuTickets, resolveFeishuTicket,
+  getOncallTickets, resolveOncallTicket, getOncallStats, getOncallWeekGroups, getOncallFeishuTickets, resolveFeishuTicket,
   createTask,
-  type EscalatedTicket, type OncallWeekStat, type Issue,
+  type EscalatedTicket, type OncallWeekStat, type OncallWeekGroupEntry, type Issue,
 } from "@/lib/api";
 
 const S = {
@@ -81,6 +81,11 @@ export default function OncallPage() {
   const [weekStats, setWeekStats] = useState<OncallWeekStat[]>([]);
   const [tab, setTab] = useState<"tickets" | "stats">("tickets");
 
+  // 2026-07-24：周→组的权威映射(后端排班快照优先，查不到才现算)，替代前端本地
+  // 重新实现一遍取模逻辑——避免"新增/删除值班组"时前端和后端各算一套导致不一致。
+  const [weekGroups, setWeekGroups] = useState<OncallWeekGroupEntry[]>([]);
+  const [currentGroupIndexFromApi, setCurrentGroupIndexFromApi] = useState<number | null>(null);
+
   // Show resolved/done tickets (off by default → only pending + in_progress shown)
   const [showResolved, setShowResolved] = useState(false);
 
@@ -96,13 +101,31 @@ export default function OncallPage() {
   const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   const isAdmin = username === "sanato";
 
+  // 优先用后端算好的 group_index(排班快照优先，新增/删除组不会让"本周"跳变)；
+  // 缺失时(老后端/加载中)才回退本地公式，与后端的"查表→现算兜底"原则保持一致。
   const currentGroupIdx = (() => {
+    if (currentGroupIndexFromApi !== null) return currentGroupIndexFromApi;
     if (!startDate || groups.length === 0) return -1;
     const start = new Date(startDate);
     const today = new Date();
     const weeks = Math.floor((today.getTime() - start.getTime()) / (7 * 86400000));
     return weeks % groups.length;
   })();
+
+  // week_num → group_index 查表(来自 /oncall/week-groups)，供按历史日期归组用。
+  const weekNumToGroupIdx = (() => {
+    const m = new Map<number, number>();
+    for (const w of weekGroups) m.set(w.week_num, w.group_index);
+    return m;
+  })();
+  // 按日期解析归属组：优先查后端权威映射，查不到(日期早于本次上线覆盖范围，或
+  // 数据还没加载完)才回退本地取模公式——与后端"查表→现算兜底"的原则保持一致。
+  const resolveGroupForDate = (dateStr: string): number => {
+    if (!startDate || groups.length === 0) return -1;
+    const wn = weekNum(dateStr, startDate);
+    const fromMap = weekNumToGroupIdx.get(wn);
+    return fromMap !== undefined ? fromMap : weekGroupIndex(dateStr, startDate, groups.length);
+  };
 
   // Most recent week_num for a group (for the current group this is the current week)
   const latestWeekForGroup = (gi: number): number | null => {
@@ -116,18 +139,21 @@ export default function OncallPage() {
       setGroups(sched.groups.map((g) => g.members));
       setStartDate(sched.start_date || new Date().toISOString().slice(0, 10));
       setCurrentMembers(curr.members);
+      setCurrentGroupIndexFromApi(typeof curr.group_index === "number" ? curr.group_index : null);
     } catch (e: any) { setToast({ msg: e.message, type: "error" }); }
   };
 
   const loadTickets = async () => {
     setTicketsLoading(true);
     try {
-      const [tkRes, statsRes] = await Promise.all([
+      const [tkRes, statsRes, weekGroupsRes] = await Promise.all([
         getOncallTickets(),  // weeks=0, fetch all
         getOncallStats(),
+        getOncallWeekGroups(),
       ]);
       setAllTickets(tkRes.tickets);
       setWeekStats(statsRes.weeks);
+      setWeekGroups(weekGroupsRes.weeks);
     } catch (e: any) { setToast({ msg: e.message, type: "error" }); }
     finally { setTicketsLoading(false); }
   };
@@ -179,7 +205,7 @@ export default function OncallPage() {
   // Filter tickets based on selection
   const filteredTickets = allTickets.filter((tk) => {
     if (selectedGroup < 0 || !startDate || groups.length === 0) return false;
-    const gi = weekGroupIndex(tk.escalated_at, startDate, groups.length);
+    const gi = resolveGroupForDate(tk.escalated_at);
     if (gi !== selectedGroup) return false;
     if (selectedWeek !== null) {
       return weekNum(tk.escalated_at, startDate) === selectedWeek;
@@ -276,7 +302,7 @@ export default function OncallPage() {
   const groupTicketCount = (gi: number) => {
     const wk = latestWeekForGroup(gi);
     const escalated = allTickets.filter((tk) =>
-      weekGroupIndex(tk.escalated_at, startDate, groups.length) === gi
+      resolveGroupForDate(tk.escalated_at) === gi
       && tk.escalation_status !== "resolved"
       && (wk === null || weekNum(tk.escalated_at, startDate) === wk)
     ).length;

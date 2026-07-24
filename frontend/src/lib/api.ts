@@ -635,7 +635,17 @@ export const fetchUsers = () => request<UserListItem[]>("/users");
 
 export interface OncallGroup { group_index: number; members: string[]; }
 
-export const getOncallCurrent = () => request<{ members: string[]; count: number }>("/oncall/current");
+export const getOncallCurrent = () => request<{ members: string[]; count: number; group_index?: number }>("/oncall/current");
+
+export interface OncallWeekGroupEntry {
+  week_num: number;
+  group_index: number;
+  members: string[];
+  week_start: string;
+  week_end: string;
+}
+export const getOncallWeekGroups = () =>
+  request<{ weeks: OncallWeekGroupEntry[]; current_week_num: number }>("/oncall/week-groups");
 export const getOncallSchedule = () => request<{ groups: OncallGroup[]; start_date: string; total_groups: number }>("/oncall/schedule");
 export const updateOncallSchedule = (groups: string[][], startDate: string, username: string) =>
   request<any>(`/oncall/schedule?username=${encodeURIComponent(username)}`, {

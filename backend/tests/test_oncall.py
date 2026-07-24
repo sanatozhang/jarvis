@@ -38,11 +38,13 @@ async def test_update_schedule_non_admin(client):
 from datetime import date
 
 
-def test_resolve_duty_week_current_week():
+async def test_resolve_duty_week_current_week(client):
+    """client fixture 只是为了让 db.get_session() 指向测试内存库(resolve_duty_week
+    2026-07-24 起会查排班快照表)；这里没有任何快照行，全部现算兜底，行为与改造前一致。"""
     from app.api.oncall import resolve_duty_week
     groups = [{"members": ["a@x.com"]}, {"members": ["b@x.com"]}]
     # start 2026-06-01, today 2026-06-25 → 24 天 → week 3 → 3%2=1 → b 当周值周
-    info = resolve_duty_week(groups, "2026-06-01", "B@x.com", date(2026, 6, 25))
+    info = await resolve_duty_week(groups, "2026-06-01", "B@x.com", date(2026, 6, 25))
     assert info is not None
     assert info["group_index"] == 1
     assert info["week_num"] == 3
@@ -52,11 +54,11 @@ def test_resolve_duty_week_current_week():
     assert info["partners"] == []
 
 
-def test_resolve_duty_week_most_recent_past():
+async def test_resolve_duty_week_most_recent_past(client):
     from app.api.oncall import resolve_duty_week
     groups = [{"members": ["a@x.com", "c@x.com"]}, {"members": ["b@x.com"]}]
     # a 在 group 0；today week 3 → a 最近值周是 week 2（2026-06-15）
-    info = resolve_duty_week(groups, "2026-06-01", "a@x.com", date(2026, 6, 25))
+    info = await resolve_duty_week(groups, "2026-06-01", "a@x.com", date(2026, 6, 25))
     assert info["group_index"] == 0
     assert info["week_num"] == 2
     assert info["is_current"] is False
@@ -64,15 +66,116 @@ def test_resolve_duty_week_most_recent_past():
     assert info["partners"] == ["c@x.com"]
 
 
-def test_resolve_duty_week_not_member():
+async def test_resolve_duty_week_not_member(client):
     from app.api.oncall import resolve_duty_week
     groups = [{"members": ["a@x.com"]}]
-    assert resolve_duty_week(groups, "2026-06-01", "nobody@x.com", date(2026, 6, 25)) is None
-    assert resolve_duty_week([], "2026-06-01", "a@x.com", date(2026, 6, 25)) is None
-    assert resolve_duty_week(groups, "", "a@x.com", date(2026, 6, 25)) is None
+    assert await resolve_duty_week(groups, "2026-06-01", "nobody@x.com", date(2026, 6, 25)) is None
+    assert await resolve_duty_week([], "2026-06-01", "a@x.com", date(2026, 6, 25)) is None
+    assert await resolve_duty_week(groups, "", "a@x.com", date(2026, 6, 25)) is None
 
 
 from unittest.mock import patch, AsyncMock
+
+
+# ── 排班快照表：2026-07-24 核心回归 ──────────────────────────────────────────
+
+async def test_adding_group_does_not_change_current_week(client):
+    """核心回归：复现线上 bug——新增一个值班组不应该改变本周已经在进行中的值班
+    归属。原 bug：7 组时本周是 chance/sanato.zhang（14 周 % 7 == 0），管理员新增
+    第 8 组后，本周瞬间变成 jason.shao/victor（14 % 8 == 6），因为"当前组数"是
+    实时现算的分母。"""
+    import app.db.database as db_mod
+    from datetime import date, timedelta
+
+    await db_mod.upsert_user("sanato", feishu_email="sanato@plaud.ai", role="admin")
+
+    today = date.today()
+    # 14 周前的 start_date，与线上复现数据同构：14%7=0（g0），14%8=6（g6）
+    start = today - timedelta(weeks=14)
+    groups_7 = [{"members": [f"g{i}@x.com"]} for i in range(7)]
+
+    resp = await client.put("/api/oncall/schedule", params={"username": "sanato"}, json={
+        "groups": groups_7, "start_date": start.isoformat(),
+    })
+    assert resp.status_code == 200
+
+    before = await client.get("/api/oncall/current")
+    assert before.status_code == 200
+    before_members = before.json()["members"]
+    assert before_members == ["g0@x.com"]  # 14 % 7 == 0，回归基线
+
+    # 新增第 8 组（追加到末尾），start_date 不变——这正是触发线上 bug 的操作
+    groups_8 = groups_7 + [{"members": ["g7@x.com"]}]
+    resp2 = await client.put("/api/oncall/schedule", params={"username": "sanato"}, json={
+        "groups": groups_8, "start_date": start.isoformat(),
+    })
+    assert resp2.status_code == 200
+
+    after = await client.get("/api/oncall/current")
+    assert after.status_code == 200
+    # 关键断言：本周归属必须保持不变，不能因为组数变化跳到别的组（旧 bug 会跳到 g6）
+    assert after.json()["members"] == before_members == ["g0@x.com"]
+    assert after.json()["group_index"] == 0
+
+
+async def test_future_weeks_regenerated_with_new_group_count(client):
+    """本周之后的未来周次，组配置变化后应该按新组数重新生成映射（未来是可以
+    改的，只有本周及历史不能变）。"""
+    import app.db.database as db_mod
+    from datetime import date, timedelta
+
+    await db_mod.upsert_user("sanato", feishu_email="sanato@plaud.ai", role="admin")
+
+    today = date.today()
+    start = today - timedelta(weeks=14)
+    groups_7 = [{"members": [f"g{i}@x.com"]} for i in range(7)]
+    await client.put("/api/oncall/schedule", params={"username": "sanato"}, json={
+        "groups": groups_7, "start_date": start.isoformat(),
+    })
+
+    groups_8 = groups_7 + [{"members": ["g7@x.com"]}]
+    resp = await client.put("/api/oncall/schedule", params={"username": "sanato"}, json={
+        "groups": groups_8, "start_date": start.isoformat(),
+    })
+    assert resp.status_code == 200
+
+    # 下周（week_num=15）按 8 组计算：15 % 8 == 7 → g7
+    next_week_start = start + timedelta(weeks=15)
+    snap = await db_mod.get_week_assignment(next_week_start)
+    assert snap is not None
+    assert snap["members"] == ["g7@x.com"]
+    assert snap["group_index"] == 7
+
+
+async def test_already_frozen_week_not_overwritten_by_later_edit(client):
+    """已经冻结过的"本周"快照，同一周内再次编辑组配置不应该被覆盖
+    （only_if_missing 语义——防止多次编辑互相打架）。"""
+    import app.db.database as db_mod
+    from datetime import date, timedelta
+
+    await db_mod.upsert_user("sanato", feishu_email="sanato@plaud.ai", role="admin")
+
+    today = date.today()
+    start = today - timedelta(weeks=14)
+    groups_7 = [{"members": [f"g{i}@x.com"]} for i in range(7)]
+    await client.put("/api/oncall/schedule", params={"username": "sanato"}, json={
+        "groups": groups_7, "start_date": start.isoformat(),
+    })
+    current_week_start = start + timedelta(weeks=14)
+    frozen = await db_mod.get_week_assignment(current_week_start)
+    assert frozen is not None
+    assert frozen["members"] == ["g0@x.com"]
+
+    # 同一周内再编辑一次（加第 8、9 组），本周快照不应该变
+    groups_9 = groups_7 + [{"members": ["g7@x.com"]}, {"members": ["g8@x.com"]}]
+    resp = await client.put("/api/oncall/schedule", params={"username": "sanato"}, json={
+        "groups": groups_9, "start_date": start.isoformat(),
+    })
+    assert resp.status_code == 200
+
+    still_frozen = await db_mod.get_week_assignment(current_week_start)
+    assert still_frozen is not None
+    assert still_frozen["members"] == ["g0@x.com"]
 
 
 async def test_my_workload_not_member(client):

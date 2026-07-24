@@ -23,7 +23,7 @@ logger = logging.getLogger("jarvis.api.oncall")
 router = APIRouter()
 
 
-def resolve_duty_week(
+async def resolve_duty_week(
     groups: List[Dict[str, Any]],
     start_date_str: str,
     email: str,
@@ -33,43 +33,36 @@ def resolve_duty_week(
 
     Returns None when there is no schedule, the email is not in any group,
     or the person has not yet had a duty week (start in the future for them).
+
+    2026-07-24：改成从"本周"往回逐周查排班快照表(`db.resolve_week_group`)，找
+    第一个成员列表包含 email 的周次，替代原来"反向取模找 group_index"的公式——
+    旧公式假设 group_index 与成员的对应关系从始至终不变，但组配置一旦被编辑
+    (`save_oncall_groups` 全删全建)，同一个 group_index 可能对应不同的人，快照表
+    按实际成员走则不受这个假设影响。
     """
     if not groups or not start_date_str:
         return None
     email_l = email.strip().lower()
-    group_index = None
-    for i, g in enumerate(groups):
-        members = [m.strip().lower() for m in g.get("members", [])]
-        if email_l in members:
-            group_index = i
-            break
-    if group_index is None:
-        return None
     try:
         start = date.fromisoformat(start_date_str)
     except ValueError:
         return None
 
-    n = len(groups)
     current_week = max(0, (today - start).days // 7)
-    # largest week_num <= current_week with week_num % n == group_index
-    duty = current_week - ((current_week - group_index) % n)
-    if duty < 0:
-        return None
-    week_start = start + timedelta(weeks=duty)
-    week_end = week_start + timedelta(days=6)
-    partners = [
-        m for m in groups[group_index].get("members", [])
-        if m.strip().lower() != email_l
-    ]
-    return {
-        "group_index": group_index,
-        "week_num": duty,
-        "week_start": week_start,
-        "week_end": week_end,
-        "is_current": duty == current_week,
-        "partners": partners,
-    }
+    for wn in range(current_week, -1, -1):
+        info = await db.resolve_week_group(wn, groups, start)
+        members_l = [m.strip().lower() for m in info["members"]]
+        if email_l in members_l:
+            partners = [m for m in info["members"] if m.strip().lower() != email_l]
+            return {
+                "group_index": info["group_index"],
+                "week_num": wn,
+                "week_start": info["week_start"],
+                "week_end": info["week_end"],
+                "is_current": wn == current_week,
+                "partners": partners,
+            }
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +83,37 @@ class OncallScheduleInput(BaseModel):
 @router.get("/current")
 async def get_current_oncall():
     """Get this week's oncall members."""
-    members = await db.get_current_oncall()
-    return {"members": members, "count": len(members)}
+    info = await db.get_current_oncall_info()
+    return {"members": info["members"], "count": len(info["members"]), "group_index": info["group_index"]}
+
+
+@router.get("/week-groups")
+async def get_week_groups():
+    """周 → 值班组的完整映射(从 week 0 到当前周)，优先查排班快照表，查不到才现算。
+
+    供前端替换本地"重算取模"逻辑用——按历史日期给工单归组/高亮当前组时，不再
+    自己用 JS 重新实现一遍取模公式，直接查这个权威列表。
+    """
+    groups = await db.get_oncall_groups()
+    start_date_str = await db.get_oncall_config("start_date", "")
+    if not start_date_str or not groups:
+        return {"weeks": [], "current_week_num": 0}
+
+    start = date.fromisoformat(start_date_str)
+    today = date.today()
+    current_week_num = max(0, (today - start).days // 7)
+
+    weeks = []
+    for wn in range(0, current_week_num + 1):
+        info = await db.resolve_week_group(wn, groups, start)
+        weeks.append({
+            "week_num": wn,
+            "group_index": info["group_index"],
+            "members": info["members"],
+            "week_start": info["week_start"].isoformat(),
+            "week_end": info["week_end"].isoformat(),
+        })
+    return {"weeks": weeks, "current_week_num": current_week_num}
 
 
 @router.get("/schedule")
@@ -109,6 +131,65 @@ async def get_schedule():
 # ---------------------------------------------------------------------------
 # Write endpoints (admin only — enforced by frontend, checked by username)
 # ---------------------------------------------------------------------------
+_ASSIGNMENT_HORIZON_WEEKS = 52  # 每次编辑往未来预生成多少周的快照(经验值，写入量小)
+
+
+async def _regenerate_week_assignments(
+    old_groups: List[Dict[str, Any]],
+    old_start_date_str: str,
+    new_groups: List[List[str]],
+    new_start_date_str: str,
+) -> None:
+    """组配置变化时重算排班快照(2026-07-24)。
+
+    1) 冻结"本周"：本周从没被冻结过时才写入一次——若有旧配置，按旧配置算出本周
+       该是谁（保证这次编辑不会把正在进行中的本周值班顶替掉）；若是首次配置
+       （没有旧配置），按新配置算（没有"旧值"可保护）。`only_if_missing=True`，
+       已经冻结过的本周不会因为同一周内再编辑而被重新计算。
+    2) 未来 `_ASSIGNMENT_HORIZON_WEEKS` 周：一律按新配置覆盖生成——未来周次在
+       轮到之前都可以被后续编辑改变，这是设计上允许的。
+    """
+    today = date.today()
+
+    if old_groups and old_start_date_str:
+        try:
+            old_start = date.fromisoformat(old_start_date_str)
+            old_week_num = max(0, (today - old_start).days // 7)
+            old_info = await db.resolve_week_group(old_week_num, old_groups, old_start)
+            await db.upsert_week_assignment(
+                old_info["week_start"], old_info["week_end"], old_info["group_index"],
+                old_info["members"], only_if_missing=True,
+            )
+        except ValueError:
+            pass
+
+    if not new_groups or not new_start_date_str:
+        return
+    new_groups_dicts = [{"group_index": i, "members": m} for i, m in enumerate(new_groups)]
+    try:
+        new_start = date.fromisoformat(new_start_date_str)
+    except ValueError:
+        return
+    new_week_num_today = max(0, (today - new_start).days // 7)
+
+    if not (old_groups and old_start_date_str):
+        # 首次配置：本周也按新配置生成(insert-only-if-missing，避免覆盖上面刚写的)
+        info = await db.resolve_week_group(new_week_num_today, new_groups_dicts, new_start)
+        await db.upsert_week_assignment(
+            info["week_start"], info["week_end"], info["group_index"], info["members"],
+            only_if_missing=True,
+        )
+
+    for offset in range(1, _ASSIGNMENT_HORIZON_WEEKS + 1):
+        wn = new_week_num_today + offset
+        idx = wn % len(new_groups)
+        week_start = new_start + timedelta(weeks=wn)
+        week_end = week_start + timedelta(days=6)
+        await db.upsert_week_assignment(
+            week_start, week_end, idx, new_groups[idx], only_if_missing=False,
+        )
+
+
 @router.put("/schedule")
 async def update_schedule(
     req: OncallScheduleInput,
@@ -119,9 +200,16 @@ async def update_schedule(
     if not user or user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Only admins can edit oncall schedule")
 
+    # 2026-07-24：改动前先读旧配置，用于"冻结本周"——必须在两个写操作之前读，
+    # 否则读到的就已经是这次编辑后的新配置，没法保护正在进行中的本周值班。
+    old_groups = await db.get_oncall_groups()
+    old_start_date_str = await db.get_oncall_config("start_date", "")
+
     groups = [g.members for g in req.groups]
     await db.save_oncall_groups(groups, created_by=username)
     await db.set_oncall_config("start_date", req.start_date)
+
+    await _regenerate_week_assignments(old_groups, old_start_date_str, groups, req.start_date)
 
     logger.info("Oncall schedule updated by %s: %d groups, start=%s", username, len(groups), req.start_date)
     return {"status": "ok", "groups": len(groups), "start_date": req.start_date}
@@ -225,7 +313,6 @@ async def get_oncall_stats():
 
     oncall_start = date.fromisoformat(start_date_str)
     today = date.today()
-    total_groups = len(groups)
     current_week_num = max(0, (today - oncall_start).days // 7)
 
     # Fetch ALL escalated tickets
@@ -242,19 +329,22 @@ async def get_oncall_stats():
         week_tickets.setdefault(wn, []).append(tk)
 
     # Build week stats (most recent first, up to 12 weeks)
+    # 2026-07-24：每周的 group_index/members 改为优先查排班快照表(历史/当前周
+    # 固定不受后续组数变化影响)，查不到才现算 wn % total_groups 兜底。
     week_stats = []
     start_week = max(0, current_week_num - 11)
     for wn in range(current_week_num, start_week - 1, -1):
-        gi = wn % total_groups
-        w_start = oncall_start + timedelta(weeks=wn)
-        w_end = w_start + timedelta(days=6)
+        info = await db.resolve_week_group(wn, groups, oncall_start)
+        gi = info["group_index"]
+        w_start = info["week_start"]
+        w_end = info["week_end"]
         tks = week_tickets.get(wn, [])
         in_progress = sum(1 for t in tks if t.get("escalation_status") != "resolved")
         resolved = sum(1 for t in tks if t.get("escalation_status") == "resolved")
         week_stats.append({
             "week_num": wn,
             "group_index": gi,
-            "members": groups[gi]["members"],
+            "members": info["members"],
             "week_start": w_start.isoformat(),
             "week_end": w_end.isoformat(),
             "is_current": wn == current_week_num,
@@ -282,7 +372,7 @@ async def get_my_workload(email: str = Query(..., description="Oncall member ema
 
     groups = await db.get_oncall_groups()
     start_date_str = await db.get_oncall_config("start_date", "")
-    info = resolve_duty_week(groups, start_date_str, email, date.today())
+    info = await resolve_duty_week(groups, start_date_str, email, date.today())
     if info is None:
         raise HTTPException(status_code=404, detail=f"{email} is not an oncall member or no schedule configured")
 

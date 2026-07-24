@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, Boolean, Float, func, text
+from sqlalchemy import Column, Date, DateTime, Integer, String, Text, Boolean, Float, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -176,6 +176,35 @@ class OncallConfigRecord(Base):
 
     key = Column(String(64), primary_key=True)
     value = Column(Text, default="")
+
+
+class OncallWeekAssignmentRecord(Base):
+    """排班快照(2026-07-24)：某一周实际值班归属的历史真相源。
+
+    背景：`get_current_oncall()` 原来每次都用"当前组数"实时现算
+    `weeks_elapsed % len(groups)`，新增/删除值班组会让分母瞬间改变，导致本周
+    乃至全部历史周次的归属被一次编辑整体重新洗牌（102 实测：7 组时 14 周 %7=0
+    对应正确的 chance/sanato.zhang，改成 8 组后 14%8=6 变成 jason.shao/victor）。
+
+    这张表把"周 → 值班组"的映射从"现算"变成"写入即固定"：组配置变化时只重算
+    当前周之后的未来周次（`_regenerate_week_assignments`，见 api/oncall.py），
+    已经生成过的历史/当前周永远不会被后续编辑覆盖。
+
+    `week_start_date` 沿用全代码库一致的"非自然周"定义：
+    `start_date + timedelta(weeks=(某天-start_date).days//7)`，不对齐自然周一。
+
+    `members_json` 存的是该周实际值班成员的邮箱快照（不是仅存 group_index）——
+    `save_oncall_groups()` 是全删全建，组编辑后 group_index 对应的成员可能变化，
+    只存索引会让"历史固定"变成假的固定；`group_index` 保留一列仅供展示参考，
+    读取"谁值班"永远以 `members_json` 为准。
+    """
+    __tablename__ = "oncall_week_assignments"
+
+    week_start_date = Column(Date, primary_key=True)
+    week_end_date = Column(Date, nullable=False)
+    group_index = Column(Integer, default=0)
+    members_json = Column(Text, default="[]")
+    generated_at = Column(DateTime, default=datetime.utcnow)
 
 
 class GoldenSampleRecord(Base):
@@ -1437,23 +1466,93 @@ async def get_oncall_config(key: str, default: str = "") -> str:
         return record.value if record else default
 
 
-async def get_current_oncall() -> List[str]:
-    """Get the current week's oncall members based on rotation."""
+async def get_week_assignment(week_start: date) -> Optional[Dict[str, Any]]:
+    """查排班快照表某一周,查不到返回 None(调用方应回退现算)。"""
+    async with get_session() as session:
+        record = await session.get(OncallWeekAssignmentRecord, week_start)
+        if record is None:
+            return None
+        return {
+            "week_start": record.week_start_date,
+            "week_end": record.week_end_date,
+            "group_index": record.group_index,
+            "members": json.loads(record.members_json) if record.members_json else [],
+        }
+
+
+async def upsert_week_assignment(
+    week_start: date, week_end: date, group_index: int, members: List[str],
+    *, only_if_missing: bool = False,
+) -> None:
+    """写入/覆盖某一周的排班快照。
+
+    `only_if_missing=True` 时,已有行就跳过不覆盖——用于"冻结当前周"这个语义:
+    组配置变化时,若本周从没被冻结过才写入一次,已经冻结过的本周不会因为同一周内
+    再次编辑而被重新计算。
+    """
+    async with get_session() as session:
+        existing = await session.get(OncallWeekAssignmentRecord, week_start)
+        if existing is not None:
+            if only_if_missing:
+                return
+            existing.week_end_date = week_end
+            existing.group_index = group_index
+            existing.members_json = json.dumps(members, ensure_ascii=False)
+            existing.generated_at = datetime.utcnow()
+        else:
+            session.add(OncallWeekAssignmentRecord(
+                week_start_date=week_start, week_end_date=week_end,
+                group_index=group_index, members_json=json.dumps(members, ensure_ascii=False),
+            ))
+        await session.commit()
+
+
+async def resolve_week_group(week_num: int, groups: List[Dict[str, Any]], start: date) -> Dict[str, Any]:
+    """给定 week_num,返回该周实际值班组 {group_index, members, week_start, week_end}。
+
+    优先查排班快照表(历史/当前周一旦生成即固定,不受后续组数变化影响);查不到
+    (本次功能上线之前的历史空洞,或还没被 `_regenerate_week_assignments` 覆盖到
+    的周次)才现算 `week_num % len(groups)` 兜底。这是全代码库"周→组"计算的唯一
+    权威入口，`get_current_oncall`/`/stats`/`resolve_duty_week` 均应改为调用此函数，
+    不再各自重复实现取模公式。
+    """
+    week_start = start + timedelta(weeks=week_num)
+    week_end = week_start + timedelta(days=6)
+    snap = await get_week_assignment(week_start)
+    if snap is not None:
+        return {
+            "group_index": snap["group_index"], "members": snap["members"],
+            "week_start": week_start, "week_end": week_end,
+        }
+    idx = week_num % len(groups) if groups else 0
+    return {
+        "group_index": idx, "members": groups[idx]["members"] if groups else [],
+        "week_start": week_start, "week_end": week_end,
+    }
+
+
+async def get_current_oncall_info() -> Dict[str, Any]:
+    """本周值班组完整信息(members + group_index),供 `/current` 接口用。"""
     groups = await get_oncall_groups()
     if not groups:
-        return []
+        return {"members": [], "group_index": -1}
     start_date_str = await get_oncall_config("start_date", "")
     if not start_date_str:
-        return groups[0]["members"] if groups else []
-    from datetime import date
+        return {"members": groups[0]["members"], "group_index": 0}
     try:
         start = date.fromisoformat(start_date_str)
         today = date.today()
-        weeks_elapsed = (today - start).days // 7
-        idx = weeks_elapsed % len(groups)
-        return groups[idx]["members"]
+        week_num = max(0, (today - start).days // 7)
+        info = await resolve_week_group(week_num, groups, start)
+        return {"members": info["members"], "group_index": info["group_index"]}
     except Exception:
-        return groups[0]["members"] if groups else []
+        return {"members": groups[0]["members"], "group_index": 0}
+
+
+async def get_current_oncall() -> List[str]:
+    """Get the current week's oncall members based on rotation(优先查排班快照)。"""
+    info = await get_current_oncall_info()
+    return info["members"]
 
 
 # ---------------------------------------------------------------------------
