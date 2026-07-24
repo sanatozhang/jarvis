@@ -1,6 +1,8 @@
 """Tests for crashguard.api.crash — issue detail generation field."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -186,3 +188,86 @@ async def test_get_top_search_matches_top_page(patched_session):
     )
     ids_miss = [it["datadog_issue_id"] for it in result_miss["issues"]]
     assert "jank-page-2" not in ids_miss
+
+
+# ── symbols_missing 顶层字段（2026-07-24：符号表丢失 UI 标识）────────────────────
+
+@pytest.mark.asyncio
+async def test_issue_detail_includes_symbols_missing_true(patched_session):
+    """detail response 必须回传顶层 symbols_missing 布尔字段，值与 tags.symbols_missing
+    一致——前端不应该自己解析 tags JSON 字符串。"""
+    from app.crashguard.api.crash import get_issue_detail
+    from app.crashguard.models import CrashIssue
+
+    async with patched_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="jank-symmiss-1",
+            platform="ios",
+            kind="jank",
+            fatality="jank",
+            title="Jank @ Plaud-Global",
+            stack_fingerprint="fpsm1",
+            tags=json.dumps({"symbols_missing": True, "dd_query_attrs": {"app_stack_module": "Plaud-Global"}}),
+        ))
+        await session.commit()
+
+    detail = await get_issue_detail("jank-symmiss-1")
+    assert detail["symbols_missing"] is True
+    # 不应影响已有的 dd_query_attrs（同一份 tags JSON 里两个 key 共存）
+    assert detail["tags"]["dd_query_attrs"] == {"app_stack_module": "Plaud-Global"}
+
+
+@pytest.mark.asyncio
+async def test_issue_detail_symbols_missing_false_when_absent(patched_session):
+    """tags 里没有 symbols_missing key（老数据/未判定）时，顶层字段回退 False，
+    而不是 None/缺失——前端按布尔值直接渲染徽章，不需要额外判空。"""
+    from app.crashguard.api.crash import get_issue_detail
+    from app.crashguard.models import CrashIssue
+
+    async with patched_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="jank-symmiss-2",
+            platform="ios",
+            kind="jank",
+            fatality="jank",
+            title="Jank @ SomeFunc",
+            stack_fingerprint="fpsm2",
+            tags=json.dumps({"dd_query_attrs": {}}),
+        ))
+        await session.commit()
+
+    detail = await get_issue_detail("jank-symmiss-2")
+    assert detail["symbols_missing"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_top_includes_symbols_missing_field(patched_session):
+    """get_top() 的每个 item dict 必须带顶层 symbols_missing 字段（不是内嵌在 tags 字符串里）。"""
+    from datetime import date
+
+    from app.crashguard.api.crash import get_top
+    from app.crashguard.models import CrashIssue, CrashSnapshot
+
+    today = date.today()
+    async with patched_session() as session:
+        session.add(CrashIssue(
+            datadog_issue_id="jank-symmiss-top-1",
+            platform="ANDROID",
+            kind="jank",
+            fatality="jank",
+            title="Jank @ SomeClass",
+            stack_fingerprint="fpsmtop1",
+            tags=json.dumps({"symbols_missing": True}),
+        ))
+        session.add(CrashSnapshot(
+            datadog_issue_id="jank-symmiss-top-1",
+            snapshot_date=today,
+            events_count=3,
+        ))
+        await session.commit()
+
+    result = await get_top(
+        target_date=today, kinds="all", page=1, page_size=40, search="", generation="",
+    )
+    item = next(it for it in result["issues"] if it["datadog_issue_id"] == "jank-symmiss-top-1")
+    assert item["symbols_missing"] is True

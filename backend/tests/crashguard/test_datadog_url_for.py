@@ -58,7 +58,8 @@ def test_jank_url_contains_query_platform_and_raw_datadog_attrs():
     query_str = url.split("query=", 1)[1].split("&", 1)[0]
     decoded = _urlparse.unquote(query_str)
     assert "jank_watchdog_block" in decoded
-    assert "@os.name:ios" in decoded
+    # Datadog `@os.name:` 精确匹配大小写敏感，真实值是 iOS（非小写 ios）
+    assert "@os.name:iOS" in decoded
     assert '@app_stack_module:"RootView"' in decoded
     assert '@app_stack_module_offset:"0x1234"' in decoded
     # title 里符号化后的衍生文本不应该出现在 query 里
@@ -86,6 +87,49 @@ def test_jank_url_omits_window_params_when_window_hours_zero():
 
     url = _datadog_url_for("jank:deadbeef", window_hours=0, kind="jank", title="Jank @ x", platform="ios")
     assert "from_ts=" not in url and "to_ts=" not in url
+
+
+def test_jank_url_os_name_uses_datadog_real_casing_ios():
+    """Datadog `@os.name:` 精确匹配大小写敏感——真实值是 iOS，不是 ios。"""
+    from app.crashguard.api.crash import _datadog_url_for
+    import urllib.parse as _urlparse
+
+    url = _datadog_url_for("jank:deadbeef", window_hours=24, kind="jank", title="", platform="ios")
+    decoded = _urlparse.unquote(url.split("query=", 1)[1].split("&", 1)[0])
+    assert "@os.name:iOS" in decoded
+    assert "@os.name:ios" not in decoded
+
+
+def test_jank_url_os_name_uses_datadog_real_casing_ipados():
+    from app.crashguard.api.crash import _datadog_url_for
+    import urllib.parse as _urlparse
+
+    url = _datadog_url_for("jank:deadbeef", window_hours=24, kind="jank", title="", platform="ipados")
+    decoded = _urlparse.unquote(url.split("query=", 1)[1].split("&", 1)[0])
+    assert "@os.name:iPadOS" in decoded
+    assert "@os.name:ipados" not in decoded
+
+
+def test_jank_url_os_name_uses_datadog_real_casing_android():
+    from app.crashguard.api.crash import _datadog_url_for
+    import urllib.parse as _urlparse
+
+    url = _datadog_url_for("jank:deadbeef", window_hours=24, kind="jank", title="", platform="android")
+    decoded = _urlparse.unquote(url.split("query=", 1)[1].split("&", 1)[0])
+    assert "@os.name:Android" in decoded
+    assert "@os.name:android" not in decoded
+
+
+@pytest.mark.parametrize("platform", ["", "flutter"])
+def test_jank_url_omits_os_name_filter_for_unknown_platform(platform):
+    """空字符串或映射表未覆盖的平台（如 flutter）：不加 @os.name 过滤，
+    宁可返回更宽泛的结果也不要因为大小写猜错/映射表没覆盖到而 0 命中。"""
+    from app.crashguard.api.crash import _datadog_url_for
+    import urllib.parse as _urlparse
+
+    url = _datadog_url_for("jank:deadbeef", window_hours=24, kind="jank", title="", platform=platform)
+    decoded = _urlparse.unquote(url.split("query=", 1)[1].split("&", 1)[0])
+    assert "@os.name" not in decoded
 
 
 @pytest.fixture

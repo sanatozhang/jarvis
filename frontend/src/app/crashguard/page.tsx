@@ -1329,6 +1329,11 @@ function CrashguardPageInner() {
                                   🤖 {t("已分析")}
                                 </Badge>
                               )}
+                              {it.symbols_missing && (
+                                <Badge fg={D.warn} bg={D.warnBg}>
+                                  🚫 {t("符号表丢失")}
+                                </Badge>
+                              )}
                               {blocksAutoPr && (
                                 <span title={`${t("可行度低于自动 PR 阈值")}: ${(feasibility * 100).toFixed(0)}% < ${(autoPrThreshold * 100).toFixed(0)}%`}>
                                   <Badge fg={D.warn} bg={D.warnBg}>
@@ -2298,7 +2303,14 @@ function DetailDrawer({
               </Section>
             )}
 
-            <Section title={t("代表性堆栈")}>
+            <Section
+              title={t("代表性堆栈")}
+              right={detail.symbols_missing ? (
+                <Badge fg={D.warn} bg={D.warnBg}>
+                  🚫 {t("符号表丢失")}
+                </Badge>
+              ) : undefined}
+            >
               {(() => {
                 const variants = (detail.stack_variants || []).filter((v) => v && v.representative_stack);
                 const hasVariants = variants.length > 1;
@@ -2354,6 +2366,11 @@ function DetailDrawer({
                           </div>
                         )}
                       </>
+                    )}
+                    {detail.symbols_missing && (
+                      <div className="mb-2 text-[11px]" style={{ color: D.text2 }}>
+                        {t("dSYM 未上传，堆栈未符号化（原始地址仅供参考）")}
+                      </div>
                     )}
                     <pre
                       className="rounded p-3 text-xs font-mono overflow-auto whitespace-pre"

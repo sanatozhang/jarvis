@@ -876,3 +876,175 @@ async def test_ingest_keeps_placeholder_title_and_stack_when_symbolication_fails
     assert issue.representative_stack == original_stack_trace
     assert issue.prewarm_attempts == 1
     assert issue.prewarm_last_error == ""
+
+
+# ── symbols_missing 判定（2026-07-24：符号表丢失 UI 标识）────────────────────────
+
+@pytest.mark.asyncio
+async def test_ingest_sets_symbols_missing_true_when_ios_dsym_absent(patched_session, monkeypatch):
+    """场景1：get_ios_dsyms_dir 返回 None（确定没有上传/下载到 dSYM）→
+    tags["symbols_missing"] 必须是 True，且不影响已有的 dd_query_attrs key。"""
+    from app.crashguard.services.jank_ingester import ingest_jank_logs
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+    from sqlalchemy import select
+
+    _patch_settings(monkeypatch)
+    _patch_no_op_symbolication_deps(monkeypatch)
+    monkeypatch.setattr(
+        "app.crashguard.services.github_symbols.get_ios_dsyms_dir",
+        AsyncMock(return_value=None),
+    )
+
+    event = _raw_event({
+        "os": {"name": "iOS"},
+        "has_app_frame": True,
+        "app_stack_module": "Plaud-Global",
+        "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "stack_trace": "0   Plaud-Global 0x... + 123",
+        "version": "4.0.201-941",
+    })
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page",
+        AsyncMock(return_value={"data": [event], "next_cursor": None}),
+    )
+
+    await ingest_jank_logs(now=datetime(2026, 7, 20, 12, 0, 0))
+
+    async with get_session() as s:
+        issue = (await s.execute(select(CrashIssue))).scalar_one()
+
+    tags = json.loads(issue.tags)
+    assert tags["symbols_missing"] is True
+    # dd_query_attrs（_upsert_jank_event 建 issue 时已写入）必须原样保留，不能被
+    # symbols_missing 的读-改-写覆盖丢失
+    assert tags["dd_query_attrs"] == {
+        "app_stack_module": "Plaud-Global",
+        "app_stack_module_offset": "0x0000000000e31758",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ingest_sets_symbols_missing_false_when_ios_dsym_present(patched_session, monkeypatch):
+    """场景2：get_ios_dsyms_dir 返回非 None（符号包存在）→ tags["symbols_missing"] 为 False。"""
+    from app.crashguard.services.jank_ingester import ingest_jank_logs
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+    from sqlalchemy import select
+
+    _patch_settings(monkeypatch)
+    _patch_no_op_symbolication_deps(monkeypatch)
+    monkeypatch.setattr(
+        "app.crashguard.services.github_symbols.get_ios_dsyms_dir",
+        AsyncMock(return_value="/data/symbols/ios/dsym/4.0.201-941/.extracted"),
+    )
+
+    event = _raw_event({
+        "os": {"name": "iOS"},
+        "has_app_frame": True,
+        "app_stack_module": "Plaud-Global",
+        "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "stack_trace": "0   Plaud-Global 0x... + 123",
+        "version": "4.0.201-941",
+    })
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page",
+        AsyncMock(return_value={"data": [event], "next_cursor": None}),
+    )
+
+    await ingest_jank_logs(now=datetime(2026, 7, 20, 12, 0, 0))
+
+    async with get_session() as s:
+        issue = (await s.execute(select(CrashIssue))).scalar_one()
+
+    tags = json.loads(issue.tags)
+    assert tags["symbols_missing"] is False
+
+
+@pytest.mark.asyncio
+async def test_ingest_sets_symbols_missing_true_when_android_mapping_absent(patched_session, monkeypatch):
+    """Android 侧同款判定：get_android_mapping 返回 None → symbols_missing True，
+    与 symbolicate_jank_frame 的 Android 分支实际使用的 getter（get_android_mapping,
+    不是 native_symbols）保持一致。"""
+    from app.crashguard.services.jank_ingester import ingest_jank_logs
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+    from sqlalchemy import select
+
+    _patch_settings(monkeypatch)
+    _patch_no_op_symbolication_deps(monkeypatch)
+    monkeypatch.setattr(
+        "app.crashguard.services.github_symbols.get_android_mapping",
+        AsyncMock(return_value=None),
+    )
+
+    event = _raw_event({
+        "os": {"name": "Android", "version": "14"},
+        "has_app_frame": True,
+        "app_stack_frame": "ai.plaud.android.payment.k.a",
+        "stack_trace": "  at ...",
+        "version": "4.0.201-941",
+    })
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page",
+        AsyncMock(return_value={"data": [event], "next_cursor": None}),
+    )
+
+    await ingest_jank_logs(now=datetime(2026, 7, 20, 12, 0, 0))
+
+    async with get_session() as s:
+        issue = (await s.execute(select(CrashIssue))).scalar_one()
+
+    tags = json.loads(issue.tags)
+    assert tags["symbols_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_does_not_set_symbols_missing_when_detection_raises(patched_session, monkeypatch):
+    """符号包缺失判定函数本身抛异常（网络错误等不确定情况）时，不应该误写
+    symbols_missing=True 或 False——tags 里干脆不出现这个 key。这与"符号化调用本身
+    抛异常"是两条独立路径：这里符号化（symbolicate_jank_frame）成功了，只是紧随其后
+    做 missing 判定的 get_ios_dsyms_dir 调用抛了异常。"""
+    from app.crashguard.services.jank_ingester import ingest_jank_logs
+    from app.crashguard.models import CrashIssue
+    from app.db.database import get_session
+    from sqlalchemy import select
+
+    _patch_settings(monkeypatch)
+    _patch_no_op_symbolication_deps(monkeypatch)
+    monkeypatch.setattr(
+        "app.crashguard.services.github_symbols.get_ios_dsyms_dir",
+        AsyncMock(side_effect=RuntimeError("network timeout")),
+    )
+
+    event = _raw_event({
+        "os": {"name": "iOS"},
+        "has_app_frame": True,
+        "app_stack_module": "Plaud-Global",
+        "app_stack_pc": "0x0000000103e42dd4",
+        "app_stack_module_offset": "0x0000000000e31758",
+        "app_stack_module_base": "0x0000000102f1c000",
+        "stack_trace": "0   Plaud-Global 0x... + 123",
+        "version": "4.0.201-941",
+    })
+    monkeypatch.setattr(
+        "app.crashguard.services.datadog_client.DatadogClient.search_logs_page",
+        AsyncMock(return_value={"data": [event], "next_cursor": None}),
+    )
+
+    await ingest_jank_logs(now=datetime(2026, 7, 20, 12, 0, 0))
+
+    async with get_session() as s:
+        issue = (await s.execute(select(CrashIssue))).scalar_one()
+
+    tags = json.loads(issue.tags)
+    assert "symbols_missing" not in tags
+    # 摄入/符号化本身的其余行为不受影响
+    assert tags["dd_query_attrs"] == {
+        "app_stack_module": "Plaud-Global",
+        "app_stack_module_offset": "0x0000000000e31758",
+    }

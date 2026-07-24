@@ -1070,6 +1070,7 @@ export interface CrashTopItem extends CrashTopItemAnalysisFlag {
   analysis_id?: number | null;
   analysis_feasibility_score?: number | null;
   analysis_confidence?: string;
+  symbols_missing?: boolean;
 }
 
 export interface CrashTopAggregates {
@@ -1182,6 +1183,7 @@ export interface CrashIssueDetail {
   snapshot: CrashSnapshot | Record<string, never>;
   analysis: CrashAnalysis | Record<string, never>;
   pull_requests?: CrashIssuePr[];
+  symbols_missing?: boolean;
 }
 
 export interface CrashIssuePr {

@@ -587,6 +587,12 @@ async def health() -> Dict[str, Any]:
     }
 
 
+# Datadog `@os.name:` 精确匹配大小写敏感，真实值是 iOS/iPadOS/Android（非常规
+# title-case），内部 CrashIssue.platform 入库时已 .lower() 存成 ios/ipados/android，
+# 这里做小写 → Datadog 真实大小写的显式映射（查不到就不加过滤，见 _datadog_url_for）。
+_DD_OS_NAME = {"ios": "iOS", "ipados": "iPadOS", "android": "Android"}
+
+
 def _datadog_url_for(
     issue_id: str,
     window_hours: int = 24,
@@ -629,7 +635,11 @@ def _datadog_url_for(
     if (kind or "").strip().lower() == "jank":
         query = "@category:performance jank_watchdog_block"
         if platform:
-            query += f" @os.name:{platform.strip().lower()}"
+            os_name = _DD_OS_NAME.get(platform.strip().lower())
+            if os_name:
+                query += f" @os.name:{os_name}"
+            # 未知平台：不加 @os.name 过滤，宁可返回更宽泛的结果也不要因为
+            # 大小写猜错/映射表没覆盖到而 0 命中
         for key, value in (dd_query_attrs or {}).items():
             value = (value or "").strip().replace('"', "")
             if value:
@@ -1194,6 +1204,8 @@ async def get_top(
         item["analysis_confidence"] = ana["analysis_confidence"] if ana else ""
         # PR 缺位归因（可观测性抓手）：让用户在 UI 直接看到 issue 为什么没 PR
         item["pr_blocker"] = _compute_pr_blocker(item, pr, ana)
+        # 符号表丢失标识（2026-07-24）：顶层布尔字段，前端不用自己解析 tags JSON
+        item["symbols_missing"] = bool(item_tags.get("symbols_missing"))
 
     out: Dict[str, Any] = {
         "date": target_date.isoformat(),
@@ -1388,6 +1400,7 @@ async def get_issue_detail(
         "representative_stack": issue.representative_stack or "",
         "stack_variants": _safe_load_variants(getattr(issue, "stack_variants", "") or ""),
         "tags": tags,
+        "symbols_missing": bool(tags.get("symbols_missing")),
         "status": issue.status or "open",
         "assignee": getattr(issue, "assignee", "") or "",
         "snapshot": snap_block,

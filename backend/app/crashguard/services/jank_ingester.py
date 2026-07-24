@@ -308,6 +308,50 @@ def _jank_frame_looks_symbolized(result: str, original_frame_text: str) -> bool:
     return True
 
 
+async def _detect_jank_symbols_missing(
+    *, platform: str, symbol_key: str, symbol_profile: str, github_repo: str,
+) -> Optional[bool]:
+    """判定该 (platform, symbol_key) 对应的符号包（iOS dSYM / Android ProGuard mapping）
+    是否确定缺失（2026-07-24，符号表丢失 UI 标识）。
+
+    只有明确拿到 getter 的 `None` 返回值才算"确定缺失"(True)或"确定存在"(False)。
+    调用抛异常（网络错误/超时等不确定情况）时返回 `None`，调用方不应据此更新
+    `tags["symbols_missing"]`——异常 ≠ 缺失，两者语义不同，不能混为一谈。
+
+    这些 getter（`get_ios_dsyms_dir` / `get_android_mapping`）内部都有基于
+    `.extracted` marker 的磁盘缓存，本函数调用时机在 `symbolicate_jank_frame`/
+    `symbolicate_jank_stack` 已经跑过一次之后，大概率是缓存命中，成本很低。
+
+    iOS 的 asset_name 选择逻辑复用 `symbolication._profile_strategy`，与
+    `_symbolicate_jank_frame_ios` 内部选择保持一致（native profile 用
+    Plaud-Global.dSYMs.zip，其余用 PLAUD.dSYMs.zip）。Android 只查
+    `get_android_mapping`——`symbolicate_jank_frame` 的 Android 分支本身也只用
+    这一个 getter（未使用 native_symbols），保持与实际符号化路径一致。
+    """
+    from app.crashguard.services.github_symbols import (
+        get_ios_dsyms_dir, get_android_mapping, _ASSET_IOS_DSYM, _ASSET_IOS_DSYM_NATIVE,
+    )
+    from app.crashguard.services.symbolication import _profile_strategy
+
+    plat = (platform or "").strip().lower()
+    try:
+        if "ios" in plat:
+            strategy = _profile_strategy(symbol_profile)
+            ios_asset = _ASSET_IOS_DSYM_NATIVE if strategy.get("use_app_dsym") else _ASSET_IOS_DSYM
+            dsyms_dir = await get_ios_dsyms_dir(symbol_key, repo=github_repo, asset_name=ios_asset)
+            return dsyms_dir is None
+        if "android" in plat:
+            mapping_path = await get_android_mapping(symbol_key, repo=github_repo)
+            return mapping_path is None
+    except Exception as exc:
+        logger.debug(
+            "symbols_missing detection failed (non-fatal, not treated as missing/present): "
+            "platform=%s symbol_key=%s error=%s", platform, symbol_key, exc,
+        )
+        return None
+    return None
+
+
 async def _symbolicate_new_jank_issue(issue_id: str, parsed: Dict[str, Any]) -> None:
     """新建的 fixable jank issue 立即符号化一次（单帧查询成本低，不走惰性 prewarmer）。
 
@@ -320,6 +364,8 @@ async def _symbolicate_new_jank_issue(issue_id: str, parsed: Dict[str, Any]) -> 
     两次调用命中同一份 (tag, asset) 磁盘缓存（`get_ios_dsyms_dir` 内部按 `.extracted`
     marker 判断，命中即返回），不会产生二次下载。Android 不受影响：
     `representative_stack` 保持摄入时存的原始完整 `stack_trace`。
+
+    同时判定 `tags["symbols_missing"]`（2026-07-24）——见 `_detect_jank_symbols_missing`。
     """
     from app.crashguard.models import CrashIssue
     from app.crashguard.services.symbolication import (
@@ -375,6 +421,11 @@ async def _symbolicate_new_jank_issue(issue_id: str, parsed: Dict[str, Any]) -> 
 
     title_updated = _jank_frame_looks_symbolized(symbolized_frame, parsed.get("app_stack_frame", ""))
 
+    symbols_missing = await _detect_jank_symbols_missing(
+        platform=parsed["platform"], symbol_key=parsed["symbol_key"],
+        symbol_profile=symbol_profile, github_repo=github_repo,
+    )
+
     async with get_session() as session:
         row = (await session.execute(
             select(CrashIssue).where(CrashIssue.datadog_issue_id == issue_id)
@@ -388,6 +439,10 @@ async def _symbolicate_new_jank_issue(issue_id: str, parsed: Dict[str, Any]) -> 
         row.prewarm_attempts = int(row.prewarm_attempts or 0) + 1
         row.prewarm_last_at = datetime.utcnow()
         row.prewarm_last_error = ""
+        if symbols_missing is not None:
+            tags = _safe_load_tags(row.tags)
+            tags["symbols_missing"] = symbols_missing
+            row.tags = json.dumps(tags, ensure_ascii=False)
         await session.commit()
 
 
