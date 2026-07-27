@@ -146,8 +146,10 @@ async def _regenerate_week_assignments(
        该是谁（保证这次编辑不会把正在进行中的本周值班顶替掉）；若是首次配置
        （没有旧配置），按新配置算（没有"旧值"可保护）。`only_if_missing=True`，
        已经冻结过的本周不会因为同一周内再编辑而被重新计算。
-    2) 未来 `_ASSIGNMENT_HORIZON_WEEKS` 周：一律按新配置覆盖生成——未来周次在
-       轮到之前都可以被后续编辑改变，这是设计上允许的。
+    2) 未来 `_ASSIGNMENT_HORIZON_WEEKS` 周：按新配置覆盖生成——未来周次在轮到
+       之前都可以被后续编辑改变，这是设计上允许的。2026-07-27 起改为委托
+       `resolve_week_group`（而非直接对绝对周数取模），从冻结周的 group_index
+       接着顺延，避免组数一变，紧邻冻结周的下一周就跳到不相邻的组。
     """
     today = date.today()
 
@@ -182,11 +184,14 @@ async def _regenerate_week_assignments(
 
     for offset in range(1, _ASSIGNMENT_HORIZON_WEEKS + 1):
         wn = new_week_num_today + offset
-        idx = wn % len(new_groups)
-        week_start = new_start + timedelta(weeks=wn)
-        week_end = week_start + timedelta(days=6)
+        # 2026-07-27 修复：不再对绝对周数取模现算（那会在冻结周之后立刻造成
+        # 轮转跳跃），改为委托 resolve_week_group——它会找最近一次已冻结/生成
+        # 的快照锚点接着顺延。本轮写入按 offset 递增顺序提交，下一次迭代能查到
+        # 上一次刚写入的行作锚点，逐周级联，保证冻结周→未来 52 周整体连续。
+        info = await db.resolve_week_group(wn, new_groups_dicts, new_start)
         await db.upsert_week_assignment(
-            week_start, week_end, idx, new_groups[idx], only_if_missing=False,
+            info["week_start"], info["week_end"], info["group_index"], info["members"],
+            only_if_missing=False,
         )
 
 

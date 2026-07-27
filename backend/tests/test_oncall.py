@@ -120,7 +120,12 @@ async def test_adding_group_does_not_change_current_week(client):
 
 async def test_future_weeks_regenerated_with_new_group_count(client):
     """本周之后的未来周次，组配置变化后应该按新组数重新生成映射（未来是可以
-    改的，只有本周及历史不能变）。"""
+    改的，只有本周及历史不能变），且必须紧接着冻结周顺延轮转，不能跳变。
+
+    2026-07-27 修复前：下周对绝对周数取模现算（15 % 8 == 7），会从冻结周
+    的 g0 直接跳到 g7，跳过 g1~g6——这正是线上复现的 bug（8 组时本周被冻结
+    为 group 0，下一周却跳成 group 7）。修复后：下周必须接着冻结周的
+    group_index 顺延一位（g0 之后是 g1），不再跳变。"""
     import app.db.database as db_mod
     from datetime import date, timedelta
 
@@ -139,12 +144,68 @@ async def test_future_weeks_regenerated_with_new_group_count(client):
     })
     assert resp.status_code == 200
 
-    # 下周（week_num=15）按 8 组计算：15 % 8 == 7 → g7
+    # 本周（week_num=14）冻结用的是旧 7 组公式：14 % 7 == 0 → g0
+    current_week_start = start + timedelta(weeks=14)
+    current_snap = await db_mod.get_week_assignment(current_week_start)
+    assert current_snap is not None
+    assert current_snap["group_index"] == 0
+
+    # 下周（week_num=15）必须接着冻结周的 g0 顺延到 g1，不能跳到 g7
     next_week_start = start + timedelta(weeks=15)
     snap = await db_mod.get_week_assignment(next_week_start)
     assert snap is not None
-    assert snap["members"] == ["g7@x.com"]
-    assert snap["group_index"] == 7
+    assert snap["members"] == ["g1@x.com"]
+    assert snap["group_index"] == 1
+
+    # 再下一周（week_num=16）继续顺延到 g2
+    snap2 = await db_mod.get_week_assignment(start + timedelta(weeks=16))
+    assert snap2 is not None
+    assert snap2["group_index"] == 2
+
+
+async def test_current_week_falls_back_to_anchor_without_regenerate(client):
+    """核心回归：复现线上真实场景——排班快照表里只有冻结周那一行（未来 52 周
+    的预生成因为某种原因没有落地，比如本次编辑之外的历史遗留状态），本周
+    没有对应快照时，`resolve_week_group` 现算兜底必须接着最近一次冻结的锚点
+    顺延，而不是对绝对周数取模。这是 2026-07-27 生产环境实测的 bug：8 组时
+    第 14 周被冻结为 group 0，第 15 周（当前周）没有快照，现算兜底
+    `15 % 8 == 7` 直接跳到 group 7（本该顺延到 group 1）。"""
+    import app.db.database as db_mod
+    from datetime import date, timedelta
+
+    start = date.today() - timedelta(weeks=15)
+    groups = [{"group_index": i, "members": [f"g{i}@x.com"]} for i in range(8)]
+
+    # 只手工写入第 14 周的冻结快照，不触发 _regenerate_week_assignments
+    # 的未来周预生成——模拟"快照表只有一行"的线上实况。
+    week14_start = start + timedelta(weeks=14)
+    await db_mod.upsert_week_assignment(
+        week14_start, week14_start + timedelta(days=6), 0, ["g0@x.com"],
+    )
+
+    # 第 15 周（当前周）查不到快照，现算兜底必须续轮到 group 1，不能是 15%8=7
+    info = await db_mod.resolve_week_group(15, groups, start)
+    assert info["group_index"] == 1
+    assert info["members"] == ["g1@x.com"]
+
+    # 更远的第 20 周同样顺延（14 + 6 = 20 → group_index (0+6)%8=6）
+    info2 = await db_mod.resolve_week_group(20, groups, start)
+    assert info2["group_index"] == 6
+
+
+async def test_resolve_week_group_pure_historical_gap_falls_back_to_modulo(client):
+    """快照表完全为空（本功能上线前的纯历史空洞）时，找不到任何锚点，必须
+    退回原来的绝对取模兜底，行为与修复前一致——这个分支不应该被本次修复
+    影响。"""
+    import app.db.database as db_mod
+    from datetime import date, timedelta
+
+    start = date.today() - timedelta(weeks=30)
+    groups = [{"group_index": i, "members": [f"g{i}@x.com"]} for i in range(5)]
+
+    info = await db_mod.resolve_week_group(12, groups, start)
+    assert info["group_index"] == 12 % 5
+    assert info["members"] == [f"g{12 % 5}@x.com"]
 
 
 async def test_already_frozen_week_not_overwritten_by_later_edit(client):

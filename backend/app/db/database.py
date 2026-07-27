@@ -1466,6 +1466,29 @@ async def get_oncall_config(key: str, default: str = "") -> str:
         return record.value if record else default
 
 
+async def _find_latest_week_anchor(before: date) -> Optional[Dict[str, Any]]:
+    """找 `before` 之前最近一次已冻结/生成的排班快照，用作续轮锚点。
+
+    2026-07-27 修复：组数变化后，「冻结本周」之后的所有周次原先一律按
+    `绝对周数 % 新组数` 现算——这会在冻结周和下一周之间造成轮转跳跃（实测：
+    8 组时本周冻结为 group 0，下一周本该接着轮到 group 1，却因为
+    `week_num % 8` 直接跳到 group 7）。查不到返回 None（纯历史空洞——本功能
+    上线前的周次，或从未被任何快照覆盖过——调用方应回退绝对取模兜底）。
+    """
+    from sqlalchemy import select as sa_select
+    async with get_session() as session:
+        stmt = (
+            sa_select(OncallWeekAssignmentRecord)
+            .where(OncallWeekAssignmentRecord.week_start_date < before)
+            .order_by(OncallWeekAssignmentRecord.week_start_date.desc())
+            .limit(1)
+        )
+        record = (await session.execute(stmt)).scalar_one_or_none()
+        if record is None:
+            return None
+        return {"week_start": record.week_start_date, "group_index": record.group_index}
+
+
 async def get_week_assignment(week_start: date) -> Optional[Dict[str, Any]]:
     """查排班快照表某一周,查不到返回 None(调用方应回退现算)。"""
     async with get_session() as session:
@@ -1511,9 +1534,11 @@ async def resolve_week_group(week_num: int, groups: List[Dict[str, Any]], start:
     """给定 week_num,返回该周实际值班组 {group_index, members, week_start, week_end}。
 
     优先查排班快照表(历史/当前周一旦生成即固定,不受后续组数变化影响);查不到
-    (本次功能上线之前的历史空洞,或还没被 `_regenerate_week_assignments` 覆盖到
-    的周次)才现算 `week_num % len(groups)` 兜底。这是全代码库"周→组"计算的唯一
-    权威入口，`get_current_oncall`/`/stats`/`resolve_duty_week` 均应改为调用此函数，
+    时**优先续轮**：找最近一次已冻结的快照锚点，从其 group_index 往后顺延
+    （2026-07-27 修复：组数变化后紧邻的下一周不再对绝对周数取模跳变，而是接着
+    冻结周继续轮转）；连锚点都找不到（本次功能上线之前的纯历史空洞）才现算
+    `week_num % len(groups)` 兜底。这是全代码库"周→组"计算的唯一权威入口，
+    `get_current_oncall`/`/stats`/`resolve_duty_week` 均应改为调用此函数，
     不再各自重复实现取模公式。
     """
     week_start = start + timedelta(weeks=week_num)
@@ -1524,7 +1549,16 @@ async def resolve_week_group(week_num: int, groups: List[Dict[str, Any]], start:
             "group_index": snap["group_index"], "members": snap["members"],
             "week_start": week_start, "week_end": week_end,
         }
-    idx = week_num % len(groups) if groups else 0
+    n = len(groups) if groups else 0
+    if n == 0:
+        idx = 0
+    else:
+        anchor = await _find_latest_week_anchor(week_start)
+        if anchor is not None:
+            weeks_since_anchor = (week_start - anchor["week_start"]).days // 7
+            idx = (anchor["group_index"] + weeks_since_anchor) % n
+        else:
+            idx = week_num % n  # 纯历史空洞（本功能上线前），无锚点可续，退回绝对取模兜底
     return {
         "group_index": idx, "members": groups[idx]["members"] if groups else [],
         "week_start": week_start, "week_end": week_end,
