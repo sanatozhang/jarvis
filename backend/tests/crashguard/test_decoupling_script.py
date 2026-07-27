@@ -59,3 +59,61 @@ def test_no_violations_passes():
     t2 = FakeTable("crash_snapshots", [FakeColumn([FakeFK("crash_issues.id")])])
 
     assert find_violating_foreign_keys([t1, t2]) == []
+
+
+def test_pt_prefix_violation_detected():
+    """pt_* 表（platform_tickets 模块）外键指向非 pt_* 表也应被判定违规。"""
+    from scripts.check_crash_decoupling import find_violating_foreign_keys
+
+    class FakeFK:
+        def __init__(self, target):
+            self.target_fullname = target
+
+    class FakeColumn:
+        def __init__(self, fks):
+            self.foreign_keys = fks
+
+    class FakeTable:
+        def __init__(self, name, columns):
+            self.name = name
+            self.columns = columns
+
+    # pt_tickets 有非法外键指向 jarvis 主表 issues —— 违规
+    t1 = FakeTable("pt_tickets", [FakeColumn([FakeFK("issues.id")])])
+    # 假想的 pt_comments 合法外键指向 pt_tickets —— OK（同前缀域）
+    t2 = FakeTable("pt_comments", [FakeColumn([FakeFK("pt_tickets.id")])])
+    # crash_* 和 pt_* 互相指向对方同样违规：两个域各自独立，不允许跨域 FK
+    t3 = FakeTable("crash_issues", [FakeColumn([FakeFK("pt_tickets.id")])])
+    t4 = FakeTable("pt_tickets", [FakeColumn([FakeFK("crash_issues.id")])])
+
+    violations = find_violating_foreign_keys([t1, t2, t3, t4], prefixes=("crash_", "pt_"))
+    violation_tables = {v["table"] for v in violations}
+    assert "pt_tickets" in violation_tables
+    assert "pt_comments" not in violation_tables
+    # both t3 (crash_issues -> pt_tickets) and t4 (pt_tickets -> crash_issues) violate
+    assert len(violations) == 3
+
+
+def test_default_prefixes_include_pt():
+    """默认前缀集合应同时覆盖 crash_ 和 pt_，无需每次调用手动传参。"""
+    from scripts.check_crash_decoupling import find_violating_foreign_keys
+
+    class FakeFK:
+        def __init__(self, target):
+            self.target_fullname = target
+
+    class FakeColumn:
+        def __init__(self, fks):
+            self.foreign_keys = fks
+
+    class FakeTable:
+        def __init__(self, name, columns):
+            self.name = name
+            self.columns = columns
+
+    t1 = FakeTable("pt_tickets", [FakeColumn([FakeFK("issues.id")])])
+
+    # 不传 prefixes，走默认值，pt_* 违规依然能被发现
+    violations = find_violating_foreign_keys([t1])
+    assert len(violations) == 1
+    assert violations[0]["table"] == "pt_tickets"

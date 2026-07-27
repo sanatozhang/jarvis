@@ -187,7 +187,7 @@ async def get_issue_analyses(issue_id: str):
 async def get_issue_detail(issue_id: str):
     """Get a single issue with its analysis and task data by ID."""
     async with db.get_session() as session:
-        issue = await session.get(db.IssueRecord, issue_id)
+        issue = await db.get_ticket_record(session, issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
 
@@ -387,7 +387,7 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
     the existing chat info without creating a duplicate group.
     """
     async with db.get_session() as session:
-        issue_rec = await session.get(db.IssueRecord, issue_id)
+        issue_rec = await db.get_ticket_record(session, issue_id)
     if not issue_rec:
         raise HTTPException(status_code=404, detail="Issue not found")
 
@@ -401,7 +401,7 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
     # already exists (the racing request that lost will see the winner's chat_id).
     async with _get_escalate_lock(issue_id):
         async with db.get_session() as session:
-            issue_rec = await session.get(db.IssueRecord, issue_id)
+            issue_rec = await db.get_ticket_record(session, issue_id)
         if not issue_rec:
             raise HTTPException(status_code=404, detail="Issue not found")
 
@@ -490,7 +490,8 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
         if not ok:
             raise HTTPException(status_code=404, detail="Issue not found")
         await db.log_event("escalate", issue_id=issue_id, username=body.escalated_by,
-                           detail={"note": body.note, "chat_id": escalation_chat_id})
+                           detail={"note": body.note, "chat_id": escalation_chat_id},
+                           platform=issue_rec.platform or "")
 
         result = {"status": "escalated", "issue_id": issue_id}
         if chat_result:
@@ -505,12 +506,12 @@ async def escalate_issue(issue_id: str, body: EscalateRequest):
 async def mark_inaccurate(issue_id: str):
     """Mark an issue's analysis as inaccurate."""
     async with db.get_session() as session:
-        issue = await session.get(db.IssueRecord, issue_id)
+        issue = await db.get_ticket_record(session, issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
 
     await db.update_issue_status(issue_id, "inaccurate")
-    await db.log_event("mark_inaccurate", issue_id=issue_id)
+    await db.log_event("mark_inaccurate", issue_id=issue_id, platform=issue.platform or "")
     return {"status": "ok"}
 
 
@@ -531,12 +532,13 @@ async def mark_complete(issue_id: str, body: MarkCompleteRequest):
         raise HTTPException(status_code=400, detail="标记完成需填写原因")
 
     async with db.get_session() as session:
-        issue = await session.get(db.IssueRecord, issue_id)
+        issue = await db.get_ticket_record(session, issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
 
     await db.update_issue_status(issue_id, "done")
-    await db.log_event("mark_complete", issue_id=issue_id, username=body.username, detail={"reason": reason})
+    await db.log_event("mark_complete", issue_id=issue_id, username=body.username, detail={"reason": reason},
+                       platform=issue.platform or "")
 
     # Sync to Feishu bitable: only set 确认提交=true (don't touch other fields)
     feishu_synced = False

@@ -323,10 +323,10 @@ async def run_analysis_pipeline(
 
     if is_local or is_linear:
         # Local / Linear issue — read from DB (already saved by webhook handler)
-        from app.db.database import get_session, IssueRecord
+        from app.db.database import get_session, get_ticket_record
         import json as _json
         async with get_session() as session:
-            rec = await session.get(IssueRecord, issue_id)
+            rec = await get_ticket_record(session, issue_id)
         if not rec:
             raise RuntimeError(f"Issue {issue_id} not found in local DB")
         log_files_raw = _json.loads(rec.log_files_json) if rec.log_files_json else []

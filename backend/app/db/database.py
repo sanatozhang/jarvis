@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import get_settings
+from app.platforms import normalize_platform
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +121,9 @@ class AnalysisRecord(Base):
     usage_json = Column(Text, default="{}")          # {"agent":{...,cost,source}, "condenser":{...,cost,model}}
     cost_source = Column(String(16), default="")     # cli_reported / computed / partial
     is_deep_analysis = Column(Boolean, default=False)  # 深度分析（全量日志）→ 结果页打 label
+    # 多平台工单（阶段 2）：analytics 的平台维度靠给 analyses/events 打标实现，不 join 任何工单表。
+    # 默认 "app"——每条 AnalysisRecord 必然对应一个具体工单，工单必然有平台（老 app 工单隐含平台即 app）。
+    platform = Column(String(16), default="app")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -133,6 +137,9 @@ class EventRecord(Base):
     username = Column(String(64), default="")
     detail_json = Column(Text, default="{}")           # flexible payload
     duration_ms = Column(Integer, default=0)           # for timed events (analysis duration)
+    # 多平台工单（阶段 2）：默认空字符串，不同于 AnalysisRecord 的 "app" 默认值——很多 EventRecord
+    # 是通用埋点（无平台语境，如 page_visit），空串代表"未标注"，不能强行归一化成 app 掩盖这个事实。
+    platform = Column(String(16), default="")
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -466,6 +473,7 @@ async def init_db():
             ("usage_json", "TEXT", "'{}'"),            # 计量：拆分明细
             ("cost_source", "VARCHAR(16)", "''"),      # 计量：cli_reported/computed/partial
             ("is_deep_analysis", "BOOLEAN", "0"),      # 深度分析标记
+            ("platform", "VARCHAR(16)", "'app'"),      # 多平台工单（阶段 2）：analytics 打标
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -478,6 +486,15 @@ async def init_db():
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {coltype} DEFAULT {default}"))
+            except Exception:
+                pass
+
+        # Migrate events table (多平台工单阶段 2：platform 打标，默认空串="未标注"，与 analyses 的 "app" 语义不同)
+        for col, coltype, default in [
+            ("platform", "VARCHAR(16)", "''"),
+        ]:
+            try:
+                await conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype} DEFAULT {default}"))
             except Exception:
                 pass
 
@@ -551,6 +568,28 @@ def retry_on_lock(max_attempts: int = 3, base_delay: float = 0.05):
                     delay *= 2.5
         return wrapper
     return deco
+
+
+# ---------------------------------------------------------------------------
+# Ticket store routing（阶段 3：id → 存储路由）
+# ---------------------------------------------------------------------------
+# 延迟到此处（而非文件顶部）import：`app.platform_tickets.models` 反向 `from
+# app.db.database import Base`，顶部 import 会在 Base 类定义前触发循环导入。
+# 此时 Base 已在本模块靠前位置定义完毕，从已加载到 sys.modules 的本模块对象上
+# 取 Base 不会有问题。
+from app.platform_tickets.models import PlatformTicket  # noqa: E402
+
+
+def ticket_store_of(ticket_id: str) -> str:
+    """按 id 前缀判断该工单存在哪个存储：'pt_' 前缀 → 'pt'，否则 → 'app'。"""
+    return "pt" if (ticket_id or "").startswith("pt_") else "app"
+
+
+async def get_ticket_record(session: AsyncSession, ticket_id: str):
+    """路由查询：pt_ 前缀查 PlatformTicket，否则查 IssueRecord。返回 ORM 对象或 None。"""
+    if ticket_store_of(ticket_id) == "pt":
+        return await session.get(PlatformTicket, ticket_id)
+    return await session.get(IssueRecord, ticket_id)
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +669,7 @@ async def upsert_issue(data: Dict[str, Any], status: str = "pending") -> IssueRe
 
 async def update_issue_status(issue_id: str, status: str):
     async with get_session() as session:
-        record = await session.get(IssueRecord, issue_id)
+        record = await get_ticket_record(session, issue_id)
         if record:
             record.status = status
             record.updated_at = datetime.utcnow()
@@ -645,7 +684,7 @@ async def escalate_issue(
     share_link: str = "",
 ) -> bool:
     async with get_session() as session:
-        record = await session.get(IssueRecord, issue_id)
+        record = await get_ticket_record(session, issue_id)
         if not record:
             return False
         # Don't change status — keep the issue in its current tab (done/failed)
@@ -669,7 +708,7 @@ async def update_escalation_share_link(issue_id: str, share_link: str) -> bool:
     if not share_link:
         return False
     async with get_session() as session:
-        record = await session.get(IssueRecord, issue_id)
+        record = await get_ticket_record(session, issue_id)
         if not record:
             return False
         record.escalation_share_link = share_link
@@ -680,7 +719,7 @@ async def update_escalation_share_link(issue_id: str, share_link: str) -> bool:
 
 async def mark_escalation_reminded(issue_id: str) -> bool:
     async with get_session() as session:
-        record = await session.get(IssueRecord, issue_id)
+        record = await get_ticket_record(session, issue_id)
         if not record:
             return False
         record.escalation_reminded_at = datetime.utcnow()
@@ -692,7 +731,7 @@ async def mark_escalation_reminded(issue_id: str) -> bool:
 async def resolve_escalation(issue_id: str) -> bool:
     """Mark an escalated issue as resolved."""
     async with get_session() as session:
-        record = await session.get(IssueRecord, issue_id)
+        record = await get_ticket_record(session, issue_id)
         if not record or not record.escalated_at:
             return False
         record.escalation_status = "resolved"
@@ -703,25 +742,36 @@ async def resolve_escalation(issue_id: str) -> bool:
 
 
 async def get_escalated_issues(status: str | None = None, since_date=None) -> List[Dict[str, Any]]:
-    """Get escalated issues, optionally filtered by status and date cutoff."""
+    """Get escalated issues, optionally filtered by status and date cutoff.
+
+    统一读取层（阶段 3）：`issues`（IssueRecord）+ `pt_tickets`（PlatformTicket）
+    各自按同一组筛选条件查询 → Python 侧合并 → 按 `escalated_at` desc 重新排序。
+    `pt_tickets` 目前为空，故对现有 app 流量输出逐字节相同。
+    """
     from sqlalchemy import select as sa_select
-    async with get_session() as session:
-        stmt = sa_select(IssueRecord).where(
-            IssueRecord.escalated_at.isnot(None),
-            IssueRecord.deleted == False,
+
+    def _build_stmt(model):
+        stmt = sa_select(model).where(
+            model.escalated_at.isnot(None),
+            model.deleted == False,
         )
         if status:
-            stmt = stmt.where(IssueRecord.escalation_status == status)
+            stmt = stmt.where(model.escalation_status == status)
         if since_date:
             cutoff = datetime(since_date.year, since_date.month, since_date.day)
-            stmt = stmt.where(IssueRecord.escalated_at >= cutoff)
-        stmt = stmt.order_by(IssueRecord.escalated_at.desc())
-        result = await session.execute(stmt)
-        issues = result.scalars().all()
+            stmt = stmt.where(model.escalated_at >= cutoff)
+        return stmt
+
+    async with get_session() as session:
+        app_result = await session.execute(_build_stmt(IssueRecord))
+        pt_result = await session.execute(_build_stmt(PlatformTicket))
+        issues = list(app_result.scalars().all()) + list(pt_result.scalars().all())
+        issues.sort(key=lambda i: i.escalated_at or datetime.min, reverse=True)
 
         items = []
         for issue in issues:
-            # Inline latest analysis query
+            # Inline latest analysis query — AnalysisRecord 只靠 issue_id 字符串
+            # 关联，不区分来源存储，两表工单都吃得到，保持不变。
             a_stmt = sa_select(AnalysisRecord).where(
                 AnalysisRecord.issue_id == issue.id
             ).order_by(AnalysisRecord.created_at.desc()).limit(1)
@@ -736,7 +786,8 @@ async def get_escalated_issues(status: str | None = None, since_date=None) -> Li
                 "root_cause": analysis.root_cause if analysis else "",
                 "confidence": analysis.confidence if analysis else "",
                 "user_reply": analysis.user_reply if analysis else "",
-                "zendesk_id": issue.zendesk_id or "",
+                # zendesk_id 是 app 专属列，PlatformTicket 没有该属性 → 容错取空
+                "zendesk_id": getattr(issue, "zendesk_id", "") or "",
                 "source": issue.source or "",
                 "escalated_at": (issue.escalated_at.isoformat() + "Z") if issue.escalated_at else "",
                 "escalated_by": issue.escalated_by or "",
@@ -752,7 +803,7 @@ async def get_escalated_issues(status: str | None = None, since_date=None) -> Li
 
 async def soft_delete_issue(issue_id: str) -> bool:
     async with get_session() as session:
-        record = await session.get(IssueRecord, issue_id)
+        record = await get_ticket_record(session, issue_id)
         if record:
             record.deleted = True
             record.updated_at = datetime.utcnow()
@@ -763,7 +814,7 @@ async def soft_delete_issue(issue_id: str) -> bool:
 
 async def set_issue_created_by(issue_id: str, username: str):
     async with get_session() as session:
-        record = await session.get(IssueRecord, issue_id)
+        record = await get_ticket_record(session, issue_id)
         if record and username:
             record.created_by = username
             await session.commit()
@@ -942,10 +993,22 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             data.get("root_cause", ""),
         )
 
+    # 多平台工单（阶段 2）：platform 优先取顶层 "platform" key（未来 pt_tickets 流程 / 测试可直传），
+    # 否则退化到 AnalysisResult 里 denormalized 的 issue.platform（tasks.py/queue.py 的 result.issue 主路径）。
+    # 老式调用（既无顶层 platform 也无 issue）→ normalize_platform("") == "app"，向后兼容零改动。
+    raw_platform = data.get("platform")
+    if not raw_platform:
+        issue_payload = data.get("issue") or {}
+        if isinstance(issue_payload, dict):
+            raw_platform = issue_payload.get("platform", "")
+        else:
+            raw_platform = getattr(issue_payload, "platform", "") or ""
+
     async with get_session() as session:
         record = AnalysisRecord(
             task_id=data.get("task_id", ""),
             issue_id=data.get("issue_id", ""),
+            platform=normalize_platform(raw_platform),
             problem_type=data.get("problem_type", ""),
             problem_type_en=data.get("problem_type_en", ""),
             problem_categories_json=json.dumps(categories, ensure_ascii=False),
@@ -1098,49 +1161,82 @@ async def get_tracked_issues_paginated(
     """
     Get ALL locally-tracked issues (for the tracking page).
     Supports multiple filters. Excludes deleted.
+
+    统一读取层（阶段 3）：跨 `issues`（IssueRecord）+ `pt_tickets`（PlatformTicket）
+    合并。`zendesk_id` 是 app 专属字段（pt 表没有这一列），只对 IssueRecord 生
+    效——指定该筛选时 pt 侧直接不参与查询（不是忽略条件误把所有 pt 工单纳入）。
+    其余通用字段（created_by/platform/category/status_filter/source/date
+    range）两表各自套用同一组值各自过滤。
+
+    排序/分页语义与改前完全一致：**先把两表匹配结果合并成全量列表按
+    updated_at desc 排序，再 offset/limit 切片**，不是"各自分页再拼接"（否则
+    跨表边界页会错）。`total` = 两表 count 之和。`pt_tickets` 目前为空，这一步
+    对现有 app 数据的输出与改前逐字节相同。
     """
     async with get_session() as session:
         from sqlalchemy import select, func, and_
 
-        conditions = [IssueRecord.deleted == False, IssueRecord.status != "pending"]
-        if created_by:
-            conditions.append(IssueRecord.created_by == created_by)
-        if platform:
-            conditions.append(IssueRecord.platform == platform)
-        if category:
-            conditions.append(IssueRecord.category.contains(category))
-        if status_filter:
-            conditions.append(IssueRecord.status == status_filter)
-        if source:
-            conditions.append(IssueRecord.source == source)
+        def _conditions(model, include_zendesk: bool):
+            conds = [model.deleted == False, model.status != "pending"]
+            if created_by:
+                conds.append(model.created_by == created_by)
+            if platform:
+                conds.append(model.platform == platform)
+            if category:
+                conds.append(model.category.contains(category))
+            if status_filter:
+                conds.append(model.status == status_filter)
+            if source:
+                conds.append(model.source == source)
+            if include_zendesk and zendesk_id:
+                conds.append(model.zendesk_id.contains(zendesk_id.strip("#")))
+            if date_from:
+                conds.append(model.created_at >= datetime.fromisoformat(date_from))
+            if date_to:
+                conds.append(model.created_at <= datetime.fromisoformat(date_to + "T23:59:59"))
+            return and_(*conds)
+
+        app_where = _conditions(IssueRecord, include_zendesk=True)
+
+        app_count_stmt = select(func.count()).select_from(IssueRecord).where(app_where)
+        app_total = (await session.execute(app_count_stmt)).scalar() or 0
+        app_stmt = select(IssueRecord).where(app_where).order_by(IssueRecord.updated_at.desc())
+        app_issues = list((await session.execute(app_stmt)).scalars().all())
+
         if zendesk_id:
-            conditions.append(IssueRecord.zendesk_id.contains(zendesk_id.strip("#")))
-        if date_from:
-            conditions.append(IssueRecord.created_at >= datetime.fromisoformat(date_from))
-        if date_to:
-            conditions.append(IssueRecord.created_at <= datetime.fromisoformat(date_to + "T23:59:59"))
+            # pt 工单没有 zendesk_id 这个概念：指定该筛选时 pt 侧不返回任何结果。
+            pt_total = 0
+            pt_issues: List[Any] = []
+        else:
+            pt_where = _conditions(PlatformTicket, include_zendesk=False)
+            pt_count_stmt = select(func.count()).select_from(PlatformTicket).where(pt_where)
+            pt_total = (await session.execute(pt_count_stmt)).scalar() or 0
+            pt_stmt = select(PlatformTicket).where(pt_where).order_by(PlatformTicket.updated_at.desc())
+            pt_issues = list((await session.execute(pt_stmt)).scalars().all())
 
-        where = and_(*conditions)
+        total = app_total + pt_total
 
-        count_stmt = select(func.count()).select_from(IssueRecord).where(where)
-        total = (await session.execute(count_stmt)).scalar() or 0
+        merged = app_issues + pt_issues
+        merged.sort(key=lambda i: i.updated_at or datetime.min, reverse=True)
 
         offset = (page - 1) * page_size
-        stmt = select(IssueRecord).where(where).order_by(IssueRecord.updated_at.desc()).offset(offset).limit(page_size)
-        issues = list((await session.execute(stmt)).scalars().all())
+        page_issues = merged[offset:offset + page_size]
 
-        items = await _enrich_issues_batch(session, issues)
+        items = await _enrich_issues_batch(session, page_issues)
         return items, total
 
 
 async def _enrich_issues_batch(
     session: AsyncSession,
-    issues: List[IssueRecord],
+    issues: "List[IssueRecord | PlatformTicket]",
 ) -> List[Dict[str, Any]]:
     """Batch-load analysis + task data for a list of issues.
 
     Uses 2 batch queries (analysis + count) + per-issue task lookup
     within the same session to avoid N+1 session overhead.
+
+    `issues` 阶段 3 起可以混合 IssueRecord（app）和 PlatformTicket（新平台）——
+    这里只用 `issue.id` 关联 AnalysisRecord/TaskRecord，两种类型都通用，无需特判。
     """
     from sqlalchemy import select, func
 
@@ -1191,30 +1287,39 @@ async def _enrich_issues_batch(
 
 
 def _issue_to_dict(
-    issue: IssueRecord,
+    issue: "IssueRecord | PlatformTicket",
     analysis: Optional[AnalysisRecord] = None,
     task: Optional[TaskRecord] = None,
     analysis_count: int = 0,
 ) -> Dict[str, Any]:
-    """Convert DB records to a dict matching the frontend Issue+Result shape."""
+    """Convert DB records to a dict matching the frontend Issue+Result shape.
+
+    `issue` 阶段 3 起可以是 IssueRecord（app 老表）或 PlatformTicket（新平台，
+    `pt_tickets` 表）。PlatformTicket 没有 device_sn/firmware/app_version/
+    feishu_link/linear_issue_id/linear_issue_url/log_files_json/zendesk/
+    zendesk_id 这些 app 专属列——一律用 `getattr(issue, name, default)` 容错读
+    取，不能假设该属性存在；缺失字段在返回 dict 里给空字符串/空列表。
+    """
+    log_files_json = getattr(issue, "log_files_json", None)
+    payload_json = getattr(issue, "payload_json", None)
     d: Dict[str, Any] = {
         "record_id": issue.id,
         "description": issue.description or "",
-        "device_sn": issue.device_sn or "",
-        "firmware": issue.firmware or "",
-        "app_version": issue.app_version or "",
+        "device_sn": getattr(issue, "device_sn", "") or "",
+        "firmware": getattr(issue, "firmware", "") or "",
+        "app_version": getattr(issue, "app_version", "") or "",
         "priority": issue.priority or "",
-        "zendesk": issue.zendesk or "",
-        "zendesk_id": issue.zendesk_id or "",
+        "zendesk": getattr(issue, "zendesk", "") or "",
+        "zendesk_id": getattr(issue, "zendesk_id", "") or "",
         "source": issue.source or "feishu",
-        "feishu_link": issue.feishu_link or "",
+        "feishu_link": getattr(issue, "feishu_link", "") or "",
         "feishu_status": issue.status or "pending",
-        "linear_issue_id": issue.linear_issue_id or "",
-        "linear_issue_url": issue.linear_issue_url or "",
+        "linear_issue_id": getattr(issue, "linear_issue_id", "") or "",
+        "linear_issue_url": getattr(issue, "linear_issue_url", "") or "",
         "result_summary": "",
         "root_cause_summary": "",
         "created_at_ms": issue.created_at_ms or 0,
-        "log_files": json.loads(issue.log_files_json) if issue.log_files_json else [],
+        "log_files": json.loads(log_files_json) if log_files_json else [],
         "local_status": issue.status,
         "platform": issue.platform or "",
         "category": issue.category or "",
@@ -1229,6 +1334,11 @@ def _issue_to_dict(
         "escalation_resolved_at": (issue.escalation_resolved_at.isoformat() + "Z") if issue.escalation_resolved_at else "",
         "escalation_chat_id": issue.escalation_chat_id or "",
         "escalation_share_link": issue.escalation_share_link or "",
+        # 多平台工单（阶段 3）：pt 工单的平台专属字段（web 的 url/browser/session、
+        # mcp 的 client/tool 等）从 payload_json 解出，塞进这个新键。IssueRecord
+        # 没有 payload_json 属性 → 给 {}。这是本阶段唯一新增的输出字段，其余现
+        # 有字段的值/结构必须与改前完全一致。
+        "platform_meta": json.loads(payload_json) if payload_json else {},
     }
 
     if analysis:
@@ -1651,8 +1761,14 @@ async def log_event(
     username: str = "",
     detail: Optional[Dict] = None,
     duration_ms: int = 0,
+    platform: str = "",
 ):
-    """Log an analytics event."""
+    """Log an analytics event.
+
+    多平台工单（阶段 2）：platform 为可选打标。留空字符串代表"未标注"（很多 EventRecord
+    是通用埋点，没有平台语境），不像 AnalysisRecord 那样强行兜底成 "app"——空串不能被
+    normalize_platform() 静默改写成 "app"，否则会掩盖"这条事件没打标"这个事实。
+    """
     async with get_session() as session:
         session.add(EventRecord(
             event_type=event_type,
@@ -1660,6 +1776,7 @@ async def log_event(
             username=username,
             detail_json=json.dumps(detail or {}, ensure_ascii=False),
             duration_ms=duration_ms,
+            platform=normalize_platform(platform) if platform else "",
         ))
         await session.commit()
     await touch_user_active(username)

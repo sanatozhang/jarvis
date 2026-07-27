@@ -420,7 +420,7 @@ async def fix_false_failures():
                 task.error = None
 
                 # Also fix the issue status
-                issue = await session.get(IssueRecord, task.issue_id)
+                issue = await db.get_ticket_record(session, task.issue_id)
                 if issue and issue.status == "failed":
                     issue.status = "done"
 
@@ -704,7 +704,8 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             _fail_detail = {"reason": result.problem_type, "error": error_msg[:200]}
             if followup_question:
                 _fail_detail["followup_question"] = followup_question  # 便于失败追问一键重放
-            await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail=_fail_detail)
+            await db.log_event("analysis_fail", issue_id=issue_id, username=username, duration_ms=duration, detail=_fail_detail,
+                              platform=getattr(getattr(result, "issue", None), "platform", "") or "")
 
             # Admin DM: link to the failed task so we can react fast.
             try:
@@ -729,7 +730,8 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
 
             # Track: analysis succeeded
             duration = int((_time.monotonic() - _start_time) * 1000)
-            await db.log_event("analysis_done", issue_id=issue_id, username=username, duration_ms=duration, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)})
+            await db.log_event("analysis_done", issue_id=issue_id, username=username, duration_ms=duration, detail={"rule_type": result.rule_type, "confidence": str(result.confidence)},
+                              platform=getattr(getattr(result, "issue", None), "platform", "") or "")
 
             # confidence=low → 按开关自动升级深度分析；深度分析跑完自己会走下面的
             # notify_issue_creator_on_complete，这一轮（低置信度那次）不重复通知用户。

@@ -475,7 +475,7 @@ async def get_my_workload(email: str = Query(..., description="Oncall member ema
 async def resolve_ticket(issue_id: str):
     """Mark an escalated ticket as resolved + notify Feishu group."""
     async with db.get_session() as session:
-        issue = await session.get(db.IssueRecord, issue_id)
+        issue = await db.get_ticket_record(session, issue_id)
     if not issue or not issue.escalated_at:
         raise HTTPException(status_code=404, detail="Escalated issue not found")
 

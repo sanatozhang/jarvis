@@ -86,9 +86,9 @@ async def notify_issue_creator_on_complete(
     # db.database has no get_issue(); query IssueRecord directly. 用户名做 lower()
     # 归一化——历史工单 created_by 可能存的是 "Yixiu"，users 表主键是小写 "yixiu"，
     # session.get(UserRecord, ...) 是大小写敏感的主键查询。
-    from app.db.database import IssueRecord
+    from app.db.database import get_ticket_record
     async with db.get_session() as session:
-        record = await session.get(IssueRecord, issue_id)
+        record = await get_ticket_record(session, issue_id)
         if not record:
             logger.info("notify_creator_skipped issue=%s reason=issue_not_found", issue_id)
             return None

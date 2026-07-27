@@ -48,7 +48,7 @@ def _compare_result(golden: Dict[str, Any], actual: Dict[str, Any]) -> Dict[str,
 
 async def _load_issue_from_db(issue_id: str, override_description: str = "") -> Optional[Issue]:
     async with db.get_session() as session:
-        record = await session.get(db.IssueRecord, issue_id)
+        record = await db.get_ticket_record(session, issue_id)
 
     if not record:
         return None

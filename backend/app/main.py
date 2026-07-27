@@ -100,6 +100,8 @@ async def lifespan(app: FastAPI):
     from app.crashguard import models as _crashguard_models  # noqa: F401
     # Import coreguard models too (independent module, same Base)
     from app.coreguard import models as _coreguard_models  # noqa: F401
+    # Import platform_tickets models too (new-platform ticket storage, same Base)
+    from app.platform_tickets import models as _platform_tickets_models  # noqa: F401
 
     await init_db()
     logger.info("Database initialized.")
@@ -118,13 +120,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("apply_repo_routing_overrides_from_db failed (non-fatal): %s", e)
 
-    # Crashguard DB 解耦自检 — 违规则阻止启动
+    # DB 解耦自检（crash_* + pt_* 两个独立前缀域）— 违规则阻止启动
     try:
         from scripts.check_crash_decoupling import assert_crash_tables_decoupled
         assert_crash_tables_decoupled()
-        logger.info("Crashguard decoupling check passed.")
+        logger.info("Crash/platform-ticket decoupling check passed.")
     except RuntimeError as e:
-        logger.error("Crashguard decoupling check FAILED: %s", e)
+        logger.error("Crash/platform-ticket decoupling check FAILED: %s", e)
         raise
 
     # Crashguard 轻量自动迁移 — SQLite 已建表后追加新列
@@ -133,6 +135,14 @@ async def lifespan(app: FastAPI):
         await ensure_columns()
     except Exception as e:
         logger.warning("Crashguard auto-migration skipped: %s", e)
+
+    # Platform tickets 轻量自动迁移骨架 — 当前 _REQUIRED_COLUMNS 为空，no-op；
+    # 保留调用位置供未来给 pt_tickets 加列时直接生效，无需改这里。
+    try:
+        from app.platform_tickets.migrations import ensure_columns as _pt_ensure_columns
+        await _pt_ensure_columns()
+    except Exception as e:
+        logger.warning("Platform tickets auto-migration skipped: %s", e)
 
     # Clean up zombie tasks from previous crashes/restarts
     from app.db.database import get_session

@@ -76,6 +76,10 @@ class Issue(BaseModel):
     log_files: List[LogFile] = Field(default_factory=list)
     group_name: str = ""        # 群组 (Feishu chat name), from the "群组" Bitable field
     group_link: str = ""        # Feishu applink deep link to open the group directly
+    # 多平台工单（阶段 3）：pt 工单（web/mcp/desktop）的平台专属字段（url/browser/
+    # session、client/tool 等）从 PlatformTicket.payload_json 解出后塞进这里。
+    # 纯新增字段，backward-compatible——app 工单一律是 {}。
+    platform_meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 class IssueListResponse(BaseModel):

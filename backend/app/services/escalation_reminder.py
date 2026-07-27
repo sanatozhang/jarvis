@@ -136,6 +136,7 @@ async def _scan_and_remind() -> int:
                 "escalation_reminder",
                 issue_id=issue_id,
                 detail={"age_hours": age_hours, "chat_id": r.escalation_chat_id or "", "oncall": oncall_emails},
+                platform=r.platform or "",
             )
             reminded += 1
         except Exception as e:

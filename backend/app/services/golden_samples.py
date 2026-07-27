@@ -21,7 +21,7 @@ async def promote_analysis_to_sample(analysis_id: int, created_by: str = "") -> 
         if not analysis:
             raise ValueError(f"Analysis {analysis_id} not found")
 
-        issue = await session.get(db.IssueRecord, analysis.issue_id)
+        issue = await db.get_ticket_record(session, analysis.issue_id)
         description = issue.description if issue else ""
 
     sample = await db.add_golden_sample({
