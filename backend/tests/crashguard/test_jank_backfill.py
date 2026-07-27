@@ -252,7 +252,7 @@ async def test_backfill_ignores_events_with_no_matching_db_issue(patched_session
 
 @pytest.mark.asyncio
 async def test_backfill_skips_issue_at_or_above_max_attempts(patched_session, monkeypatch):
-    """一个仍是占位符标题、但 prewarm_attempts 已达上限的 issue 不应被再次重试——
+    """一个仍是占位符标题、但 jank_prewarm_attempts 已达上限的 issue 不应被再次重试——
     不计入 candidates，也不调用 _symbolicate_new_jank_issue（否则无限期打
     GitHub 那条容易挂的下载路径）。"""
     from app.crashguard.services.jank_ingester import backfill_stuck_jank_issues, compute_jank_aggregation_key
@@ -273,7 +273,7 @@ async def test_backfill_skips_issue_at_or_above_max_attempts(patched_session, mo
             datadog_issue_id=issue_id, title="Jank @ Plaud-Global",  # 占位符：仍未成功符号化
             platform="ios", kind="jank", fatality="jank", fixable=True,
             representative_stack="0   Plaud-Global 0x... + 1",
-            prewarm_attempts=12,  # 已达上限
+            jank_prewarm_attempts=12,  # 已达上限
         ))
         await session.commit()
 

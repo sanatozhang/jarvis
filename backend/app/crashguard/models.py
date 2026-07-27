@@ -66,6 +66,12 @@ class CrashIssue(Base):
     prewarm_attempts = Column(Integer, default=0)        # 已尝试预热次数
     prewarm_last_error = Column(Text, default="")        # 最近一次失败原因
     prewarm_last_at = Column(DateTime, nullable=True)    # 最近一次预热时间
+    # 2026-07-24：jank 符号化重试专用字段，与上面 distribution_prewarmer 的
+    # prewarm_attempts/prewarm_last_error/prewarm_last_at 彻底分开，避免两个
+    # 不相关子系统共用同一列互相踩踏计数上限（见 jank_ingester.py / distribution_prewarmer.py）
+    jank_prewarm_attempts = Column(Integer, default=0)        # jank 符号化重试次数（专用，不与 distribution_prewarmer 共用）
+    jank_prewarm_last_error = Column(Text, default="")        # jank 符号化最近一次失败原因
+    jank_prewarm_last_at = Column(DateTime, nullable=True)    # jank 符号化最近一次尝试时间
     # 2026-07-20：卡顿(jank_watchdog_block)摄入专用——has_app_frame=False（卡顿完全发生在
     # 系统框架内部，没有落到我们自己代码的帧）时设为 False，永久排除在 AI 分析/PR 候选之外。
     # 其余所有 kind（crash/anr/memory/web_warning）默认 True，行为不受影响。

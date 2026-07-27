@@ -79,6 +79,11 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_issues", "fixable", "BOOLEAN", "1"),
     # 2026-07-20：卡顿 Datadog `page` 字段分布，格式同 top_os/top_device/top_app_version
     ("crash_issues", "top_page", "VARCHAR(256)", "''"),
+    # 2026-07-24：jank 符号化重试计数与 distribution_prewarmer 的 prewarm_attempts 拆分开，
+    # 避免两个不相关子系统共用同一列互相踩踏计数上限（见 jank_ingester.py / distribution_prewarmer.py）
+    ("crash_issues", "jank_prewarm_attempts", "INTEGER", "0"),
+    ("crash_issues", "jank_prewarm_last_error", "TEXT", "''"),
+    ("crash_issues", "jank_prewarm_last_at", "DATETIME", "NULL"),
 ]
 
 

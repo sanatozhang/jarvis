@@ -465,7 +465,7 @@ async def test_ingest_creates_new_fixable_issue_and_symbolicates(patched_session
     assert issue.representative_stack.count("\n") > 1
     # 单帧符号化结果非占位符 → 标题回写为可读函数名
     assert issue.title == "Jank @ SomeClass.someMethod"
-    assert issue.prewarm_attempts == 1
+    assert issue.jank_prewarm_attempts == 1
     assert snap.events_count == 1
     assert snap.snapshot_date == date(2026, 7, 20)
 
@@ -518,8 +518,8 @@ async def test_ingest_does_not_promote_compiler_generated_frame_to_title(
         issue = (await s.execute(select(CrashIssue))).scalar_one()
 
     assert issue.title == "Jank @ Plaud-Global"
-    assert issue.prewarm_attempts == 1
-    assert issue.prewarm_last_error == ""
+    assert issue.jank_prewarm_attempts == 1
+    assert issue.jank_prewarm_last_error == ""
 
 
 @pytest.mark.asyncio
@@ -814,8 +814,8 @@ async def test_ingest_continues_when_symbolication_raises(patched_session, monke
 
     async with get_session() as s:
         issue = (await s.execute(select(CrashIssue))).scalar_one()
-    assert issue.prewarm_attempts == 1
-    assert "symbol package download exploded" in issue.prewarm_last_error
+    assert issue.jank_prewarm_attempts == 1
+    assert "symbol package download exploded" in issue.jank_prewarm_last_error
     # representative_stack 保留摄入时的原始占位（未被符号化覆盖）
     assert issue.representative_stack == ""
 
@@ -874,8 +874,8 @@ async def test_ingest_keeps_placeholder_title_and_stack_when_symbolication_fails
     assert issue.title == "Jank @ Plaud-Global"
     # representative_stack 保留原始完整 stack_trace，不是空、不是报错
     assert issue.representative_stack == original_stack_trace
-    assert issue.prewarm_attempts == 1
-    assert issue.prewarm_last_error == ""
+    assert issue.jank_prewarm_attempts == 1
+    assert issue.jank_prewarm_last_error == ""
 
 
 # ── symbols_missing 判定（2026-07-24：符号表丢失 UI 标识）────────────────────────

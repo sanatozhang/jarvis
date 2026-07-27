@@ -436,9 +436,9 @@ async def _symbolicate_new_jank_issue(issue_id: str, parsed: Dict[str, Any]) -> 
             row.representative_stack = full_stack[:32000]
         if title_updated:
             row.title = f"Jank @ {symbolized_frame}"[:512]
-        row.prewarm_attempts = int(row.prewarm_attempts or 0) + 1
-        row.prewarm_last_at = datetime.utcnow()
-        row.prewarm_last_error = ""
+        row.jank_prewarm_attempts = int(row.jank_prewarm_attempts or 0) + 1
+        row.jank_prewarm_last_at = datetime.utcnow()
+        row.jank_prewarm_last_error = ""
         if symbols_missing is not None:
             tags = _safe_load_tags(row.tags)
             tags["symbols_missing"] = symbols_missing
@@ -455,9 +455,9 @@ async def _record_jank_prewarm_result(issue_id: str, error: str) -> None:
         )).scalar_one_or_none()
         if row is None:
             return
-        row.prewarm_attempts = int(row.prewarm_attempts or 0) + 1
-        row.prewarm_last_error = (error or "")[:500]
-        row.prewarm_last_at = datetime.utcnow()
+        row.jank_prewarm_attempts = int(row.jank_prewarm_attempts or 0) + 1
+        row.jank_prewarm_last_error = (error or "")[:500]
+        row.jank_prewarm_last_at = datetime.utcnow()
         await session.commit()
 
 
@@ -643,7 +643,7 @@ async def backfill_stuck_jank_issues(now: Optional[datetime] = None) -> Dict[str
             parsed["app_stack_module"] if "ios" in (parsed["platform"] or "").lower()
             else parsed["app_stack_frame"]
         )
-        if _jank_issue_looks_stuck(row.title or "", original_frame) and int(row.prewarm_attempts or 0) < max_attempts:
+        if _jank_issue_looks_stuck(row.title or "", original_frame) and int(row.jank_prewarm_attempts or 0) < max_attempts:
             candidates += 1
             await _symbolicate_new_jank_issue(row.datadog_issue_id, parsed)
             resymbolized += 1
