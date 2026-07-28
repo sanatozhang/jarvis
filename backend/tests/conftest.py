@@ -135,13 +135,17 @@ def _make_test_settings():
 
 async def seed_user(client: AsyncClient, username: str = "testuser") -> dict:
     """Create a user via API."""
-    resp = await client.post("/api/users/login", json={"username": username})
+    resp = await client.post(
+        "/api/users/login", json={"username": username, "email": f"{username}@plaud.ai"},
+    )
     return resp.json()
 
 
 async def seed_admin(client: AsyncClient, username: str = "sanato") -> dict:
     """Create an admin user (first user 'sanato' is auto-admin)."""
-    resp = await client.post("/api/users/login", json={"username": username})
+    resp = await client.post(
+        "/api/users/login", json={"username": username, "email": f"{username}@plaud.ai"},
+    )
     return resp.json()
 
 
