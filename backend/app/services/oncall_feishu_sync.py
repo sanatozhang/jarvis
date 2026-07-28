@@ -131,7 +131,11 @@ async def diff_and_sync_oncall(feishu_weeks: List[Dict[str, Any]]) -> Dict[str, 
 
         await db.upsert_week_assignment(
             jarvis_info["week_start"], jarvis_info["week_end"],
-            group_index=-1,  # -1 = 来自 Feishu 同步,不对应任何内部 rotation group
+            # 复用 resolve_week_group 覆盖前算出的 group_index（而非 -1 哨兵值）：
+            # group_index 仅供展示参考，members_json 才是权威来源；这样只有本周的
+            # members 被 Feishu 数据覆盖，不会往 rotation-continuation 锚点链
+            # (_find_latest_week_anchor) 里塞进一个外来的、破坏后续周续轮计算的哨兵值。
+            group_index=jarvis_info["group_index"],
             members=feishu_members,
             only_if_missing=False,
         )

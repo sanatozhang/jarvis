@@ -94,7 +94,10 @@ async def test_diff_and_sync_overwrites_changed_week(client):
 
     snap = await db.get_week_assignment(date(2026, 7, 27))
     assert snap["members"] == ["leon@plaud.ai", "yunze@plaud.ai"]
-    assert snap["group_index"] == -1
+    # groups = [["a@plaud.ai"], ["b@plaud.ai"]], start_date week_num 0 -> pre-overwrite
+    # resolve_week_group 算出 group_index=0（对应 "a@plaud.ai"，即 before）。这是
+    # 覆盖前那次 rotation 自己的 index，不是哨兵值——续轮锚点链不会被这次写入干扰。
+    assert snap["group_index"] == 0
 
 
 async def test_diff_and_sync_skips_unchanged_week(client):
@@ -138,6 +141,26 @@ async def test_diff_and_sync_aligns_to_non_monday_grid(client):
     snap = await db.get_week_assignment(expected_key)
     assert snap is not None
     assert snap["members"] == ["leon@plaud.ai"]
+
+
+async def test_diff_and_sync_skips_week_before_start_date(client):
+    """Feishu 周早于配置的 start_date（week_num < 0）必须被跳过——不落进
+    updated/unchanged，也不写任何快照。"""
+    from app.db import database as db
+    from app.services.oncall_feishu_sync import diff_and_sync_oncall
+
+    await db.save_oncall_groups([["leon@plaud.ai"]], created_by="test")
+    await db.set_oncall_config("start_date", "2026-07-27")  # 周一
+
+    stale_week_start = date(2026, 7, 20)  # 早于 start_date 一周，week_num = -1
+    result = await diff_and_sync_oncall([
+        {"week_start": stale_week_start, "members": ["someone@plaud.ai"]},
+    ])
+
+    assert result["skipped"] is False
+    assert result["updated"] == []
+    assert result["unchanged"] == []
+    assert await db.get_week_assignment(stale_week_start) is None
 
 
 async def test_diff_and_sync_skipped_when_no_start_date(client):
