@@ -38,8 +38,8 @@
 
 - 飞书某周两个角色都为空 → 跳过，不清空 Jarvis 已有排班。
 - 从未配置过 `start_date` → 整体跳过，不做任何写入。
-- 检测到差异直接覆盖（不经人工确认这一步）——但整个定时循环默认关闭，需要
-  `ENABLE_ONCALL_FEISHU_SYNC=true` 显式开启（同 `ENABLE_ONCALL_NOTIFY` 的约定）。
+- 检测到差异直接覆盖（不经人工确认这一步）——整个定时循环 2026-07-28 评审通过后
+  **默认开启**；需要临时关闭时设 `ENABLE_ONCALL_FEISHU_SYNC=false`。
 - 管理员可调 `POST /api/oncall/sync-from-feishu?username=<admin>` 手动跑一次，
   不必等到下周一，便于上线后立即验证。
 
