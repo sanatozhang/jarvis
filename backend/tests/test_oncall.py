@@ -305,11 +305,35 @@ async def test_sync_from_feishu_requires_admin(client):
 async def test_sync_from_feishu_admin_triggers_sync(client, monkeypatch):
     from app.services import oncall_feishu_sync
 
-    async def fake_sync(today=None):
+    calls = []
+
+    async def fake_sync(today=None, dry_run=False):
+        calls.append(dry_run)
+        return {"skipped": False, "updated": [], "unchanged": []}
+
+    monkeypatch.setattr(oncall_feishu_sync, "sync_oncall_from_feishu", fake_sync)
+    await seed_admin(client, "sanato")
+    resp = await client.post(
+        "/api/oncall/sync-from-feishu", params={"username": "sanato", "dry_run": "false"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"skipped": False, "updated": [], "unchanged": []}
+    assert calls == [False]
+
+
+async def test_sync_from_feishu_defaults_to_dry_run(client, monkeypatch):
+    """端点本身不受 ENABLE_ONCALL_FEISHU_SYNC 开关约束——它自己的安全闸是
+    dry_run 默认 True,省略这个 query param 绝不能真的写库。"""
+    from app.services import oncall_feishu_sync
+
+    calls = []
+
+    async def fake_sync(today=None, dry_run=False):
+        calls.append(dry_run)
         return {"skipped": False, "updated": [], "unchanged": []}
 
     monkeypatch.setattr(oncall_feishu_sync, "sync_oncall_from_feishu", fake_sync)
     await seed_admin(client, "sanato")
     resp = await client.post("/api/oncall/sync-from-feishu", params={"username": "sanato"})
     assert resp.status_code == 200
-    assert resp.json() == {"skipped": False, "updated": [], "unchanged": []}
+    assert calls == [True]

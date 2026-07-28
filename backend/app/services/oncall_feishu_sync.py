@@ -88,11 +88,15 @@ async def fetch_feishu_oncall_weeks(min_week_start: date) -> List[Dict[str, Any]
     return weeks
 
 
-async def diff_and_sync_oncall(feishu_weeks: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def diff_and_sync_oncall(feishu_weeks: List[Dict[str, Any]], dry_run: bool = False) -> Dict[str, Any]:
     """把 Feishu 的值班数据对齐进 Jarvis 排班网格,有差异的周直接覆盖写入快照表。
 
     没有配置 `start_date`(oncall 从未初始化过)时跳过整个同步并记录 warning——
     没有网格基准,写入的 key 没有意义。
+
+    `dry_run=True` 时仍会算出完整的 before/after 差异并分类进 updated/unchanged
+    （所以调用方能预览"如果跑了会改什么"），但跳过实际的 `upsert_week_assignment`
+    写入——不落一个字节。
     """
     start_date_str = await db.get_oncall_config("start_date", "")
     if not start_date_str:
@@ -130,16 +134,17 @@ async def diff_and_sync_oncall(feishu_weeks: List[Dict[str, Any]]) -> Dict[str, 
             unchanged.append(entry)
             continue
 
-        await db.upsert_week_assignment(
-            jarvis_info["week_start"], jarvis_info["week_end"],
-            # 复用 resolve_week_group 覆盖前算出的 group_index（而非 -1 哨兵值）：
-            # group_index 仅供展示参考，members_json 才是权威来源；这样只有本周的
-            # members 被 Feishu 数据覆盖，不会往 rotation-continuation 锚点链
-            # (_find_latest_week_anchor) 里塞进一个外来的、破坏后续周续轮计算的哨兵值。
-            group_index=jarvis_info["group_index"],
-            members=feishu_members,
-            only_if_missing=False,
-        )
+        if not dry_run:
+            await db.upsert_week_assignment(
+                jarvis_info["week_start"], jarvis_info["week_end"],
+                # 复用 resolve_week_group 覆盖前算出的 group_index（而非 -1 哨兵值）：
+                # group_index 仅供展示参考，members_json 才是权威来源；这样只有本周的
+                # members 被 Feishu 数据覆盖，不会往 rotation-continuation 锚点链
+                # (_find_latest_week_anchor) 里塞进一个外来的、破坏后续周续轮计算的哨兵值。
+                group_index=jarvis_info["group_index"],
+                members=feishu_members,
+                only_if_missing=False,
+            )
         updated.append(entry)
 
     return {"skipped": False, "updated": updated, "unchanged": unchanged}
@@ -148,16 +153,22 @@ async def diff_and_sync_oncall(feishu_weeks: List[Dict[str, Any]]) -> Dict[str, 
 SYNC_HOUR_LOCAL = 8
 
 
-async def sync_oncall_from_feishu(today: Optional[date] = None) -> Dict[str, Any]:
+async def sync_oncall_from_feishu(today: Optional[date] = None, dry_run: bool = False) -> Dict[str, Any]:
     """入口:拉取 Feishu + 对比 + 覆盖写入,并记录审计事件。供 loop 和手动触发端点复用。
 
     `today` 可注入(测试用),缺省取 Asia/Shanghai 的真实当前日期。
+    `dry_run=True` 时只预览差异,不写库(见 `diff_and_sync_oncall`)。
     """
     resolved_today = today or datetime.now(SHANGHAI_TZ).date()
     this_monday = resolved_today - timedelta(days=resolved_today.weekday())
 
-    feishu_weeks = await fetch_feishu_oncall_weeks(this_monday)
-    result = await diff_and_sync_oncall(feishu_weeks)
+    try:
+        feishu_weeks = await fetch_feishu_oncall_weeks(this_monday)
+        result = await diff_and_sync_oncall(feishu_weeks, dry_run=dry_run)
+    except Exception as e:
+        logger.error("Oncall Feishu sync failed: %s", e, exc_info=True)
+        await db.log_event("oncall_feishu_sync", detail={"error": str(e), "dry_run": dry_run})
+        raise
 
     await db.log_event(
         "oncall_feishu_sync",
@@ -165,6 +176,7 @@ async def sync_oncall_from_feishu(today: Optional[date] = None) -> Dict[str, Any
             "updated_weeks": [u["week_start"] for u in result["updated"]],
             "unchanged_weeks": len(result["unchanged"]),
             "skipped": result["skipped"],
+            "dry_run": dry_run,
         },
     )
     if result["updated"]:

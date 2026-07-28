@@ -3,6 +3,8 @@
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 
 def _ms(y, m, d):
     return int(datetime(y, m, d, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000)
@@ -98,6 +100,28 @@ async def test_diff_and_sync_overwrites_changed_week(client):
     # resolve_week_group 算出 group_index=0（对应 "a@plaud.ai"，即 before）。这是
     # 覆盖前那次 rotation 自己的 index，不是哨兵值——续轮锚点链不会被这次写入干扰。
     assert snap["group_index"] == 0
+
+
+async def test_diff_and_sync_dry_run_previews_without_writing(client):
+    """dry_run=True 必须算出跟真跑一样的 updated/unchanged 分类,但不能真的写库——
+    这是手动触发端点绕过 kill switch 的安全阀,预览必须"零写入"。"""
+    from app.db import database as db
+    from app.services.oncall_feishu_sync import diff_and_sync_oncall
+
+    await db.save_oncall_groups([["a@plaud.ai"], ["b@plaud.ai"]], created_by="test")
+    await db.set_oncall_config("start_date", "2026-07-27")  # 周一，week_num 0 = 2026-07-27
+
+    result = await diff_and_sync_oncall([
+        {"week_start": date(2026, 7, 27), "members": ["leon@plaud.ai", "yunze@plaud.ai"]},
+    ], dry_run=True)
+
+    assert result["skipped"] is False
+    assert len(result["updated"]) == 1
+    assert result["updated"][0]["before"] == ["a@plaud.ai"]
+    assert result["updated"][0]["after"] == ["leon@plaud.ai", "yunze@plaud.ai"]
+
+    # 关键断言：dry_run 分类出了"会改"，但实际没有写任何东西进快照表。
+    assert await db.get_week_assignment(date(2026, 7, 27)) is None
 
 
 async def test_diff_and_sync_skips_unchanged_week(client):
@@ -214,3 +238,31 @@ async def test_sync_oncall_from_feishu_end_to_end(client, monkeypatch):
     assert len(result["updated"]) == 1
     snap = await db.get_week_assignment(date(2026, 7, 27))
     assert snap["members"] == ["leon@plaud.ai", "yunze@plaud.ai"]
+
+
+async def test_sync_oncall_from_feishu_logs_failure_and_reraises(client, monkeypatch):
+    """拉取/对比失败时，必须在往上抛异常之前先记一条 log_event——否则周一 08:00
+    的瞬时失败在审计日志里完全不可见（loop 那边只是记 error log，1 小时后重试，
+    审计表看不到这次失败发生过）。"""
+    from app.db import database as db
+    from app.services import oncall_feishu_sync
+
+    logged_calls = []
+
+    async def fake_log_event(event_type, **kwargs):
+        logged_calls.append((event_type, kwargs))
+
+    async def fake_fetch_raises(min_week_start):
+        raise RuntimeError("feishu api boom")
+
+    monkeypatch.setattr(db, "log_event", fake_log_event)
+    monkeypatch.setattr(oncall_feishu_sync, "fetch_feishu_oncall_weeks", fake_fetch_raises)
+
+    with pytest.raises(RuntimeError, match="feishu api boom"):
+        await oncall_feishu_sync.sync_oncall_from_feishu(today=date(2026, 7, 27))
+
+    assert len(logged_calls) == 1
+    event_type, kwargs = logged_calls[0]
+    assert event_type == "oncall_feishu_sync"
+    assert kwargs["detail"]["error"] == "feishu api boom"
+    assert kwargs["detail"]["dry_run"] is False

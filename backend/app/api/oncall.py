@@ -221,18 +221,23 @@ async def update_schedule(
 
 
 @router.post("/sync-from-feishu")
-async def sync_from_feishu(username: str = Query(..., description="Admin username")):
+async def sync_from_feishu(
+    username: str = Query(..., description="Admin username"),
+    dry_run: bool = Query(True, description="Preview only — don't write. Pass dry_run=false to actually apply."),
+):
     """Manually trigger the weekly Feishu -> Jarvis oncall sync (admin only).
 
     对应每周一 08:00 自动跑的同一逻辑(`services/oncall_feishu_sync.py`)，用于
-    上线后手动验证一次，不必等到下一个周一。
+    上线后手动验证一次，不必等到下一个周一。默认 dry_run=True（只预览不写库），
+    必须显式传 dry_run=false 才会真的覆盖写入 —— 这个端点本身不受
+    ENABLE_ONCALL_FEISHU_SYNC 开关约束，dry_run 默认 True 就是它自己的安全闸。
     """
     user = await db.get_user(username)
     if not user or user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Only admins can trigger oncall sync")
 
     from app.services.oncall_feishu_sync import sync_oncall_from_feishu
-    return await sync_oncall_from_feishu()
+    return await sync_oncall_from_feishu(dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------
