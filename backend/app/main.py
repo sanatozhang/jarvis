@@ -223,10 +223,23 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Escalation reminder disabled (set ENABLE_ONCALL_NOTIFY=true to enable)")
 
+    # Weekly oncall sync FROM Feishu「本周值班」表 (每周一 08:00 Asia/Shanghai)
+    # 默认关闭,评审后手动 ENABLE_ONCALL_FEISHU_SYNC=true 打开 (与 escalation
+    # reminder 的既有约定一致,不能部署即生效)。
+    oncall_feishu_sync_task = None
+    if os.environ.get("ENABLE_ONCALL_FEISHU_SYNC", "false").lower() == "true":
+        from app.services.oncall_feishu_sync import oncall_feishu_sync_loop
+        oncall_feishu_sync_task = asyncio.create_task(oncall_feishu_sync_loop())
+        logger.info("Oncall Feishu sync loop started (ENABLE_ONCALL_FEISHU_SYNC=true)")
+    else:
+        logger.info("Oncall Feishu sync disabled (set ENABLE_ONCALL_FEISHU_SYNC=true to enable)")
+
     yield
 
     if reminder_task is not None:
         reminder_task.cancel()
+    if oncall_feishu_sync_task is not None:
+        oncall_feishu_sync_task.cancel()
     if crashguard_warmup_task is not None:
         crashguard_warmup_task.cancel()
     crashguard_pipeline_task.cancel()

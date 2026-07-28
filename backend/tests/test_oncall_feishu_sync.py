@@ -171,3 +171,46 @@ async def test_diff_and_sync_skipped_when_no_start_date(client):
     ])
     assert result["skipped"] is True
     assert result["updated"] == []
+
+
+def test_seconds_until_next_monday_8am_same_day_before_8():
+    from app.services.oncall_feishu_sync import _seconds_until_next_monday_8am
+    # 2026-07-27 是周一
+    now = datetime(2026, 7, 27, 6, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    assert _seconds_until_next_monday_8am(now) == 2 * 3600
+
+
+def test_seconds_until_next_monday_8am_same_day_after_8_goes_to_next_week():
+    from app.services.oncall_feishu_sync import _seconds_until_next_monday_8am
+    now = datetime(2026, 7, 27, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    expected = (datetime(2026, 8, 3, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")) - now).total_seconds()
+    assert _seconds_until_next_monday_8am(now) == expected
+
+
+def test_seconds_until_next_monday_8am_midweek():
+    from app.services.oncall_feishu_sync import _seconds_until_next_monday_8am
+    # 2026-07-29 是周三
+    now = datetime(2026, 7, 29, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    expected = (datetime(2026, 8, 3, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")) - now).total_seconds()
+    assert _seconds_until_next_monday_8am(now) == expected
+
+
+async def test_sync_oncall_from_feishu_end_to_end(client, monkeypatch):
+    from app.db import database as db
+    from app.services import oncall_feishu_sync
+
+    await db.save_oncall_groups([["old@plaud.ai"]], created_by="test")
+    await db.set_oncall_config("start_date", "2026-07-27")
+
+    async def fake_fetch(min_week_start):
+        assert min_week_start == date(2026, 7, 27)
+        return [{"week_start": date(2026, 7, 27), "members": ["leon@plaud.ai", "yunze@plaud.ai"]}]
+
+    monkeypatch.setattr(oncall_feishu_sync, "fetch_feishu_oncall_weeks", fake_fetch)
+
+    result = await oncall_feishu_sync.sync_oncall_from_feishu(today=date(2026, 7, 27))
+
+    assert result["skipped"] is False
+    assert len(result["updated"]) == 1
+    snap = await db.get_week_assignment(date(2026, 7, 27))
+    assert snap["members"] == ["leon@plaud.ai", "yunze@plaud.ai"]

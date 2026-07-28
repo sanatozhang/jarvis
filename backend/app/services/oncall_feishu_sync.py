@@ -22,6 +22,7 @@ oncall_week_assignments 用于工单升级拉群、统计等场景。本模块�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -142,3 +143,62 @@ async def diff_and_sync_oncall(feishu_weeks: List[Dict[str, Any]]) -> Dict[str, 
         updated.append(entry)
 
     return {"skipped": False, "updated": updated, "unchanged": unchanged}
+
+
+SYNC_HOUR_LOCAL = 8
+
+
+async def sync_oncall_from_feishu(today: Optional[date] = None) -> Dict[str, Any]:
+    """入口:拉取 Feishu + 对比 + 覆盖写入,并记录审计事件。供 loop 和手动触发端点复用。
+
+    `today` 可注入(测试用),缺省取 Asia/Shanghai 的真实当前日期。
+    """
+    resolved_today = today or datetime.now(SHANGHAI_TZ).date()
+    this_monday = resolved_today - timedelta(days=resolved_today.weekday())
+
+    feishu_weeks = await fetch_feishu_oncall_weeks(this_monday)
+    result = await diff_and_sync_oncall(feishu_weeks)
+
+    await db.log_event(
+        "oncall_feishu_sync",
+        detail={
+            "updated_weeks": [u["week_start"] for u in result["updated"]],
+            "unchanged_weeks": len(result["unchanged"]),
+            "skipped": result["skipped"],
+        },
+    )
+    if result["updated"]:
+        logger.info(
+            "Oncall Feishu sync: updated %d week(s): %s",
+            len(result["updated"]), [u["week_start"] for u in result["updated"]],
+        )
+    else:
+        logger.info("Oncall Feishu sync: no changes (%d week(s) checked)", len(result["unchanged"]))
+    return result
+
+
+def _seconds_until_next_monday_8am(now_local: datetime) -> float:
+    target = now_local.replace(hour=SYNC_HOUR_LOCAL, minute=0, second=0, microsecond=0)
+    days_ahead = (0 - now_local.weekday()) % 7  # Monday == 0
+    if days_ahead == 0 and now_local >= target:
+        days_ahead = 7
+    target = target + timedelta(days=days_ahead)
+    return (target - now_local).total_seconds()
+
+
+async def oncall_feishu_sync_loop():
+    """Background loop: fire every Monday at 08:00 Asia/Shanghai."""
+    while True:
+        try:
+            now_local = datetime.now(SHANGHAI_TZ)
+            wait_s = _seconds_until_next_monday_8am(now_local)
+            logger.info("Next oncall Feishu sync in %.1f hours (Monday 08:00 SH)", wait_s / 3600)
+            await asyncio.sleep(wait_s)
+            await sync_oncall_from_feishu()
+            await asyncio.sleep(60)  # 避免本次跑得飞快导致同一分钟内重复触发
+        except asyncio.CancelledError:
+            logger.info("Oncall Feishu sync loop cancelled")
+            return
+        except Exception as e:
+            logger.error("Oncall Feishu sync loop error (retry in 1h): %s", e, exc_info=True)
+            await asyncio.sleep(3600)
