@@ -294,3 +294,22 @@ async def test_my_workload_aggregates(client, db_session):
     assert data["apollo_tickets"][0]["zendesk_url"]  # 由 zendesk_id 拼出
     att = data["feishu_tickets"][0]["attachments"][0]
     assert att["download_path"] == "/api/local/fk1/files/log.plaud"
+
+
+async def test_sync_from_feishu_requires_admin(client):
+    await seed_user(client, "regular")
+    resp = await client.post("/api/oncall/sync-from-feishu", params={"username": "regular"})
+    assert resp.status_code == 403
+
+
+async def test_sync_from_feishu_admin_triggers_sync(client, monkeypatch):
+    from app.services import oncall_feishu_sync
+
+    async def fake_sync(today=None):
+        return {"skipped": False, "updated": [], "unchanged": []}
+
+    monkeypatch.setattr(oncall_feishu_sync, "sync_oncall_from_feishu", fake_sync)
+    await seed_admin(client, "sanato")
+    resp = await client.post("/api/oncall/sync-from-feishu", params={"username": "sanato"})
+    assert resp.status_code == 200
+    assert resp.json() == {"skipped": False, "updated": [], "unchanged": []}

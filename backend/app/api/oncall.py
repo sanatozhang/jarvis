@@ -220,6 +220,21 @@ async def update_schedule(
     return {"status": "ok", "groups": len(groups), "start_date": req.start_date}
 
 
+@router.post("/sync-from-feishu")
+async def sync_from_feishu(username: str = Query(..., description="Admin username")):
+    """Manually trigger the weekly Feishu -> Jarvis oncall sync (admin only).
+
+    对应每周一 08:00 自动跑的同一逻辑(`services/oncall_feishu_sync.py`)，用于
+    上线后手动验证一次，不必等到下一个周一。
+    """
+    user = await db.get_user(username)
+    if not user or user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can trigger oncall sync")
+
+    from app.services.oncall_feishu_sync import sync_oncall_from_feishu
+    return await sync_oncall_from_feishu()
+
+
 # ---------------------------------------------------------------------------
 # Escalated tickets (oncall workload view)
 # ---------------------------------------------------------------------------
