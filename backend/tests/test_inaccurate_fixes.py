@@ -173,7 +173,7 @@ def test_sanitize_noop_when_root_cause_clean():
 @pytest.fixture
 def issue_may28():
     return SimpleNamespace(
-        id="fb_test", occurred_at=None, created_at=datetime(2026, 5, 28), description=""
+        record_id="fb_test", occurred_at=None, created_at=datetime(2026, 5, 28), description=""
     )
 
 
@@ -208,7 +208,7 @@ def test_coverage_conservative_on_no_timestamps(tmp_path, issue_may28):
 
 def test_coverage_no_reference_time_passes(tmp_path):
     """既无 problem_date 也无 occurred_at/created_at → 无法判定，放行。"""
-    issue = SimpleNamespace(id="x", occurred_at=None, created_at=None, description="")
+    issue = SimpleNamespace(record_id="x", occurred_at=None, created_at=None, description="")
     old_log = _write_log(tmp_path, "old.log", "2026-01-30")
     assert _check_log_coverage([old_log], None, issue, max_gap_days=30) is None
 

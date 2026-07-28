@@ -192,7 +192,7 @@ def _build_stale_log_result(
     )
     result = AnalysisResult(
         task_id=task_id,
-        issue_id=issue.id,
+        issue_id=issue.record_id,
         problem_type="日志时段不匹配",
         problem_type_en="Log Time Range Mismatch",
         root_cause=rc,
