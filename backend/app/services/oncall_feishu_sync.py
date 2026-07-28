@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from app.config import get_settings
+from app.db import database as db
 from app.services.feishu_cli import _run_cli
 
 logger = logging.getLogger("jarvis.oncall_feishu_sync")
@@ -84,3 +85,56 @@ async def fetch_feishu_oncall_weeks(min_week_start: date) -> List[Dict[str, Any]
 
     weeks.sort(key=lambda w: w["week_start"])
     return weeks
+
+
+async def diff_and_sync_oncall(feishu_weeks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """把 Feishu 的值班数据对齐进 Jarvis 排班网格,有差异的周直接覆盖写入快照表。
+
+    没有配置 `start_date`(oncall 从未初始化过)时跳过整个同步并记录 warning——
+    没有网格基准,写入的 key 没有意义。
+    """
+    start_date_str = await db.get_oncall_config("start_date", "")
+    if not start_date_str:
+        logger.warning("Oncall start_date not configured — skip Feishu sync entirely")
+        return {"skipped": True, "reason": "no_start_date", "updated": [], "unchanged": []}
+
+    start = date.fromisoformat(start_date_str)
+    groups = await db.get_oncall_groups()
+
+    updated: List[Dict[str, Any]] = []
+    unchanged: List[Dict[str, Any]] = []
+
+    for week in feishu_weeks:
+        feishu_week_start = week["week_start"]
+        feishu_members = week["members"]
+
+        week_num = (feishu_week_start - start).days // 7
+        if week_num < 0:
+            logger.warning(
+                "Feishu week %s predates oncall start_date %s — skip", feishu_week_start, start,
+            )
+            continue
+
+        jarvis_info = await db.resolve_week_group(week_num, groups, start)
+        jarvis_members = sorted(m.strip().lower() for m in jarvis_info["members"])
+
+        entry = {
+            "week_start": jarvis_info["week_start"].isoformat(),
+            "feishu_week_start": feishu_week_start.isoformat(),
+            "before": jarvis_members,
+            "after": feishu_members,
+        }
+
+        if feishu_members == jarvis_members:
+            unchanged.append(entry)
+            continue
+
+        await db.upsert_week_assignment(
+            jarvis_info["week_start"], jarvis_info["week_end"],
+            group_index=-1,  # -1 = 来自 Feishu 同步,不对应任何内部 rotation group
+            members=feishu_members,
+            only_if_missing=False,
+        )
+        updated.append(entry)
+
+    return {"skipped": False, "updated": updated, "unchanged": unchanged}
