@@ -1,17 +1,39 @@
 """Tests for /api/tasks endpoints."""
 from unittest.mock import patch, AsyncMock
 from tests.conftest import seed_issue, seed_task, seed_analysis
+from app.models.schemas import AnalysisResult
+
+
+def _mock_analysis_result() -> AnalysisResult:
+    """Realistic stand-in for run_analysis_pipeline()'s return value.
+
+    A bare `AsyncMock()` return value auto-creates further AsyncMock children for
+    unconfigured attributes (e.g. `result.root_cause`), so `_run_task`'s downstream
+    `"x" in result.root_cause` checks get handed an unawaited coroutine instead of a
+    string — TypeError: argument of type 'coroutine' is not a container or iterable.
+    That crash is swallowed by `_run_task`'s own except-block, but it still fires a
+    REAL Feishu DM via `notify_analysis_failure` (2026-07-28 incident: repeatedly
+    spammed prod admins every time this suite ran). Returning a real AnalysisResult
+    keeps every attribute a genuine str/bool/etc., matching production shape.
+    """
+    return AnalysisResult(task_id="mock_task", issue_id="mock_issue")
 
 
 async def test_create_task(client, db_session):
     await seed_issue(db_session, "issue_ct", status="pending")
-    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock):
+    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock) as mock_pipeline:
+        mock_pipeline.return_value = _mock_analysis_result()
         resp = await client.post("/api/tasks", json={"issue_id": "issue_ct", "username": "testuser"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["issue_id"] == "issue_ct"
     assert data["status"] == "queued"
     assert "task_id" in data
+
+    # Regression guard: the background task must complete cleanly, not crash
+    # (see _mock_analysis_result docstring for the incident this guards against).
+    task_status = await client.get(f"/api/tasks/{data['task_id']}")
+    assert task_status.json()["status"] != "failed"
 
 
 async def test_get_task_status(client, db_session):
@@ -53,10 +75,14 @@ async def test_list_tasks(client, db_session):
 async def test_batch_analyze(client, db_session):
     await seed_issue(db_session, "b1", status="pending")
     await seed_issue(db_session, "b2", status="pending")
-    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock):
+    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock) as mock_pipeline:
+        mock_pipeline.return_value = _mock_analysis_result()
         resp = await client.post("/api/tasks/batch", json={"issue_ids": ["b1", "b2"]})
     assert resp.status_code == 200
     assert len(resp.json()) == 2
+    for item in resp.json():
+        task_status = await client.get(f"/api/tasks/{item['task_id']}")
+        assert task_status.json()["status"] != "failed"
 
 
 async def _start_events(db_session, issue_id: str):
@@ -77,7 +103,8 @@ async def _start_events(db_session, issue_id: str):
 async def test_followup_task_records_question_in_start_event(client, db_session):
     # 追问：analysis_start 事件须带 followup_question + task_id，失败后可据此重放
     await seed_issue(db_session, "issue_fq", status="done")
-    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock):
+    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock) as mock_pipeline:
+        mock_pipeline.return_value = _mock_analysis_result()
         resp = await client.post("/api/tasks", json={
             "issue_id": "issue_fq", "username": "wm",
             "followup_question": "看更早的蓝牙日志",
@@ -93,7 +120,8 @@ async def test_followup_task_records_question_in_start_event(client, db_session)
 async def test_base_task_start_event_has_no_followup(client, db_session):
     # 首次分析（无追问）：start 事件不应塞 followup_question，保持干净
     await seed_issue(db_session, "issue_base", status="pending")
-    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock):
+    with patch("app.api.tasks.run_analysis_pipeline", new_callable=AsyncMock) as mock_pipeline:
+        mock_pipeline.return_value = _mock_analysis_result()
         resp = await client.post("/api/tasks", json={"issue_id": "issue_base", "username": "u"})
     assert resp.status_code == 200
     details = await _start_events(db_session, "issue_base")
