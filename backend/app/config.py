@@ -110,6 +110,8 @@ class FeishuSettings(BaseSettings):
     app_token: str = "BmjmbSpxxabP2dsuxbtcUTYAn4g"
     table_id: str = "tblWQRIvZq74MhRT"
     view_id: str = "vewu36X0Gx"
+    oncall_table_id: str = "tblICR3x8k7nwoNK"
+    oncall_view_id: str = "vewpgzcUrK"
     base_url: str = "https://nicebuild.feishu.cn/base/BmjmbSpxxabP2dsuxbtcUTYAn4g"
     # Separate IM app for group chat / messaging (can be same or different app)
     im_app_id: str = ""
