@@ -80,6 +80,7 @@
 | `GET`  | `/api/crash/auto-pr-queue` | auto-PR 队列 |
 | `GET`  | `/api/crash/pull-requests` | PR 列表 |
 | `GET`  | `/api/crash/latest-release` | 「线上最新版本」+「用户量最大版本」（按平台 + source 标注） |
+| `POST` | `/api/crash/symbolicate` | 手工符号化任意堆栈文本（同步返回，只读，不写库；详见 `docs/crashguard/symbolication.md`） |
 | `GET`  | `/api/crash/health` | 健康探针（**不受 enabled kill switch 拦截**，前端用它探测） |
 
 ## 配置（env > yaml > defaults）
