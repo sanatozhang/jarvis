@@ -648,7 +648,15 @@ async def _maybe_auto_draft_pr(analysis_id: int, feasibility: float) -> None:
 # ---------------------------------------------------------------------------
 
 async def analyze_issue(issue_id: str) -> AnalysisOutput:
-    """同步：拉一条 issue → 跑 agent → 写 CrashAnalysis 表 → 返回结果。"""
+    """同步：拉一条 issue → 跑 agent → 写 CrashAnalysis 表 → 返回结果。
+
+    分析开始前立即落一条 status="running" 的占位行（同 start_analysis 的
+    pending 占位思路），让 `_filter_pending_ids` 等去重查询在分析进行中就能
+    看到"已被认领"——此前这里在 agent 跑完前不写任何行，两个独立调度入口
+    （5 分钟 tick / 4 小时 pipeline）各自查重时都看不到对方正在跑同一个
+    issue，会并发重复分析同一个 issue（且 `_prepare_workspace` 的
+    rmtree-then-recreate 在并发时还可能互相删对方的工作区文件）。
+    """
     async with get_session() as session:
         issue = (await session.execute(
             select(CrashIssue).where(CrashIssue.datadog_issue_id == issue_id)
@@ -657,24 +665,54 @@ async def analyze_issue(issue_id: str) -> AnalysisOutput:
             raise ValueError(f"issue {issue_id} not found")
         snapshot_data = _issue_to_dict(issue)
 
-    snapshot_data["enrichment_block"] = await _build_enrichment_block(issue_id)
-    workspace = _prepare_workspace(issue_id)
-    snapshot_data["code_hint"] = _platform_code_hint(snapshot_data.get("platform", ""), workspace)
-    snapshot_data["stack_paths_block"] = _build_stack_paths_block(
-        snapshot_data.get("stack_trace", ""),
-        snapshot_data.get("platform", ""),
-        workspace,
-    )
-    prompt = _build_prompt(snapshot_data)
+    run_id = str(uuid.uuid4())
+    async with get_session() as session:
+        session.add(CrashAnalysis(
+            datadog_issue_id=issue_id,
+            analysis_run_id=run_id,
+            agent_name="",
+            triggered_by="manual",
+            problem_type="",
+            scenario="",
+            root_cause="",
+            fix_suggestion="",
+            feasibility_score=0.0,
+            confidence="low",
+            reproducibility="unknown",
+            agent_raw_output="",
+            status="running",
+            followup_question="",
+            parent_run_id="",
+            answer="",
+            created_at=datetime.utcnow(),
+            phase="fix",
+            parent_diagnosis_run_id="",
+        ))
+        await session.commit()
+
     try:
-        (workspace / "prompt.md").write_text(prompt, encoding="utf-8")
-    except Exception:
-        pass
+        snapshot_data["enrichment_block"] = await _build_enrichment_block(issue_id)
+        workspace = _prepare_workspace(issue_id)
+        snapshot_data["code_hint"] = _platform_code_hint(snapshot_data.get("platform", ""), workspace)
+        snapshot_data["stack_paths_block"] = _build_stack_paths_block(
+            snapshot_data.get("stack_trace", ""),
+            snapshot_data.get("platform", ""),
+            workspace,
+        )
+        prompt = _build_prompt(snapshot_data)
+        try:
+            (workspace / "prompt.md").write_text(prompt, encoding="utf-8")
+        except Exception:
+            pass
 
-    output = await _run_agent(workspace, prompt)
-    output.raw_output = output.raw_output[:8000] if output.raw_output else ""
+        output = await _run_agent(workspace, prompt)
+        output.raw_output = output.raw_output[:8000] if output.raw_output else ""
+    except Exception as exc:
+        logger.exception("analyze_issue failed issue=%s run_id=%s", issue_id, run_id)
+        await _update_failed(run_id, str(exc))
+        raise
 
-    await _persist_analysis_legacy(issue_id, output)
+    await _persist_analysis_legacy(run_id, output)
     return output
 
 
@@ -1112,28 +1150,31 @@ def _parse_result_json(workspace: Path) -> Dict[str, Any]:
     return {"_raw": ""}
 
 
-async def _persist_analysis_legacy(issue_id: str, output: AnalysisOutput) -> None:
-    """同步入口走的旧路径——直接 add 一条新行。"""
+async def _persist_analysis_legacy(run_id: str, output: AnalysisOutput) -> None:
+    """同步入口走的旧路径——更新 analyze_issue() 一开始认领的那条 running 占位行
+
+    （而不是另起一条新行：占位行的存在本身就是"这个 issue 正在被分析"的
+    唯一 DB 可见信号，起新行会让占位行永远卡在 running，其他调用方的去重
+    查询看不到真实结果）。
+    """
     async with get_session() as session:
-        row = CrashAnalysis(
-            datadog_issue_id=issue_id,
-            analysis_run_id=str(uuid.uuid4()),
-            agent_name=output.agent_name or "",
-            triggered_by="manual",
-            problem_type="",
-            scenario=output.scenario,
-            root_cause=output.root_cause,
-            fix_suggestion=output.fix_suggestion,
-            fix_diff=output.fix_diff or "",
-            feasibility_score=output.feasibility_score,
-            confidence=output.confidence,
-            reproducibility=output.reproducibility,
-            agent_raw_output=output.raw_output,
-            status="failed" if output.error else ("success" if output.root_cause else "failed"),
-            error=output.error,
-            created_at=datetime.utcnow(),
-        )
-        session.add(row)
+        row = (await session.execute(
+            select(CrashAnalysis).where(CrashAnalysis.analysis_run_id == run_id)
+        )).scalar_one_or_none()
+        if row is None:
+            logger.warning("_persist_analysis_legacy: claim row vanished run_id=%s", run_id)
+            return
+        row.agent_name = output.agent_name or ""
+        row.scenario = output.scenario
+        row.root_cause = output.root_cause
+        row.fix_suggestion = output.fix_suggestion
+        row.fix_diff = output.fix_diff or ""
+        row.feasibility_score = output.feasibility_score
+        row.confidence = output.confidence
+        row.reproducibility = output.reproducibility
+        row.agent_raw_output = output.raw_output
+        row.status = "failed" if output.error else ("success" if output.root_cause else "failed")
+        row.error = output.error
         await session.commit()
         analysis_id = row.id
         is_success = row.status == "success"

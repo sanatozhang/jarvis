@@ -52,15 +52,33 @@ class _HeartbeatCtx:
     def set_summary(self, payload: Any) -> None:
         try:
             if isinstance(payload, dict):
-                # 仅保留可 JSON 化的简单字段，避免巨型 dict 撑爆 row
+                # 仅保留可 JSON 化的字段，避免巨型/不可序列化对象撑爆 row；
+                # dict 本身也允许（如 job_health_alert 的嵌套 fatal_backlog
+                # 检查结果），但超过 _MAX_NESTED_VALUE_CHARS 的一律截断成
+                # 字符串标记，而不是整体丢弃——此前 dict 不在允许类型里，
+                # 会被这行 isinstance 检查静默过滤掉，导致心跳 JSON 里完全
+                # 看不到该字段，即使底层检查本身跑得正常。
                 self.summary = {
-                    k: v for k, v in payload.items()
-                    if isinstance(v, (str, int, float, bool, list, type(None)))
+                    k: (v if isinstance(v, (str, int, float, bool, list, type(None)))
+                        else self._safe_nested(v))
+                    for k, v in payload.items()
                 }
             else:
                 self.summary = {"raw": str(payload)[:500]}
         except Exception:
             self.summary = {"raw": "<unserializable>"}
+
+    @staticmethod
+    def _safe_nested(v: Any) -> Any:
+        if not isinstance(v, dict):
+            return f"<unsupported type: {type(v).__name__}>"
+        try:
+            text = _json.dumps(v, ensure_ascii=False, default=str)
+        except Exception:
+            return "<unserializable dict>"
+        if len(text) > 2000:
+            return {"_truncated": True, "raw": text[:2000]}
+        return v
 
     def set_status_from_result(self, res: Optional[Dict[str, Any]]) -> None:
         """根据 tick 返回的 dict 推断 status：
