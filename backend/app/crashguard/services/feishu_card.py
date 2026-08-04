@@ -966,6 +966,71 @@ def build_core_metric_alert_card(
     }
 
 
+def build_fatal_backlog_alert_card(
+    count: int,
+    threshold: int,
+    sample_issues: List[Dict[str, Any]],
+    frontend_base_url: str = "http://localhost:3000",
+) -> Dict[str, Any]:
+    """今日 fatal crash/ANR 积压告警——从未分析过的数量超过阈值。
+
+    sample_issues: [{datadog_issue_id, title, platform, first_seen_at, events_count}, ...]
+    独立卡片：跟 build_job_health_alert_card（任务心跳 stale/failing 专用 schema）
+    语义不同，不复用。
+    """
+    title_text = f"🔴 Crashguard fatal 崩溃积压 · {count} 个从未分析（阈值 {threshold}）"
+    elements: List[Dict[str, Any]] = []
+
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": (
+                f"📊 今日 fatal/ANR + fixable + 从未分析过的 issue 共 **{count}** 个，"
+                f"超过阈值 **{threshold}** —— 排在最前的几个可能已积压较久。"
+            ),
+        },
+    })
+    elements.append({"tag": "hr"})
+
+    for it in sample_issues[:10]:
+        pe = _platform_emoji(it.get("platform", ""))
+        title = it.get("title") or it.get("datadog_issue_id") or ""
+        first_seen = it.get("first_seen_at") or "—"
+        events = it.get("events_count", 0)
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"{pe} **{title}**\n"
+                    f"  首次出现：{first_seen} · events {events}"
+                ),
+            },
+        })
+    elements.append({"tag": "hr"})
+
+    btn_url = f"{frontend_base_url.rstrip('/')}/crashguard"
+    elements.append({
+        "tag": "action",
+        "actions": [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📊 在 Web 端查看"},
+            "type": "primary",
+            "url": btn_url,
+        }],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "red",
+            "title": {"tag": "plain_text", "content": title_text},
+        },
+        "elements": elements,
+    }
+
+
 def build_job_health_alert_card(
     items: List[Dict[str, Any]],
     cooldown_minutes: int = 30,

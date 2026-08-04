@@ -207,6 +207,14 @@ class CrashguardSettings(BaseSettings):
     # 不动崩溃/ANR 现有口径。
     jank_attention_min_events: int = 5
     jank_daily_new_issue_min_events: int = 3
+    # fatal crash/ANR 从未分析过的兜底通道独立小额度（2026-08-04，参见 warmup.py
+    # ①.6 通道注释）：低频 fatal 崩溃（events 个位数）跟高频 fatal/non_fatal 拼
+    # events DESC 排序永远输，导致部分致命崩溃几个月都进不了自动分析池。
+    fatal_backlog_max_slots: int = 3
+    # 今日 fatal+fixable+从未分析 积压独立告警（2026-08-04，与①.6 通道共享候选查询，
+    # 但不设名额限制——这里数的是"今天总共积压了多少个"，不是"这次选几个进池"）。
+    fatal_backlog_alert_threshold: int = 10  # 超过此数才告警
+    fatal_backlog_alert_cooldown_minutes: int = 240  # 告警节流（默认 4 小时一次，避免刷屏）
 
     # Feishu
     feishu_target_chat_id: str = ""
@@ -292,6 +300,12 @@ class CrashguardSettings(BaseSettings):
     # 上调依据：今日 funnel 显示 12/20 卡 no_analysis，是最大瓶颈。
     analyze_cron: str = "*/5 * * * *"
     analyze_max_per_tick: int = 2
+    # 周期 pipeline（每 4 小时一次的 run_ai_analysis_phase）单次运行最多分析几个 issue。
+    # 底层逻辑：run_ai_analysis_phase 跑在单线程 pipeline_scheduler_loop 里，池子（analyze_top_n）
+    # 再大也不能一次串行跑几小时——那会连带卡住同一循环体里的 pr_reviewer_daily/pr_pending_review
+    # 检查。真正跑完剩余积压靠 analyze_cron（analyze_tick）5 分钟一次增量推进，这里只是给
+    # 4 小时入口本身设一个耗时上限（约 pipeline_analyze_max_per_run × 120s）。
+    pipeline_analyze_max_per_run: int = 5
 
     # === 3h 告警（SHoW-3h 同周同 3 小时块对比）===
     # 每 3 小时拉 Datadog，对比上周同 weekday 同 3h 块 events，超过阈值或新增 issue 发飞书告警。
@@ -393,7 +407,7 @@ class CrashguardSettings(BaseSettings):
     # Gate#4 禁 Write / Gate#5 实存文件清单 / Gate#6 git clean -fdx 全部在 _run_implementation_agent 内硬编码生效
     # 输出端
     gate_keyword_enabled: bool = True           # Gate#8：关键词命中
-    gate_keyword_min_hits: int = 1
+    gate_keyword_min_hits: int = 2
     gate_syntax_enabled: bool = True            # Gate#7：语法速检（best-effort）
     gate_llm_judge_enabled: bool = False        # Gate#9：二级 LLM 判官（默认关，开 = 每 PR 多一次 agent 调用成本）
     gate_llm_judge_min_score: int = 7
@@ -603,7 +617,7 @@ def _yaml_overrides() -> Dict[str, Any]:
     for k in (
         "enabled", "pr_enabled", "pr_enabled_flutter", "pr_enabled_native",
         "feishu_enabled", "scheduler_enabled",
-        "max_top_n", "analyze_top_n",
+        "max_top_n", "analyze_top_n", "pipeline_analyze_max_per_run",
         "qa_capture_enabled",
     ):
         if k in cfg:
@@ -624,6 +638,9 @@ def _yaml_overrides() -> Dict[str, Any]:
             ("daily_surge_driver_min_events", "daily_surge_driver_min_events"),
             ("jank_attention_min_events", "jank_attention_min_events"),
             ("jank_daily_new_issue_min_events", "jank_daily_new_issue_min_events"),
+            ("fatal_backlog_max_slots", "fatal_backlog_max_slots"),
+            ("fatal_backlog_alert_threshold", "fatal_backlog_alert_threshold"),
+            ("fatal_backlog_alert_cooldown_minutes", "fatal_backlog_alert_cooldown_minutes"),
         ]:
             if k_yaml in t:
                 flat[k_py] = t[k_yaml]

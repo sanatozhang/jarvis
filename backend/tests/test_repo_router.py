@@ -117,6 +117,24 @@ def test_resolve_app_platform_disambiguated_by_os_name():
     assert r.logical_name == "plaud-native-android"
 
 
+def test_resolve_flutter_literal_platform_disambiguated_by_os_name():
+    """B2: platform literal 'flutter' (not 'app') + os_name='Android 14' must still
+    resolve to the android flutter band — this is the exact case CrashIssue.platform
+    stores in production (e.g. 'FLUTTER' lowercased to 'flutter')."""
+    r = rr.resolve("flutter", "3.2.0", ROUTING, os_name="Android 14", path_exists=ALWAYS)
+    assert r is not None
+    assert r.platform == "android"
+    assert r.family == "flutter"
+    assert r.symbol_profile == "flutter_android"
+
+
+def test_resolve_flutter_literal_platform_without_os_name_returns_none():
+    """Without os_name, platform='flutter' cannot be disambiguated to android/ios —
+    confirms this fix does not change the existing degrade-to-None behavior."""
+    r = rr.resolve("flutter", "3.2.0", ROUTING, os_name="", path_exists=ALWAYS)
+    assert r is None
+
+
 # ---------------------------------------------------------------------------
 # New test: select_band below-floor returns low confidence
 # ---------------------------------------------------------------------------

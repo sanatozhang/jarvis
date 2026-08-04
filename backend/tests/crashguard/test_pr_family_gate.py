@@ -7,7 +7,6 @@ clicking approve (or the backfill sweep) must never be blocked by it.
 """
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -63,7 +62,7 @@ async def _seed(monkeypatch, tmp_path, *, sample_version: str, issue_id: str):
             datadog_issue_id=issue_id,
             platform="android",
             title="crash",
-            representative_stack=json.dumps({"sample_app_version": sample_version}),
+            top_app_version=sample_version,
         ))
         ana = CrashAnalysis(
             datadog_issue_id=issue_id,

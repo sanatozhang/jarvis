@@ -93,12 +93,15 @@ async def _with_workspace_lock(wrapper_path: str, coro_factory, *, issue_id: str
 
 # ─── Task 5: version-aware repo resolution + flutter family gate ──────────────
 
-def _resolve_repo_for_issue(platform: str, version: str):
+def _resolve_repo_for_issue(platform: str, version: str, os_name: str = ""):
     """crashguard PR 选仓：按 (platform, sample_app_version) 经 repo_router 路由。
+
+    `os_name` 用于当 platform 字面量是 "app"/"flutter" 时分流到 android/ios band
+    （见 repo_router.normalize_platform）；调用方通常传 `issue.top_os` 清洗后的值。
 
     返回 RepoResolution | None（None 时调用方应返回 {"ok": False, "error": ...}）。
     """
-    return repo_router.resolve(platform, version, get_repo_routing())
+    return repo_router.resolve(platform, version, get_repo_routing(), os_name=os_name)
 
 
 def _should_run_flutter_subrepo_detection(family: str) -> bool:
@@ -131,18 +134,43 @@ def _select_candidates(family: str, res, fallback_callable):
     return fallback_callable()
 
 
-def _sample_version(issue) -> str:
-    """从 issue.representative_stack JSON 的 sample_app_version 取版本；
-    回退到 issue.app_version；再回退空字符串。
+_DIST_TRAILING_PCT_RE = re.compile(r"\s*\([\d.]+%\)\s*$")
+
+
+def _first_dominant_value(raw: str) -> str:
+    """从 'X (NN.N%), Y (MM.M%), ...' 这种分布字符串里取占比最高（排第一）的那个值，
+    去掉尾随的百分比标注。空输入返回空字符串。
     """
+    if not raw:
+        return ""
+    first = (raw.split(",")[0] or "").strip()
+    return _DIST_TRAILING_PCT_RE.sub("", first).strip()
+
+
+def _sample_version(issue) -> str:
+    """优先取 issue.top_app_version 里占比最高的那个版本；
+    解析失败/为空则回退 issue.stack_variants 里 is_main（或第一条）的 sample_app_version；
+    两者都没有则回退 issue.last_seen_version——这个字段由 Datadog 摄取路径
+    （pipeline.py::_upsert_issue）无条件写入，不依赖 RUM 分布数据（top_app_version /
+    stack_variants 由 analyzer._persist_distribution_to_issue 各自独立守卫写入，可能
+    因为拿到了 os 分布但 version 分布恰好为空而缺失）是否拉到，是最可靠的最终兜底。
+    repo_router.select_band 对 version 缺失的处理是"取 min_version 最大的 band"，
+    对老版本崩溃会误路由到最新 native band，所以能有值就不该返回空字符串。
+    真正三者都没有才返回空字符串（保留"version 缺失→confidence=low"的兜底行为）。
+    """
+    v = _first_dominant_value(getattr(issue, "top_app_version", "") or "")
+    if v:
+        return v
     try:
-        rep = json.loads(getattr(issue, "representative_stack", "") or "{}")
-        v = (rep.get("sample_app_version") or "").strip()
-        if v:
-            return v
+        variants = json.loads(getattr(issue, "stack_variants", "") or "[]")
+        if isinstance(variants, list) and variants:
+            main = next((x for x in variants if x.get("is_main")), variants[0])
+            v2 = (main.get("sample_app_version") or "").strip()
+            if v2:
+                return v2
     except Exception:
         pass
-    return (getattr(issue, "app_version", "") or "").strip()
+    return (getattr(issue, "last_seen_version", "") or "").strip()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1660,10 +1688,16 @@ def _build_pr_body(
     ana: CrashAnalysis,
     frontend_url: str,
     patch_applied: bool,
+    fix_diff_was_empty: bool = False,
 ) -> str:
     """拼装 PR description（markdown）。"""
-    if patch_applied:
+    if patch_applied and not fix_diff_was_empty:
         header_note = "✅ **AI 已落 patch 到代码**——本 PR 的 Files changed 即为修复 diff，请工程师 review 后合入。"
+    elif patch_applied and fix_diff_was_empty:
+        header_note = (
+            "⚠️ **以下改动为 agent 在代码库中自由定位后的产出，未在分析阶段预先给出 diff**"
+            "（已通过关键词/LLM 相关性校验，但仍建议重点核实改动文件与根因的相关性）。"
+        )
     else:
         header_note = "⚠️ **未自动 patch 代码**——本 PR 仅包含修复说明文档，工程师需手动改代码。"
     lines = [
@@ -1766,19 +1800,31 @@ async def draft_pr_for_analysis(
         # so locking it serialises correctly against repo_updater's nightly
         # sync. Does NOT touch github_slug: the repo_override path keeps its
         # existing "" default (unchanged behavior).
-        _ov_res = _resolve_repo_for_issue(platform, _sample_version(issue))
+        _ov_res = _resolve_repo_for_issue(
+            platform, _sample_version(issue), os_name=_first_dominant_value(issue.top_os or ""),
+        )
         if _ov_res is not None:
             wrapper_path = _ov_res.wrapper_path
     else:
         # Version-aware repo selection via repo_router (Goal 1 + Goal 3)
         sample_version = _sample_version(issue)
-        res = _resolve_repo_for_issue(platform, sample_version)
+        res = _resolve_repo_for_issue(
+            platform, sample_version, os_name=_first_dominant_value(issue.top_os or ""),
+        )
         if res is None:
             # Fallback to old static mapping if repo_router has no config for this platform
             logger.warning(
                 "repo_router returned None for platform=%s version=%s; "
                 "falling back to static _platform_repo_path mapping",
                 platform, sample_version,
+            )
+            from app.crashguard.services.audit import write_audit
+            await write_audit(
+                op="repo_routing_unresolved",
+                target_id=ana.datadog_issue_id,
+                success=False,
+                detail={"platform": platform, "app_version": sample_version,
+                        "caller": "pr_drafter.draft_pr_for_analysis"},
             )
             repo_logical = platform
             repo_path = _platform_repo_path(platform)
@@ -2247,11 +2293,11 @@ async def draft_pr_for_analysis(
                 return {"ok": False, "error": f"gate_version_bump: {why_g13}",
                         "repo": repo_logical, "gate_info": info_g13}
 
-        # Gate#8：关键词命中（必须命中 fix_suggestion 里 ≥1 个标识符）
+        # Gate#8：关键词命中（必须命中 root_cause+fix_suggestion 合并抽取的 ≥2 个标识符）
         if getattr(s, "gate_keyword_enabled", True) and diff_text:
             ok_g8, why_g8, info_g8 = verify_keyword_hits(
-                diff_text, ana.fix_suggestion or "",
-                min_hits=int(getattr(s, "gate_keyword_min_hits", 1) or 1),
+                diff_text, ana.fix_suggestion or "", ana.root_cause or "",
+                min_hits=int(getattr(s, "gate_keyword_min_hits", 2) or 2),
             )
             if not ok_g8:
                 logger.warning("gate#8 blocked PR (ana=%d): %s", analysis_id, why_g8)
@@ -2267,6 +2313,41 @@ async def draft_pr_for_analysis(
                     pass
                 return {"ok": False, "error": f"gate_keyword: {why_g8}",
                         "repo": repo_logical, "gate_info": info_g8}
+
+        # Gate#8b：fix_diff 为空时强制过二级 LLM 判官，不受 gate_llm_judge_enabled 开关约束
+        # 抓手：analysis.fix_diff 为空意味着这次 PR 的实际改动完全是 implementation
+        # agent 在真实仓库里自由定位产出的（不是分析阶段预先给出的 diff），Gate#8
+        # 关键词命中是唯一的相关性信号，太弱——PR #1067 就是这种场景下侥幸命中关键词、
+        # 实际改了完全无关的 IsarMigrationManager.kt 才照常开出去的。这种高风险子集
+        # 不管全局开关是否打开都强制多判一次；其余 68% 有真实 fix_diff 的 PR 不受影响，
+        # 成本不变。
+        fix_diff_was_empty = not (ana.fix_diff or "").strip()
+        if fix_diff_was_empty and diff_text:
+            # fallback 到 ana.solution：跟入口校验（`not (ana.fix_suggestion or
+            # ana.solution or ana.fix_diff)`）以及 _build_pr_body 里的用法保持一致——
+            # 只有 solution、没有 fix_suggestion 的分析不该被误判成"数据缺失"而在
+            # 判官一次都没跑的情况下直接拦截。
+            ok_g8b, why_g8b, info_g8b = await judge_diff_with_llm(
+                diff_text, ana.fix_suggestion or ana.solution or "", ana.root_cause or "",
+                min_score=int(getattr(s, "gate_llm_judge_min_score", 7) or 7),
+            )
+            if not ok_g8b:
+                logger.warning(
+                    "gate#8b (empty fix_diff forced judge) blocked PR (ana=%d): %s",
+                    analysis_id, why_g8b,
+                )
+                try:
+                    from app.crashguard.services.audit import write_audit
+                    await write_audit(
+                        op="pr_draft", target_id=str(analysis_id), success=False,
+                        error=f"gate_empty_fix_diff_judge: {why_g8b}",
+                        detail={"gate": "empty_fix_diff_llm_judge", "info": info_g8b,
+                                "repo": repo_logical or platform},
+                    )
+                except Exception:
+                    pass
+                return {"ok": False, "error": f"gate_empty_fix_diff_judge: {why_g8b}",
+                        "repo": repo_logical, "gate_info": info_g8b}
 
         # Gate#7：语法速检（best-effort：工具不在 PATH 时 skip 不阻断）
         if getattr(s, "gate_syntax_enabled", True):
@@ -2287,7 +2368,10 @@ async def draft_pr_for_analysis(
                         "repo": repo_logical, "gate_info": info_g7}
 
         # Gate#9：二级 LLM 判官（fail-open：判官超时/挂掉不阻断真修复）
-        if getattr(s, "gate_llm_judge_enabled", False) and diff_text:
+        # `not fix_diff_was_empty`：fix_diff 为空的场景已经被上面的 Gate#8b 强制判过一次了，
+        # 避免以后打开 gate_llm_judge_enabled 时对同一批 PR 用相同入参重复调用判官
+        # （多一次 agent 成本 + 判官非确定性可能导致 Gate#8b 放行、Gate#9 又反悔的抖动）。
+        if getattr(s, "gate_llm_judge_enabled", False) and diff_text and not fix_diff_was_empty:
             ok_g9, why_g9, info_g9 = await judge_diff_with_llm(
                 diff_text, ana.fix_suggestion or "", ana.root_cause or "",
                 min_score=int(getattr(s, "gate_llm_judge_min_score", 7) or 7),
@@ -2308,7 +2392,8 @@ async def draft_pr_for_analysis(
                         "repo": repo_logical, "gate_info": info_g9}
 
         pr_title = f"[Crashguard][{platform}] {(issue.title or 'crash fix')[:80]}"
-        pr_body = _build_pr_body(issue, ana, frontend_url, patch_applied=patch_applied)
+        pr_body = _build_pr_body(issue, ana, frontend_url, patch_applied=patch_applied,
+                                  fix_diff_was_empty=fix_diff_was_empty)
         all_pr_results: list[dict] = []
         # finally 块用：清理这些 submodule worktree
         affected_submodules.clear()
@@ -2510,7 +2595,9 @@ async def draft_prs_multi(
     fix_text = "\n".join([ana.fix_suggestion or "", ana.solution or "", ana.fix_diff or ""])
     # Derive family from repo_router to gate flutter sub-repo detection (Goal 2)
     _sample_ver = _sample_version(issue)
-    _res_for_family = _resolve_repo_for_issue((issue.platform or "").lower(), _sample_ver)
+    _res_for_family = _resolve_repo_for_issue(
+        (issue.platform or "").lower(), _sample_ver, os_name=_first_dominant_value(issue.top_os or ""),
+    )
     _family = _res_for_family.family if _res_for_family else "flutter"
 
     # Family-scoped auto-PR switch（2026-07-13）：3.x(flutter) 暂停自动开 PR，

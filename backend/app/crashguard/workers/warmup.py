@@ -152,6 +152,57 @@ async def _collect_attention_ids(today: date) -> List[str]:
             if _add(snap.datadog_issue_id):
                 return ordered
 
+        # ①.6 fatal crash/ANR 从未分析过的兜底通道（2026-08-04）：①.5 只解决了 jank
+        # 抢不过崩溃的问题，但反过来低频 fatal 崩溃（ev=1~4）一样抢不过高频 fatal/non_fatal
+        # 崩溃，导致部分致命崩溃几个月都进不了分析池（2026-08-04 实测：18 个 fatal+fixable
+        # 从未分析过，最早积压近 6 个月）。给"从未分析过的 fatal"单独留一条小额度通道，
+        # 不设符号化质量门槛（致命崩溃即使暂未符号化，AI 仍可能靠 native 帧里天然可读的符号
+        # 或后续 enrichment 得出结论，不应该因为暂无符号包就永远不分析）、不设事件数下限
+        # （哪怕 1 次致命崩溃也该分析一次），按 first_seen_at ASC 优先照顾积压最久的，
+        # 名额独立小额度防止刷单。
+        #
+        # ⚠️ 修复记录（2026-08-04，见 task-2-report.md fix round 1）：原实现按
+        # CrashIssue.first_analyzed_at IS NULL 判断"从未分析过"，但经 grep 确认，
+        # 自动 pipeline 路径（本函数 → run_ai_analysis_phase/analyze_tick →
+        # _auto_analyze_attention → analyzer.analyze_issue）从不回写这个字段——只有手动
+        # /api/crash/batch-analyze（batch_analyzer.py）和启动时 zombie task 回收
+        # （migrations.py）两处会写，导致"只走自动流水线分析过、但字段没同步"的 issue
+        # 会被误判为"从未分析过"占用本通道本就稀缺的 3 个名额。改为复用批次 1 已经写好
+        # 且过 review 的 _filter_pending_ids（真正查 CrashAnalysis 表 success/running/pending
+        # 状态，跟 _auto_analyze_attention/_run_analyze_tick 是同一套去重口径的单一真相源）
+        # 判断"是否真的没有分析记录"，不再依赖从不回写的 first_analyzed_at 字段。
+        from app.crashguard.models import CrashIssue as _CrashIssueForFatal
+        from app.crashguard.services.daily_report import _filter_pending_ids as _filter_pending_ids_for_fatal
+
+        fatal_backlog_max_slots = int(getattr(s_cfg, "fatal_backlog_max_slots", 3) or 3)
+        fatal_candidate_rows = (await session.execute(
+            select(CrashSnapshot.datadog_issue_id)
+            .join(_CrashIssueForFatal, _CrashIssueForFatal.datadog_issue_id == CrashSnapshot.datadog_issue_id)
+            .where(
+                CrashSnapshot.snapshot_date == today,
+                _CrashIssueForFatal.kind.in_(("crash", "anr")),
+                _CrashIssueForFatal.fatality == "fatal",
+                _CrashIssueForFatal.fixable == True,  # noqa: E712
+                _CrashIssueForFatal.platform.in_(list(fixable_platforms)
+                                                  + [p.upper() for p in fixable_platforms]),
+            )
+            .order_by(_CrashIssueForFatal.first_seen_at.asc())
+        )).scalars().all()
+        # _filter_pending_ids 保序，过滤后仍然是 first_seen_at ASC 顺序
+        fatal_pending_ids = await _filter_pending_ids_for_fatal(list(fatal_candidate_rows))
+        _fatal_slots_used = 0
+        for iid in fatal_pending_ids:
+            if _fatal_slots_used >= fatal_backlog_max_slots:
+                break
+            # 已经在 seen 里的 id（被①/①.5 选过）_add 是 no-op——不能让它白白吃掉
+            # 本就只有 fatal_backlog_max_slots 个的兜底名额，否则最坏情况全部 3 个
+            # 名额都被"重复项"消耗，①.6 通道当次形同虚设（真正未入选的 fatal 顶不上来）。
+            if iid in seen:
+                continue
+            if _add(iid):
+                return ordered
+            _fatal_slots_used += 1
+
         # ② fatal + non_fatal 合并按 events DESC 全局排序 —— fatality="" 不过滤
         top_all = await pick_top_n(
             session, today=today, n=cap, kinds=(), fatality="", dedup_days=0,
@@ -339,8 +390,16 @@ async def run_data_only(reason: str = "warmup") -> dict:
 
 
 async def run_ai_analysis_phase(today: date, reason: str = "warmup") -> dict:
-    """对今日 attention 列表跑 auto-analyze + auto-PR。可能耗时数十分钟。"""
-    from app.crashguard.services.daily_report import _auto_analyze_attention
+    """对今日 attention 列表跑 auto-analyze + auto-PR。可能耗时数十分钟。
+
+    分片（2026-08-04）：这个入口被单线程 pipeline_scheduler_loop 每 4 小时调用一次，
+    池子（analyze_top_n）再大也不能一次串行跑几小时——那会连带卡住同一循环体里的
+    pr_reviewer_daily/pr_pending_review 检查。真正跑完剩余积压靠 analyze_cron
+    （scheduler.py 的 analyze_tick，5 分钟一次）增量推进；这里只保证单次运行时长有上限
+    （约 pipeline_analyze_max_per_run × 120s，默认 5 → 10 分钟量级）。
+    """
+    from app.crashguard.services.daily_report import _auto_analyze_attention, _filter_pending_ids
+    from app.crashguard.config import get_crashguard_settings
 
     attention_ids = await _collect_attention_ids(today)
     logger.info("[%s] attention candidates: %d", reason, len(attention_ids))
@@ -348,8 +407,15 @@ async def run_ai_analysis_phase(today: date, reason: str = "warmup") -> dict:
     auto_pr = {"scanned": 0, "attempted": 0, "created": 0, "skipped": 0, "failed": []}
     analyzed = 0
     if attention_ids:
+        s = get_crashguard_settings()
+        max_per_run = int(getattr(s, "pipeline_analyze_max_per_run", 5) or 5)
+        # 分片：先按 CrashAnalysis 表过滤掉已 success/running/pending 的（不这样做会复现
+        # 批次1修的"队头恒是已分析项"问题），再切片限制单次运行时长。
+        # _backfill_attention_auto_pr 不切片——它只处理"已有 success 分析但没 PR"的子集，
+        # 走 PR 草拟而非重新分析，不会随 analyze_top_n 线性放大处理量本身。
+        pending_for_run = await _filter_pending_ids(attention_ids)
         auto_pr = await _backfill_attention_auto_pr(attention_ids)
-        analyzed = await _auto_analyze_attention(attention_ids)
+        analyzed = await _auto_analyze_attention(pending_for_run[:max_per_run])
 
     logger.info(
         "[%s] ai phase done: attention=%d analyzed=%d auto_pr=%s",

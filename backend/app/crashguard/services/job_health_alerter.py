@@ -35,6 +35,104 @@ _consecutive_retry_failures: Dict[str, int] = {}
 # 自愈成功告警阈值（连续 N 次自愈后仍无 success 心跳才升级为告警）
 RETRY_FAILURE_THRESHOLD = 3
 
+# 独立节流戳：今日 fatal 崩溃积压告警上次发送的 UTC 时间（跟 job 级的 _last_alerted_at 分开）
+_fatal_backlog_last_alerted_at: Optional[datetime] = None
+
+
+async def _check_fatal_backlog_and_alert(session) -> Dict[str, Any]:
+    """今日 fatal+fixable+从未分析 的积压检查，独立于任务心跳扫描。
+
+    复用 warmup.py::_collect_attention_ids ①.6 通道同款候选条件（kind in
+    (crash, anr) + fatality=="fatal" + fixable=True + 今日 snapshot），但不设
+    ①.6 那样的 fatal_backlog_max_slots 名额限制——这里要的是"今天总共积压了
+    多少个从未分析的"真实计数，再用 `_filter_pending_ids`（daily_report.py）
+    过滤出真正没有分析记录的。超过阈值才发一条独立飞书告警，遵循"早报只显示
+    异常"的既有约定：数字在阈值以内什么都不做。
+    """
+    global _fatal_backlog_last_alerted_at
+    s = get_crashguard_settings()
+    threshold = int(getattr(s, "fatal_backlog_alert_threshold", 10) or 10)
+    cooldown_min = int(getattr(s, "fatal_backlog_alert_cooldown_minutes", 240) or 240)
+
+    from datetime import date as _date
+
+    from app.crashguard.models import CrashIssue, CrashSnapshot
+    from app.crashguard.services.daily_report import _filter_pending_ids
+
+    # 平台白名单过滤：跟 warmup.py::_collect_attention_ids ①/②/①.6 通道同款口径——
+    # BROWSER/JS 等无对应 mobile repo 的平台无法开 PR，不该计入"待分析积压"数字
+    # （否则积压告警会把永远不会被分析的 issue 也算进去，制造假警报）。
+    fixable_platforms = tuple(
+        p.lower() for p in
+        getattr(s, "auto_pr_fixable_platforms", ["android", "ios", "flutter"])
+    )
+    platform_filter = list(fixable_platforms) + [p.upper() for p in fixable_platforms]
+
+    today = _date.today()
+    rows = (await session.execute(
+        select(CrashSnapshot, CrashIssue)
+        .join(CrashIssue, CrashIssue.datadog_issue_id == CrashSnapshot.datadog_issue_id)
+        .where(
+            CrashSnapshot.snapshot_date == today,
+            CrashIssue.kind.in_(("crash", "anr")),
+            CrashIssue.fatality == "fatal",
+            CrashIssue.fixable == True,  # noqa: E712
+            CrashIssue.platform.in_(platform_filter),
+        )
+        .order_by(CrashIssue.first_seen_at.asc())
+    )).all()
+
+    candidate_ids = [snap.datadog_issue_id for snap, _issue in rows]
+    pending_ids = set(await _filter_pending_ids(candidate_ids))
+    count = len(pending_ids)
+
+    if count <= threshold:
+        return {"count": count, "threshold": threshold, "alerted": False}
+
+    now = datetime.utcnow()
+    if _fatal_backlog_last_alerted_at is not None and \
+            (now - _fatal_backlog_last_alerted_at) < timedelta(minutes=cooldown_min):
+        return {"count": count, "threshold": threshold, "alerted": False, "throttled": True}
+
+    sample_issues: List[Dict[str, Any]] = []
+    for snap, issue in rows:
+        if snap.datadog_issue_id not in pending_ids:
+            continue
+        sample_issues.append({
+            "datadog_issue_id": snap.datadog_issue_id,
+            "title": issue.title or "",
+            "platform": issue.platform or "",
+            "first_seen_at": issue.first_seen_at.isoformat() if issue.first_seen_at else "",
+            "events_count": int(snap.events_count or 0),
+        })
+        if len(sample_issues) >= 10:
+            break
+
+    from app.crashguard.services.feishu_card import build_fatal_backlog_alert_card
+    card = build_fatal_backlog_alert_card(
+        count=count, threshold=threshold, sample_issues=sample_issues,
+        frontend_base_url=s.frontend_base_url,
+    )
+    sent_ok = False
+    try:
+        from app.services.feishu_cli import send_interactive_card
+        # 路由：alert_email > chat_id > target_email，跟 run_job_health_check 现有逻辑一致
+        if s.feishu_alert_email:
+            sent_ok = await send_interactive_card(email=s.feishu_alert_email, card=card)
+        elif s.feishu_target_chat_id:
+            sent_ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
+        elif s.feishu_target_email:
+            sent_ok = await send_interactive_card(email=s.feishu_target_email, card=card)
+    except Exception:
+        logger.exception("fatal_backlog_alerter: feishu send error")
+
+    _fatal_backlog_last_alerted_at = now
+    logger.info(
+        "fatal_backlog_alert fired: count=%d threshold=%d sent=%s",
+        count, threshold, sent_ok,
+    )
+    return {"count": count, "threshold": threshold, "alerted": True, "sent": sent_ok}
+
 
 async def _try_auto_retry_job(job_name: str) -> tuple[bool, str]:
     """根据 job_name 派发到对应 runner，跑一次"自愈"重试。
@@ -120,8 +218,20 @@ async def run_job_health_check() -> Dict[str, Any]:
     s = get_crashguard_settings()
     if not s.enabled or not s.feishu_enabled:
         return {"skipped": "kill_switch"}
+
+    # 今日 fatal 崩溃积压告警——调用位置上看似"独立于下面的任务心跳扫描，只受
+    # enabled/feishu_enabled 把关"，但如实说：本函数 run_job_health_check 唯一的
+    # 定时调用方是 workers/scheduler.py，那里整段 job_health tick（含本函数）都包在
+    # `if job_health_alert_enabled:` 里——job_health_alert_enabled=False 时
+    # run_job_health_check 根本不会被定时触发，这条积压检查也就跟着停摆，只能靠
+    # /api/crash 的手动 run-now 按钮触发到这里。换句话说，这里的调用顺序（在下面
+    # job_health_alert_enabled 判断之前）只解耦了"同一次 tick 内"的开关依赖，
+    # 并不能让积压检查摆脱调度层面对 job_health_alert_enabled 的间接约束。
+    async with get_session() as fb_session:
+        fatal_backlog_result = await _check_fatal_backlog_and_alert(fb_session)
+
     if not getattr(s, "job_health_alert_enabled", True):
-        return {"skipped": "job_health_alert_disabled"}
+        return {"skipped": "job_health_alert_disabled", "fatal_backlog": fatal_backlog_result}
 
     # 与 _JOB_META 保持对齐——但本服务避免反向 import api 层，重新声明一份精简元数据
     # enabled_field: 任务自身的 kill switch；为 "" 表示该任务无独立开关（受 enabled/feishu_enabled 总控）
@@ -328,6 +438,7 @@ async def run_job_health_check() -> Dict[str, Any]:
             "ok": True, "alerted": False, "scanned": len(job_meta),
             "skipped_disabled": skipped_disabled,
             "auto_retried": auto_retried,
+            "fatal_backlog": fatal_backlog_result,
         }
 
     # 发送聚合飞书卡片
@@ -366,4 +477,5 @@ async def run_job_health_check() -> Dict[str, Any]:
         "unhealthy_jobs": [it["job_name"] for it in unhealthy],
         "skipped_disabled": skipped_disabled,
         "auto_retried": auto_retried,
+        "fatal_backlog": fatal_backlog_result,
     }

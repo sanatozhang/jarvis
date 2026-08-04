@@ -541,24 +541,28 @@ def lint_changed_files(
 # ============================================================
 
 def verify_keyword_hits(
-    diff_text: str, fix_suggestion: str, min_hits: int = 1,
+    diff_text: str, fix_suggestion: str, root_cause: str = "", min_hits: int = 2,
 ) -> tuple[bool, str, dict]:
-    """diff 必须命中 fix_suggestion 里至少 min_hits 个关键标识符。
+    """diff 必须命中 root_cause+fix_suggestion 合并抽取的关键标识符 ≥ min_hits 个。
 
-    抓手：拦"AI 改了但没改到点"——agent 在错误的文件里改了无关行，
-    diff 不为空但根本没碰 fix_suggestion 提到的方法/类（PR #988 教训：
-    新建 lib/test_new_file.dart 占位文件，跟原 root cause 完全无关）。
+    2026-0X-XX 加强：(1) 关键词来源从仅 fix_suggestion 扩到 root_cause+fix_suggestion
+    合并抽取，信号更全；(2) min_hits 从 1 提到 2，降低"侥幸命中 1 个通用词"的假阳性
+    （PR #1067 教训：analysis.fix_diff 为空，agent 在无关文件 IsarMigrationManager.kt
+    里自由发挥，min_hits=1 时可能被某个双方都出现的普通标识符侥幸命中而放行）；
+    (3) 抽不到关键词不再默认放行——这种情况下无法验证相关性，按"不通过"处理，
+    交给人工审核，而不是默认信任。
     """
-    kws = _extract_keywords(fix_suggestion or "", max_n=20)
+    combined = f"{root_cause or ''}\n{fix_suggestion or ''}"
+    kws = _extract_keywords(combined, max_n=30)
     if not kws:
-        return True, "skipped (no keywords extractable)", {"keywords": []}
+        return False, "no_keywords_extractable: cannot verify diff relevance, needs manual review", {"keywords": []}
     diff_l = (diff_text or "").lower()
     hits = [kw for kw in kws if kw.lower() in diff_l]
     info = {"keywords": kws[:15], "hits": hits[:15]}
     if len(hits) < min_hits:
         return False, (
             f"keyword_hit_failed: diff hit {len(hits)}/{len(kws)} "
-            f"fix_suggestion keywords (<{min_hits}); kws sample: {kws[:5]}"
+            f"combined root_cause+fix_suggestion keywords (<{min_hits}); kws sample: {kws[:5]}"
         ), info
     return True, f"keyword_hit_ok: {len(hits)}/{len(kws)} hits", info
 
@@ -582,7 +586,7 @@ async def judge_diff_with_llm(
       3. 是否引入无关改动 / 占位代码 / 编译不过的代码
     """
     if not diff_text or not fix_suggestion:
-        return True, "skipped (no diff or fix_suggestion)", {"score": None}
+        return False, "missing_diff_or_fix_suggestion: cannot verify diff relevance", {"score": None}
     # 防 diff 过大 token 爆炸：截 8000 字
     diff_snip = (diff_text or "")[:8000]
     fix_snip = (fix_suggestion or "")[:3000]

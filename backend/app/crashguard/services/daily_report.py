@@ -2141,6 +2141,51 @@ async def _recent_auto_prs(
     return out
 
 
+async def _filter_pending_ids(issue_ids: List[str]) -> List[str]:
+    """从 issue_ids 里过滤掉：
+    (1) 已有 success/running/pending fix 分析的（diagnosis 不算）；
+    (2) 最近 analysis_dedup_hours 小时内刚 failed/empty 过的（退避——防止反复分析
+        一个永久失败的 issue，浪费 AI 调用，且这类 issue 若排在候选列表队头会
+        导致其后真正待分析的 issue 永远轮不到；批次 2 的 ①.6 fatal 兜底通道按
+        first_seen_at ASC 优先选"积压最久"的，这类 issue 恰好最容易排在最前，
+        不加这层退避会把本就稀缺的兜底名额长期占满）。
+
+    保持传入顺序。供 `_auto_analyze_attention` 及 scheduler 的 tick 切片前预过滤复用。
+    """
+    if not issue_ids:
+        return []
+    try:
+        dedup_hours = int(getattr(get_crashguard_settings(), "analysis_dedup_hours", 6) or 6)
+    except Exception:
+        dedup_hours = 6
+
+    async with get_session() as session:
+        existing = (await session.execute(
+            select(CrashAnalysis.datadog_issue_id, CrashAnalysis.status).where(
+                CrashAnalysis.datadog_issue_id.in_(issue_ids),
+                CrashAnalysis.followup_question == "",
+                CrashAnalysis.status.in_(["success", "running", "pending"]),
+                CrashAnalysis.phase != "diagnosis",
+            )
+        )).all()
+        skip_set = {row[0] for row in existing}
+
+        if dedup_hours > 0:
+            since = datetime.utcnow() - timedelta(hours=dedup_hours)
+            recent_failed = (await session.execute(
+                select(CrashAnalysis.datadog_issue_id).where(
+                    CrashAnalysis.datadog_issue_id.in_(issue_ids),
+                    CrashAnalysis.followup_question == "",
+                    CrashAnalysis.status.in_(["failed", "empty"]),
+                    CrashAnalysis.phase != "diagnosis",
+                    CrashAnalysis.created_at >= since,
+                )
+            )).all()
+            skip_set |= {row[0] for row in recent_failed}
+
+    return [iid for iid in issue_ids if iid not in skip_set]
+
+
 async def _auto_analyze_attention(issue_ids: List[str]) -> int:
     """对关注点 issue 中尚无 success root 分析的，**串行**跑 analyze_issue（含 auto-PR）。
 
@@ -2151,22 +2196,9 @@ async def _auto_analyze_attention(issue_ids: List[str]) -> int:
     """
     if not issue_ids:
         return 0
-    from app.crashguard.models import CrashAnalysis
     from app.crashguard.services.analyzer import analyze_issue
 
-    async with get_session() as session:
-        # 已有 success/running/pending 的 fix 分析 → 跳（diagnosis Phase 1 不算）
-        existing = (await session.execute(
-            select(CrashAnalysis.datadog_issue_id, CrashAnalysis.status).where(
-                CrashAnalysis.datadog_issue_id.in_(issue_ids),
-                CrashAnalysis.followup_question == "",
-                CrashAnalysis.status.in_(["success", "running", "pending"]),
-                CrashAnalysis.phase != "diagnosis",
-            )
-        )).all()
-    skip_set = {row[0] for row in existing}
-
-    pending = [iid for iid in issue_ids if iid not in skip_set]
+    pending = await _filter_pending_ids(issue_ids)
     if not pending:
         logger.info("auto_analyze: all %d issues already analyzed/running, nothing to do", len(issue_ids))
         return 0
