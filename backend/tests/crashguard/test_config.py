@@ -43,6 +43,53 @@ def test_env_overrides_yaml(monkeypatch):
     assert s.enabled is False
 
 
+def test_fatal_backlog_and_pipeline_analyze_max_per_run_defaults(monkeypatch):
+    """新增两个配置项（2026-08-04）的默认值：fatal_backlog_max_slots / pipeline_analyze_max_per_run。"""
+    monkeypatch.delenv("CRASHGUARD_FATAL_BACKLOG_MAX_SLOTS", raising=False)
+    monkeypatch.delenv("CRASHGUARD_PIPELINE_ANALYZE_MAX_PER_RUN", raising=False)
+
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    s = get_crashguard_settings()
+    assert s.fatal_backlog_max_slots == 3
+    assert s.pipeline_analyze_max_per_run == 5
+
+
+def test_pipeline_analyze_max_per_run_overridden_by_yaml(monkeypatch):
+    """`pipeline_analyze_max_per_run` 需能被 config.yaml 顶层 crashguard 段覆盖
+    （跟 analyze_top_n 同一个映射列表，写法对齐）。"""
+    monkeypatch.delenv("CRASHGUARD_PIPELINE_ANALYZE_MAX_PER_RUN", raising=False)
+
+    from unittest.mock import patch
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    with patch("app.crashguard.config._load_yaml", return_value={
+        "crashguard": {"pipeline_analyze_max_per_run": 15}
+    }):
+        s = get_crashguard_settings()
+
+    assert s.pipeline_analyze_max_per_run == 15
+
+
+def test_fatal_backlog_max_slots_overridden_by_yaml_thresholds(monkeypatch):
+    """`fatal_backlog_max_slots` 需能被 config.yaml crashguard.thresholds 段覆盖
+    （跟 jank_attention_min_events 同一个映射列表，写法对齐）。"""
+    monkeypatch.delenv("CRASHGUARD_FATAL_BACKLOG_MAX_SLOTS", raising=False)
+
+    from unittest.mock import patch
+    from app.crashguard.config import get_crashguard_settings
+    get_crashguard_settings.cache_clear()
+
+    with patch("app.crashguard.config._load_yaml", return_value={
+        "crashguard": {"thresholds": {"fatal_backlog_max_slots": 7}}
+    }):
+        s = get_crashguard_settings()
+
+    assert s.fatal_backlog_max_slots == 7
+
+
 def test_datadog_split_queries_load_from_yaml(monkeypatch):
     """fatal / non_fatal 双路 query 应允许通过 config.yaml 覆盖。"""
     monkeypatch.delenv("CRASHGUARD_DATADOG_QUERY_FATAL", raising=False)

@@ -381,6 +381,15 @@ async def _symbolicate_new_jank_issue(issue_id: str, parsed: Dict[str, Any]) -> 
         if res:
             symbol_profile = res.symbol_profile or ""
             github_repo = res.github_repo or ""
+        else:
+            from app.crashguard.services.audit import write_audit
+            await write_audit(
+                op="repo_routing_unresolved",
+                target_id=issue_id,
+                success=False,
+                detail={"platform": parsed["platform"], "app_version": parsed["app_version"],
+                        "caller": "jank_ingester"},
+            )
     except Exception as exc:
         logger.debug("jank repo_router.resolve failed for %s: %s", issue_id, exc)
 

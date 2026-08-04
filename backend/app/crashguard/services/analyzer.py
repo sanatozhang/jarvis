@@ -77,7 +77,7 @@ _PROMPT_TEMPLATE = """你是 Plaud 移动端崩溃分析专家。基于下方崩
 - **首次出现**: {first_seen_at}
 - **最近出现**: {last_seen_at}
 - **总事件数**: {total_events}
-- **代表性堆栈**:
+- **代表性堆栈**（栈质量：{stack_quality_note}）:
 
 ```
 {stack_trace}
@@ -369,6 +369,25 @@ async def _run_in_background(issue_id: str, run_id: str) -> None:
             confirmed_hyp_id = getattr(run, "confirmed_hypothesis_id", "") or ""
 
         snapshot_data["enrichment_block"] = await _build_enrichment_block(issue_id)
+
+        # _build_enrichment_block 内部可能已经重新符号化并把结果回写进
+        # CrashIssue.representative_stack（_persist_distribution_to_issue），但上面
+        # snapshot_data["stack_trace"] 是在这之前、用旧 issue 对象取的值——顺序反了，
+        # prompt 主堆栈永远是符号化前的旧值。这里重新读一次最新值，只读这一列，
+        # 不需要整行 issue。
+        async with get_session() as session:
+            fresh_stack = (await session.execute(
+                select(CrashIssue.representative_stack).where(
+                    CrashIssue.datadog_issue_id == issue_id
+                )
+            )).scalar_one_or_none()
+        if fresh_stack:
+            snapshot_data["stack_trace"] = fresh_stack[:32000]
+        from app.crashguard.services.datadog_client import DatadogClient
+        snapshot_data["stack_quality_note"] = _stack_quality_note(
+            DatadogClient._stack_quality_label(snapshot_data.get("stack_trace", ""))
+        )
+
         workspace = _prepare_workspace(issue_id)
         snapshot_data["code_hint"] = _platform_code_hint(snapshot_data.get("platform", ""), workspace)
         snapshot_data["stack_paths_block"] = _build_stack_paths_block(
@@ -677,6 +696,23 @@ def _issue_to_dict(issue: CrashIssue) -> Dict[str, Any]:
     }
 
 
+# 栈质量 → 给 AI 的文案提示（共享给 prompt 主分析块 + enrichment block 展示）。
+# raw/empty 原文是"未识别"/"无堆栈"，太中性容易被 AI 忽略，这里改成跟
+# aot_pointers_unsymbolicated 一致的 ⚠️ 语气，让 AI 真的把这个信号纳入置信度判断。
+_STACK_QUALITY_NOTE = {
+    "symbolicated_dart": "✅ 含 Dart 文件路径与行号，可直接定位",
+    "symbolicated_jvm": "✅ 含 Java/Kotlin 类名与方法，可直接定位",
+    "symbolicated_native": "✅ 含 iOS 符号，可直接定位",
+    "aot_pointers_unsymbolicated": "⚠️ Flutter AOT 编译后的 hex 指针，需配合 build_id + flutter symbolize 才能解符号",
+    "raw": "⚠️ 未能符号化，仍是原始地址/未解析形态，结论需要谨慎",
+    "empty": "⚠️ 无堆栈内容",
+}
+
+
+def _stack_quality_note(quality: str) -> str:
+    return _STACK_QUALITY_NOTE.get(quality, quality)
+
+
 def _build_prompt(d: Dict[str, Any]) -> str:
     data = dict(d)
     data.setdefault("enrichment_block", "")
@@ -684,6 +720,7 @@ def _build_prompt(d: Dict[str, Any]) -> str:
     data.setdefault("followup_block", "")
     data.setdefault("stack_paths_block", "")
     data.setdefault("confirmed_hypothesis_block", "")
+    data.setdefault("stack_quality_note", "未知")
     return _PROMPT_TEMPLATE.format(**data)
 
 
@@ -1197,14 +1234,7 @@ async def _build_enrichment_block(issue_id: str) -> str:
     full_stack = detail.get("full_stack") or ""
     if full_stack:
         quality = detail.get("stack_quality", "raw")
-        quality_note = {
-            "symbolicated_dart": "✅ 含 Dart 文件路径与行号，可直接定位",
-            "symbolicated_jvm": "✅ 含 Java/Kotlin 类名与方法，可直接定位",
-            "symbolicated_native": "✅ 含 iOS 符号，可直接定位",
-            "aot_pointers_unsymbolicated": "⚠️ Flutter AOT 编译后的 hex 指针，需配合 build_id + flutter symbolize 才能解符号",
-            "raw": "未识别",
-            "empty": "无堆栈",
-        }.get(quality, quality)
+        quality_note = _stack_quality_note(quality)
         parts.append(f"\n### 真实完整堆栈（来自 RUM 事件，挑选自 {detail.get('events_scanned', '?')} 条事件中最优的一条）")
         parts.append(f"\n**栈质量**：{quality_note}\n")
         parts.append("```")

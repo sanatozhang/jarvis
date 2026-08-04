@@ -449,6 +449,15 @@ class DatadogClient:
             from app.config import get_repo_routing
             from app.services import repo_router
             _res = repo_router.resolve(platform_str, app_ver, get_repo_routing())
+            if _res is None:
+                from app.crashguard.services.audit import write_audit
+                await write_audit(
+                    op="repo_routing_unresolved",
+                    target_id=issue_id,
+                    success=False,
+                    detail={"platform": platform_str, "app_version": app_ver,
+                            "caller": "datadog_client.get_issue_detail"},
+                )
             symbolicated = await symbolicate_stack(
                 best_stack, binary_images, platform_str, app_ver,
                 symbol_profile=(_res.symbol_profile if _res else ""),

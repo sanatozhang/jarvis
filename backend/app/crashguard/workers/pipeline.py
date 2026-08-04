@@ -278,6 +278,7 @@ async def _try_symbolicate_issue(datadog_issue_id: str, platform: str) -> None:
         from app.crashguard.models import CrashIssue
         from app.config import get_repo_routing
         from app.services import repo_router
+        from app.crashguard.services.pr_drafter import _first_dominant_value
 
         async with get_session() as session:
             row = (await session.execute(
@@ -287,7 +288,19 @@ async def _try_symbolicate_issue(datadog_issue_id: str, platform: str) -> None:
                 return
             original = row.representative_stack
             app_ver = (row.last_seen_version or "").strip()
-            _res = repo_router.resolve(platform or row.platform or "", app_ver, get_repo_routing())
+            _res = repo_router.resolve(
+                platform or row.platform or "", app_ver, get_repo_routing(),
+                os_name=_first_dominant_value(row.top_os or ""),
+            )
+            if _res is None:
+                from app.crashguard.services.audit import write_audit
+                await write_audit(
+                    op="repo_routing_unresolved",
+                    target_id=datadog_issue_id,
+                    success=False,
+                    detail={"platform": platform or row.platform or "", "app_version": app_ver,
+                            "caller": "pipeline._try_symbolicate_issue"},
+                )
             enhanced = await symbolicate_stack(
                 original, [], platform or row.platform or "", app_ver,
                 symbol_profile=(_res.symbol_profile if _res else ""),

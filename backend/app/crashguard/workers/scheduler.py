@@ -46,7 +46,7 @@ async def _run_analyze_tick(max_per_tick: int) -> dict:
     复用 _auto_analyze_attention 的去重 + 串行 + auto-PR 逻辑。
     """
     from datetime import date
-    from app.crashguard.services.daily_report import _auto_analyze_attention
+    from app.crashguard.services.daily_report import _auto_analyze_attention, _filter_pending_ids
     from app.crashguard.workers.warmup import _collect_attention_ids
 
     today = date.today()
@@ -54,11 +54,17 @@ async def _run_analyze_tick(max_per_tick: int) -> dict:
     if not full:
         return {"picked": 0, "completed": 0, "remaining": 0}
 
-    # _auto_analyze_attention 内部还有 dedup 闸再过滤 success/running/pending —— 这里限量挑前 N 个传进去
-    # （内部会过滤掉已跑过的）
-    picked = full[: max(1, int(max_per_tick))]
+    # 先过滤掉已 success/running/pending 的，再切片——避免队头恒是"早已分析过"的 issue
+    # 导致 picked 永远是同一批已完成 issue，真正待分析的排在后面永远轮不到。
+    pending = await _filter_pending_ids(full)
+    if not pending:
+        return {"picked": 0, "completed": 0, "remaining": 0}
+
+    # _auto_analyze_attention 内部循环里还有 dedup_hours 二次过滤（等待期间状态可能变化）——
+    # 这里的预过滤是为了让切片挑到"真正待分析"的 N 个，不是为了省掉内部那层查询。
+    picked = pending[: max(1, int(max_per_tick))]
     completed = await _auto_analyze_attention(picked)
-    return {"picked": len(picked), "completed": completed, "remaining": max(0, len(full) - completed)}
+    return {"picked": len(picked), "completed": completed, "remaining": max(0, len(pending) - completed)}
 
 
 def _cron_matches(expr: str, now: datetime) -> bool:
