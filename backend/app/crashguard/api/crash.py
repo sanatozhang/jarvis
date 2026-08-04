@@ -3636,3 +3636,121 @@ async def delete_symbol_package(symbol_id: str) -> Dict[str, Any]:
         logger.warning("failed to delete symbol file %s: %s", file_path, exc)
 
     return {"ok": True}
+
+
+# ── 手工符号化任意堆栈 ────────────────────────────────────────────────────────
+
+class SymbolicateRequest(BaseModel):
+    stack: str = Field(..., description="原始堆栈文本")
+    platform: str = Field(..., description="ios / android / flutter（不做后端猜测）")
+    app_version: Optional[str] = Field(None, description="如 '4.0.201-941'；缺失则 Plan B/C 全部失效，仅 Plan A 生效")
+    binary_images: List[dict] = Field(default_factory=list, description="Datadog RUM @error.binary_images，普通用户不会有")
+    symbol_profile: Optional[str] = Field(None, description="覆盖自动路由：flutter_ios / native_ios / flutter_android / native_android / none")
+    github_repo: Optional[str] = Field(None, description="覆盖自动路由")
+
+
+@router.post("/symbolicate")
+async def symbolicate_ad_hoc_stack(body: SymbolicateRequest) -> Dict[str, Any]:
+    """手工符号化任意堆栈文本（同步返回，无 task_id，只读，不写任何 crash_* 表）。
+
+    首次遇到新版本会现场下载符号包（dSYM 可达 90MB），可能耗时数十秒到数分钟——
+    调用方应设置足够长的超时（如 `curl --max-time 300`）。
+    """
+    import time as _time
+
+    from sqlalchemy import select as _select
+
+    from app.config import get_repo_routing
+    from app.crashguard.models import CrashSymbolPackage
+    from app.crashguard.services.datadog_client import DatadogClient
+    from app.crashguard.services.symbolication import symbolicate_stack
+    from app.db.database import get_session as _get_session
+    from app.services import repo_router
+
+    stack = body.stack
+    if not stack:
+        raise HTTPException(status_code=400, detail="stack 不能为空")
+    if len(stack) > 200_000:
+        raise HTTPException(status_code=413, detail="stack 超过 200000 字符上限")
+
+    platform = (body.platform or "").strip().lower()
+    if platform not in ("ios", "android", "flutter"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"platform 必须是 ios/android/flutter 之一，收到: {body.platform!r}",
+        )
+
+    app_version = body.app_version or ""
+    warnings: List[str] = []
+    if not app_version:
+        warnings.append("app_version 缺失，Plan B/C 均无法命中")
+
+    # 关键点：必须传 path_exists=lambda _p: True。resolve() 默认用 os.path.exists 校验
+    # 源码 wrapper 目录，但 config.yaml 里配的是裸机路径，在容器里不存在会返回 None，
+    # 进而 symbol_profile 丢失、iOS 会去下错误的 dSYM 资产（见 docs/crashguard/symbolication.md）。
+    # 符号化本身不需要源码目录，只需要 github_repo 字符串 + symbol_profile，所以跳过存在性
+    # 校验是正确且零副作用的。
+    res = repo_router.resolve(
+        platform, app_version, get_repo_routing(), path_exists=lambda _p: True,
+    )
+    if res is None:
+        routing_confidence = "unresolved"
+        warnings.append("repo_router.resolve 返回 None（无法按 platform/app_version 路由），已使用兼容回退")
+        resolved_symbol_profile = ""
+        resolved_github_repo = ""
+    else:
+        routing_confidence = res.confidence
+        resolved_symbol_profile = res.symbol_profile
+        resolved_github_repo = res.github_repo
+
+    symbol_profile = body.symbol_profile or resolved_symbol_profile
+    github_repo = body.github_repo or resolved_github_repo
+
+    stack_quality_before = DatadogClient._stack_quality_label(stack)
+
+    start = _time.monotonic()
+    symbolicated_stack = await symbolicate_stack(
+        stack, body.binary_images or [], platform, app_version,
+        symbol_profile=symbol_profile, github_repo=github_repo,
+    )
+    duration_ms = int((_time.monotonic() - start) * 1000)
+
+    changed = symbolicated_stack != stack
+    stack_quality_after = DatadogClient._stack_quality_label(symbolicated_stack)
+
+    if not changed:
+        warnings.append("symbolicate_stack 原样返回堆栈，符号化未生效（常见原因：无匹配符号包 / 下载失败 / GH_TOKEN 权限不足）")
+
+    async with _get_session() as session:
+        q = _select(CrashSymbolPackage).order_by(CrashSymbolPackage.created_at.desc())
+        q = q.where(CrashSymbolPackage.platform == platform)
+        if app_version:
+            q = q.where(CrashSymbolPackage.app_version == app_version)
+        rows = (await session.execute(q)).scalars().all()
+
+    available_symbol_packages = [
+        {
+            "symbol_type": r.symbol_type,
+            "app_version": r.app_version,
+            "file_name": r.file_name,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+    if not available_symbol_packages:
+        warnings.append("该 (platform, app_version) 无已上传符号包，可能不是线上包（Jenkins 仅在 IS_ONLINE_PACKAGE=true 时上传）")
+
+    return {
+        "symbolicated_stack": symbolicated_stack,
+        "changed": changed,
+        "stack_quality_before": stack_quality_before,
+        "stack_quality_after": stack_quality_after,
+        "platform": platform,
+        "app_version": app_version,
+        "symbol_profile": symbol_profile,
+        "github_repo": github_repo,
+        "routing_confidence": routing_confidence,
+        "available_symbol_packages": available_symbol_packages,
+        "duration_ms": duration_ms,
+        "warnings": warnings,
+    }
