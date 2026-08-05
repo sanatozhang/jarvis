@@ -156,3 +156,73 @@ async def test_top_crash_auto_pr_skips_when_pr_enabled_false(patched_session, mo
     res = await run_job_health_check()
     assert res["alerted"] is False
     assert "top_crash_auto_pr" in res["skipped_disabled"]
+
+
+@pytest.mark.asyncio
+async def test_recent_skipped_heartbeat_is_not_stale(patched_session, monkeypatch):
+    """抓手：2026-08-05 事故——queue-head bug 修复后 analyze_tick 的 attention
+    池被真正清空，之后每 5min tick 正常返回 picked=0 → status=skipped（这是
+    合法终态，不是异常）。但 stale 判定此前只认 status=="success"，last_success
+    永远停在旧值，10 分钟后就被误报"超期未跑"并每 30min 反复告警。这里验证：
+    只要最近有 success 或 skipped 心跳（在 2×interval 内），就不该判 stale。
+    """
+    from app.crashguard.services.job_health_alerter import run_job_health_check
+    from app.crashguard.models import CrashJobHeartbeat
+    from app.db.database import get_session
+
+    _make_settings(monkeypatch)
+
+    async with get_session() as s:
+        # 很久以前的最后一次真正"有活干"的 success
+        s.add(CrashJobHeartbeat(
+            job_name="analyze_tick",
+            fired_at=datetime.utcnow() - timedelta(days=1),
+            status="success",
+            duration_ms=100,
+            summary="{}", error="",
+        ))
+        # 最近一次 tick：池子已清空，合法 skipped，不算异常
+        s.add(CrashJobHeartbeat(
+            job_name="analyze_tick",
+            fired_at=datetime.utcnow() - timedelta(minutes=2),
+            status="skipped",
+            duration_ms=50,
+            summary='{"picked": 0, "completed": 0, "remaining": 0}', error="",
+        ))
+        await s.commit()
+
+    res = await run_job_health_check()
+    assert res["alerted"] is False
+    assert "analyze_tick" not in res.get("unhealthy_jobs", [])
+
+
+@pytest.mark.asyncio
+async def test_only_old_skipped_heartbeats_still_stale(patched_session, monkeypatch):
+    """对照组：skipped 心跳本身也过期（超过 2×interval 没有任何新心跳）时，
+    仍然要判 stale——不能因为"允许 skipped"就彻底关掉 stale 检测。"""
+    from app.crashguard.services import job_health_alerter as jha
+    from app.crashguard.services.job_health_alerter import run_job_health_check
+    from app.crashguard.models import CrashJobHeartbeat
+    from app.db.database import get_session
+
+    _make_settings(monkeypatch)
+    jha._consecutive_retry_failures["analyze_tick"] = 3  # 越过自愈重试，直接判告警
+
+    async with get_session() as s:
+        s.add(CrashJobHeartbeat(
+            job_name="analyze_tick",
+            fired_at=datetime.utcnow() - timedelta(days=1),
+            status="skipped",
+            duration_ms=50,
+            summary="{}", error="",
+        ))
+        await s.commit()
+
+    monkeypatch.setattr(
+        "app.services.feishu_cli.send_interactive_card",
+        AsyncMock(return_value=True),
+    )
+
+    res = await run_job_health_check()
+    assert res["alerted"] is True
+    assert "analyze_tick" in res["unhealthy_jobs"]

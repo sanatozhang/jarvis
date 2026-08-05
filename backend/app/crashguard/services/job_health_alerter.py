@@ -311,12 +311,27 @@ async def run_job_health_check() -> Dict[str, Any]:
                 .order_by(desc(CrashJobHeartbeat.fired_at))
                 .limit(1)
             )).scalars().first()
-            # 上次成功
+            # 上次成功（仅供 last_success_at 展示）
             last_success_row = (await session.execute(
                 select(CrashJobHeartbeat)
                 .where(
                     CrashJobHeartbeat.job_name == jn,
                     CrashJobHeartbeat.status == "success",
+                )
+                .order_by(desc(CrashJobHeartbeat.fired_at))
+                .limit(1)
+            )).scalars().first()
+            # 上次"存活"（success 或 skipped）——供 stale 判定。skipped 是
+            # analyze_tick/jank_backfill/top_crash_auto_pr/deep_analyze_auto 等
+            # 任务在"本轮 attention 池已清空、无待办"时的合法终态，不是异常；
+            # 只用 last_success 判定会把"一直在跑但暂时没活干"误判成"任务挂了"
+            # （2026-08-05 实测：queue-head bug 修复后 analyze_tick 真的清空了
+            # 积压，之后每 5min 正常 skip，却被误报超期告警）。
+            last_alive_row = (await session.execute(
+                select(CrashJobHeartbeat)
+                .where(
+                    CrashJobHeartbeat.job_name == jn,
+                    CrashJobHeartbeat.status.in_(["success", "skipped"]),
                 )
                 .order_by(desc(CrashJobHeartbeat.fired_at))
                 .limit(1)
@@ -344,10 +359,12 @@ async def run_job_health_check() -> Dict[str, Any]:
                     break
 
             stale = False
-            if interval and last_success_row is not None and last_success_row.fired_at:
-                age_min = (now_utc - last_success_row.fired_at).total_seconds() / 60.0
+            if interval and last_alive_row is not None and last_alive_row.fired_at:
+                age_min = (now_utc - last_alive_row.fired_at).total_seconds() / 60.0
                 if age_min > 2 * interval:
                     stale = True
+            elif interval and last_alive_row is None and last_row is not None:
+                stale = True  # 从来没成功/skip 过，只有 failed 记录
 
             health: str
             if stale:

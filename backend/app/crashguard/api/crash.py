@@ -2745,12 +2745,27 @@ async def jobs_status() -> Dict[str, Any]:
                 .order_by(desc(CrashJobHeartbeat.fired_at))
                 .limit(1)
             )).scalars().first()
-            # 上次成功心跳
+            # 上次成功心跳（仅 success，供 last_success_at 展示"真正做了活的时间"）
             last_success_row = (await session.execute(
                 select(CrashJobHeartbeat)
                 .where(
                     CrashJobHeartbeat.job_name == jn,
                     CrashJobHeartbeat.status == "success",
+                )
+                .order_by(desc(CrashJobHeartbeat.fired_at))
+                .limit(1)
+            )).scalars().first()
+            # 上次"存活"心跳（success 或 skipped）——供 stale 判定用。
+            # skipped 是多个 job（analyze_tick/jank_backfill/top_crash_auto_pr/
+            # deep_analyze_auto）在"本轮 attention 池已清空、无待办"时的合法终态，
+            # 不是异常；只用 last_success_at 判定 stale 会把"任务一直在跑但暂时
+            # 没活干"误判成"任务挂了"（2026-08-05 实测：queue-head bug 修复后
+            # analyze_tick 真的清空了积压，之后每 5min 正常 skip，却被误报超期）。
+            last_alive_row = (await session.execute(
+                select(CrashJobHeartbeat)
+                .where(
+                    CrashJobHeartbeat.job_name == jn,
+                    CrashJobHeartbeat.status.in_(["success", "skipped"]),
                 )
                 .order_by(desc(CrashJobHeartbeat.fired_at))
                 .limit(1)
@@ -2778,15 +2793,15 @@ async def jobs_status() -> Dict[str, Any]:
                 else:
                     break
 
-            # 是否超期（last_success_at 超过 2× 预期间隔）
+            # 是否超期（last_alive_at 超过 2× 预期间隔；success/skipped 都算"活着"）
             interval_minutes = _interval_minutes_from_cron(cron_expr)
             stale = False
-            if interval_minutes and last_success_row is not None and last_success_row.fired_at:
-                age_minutes = (now_utc - last_success_row.fired_at).total_seconds() / 60.0
+            if interval_minutes and last_alive_row is not None and last_alive_row.fired_at:
+                age_minutes = (now_utc - last_alive_row.fired_at).total_seconds() / 60.0
                 if age_minutes > 2 * interval_minutes:
                     stale = True
-            elif interval_minutes and last_success_row is None and last_row is not None:
-                stale = True  # 从来没成功过
+            elif interval_minutes and last_alive_row is None and last_row is not None:
+                stale = True  # 从来没成功/skip 过，只有 failed 记录
 
             last_summary: Dict[str, Any] = {}
             if last_row and last_row.summary:
