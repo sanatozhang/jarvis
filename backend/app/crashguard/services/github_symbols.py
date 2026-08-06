@@ -59,18 +59,13 @@ _ASSET_ANDROID_NATIVE_SYMBOLS = "native_symbols.tar.gz"  # libflutter.so / libap
 
 
 def _github_token() -> Optional[str]:
-    """优先用 `gh auth token`（服务器上已登录的 OAuth token，hosts.yml gho_*，长期
-    有效、有 org 权限）；GH_TOKEN/GITHUB_TOKEN env 常是个人 fine-grained PAT，超过
+    """用 `gh auth token`（服务器上已登录的 OAuth token，hosts.yml gho_*，长期
+    有效、有 org 权限）。个人 fine-grained PAT（GH_TOKEN/GITHUB_TOKEN env）超过
     Plaud-AI org 90 天生命周期策略会被硬拒绝（2026-07-13 实测：release 列表接口全
-    403），只作 gh 不可用时的最后兜底。和 pr_drafter/pr_sync/pr_reviewer 里"剥
-    GH_TOKEN 走 OAuth"是同一个道理，这里因为走的是 httpx 直连而不是 gh 子进程，
-    没法靠剥 env 让 gh 自己接管，只能反过来主动问 gh 要它当前用的 token。
-
-    2026-07-20 修复：上面这段调 `gh auth token` 子进程时忘了剥离
-    GH_TOKEN/GITHUB_TOKEN env——`gh` 二进制本身会尊重这两个 env var，于是又把
-    过期 PAT 取了回来，102 上实测所有符号包下载全 403。和其余 3 个 gh 子进程调用
-    点（pr_drafter._github_open_crashguard_pr / pr_reviewer.fetch_pr_diff_via_gh /
-    check_review_status_from_gh）保持同款处理：调用前从子进程 env 里剥掉这两个 key。
+    403），2026-08-06 起不再作为兜底读取——和 pr_drafter/pr_sync/pr_reviewer 里
+    "剥 GH_TOKEN 走 OAuth"保持同一策略，调 `gh auth token` 子进程前也剥离这两个
+    env key，避免 `gh` 二进制自己优先用回过期 PAT（2026-07-20 曾踩过这个坑，102
+    上符号包下载全 403）。
     """
     try:
         import subprocess
@@ -87,7 +82,7 @@ def _github_token() -> Optional[str]:
                 return tok
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
-    return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    return None
 
 
 _GITHUB_CACHE_KEEP_VERSIONS = 10  # fallback，优先使用 crashguard config
