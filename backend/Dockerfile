@@ -95,6 +95,8 @@ COPY app/ ./app/
 COPY rules/ ./rules/
 # scripts/ is imported at startup (check_crash_decoupling)
 COPY scripts/ ./scripts/
+# seeds/ is read at startup (voc_taxonomy.sync_seed_to_db bootstraps voc_tags from here)
+COPY seeds/ ./seeds/
 
 # Create data dirs
 RUN mkdir -p /app/data /app/workspaces
