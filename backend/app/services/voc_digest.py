@@ -15,6 +15,9 @@ import logging
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
+from app.config import get_settings
+from app.services import claude_headless
+
 logger = logging.getLogger("jarvis.voc_digest")
 
 
@@ -183,3 +186,183 @@ def sample_root_causes(
         seen[group].add(rc)
 
     return {g: v for g, v in samples.items() if v}
+
+
+_DIGEST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "key_findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string"},
+                    "finding": {"type": "string"},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["scope", "finding"],
+            },
+        },
+        "product_opportunities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "area": {"type": "string"},
+                    "problem": {"type": "string"},
+                    "suggestion": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["area", "problem", "suggestion"],
+            },
+        },
+        "movers_commentary": {"type": "string"},
+    },
+    "required": ["headline", "key_findings", "product_opportunities"],
+}
+
+_DIGEST_REQUIRED_KEYS = ("headline", "key_findings", "product_opportunities")
+
+
+def _build_digest_system_prompt() -> str:
+    return (
+        "You are writing a weekly customer-support insight digest for Plaud's "
+        "product team, based on support tickets already classified against a "
+        "fixed VOC taxonomy.\n\n"
+        "You will receive a JSON `stats` object (already-computed group counts, "
+        "week-over-week deltas, and top movers) and a `root_cause_samples` "
+        "object (real root-cause text sampled from this week's tickets, "
+        "grouped by VOC category).\n\n"
+        "Rules:\n"
+        "- Every number you mention (counts, percentages, deltas) MUST come "
+        "verbatim from `stats`. Never compute, round, or restate a number "
+        "that isn't already there.\n"
+        "- `key_findings` should call out the categories with the highest "
+        "volume or the sharpest movers from `stats`.\n"
+        "- `product_opportunities` is the most important output. For each "
+        "category in `root_cause_samples`, ask: do these root causes describe "
+        "something the PRODUCT could prevent or mitigate (a missing hint, a "
+        "confusing flow, a hardware limitation users hit repeatedly) rather "
+        "than something the user did wrong? Only include an entry if the "
+        "sampled root causes actually support that conclusion — it is fine "
+        "to return an empty list if nothing this week supports a product "
+        "change. Do not invent a plausible-sounding opportunity.\n"
+        "- Write in English. Keep `finding`/`problem`/`suggestion` to 1-2 "
+        "sentences each."
+    )
+
+
+def _build_digest_user_input(
+    stats: Dict[str, Any], root_cause_samples: Dict[str, List[str]],
+    week_start: str, week_end: str,
+) -> str:
+    payload = {
+        "week_start": week_start, "week_end": week_end,
+        "stats": stats, "root_cause_samples": root_cause_samples,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _render_markdown(
+    week_start: str, week_end: str, stats: Dict[str, Any], narrative: Optional[Dict[str, Any]],
+) -> str:
+    lines = [f"# VOC 周度洞察 · {week_start} ~ {week_end}", ""]
+    if narrative and narrative.get("headline"):
+        lines += [f"**{narrative['headline']}**", ""]
+
+    total_cur = stats.get("total_cur", 0)
+    total_delta_pct = stats.get("total_delta_pct")
+    delta_str = f"{total_delta_pct:+.1f}%" if total_delta_pct is not None else "N/A（上周无基线）"
+    lines += [f"本周共 {total_cur} 单，环比 {delta_str}。", ""]
+
+    if narrative and narrative.get("key_findings"):
+        lines.append("## 关键发现")
+        for f in narrative["key_findings"]:
+            line = f"- **{f.get('scope', '')}**：{f.get('finding', '')}"
+            if f.get("evidence"):
+                line += f"（{f['evidence']}）"
+            lines.append(line)
+        lines.append("")
+
+    if narrative and narrative.get("product_opportunities"):
+        lines.append("## 产品优化建议")
+        for o in narrative["product_opportunities"]:
+            lines.append(f"- **{o.get('area', '')}**：{o.get('problem', '')} → {o.get('suggestion', '')}")
+            if o.get("rationale"):
+                lines.append(f"  - 依据：{o['rationale']}")
+        lines.append("")
+    elif narrative is not None:
+        lines += ["## 产品优化建议", "", "（本周没有明显可归因为产品问题的重复根因）", ""]
+
+    lines.append("## 分类占比 Top 10")
+    for g in stats.get("groups", [])[:10]:
+        lines.append(f"- {g['group']}：{g['count']}")
+    lines.append("")
+
+    top_movers = stats.get("top_movers", [])
+    if top_movers:
+        lines.append("## 环比变动 Top 5")
+        for m in top_movers[:5]:
+            pct = f"{m['delta_pct']:+.0f}%" if m.get("delta_pct") is not None else "new"
+            lines.append(f"- {m['key']}：{m['prev']} → {m['cur']}（{pct}）")
+        lines.append("")
+
+    if narrative is None:
+        lines.append("_洞察生成失败，以上仅为确定性统计。可点击「重新生成」重试。_")
+
+    return "\n".join(lines)
+
+
+async def generate_weekly_digest(week_start: str, force: bool = False) -> Dict[str, Any]:
+    """Generate (or return the cached) weekly digest for the week starting
+    `week_start` (Monday, "YYYY-MM-DD"). The deterministic stats half always
+    computes; the LLM narrative half degrades to None on any failure
+    (disabled, CLI unavailable, timeout, malformed output) — the record is
+    ALWAYS written either way, since the numbers alone are useful even
+    without a narrative (see _render_markdown's fallback line).
+    """
+    from app.db import database as db
+
+    if not force:
+        existing = await db.get_voc_weekly_digest(week_start)
+        if existing:
+            return existing
+
+    ws = date.fromisoformat(week_start)
+    we = ws + timedelta(days=6)
+    prev_ws = ws - timedelta(days=7)
+    prev_we = ws - timedelta(days=1)
+
+    cur_rows = await db.get_voc_analysis_rows(ws.isoformat(), we.isoformat())
+    prev_rows = await db.get_voc_analysis_rows(prev_ws.isoformat(), prev_we.isoformat())
+
+    stats = compute_weekly_stats(cur_rows, prev_rows)
+    root_cause_samples = sample_root_causes(cur_rows)
+
+    settings = get_settings().voc
+    narrative: Optional[Dict[str, Any]] = None
+    if settings.digest_enabled:
+        narrative = await claude_headless.run_json(
+            system_prompt=_build_digest_system_prompt(),
+            user_input=_build_digest_user_input(stats, root_cause_samples, week_start, we.isoformat()),
+            schema=_DIGEST_SCHEMA,
+            model=settings.digest_model,
+            timeout=float(settings.digest_timeout_seconds),
+            log_prefix="voc_digest",
+        )
+        if narrative is not None:
+            missing = [k for k in _DIGEST_REQUIRED_KEYS if k not in narrative]
+            if missing:
+                logger.warning("VOC digest narrative missing required keys %s — discarding", missing)
+                narrative = None
+
+    markdown = _render_markdown(week_start, we.isoformat(), stats, narrative)
+
+    return await db.upsert_voc_weekly_digest(
+        week_start=week_start,
+        stats=stats,
+        narrative=narrative,
+        markdown=markdown,
+        model=settings.digest_model if narrative else "",
+    )

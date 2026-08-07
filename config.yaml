@@ -178,6 +178,12 @@ voc:
   sync_enabled: false
   sync_interval_hours: 24
   classifier_model: claude-sonnet-5
+  digest_enabled: true
+  digest_cron: "0 10 * * 1"
+  digest_push_enabled: false
+  digest_chat_id: ""
+  digest_model: claude-sonnet-5
+  digest_timeout_seconds: 300
 
 # ===========================
 # Crashguard 模块配置

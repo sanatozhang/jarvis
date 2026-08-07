@@ -327,6 +327,19 @@ class VOCSettings(BaseSettings):
     # absorb CLI cold-start under load without hanging a backfill worker forever.
     classifier_timeout_seconds: int = 90
 
+    # Weekly insight digest (app.services.voc_digest.generate_weekly_digest).
+    # digest_enabled gates the LLM narrative call only — the deterministic
+    # stats half always computes regardless, so the digest never has zero
+    # content even with this off. digest_push_enabled is OFF by default:
+    # this ships the generation pipeline first, Feishu push is a separate
+    # explicit opt-in once someone has reviewed a few weeks of output.
+    digest_enabled: bool = True
+    digest_cron: str = "0 10 * * 1"   # Monday 10:00 UTC — "M H * * D" shape only, see voc_digest_loop
+    digest_push_enabled: bool = False
+    digest_chat_id: str = ""
+    digest_model: str = "claude-sonnet-5"
+    digest_timeout_seconds: int = 300
+
     model_config = {
         "env_prefix": "VOC_",
         "env_file": str(PROJECT_ROOT / ".env"),
@@ -512,7 +525,9 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
 
     # VOC taxonomy — client_id/secret 是 secret，只走 env，yaml 只覆盖非 secret 字段
     voc_cfg = cfg.get("voc", {})
-    for k in ("base_url", "token_url", "sync_enabled", "sync_interval_hours", "classifier_model", "classifier_timeout_seconds"):
+    for k in ("base_url", "token_url", "sync_enabled", "sync_interval_hours", "classifier_model",
+              "classifier_timeout_seconds", "digest_enabled", "digest_cron", "digest_push_enabled",
+              "digest_chat_id", "digest_model", "digest_timeout_seconds"):
         if k in voc_cfg and not os.getenv(f"VOC_{k.upper()}"):
             setattr(settings.voc, k, voc_cfg[k])
 
