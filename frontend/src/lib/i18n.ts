@@ -922,6 +922,10 @@ const EN: Record<string, string> = {
   "(无三级诊断)": "(no L3 diagnosis)",
   "暂无 VOC 分类数据——taxonomy 尚未同步，或所选时间范围内还没有打标结果。":
     "No VOC classification data yet — the taxonomy hasn't synced, or there are no tagged results in this date range.",
+  "值班日报": "Daily Report",
+  "VOC 周报": "VOC Weekly Report",
+  "暂无周报": "No weekly reports yet",
+  "选择左侧周次查看": "Select a week on the left",
   "全部设备": "All Devices",
   "设备类型分布": "Device Type Distribution",
   "问题总数": "Total Issues",

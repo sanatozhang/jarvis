@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchDailyReport, fetchReportDates, type DailyReport } from "@/lib/api";
+import { fetchDailyReport, fetchReportDates, fetchVocWeeklyDigests, type DailyReport, type VocWeeklyDigest } from "@/lib/api";
 import MarkdownText from "@/components/MarkdownText";
 
 const S = {
@@ -33,6 +33,10 @@ export default function ReportsPage() {
   const [report, setReport] = useState<DailyReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
+  const [reportTab, setReportTab] = useState<"daily" | "weekly">("daily");
+  const [digests, setDigests] = useState<VocWeeklyDigest[]>([]);
+  const [selectedWeek, setSelectedWeek] = useState("");
+  const [weeklyLoading, setWeeklyLoading] = useState(false);
 
   useEffect(() => {
     fetchReportDates().then((r) => {
@@ -49,6 +53,18 @@ export default function ReportsPage() {
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [selectedDate]);
+
+  useEffect(() => {
+    if (reportTab !== "weekly") return;
+    setWeeklyLoading(true);
+    fetchVocWeeklyDigests(12)
+      .then((r) => {
+        setDigests(r.digests);
+        if (r.digests.length > 0 && !selectedWeek) setSelectedWeek(r.digests[0].week_start);
+      })
+      .catch(() => setDigests([]))
+      .finally(() => setWeeklyLoading(false));
+  }, [reportTab]);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -95,7 +111,20 @@ export default function ReportsPage() {
       </header>
 
       <div className="px-6 py-5">
-        {loading ? (
+        <div className="flex items-center gap-1 rounded-lg p-1 mb-4" style={{ background: S.overlay, width: "fit-content" }}>
+          <button onClick={() => setReportTab("daily")}
+            className="rounded-md px-3 py-1.5 text-xs font-medium transition-all"
+            style={reportTab === "daily" ? { background: S.surface, color: S.text1 } : { color: S.text3 }}>
+            {t("值班日报")}
+          </button>
+          <button onClick={() => setReportTab("weekly")}
+            className="rounded-md px-3 py-1.5 text-xs font-medium transition-all"
+            style={reportTab === "weekly" ? { background: S.surface, color: S.text1 } : { color: S.text3 }}>
+            {t("VOC 周报")}
+          </button>
+        </div>
+
+        {reportTab === "daily" && (loading ? (
           <div className="flex items-center justify-center py-24">
             <div className="h-8 w-8 animate-spin rounded-full border-4"
               style={{ borderColor: "rgba(0,0,0,0.08)", borderTopColor: S.accent }} />
@@ -189,6 +218,39 @@ export default function ReportsPage() {
                 {report.markdown}
               </pre>
             </details>
+          </div>
+        ))}
+
+        {reportTab === "weekly" && (
+          <div className="grid grid-cols-[200px_1fr] gap-4">
+            <div className="space-y-1">
+              {weeklyLoading ? (
+                <p className="text-xs" style={{ color: S.text3 }}>{t("加载中")}...</p>
+              ) : digests.length === 0 ? (
+                <p className="text-xs" style={{ color: S.text3 }}>{t("暂无周报")}</p>
+              ) : (
+                digests.map((d) => (
+                  <button key={d.week_start} onClick={() => setSelectedWeek(d.week_start)}
+                    className="block w-full text-left rounded-lg px-3 py-2 text-xs transition-colors"
+                    style={selectedWeek === d.week_start
+                      ? { background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)" }
+                      : { color: S.text2, border: `1px solid ${S.border}` }}>
+                    {d.week_start}
+                  </button>
+                ))
+              )}
+            </div>
+            <div>
+              {(() => {
+                const selected = digests.find((d) => d.week_start === selectedWeek);
+                if (!selected) return <p className="text-sm" style={{ color: S.text3 }}>{t("选择左侧周次查看")}</p>;
+                return (
+                  <div className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                    <MarkdownText>{selected.markdown}</MarkdownText>
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         )}
       </div>
