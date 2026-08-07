@@ -156,6 +156,25 @@ class VocTagRecord(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class VocWeeklyDigest(Base):
+    """Cached weekly VOC insight digest (app.services.voc_digest). One row
+    per ISO week (week_start = that week's Monday, "YYYY-MM-DD"). Generation
+    involves an LLM call that can take tens of seconds, so this is a cache
+    to read from on every page load, not a view recomputed per-request —
+    regenerate via generate_weekly_digest(force=True), not by deleting rows."""
+    __tablename__ = "voc_weekly_digests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    week_start = Column(String(10), unique=True, index=True, nullable=False)
+    stats_json = Column(Text, default="{}")        # compute_weekly_stats() output
+    narrative_json = Column(Text, default="null")  # LLM output dict, or JSON null if generation failed/disabled
+    markdown = Column(Text, default="")
+    model = Column(String(128), default="")
+    total_tokens = Column(Integer, default=0)
+    total_cost_usd = Column(Float, default=0.0)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class EventRecord(Base):
     """Core analytics events table."""
     __tablename__ = "events"
@@ -2416,6 +2435,102 @@ async def get_voc_classification_stats(
             "total_tagged": total_tagged,
             "groups": groups,
         }
+
+
+async def get_voc_analysis_rows(date_from: str, date_to: str) -> List[Dict[str, Any]]:
+    """Raw per-analysis rows for VOC trend/movers/digest aggregation
+    (app.services.voc_digest) — one row per analysis in [date_from, date_to]
+    (inclusive, same local-date granularity as get_voc_classification_stats).
+    Callers parse voc_tags_json themselves via voc_digest._primary_tag; this
+    function is just the DB round-trip.
+    """
+    async with get_session() as session:
+        from sqlalchemy import select, and_
+
+        start = datetime.fromisoformat(date_from)
+        end = datetime.fromisoformat(date_to + "T23:59:59")
+
+        stmt = select(
+            AnalysisRecord.issue_id,
+            AnalysisRecord.created_at,
+            AnalysisRecord.voc_tags_json,
+            AnalysisRecord.problem_type,
+            AnalysisRecord.root_cause,
+            AnalysisRecord.device_type,
+            AnalysisRecord.platform,
+            AnalysisRecord.needs_engineer,
+        ).where(and_(
+            AnalysisRecord.created_at >= start,
+            AnalysisRecord.created_at <= end,
+        ))
+        rows = (await session.execute(stmt)).fetchall()
+        return [
+            {
+                "issue_id": r.issue_id,
+                "created_at": r.created_at,
+                "voc_tags_json": r.voc_tags_json,
+                "problem_type": r.problem_type,
+                "root_cause": r.root_cause,
+                "device_type": r.device_type,
+                "platform": r.platform,
+                "needs_engineer": bool(r.needs_engineer),
+            }
+            for r in rows
+        ]
+
+
+def _voc_weekly_digest_to_dict(row: "VocWeeklyDigest") -> Dict[str, Any]:
+    return {
+        "week_start": row.week_start,
+        "stats": json.loads(row.stats_json or "{}"),
+        "narrative": json.loads(row.narrative_json or "null"),
+        "markdown": row.markdown or "",
+        "model": row.model or "",
+        "total_tokens": row.total_tokens or 0,
+        "total_cost_usd": row.total_cost_usd or 0.0,
+        "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+    }
+
+
+async def get_voc_weekly_digest(week_start: str) -> Optional[Dict[str, Any]]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        row = (await session.execute(
+            select(VocWeeklyDigest).where(VocWeeklyDigest.week_start == week_start)
+        )).scalar_one_or_none()
+        return _voc_weekly_digest_to_dict(row) if row else None
+
+
+async def list_voc_weekly_digests(limit: int = 12) -> List[Dict[str, Any]]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        rows = (await session.execute(
+            select(VocWeeklyDigest).order_by(VocWeeklyDigest.week_start.desc()).limit(limit)
+        )).scalars().all()
+        return [_voc_weekly_digest_to_dict(r) for r in rows]
+
+
+async def upsert_voc_weekly_digest(
+    week_start: str, stats: Dict[str, Any], narrative: Optional[Dict[str, Any]],
+    markdown: str, model: str = "", total_tokens: int = 0, total_cost_usd: float = 0.0,
+) -> Dict[str, Any]:
+    async with get_session() as session:
+        from sqlalchemy import select
+        row = (await session.execute(
+            select(VocWeeklyDigest).where(VocWeeklyDigest.week_start == week_start)
+        )).scalar_one_or_none()
+        if row is None:
+            row = VocWeeklyDigest(week_start=week_start)
+            session.add(row)
+        row.stats_json = json.dumps(stats, ensure_ascii=False)
+        row.narrative_json = json.dumps(narrative, ensure_ascii=False) if narrative is not None else "null"
+        row.markdown = markdown
+        row.model = model
+        row.total_tokens = total_tokens
+        row.total_cost_usd = total_cost_usd
+        row.generated_at = datetime.utcnow()
+        await session.commit()
+        return _voc_weekly_digest_to_dict(row)
 
 
 # ---------------------------------------------------------------------------
