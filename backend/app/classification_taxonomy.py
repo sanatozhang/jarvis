@@ -2,8 +2,11 @@
 Problem classification taxonomy for AI analysis results.
 
 - CLASSIFICATION_TAXONOMY: written to workspace context/ for AI reference
-- classify_problem(): keyword-based mapping, called by backend on save_analysis
-  and by backfill endpoint for old data. Single source of truth.
+- classify_problem(): keyword-based mapping. Retired 2026-08 as the write
+  path for new analyses (superseded by the VOC Portal taxonomy — see
+  app.db.database.save_analysis) — now only called by the legacy
+  POST /api/analytics/backfill-classifications endpoint, to keep old,
+  pre-cutover data comparable.
 """
 
 import re

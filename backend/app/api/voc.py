@@ -6,7 +6,7 @@ and a manual sync trigger.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Query
@@ -135,20 +135,40 @@ async def get_movers(
     }
 
 
+def _require_monday(ws: str) -> None:
+    """Raise a 422 if `ws` isn't a Monday. The Query `pattern` already
+    rejects non-YYYY-MM-DD shapes, but date.fromisoformat() can still raise
+    on e.g. "2026-02-30" — treat that as a 422 too rather than a 500."""
+    try:
+        is_monday = date.fromisoformat(ws).weekday() == 0
+    except ValueError:
+        raise HTTPException(status_code=422, detail="week_start must be a Monday (YYYY-MM-DD)")
+    if not is_monday:
+        raise HTTPException(status_code=422, detail="week_start must be a Monday (YYYY-MM-DD)")
+
+
 @router.get("/weekly-digest")
 async def get_weekly_digest(
-    week_start: str = Query("", description="YYYY-MM-DD Monday; default = most recent complete week"),
+    week_start: str = Query(
+        "", pattern=r"^(\d{4}-\d{2}-\d{2})?$",
+        description="YYYY-MM-DD Monday; default = most recent complete week",
+    ),
 ):
     ws = week_start or voc_digest.default_week_start()
+    _require_monday(ws)
     return await db.get_voc_weekly_digest(ws)
 
 
 @router.post("/weekly-digest/generate")
 async def generate_weekly_digest_endpoint(
-    week_start: str = Query("", description="YYYY-MM-DD Monday; default = most recent complete week"),
+    week_start: str = Query(
+        "", pattern=r"^(\d{4}-\d{2}-\d{2})?$",
+        description="YYYY-MM-DD Monday; default = most recent complete week",
+    ),
     force: bool = Query(False),
 ):
     ws = week_start or voc_digest.default_week_start()
+    _require_monday(ws)
     return await voc_digest.generate_weekly_digest(ws, force=force)
 
 

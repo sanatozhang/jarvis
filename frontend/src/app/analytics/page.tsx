@@ -81,6 +81,7 @@ export default function AnalyticsPage() {
   const [digest, setDigest] = useState<VocWeeklyDigest | null>(null);
   const [digestLoading, setDigestLoading] = useState(false);
   const [digestRegenerating, setDigestRegenerating] = useState(false);
+  const [digestError, setDigestError] = useState("");
   const [taxonomyMode, setTaxonomyMode] = useState<"voc" | "legacy">("voc");
   const [expandedVocGroup, setExpandedVocGroup] = useState<string | null>(null);
   const [expandedCat, setExpandedCat] = useState<string | null>(null);
@@ -131,10 +132,13 @@ export default function AnalyticsPage() {
 
   const regenerateDigest = async () => {
     setDigestRegenerating(true);
+    setDigestError("");
     try {
       const result = await generateVocWeeklyDigest("", true);
       setDigest(result);
-    } catch {} finally { setDigestRegenerating(false); }
+    } catch {
+      setDigestError(t("生成失败，请稍后重试"));
+    } finally { setDigestRegenerating(false); }
   };
 
   const dailyDates = data ? Object.keys(data.daily).sort() : [];
@@ -264,13 +268,18 @@ export default function AnalyticsPage() {
                 </span>
                 {digest && <span className="text-xs" style={{ color: S.text3 }}>{digest.week_start}</span>}
               </div>
-              <button
-                onClick={regenerateDigest}
-                disabled={digestRegenerating}
-                className="rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all"
-                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)", opacity: digestRegenerating ? 0.5 : 1 }}>
-                {digestRegenerating ? t("生成中...") : t("重新生成")}
-              </button>
+              <div className="flex items-center gap-2">
+                {digestError && (
+                  <span className="text-[11px]" style={{ color: "#DC2626" }}>{digestError}</span>
+                )}
+                <button
+                  onClick={regenerateDigest}
+                  disabled={digestRegenerating}
+                  className="rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all"
+                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)", opacity: digestRegenerating ? 0.5 : 1 }}>
+                  {digestRegenerating ? t("生成中...") : t("重新生成")}
+                </button>
+              </div>
             </div>
 
             {digestLoading ? (
@@ -286,13 +295,13 @@ export default function AnalyticsPage() {
                 )}
 
                 <p className="text-xs" style={{ color: S.text3 }}>
-                  {t("本期共")} {digest.stats.total_cur} {t("单")}
-                  {digest.stats.total_delta_pct !== null && (
+                  {t("本期共")} {digest.stats?.total_cur ?? 0} {t("单")}
+                  {digest.stats?.total_delta_pct != null && (
                     <> · {t("环比")} {digest.stats.total_delta_pct > 0 ? "+" : ""}{digest.stats.total_delta_pct}%</>
                   )}
                 </p>
 
-                {digest.narrative && digest.narrative.key_findings.length > 0 && (
+                {digest.narrative && (digest.narrative.key_findings?.length ?? 0) > 0 && (
                   <div>
                     <h3 className="text-xs font-semibold mb-2" style={{ color: S.text2 }}>{t("关键发现")}</h3>
                     <ul className="space-y-1">
@@ -305,7 +314,7 @@ export default function AnalyticsPage() {
                   </div>
                 )}
 
-                {digest.narrative && digest.narrative.product_opportunities.length > 0 && (
+                {digest.narrative && (digest.narrative.product_opportunities?.length ?? 0) > 0 && (
                   <div className="rounded-xl p-4" style={{ background: S.accentBg, border: "1px solid rgba(14,124,134,0.25)" }}>
                     <h3 className="text-xs font-semibold mb-2" style={{ color: S.accent }}>{t("产品优化建议")}</h3>
                     <ul className="space-y-2">
@@ -318,7 +327,7 @@ export default function AnalyticsPage() {
                   </div>
                 )}
 
-                {digest.stats.top_movers.length > 0 && (
+                {(digest.stats?.top_movers?.length ?? 0) > 0 && (
                   <div>
                     <h3 className="text-xs font-semibold mb-2" style={{ color: S.text2 }}>{t("环比变动")}</h3>
                     <div className="space-y-1">

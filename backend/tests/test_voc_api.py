@@ -192,3 +192,57 @@ async def test_list_weekly_digests_endpoint(client):
         resp = await client.get("/api/voc/weekly-digests", params={"limit": 5})
     assert resp.status_code == 200
     assert resp.json()["digests"] == [{"week_start": "2026-08-03"}]
+
+
+# ---------------------------------------------------------------------------
+# week_start validation (malformed / non-Monday) — final-review fix
+# ---------------------------------------------------------------------------
+
+async def test_get_weekly_digest_malformed_week_start_returns_422(client):
+    resp = await client.get("/api/voc/weekly-digest", params={"week_start": "not-a-date"})
+    assert resp.status_code == 422
+
+
+async def test_generate_weekly_digest_malformed_week_start_returns_422(client):
+    resp = await client.post("/api/voc/weekly-digest/generate", params={"week_start": "not-a-date"})
+    assert resp.status_code == 422
+
+
+async def test_get_weekly_digest_non_monday_returns_422(client):
+    # 2026-08-04 is a Tuesday
+    resp = await client.get("/api/voc/weekly-digest", params={"week_start": "2026-08-04"})
+    assert resp.status_code == 422
+
+
+async def test_generate_weekly_digest_non_monday_returns_422(client):
+    resp = await client.post("/api/voc/weekly-digest/generate", params={"week_start": "2026-08-04"})
+    assert resp.status_code == 422
+
+
+async def test_get_weekly_digest_invalid_calendar_date_returns_422(client):
+    # Regex-shaped but not a real date — date.fromisoformat() would raise;
+    # must be caught and turned into a 422, not surfaced as a 500.
+    resp = await client.get("/api/voc/weekly-digest", params={"week_start": "2026-02-30"})
+    assert resp.status_code == 422
+
+
+async def test_get_weekly_digest_empty_week_start_uses_default(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    with _patch("app.db.database.get_voc_weekly_digest", new_callable=AsyncMock, return_value=None) as mock_get:
+        resp = await client.get("/api/voc/weekly-digest")
+    assert resp.status_code == 200
+    assert mock_get.call_count == 1
+
+
+async def test_generate_weekly_digest_omitted_week_start_uses_default(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    fake_record = {"week_start": "2026-08-03", "stats": {}, "narrative": None, "markdown": "x"}
+    with _patch("app.services.voc_digest.generate_weekly_digest", new_callable=AsyncMock,
+                return_value=fake_record) as mock_gen:
+        resp = await client.post("/api/voc/weekly-digest/generate")
+    assert resp.status_code == 200
+    assert mock_gen.call_count == 1
+    # called with the resolved default (a Monday), not the empty string
+    called_ws = mock_gen.call_args.args[0]
+    from datetime import date as _date
+    assert _date.fromisoformat(called_ws).weekday() == 0

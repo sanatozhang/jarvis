@@ -912,6 +912,7 @@ const EN: Record<string, string> = {
   "重新生成": "Regenerate",
   "本周暂无汇总，点击「重新生成」创建。": "No digest for this week yet — click Regenerate to create one.",
   "洞察生成失败，以下为确定性统计，可点击「重新生成」重试。": "Insight generation failed — showing deterministic stats only; click Regenerate to retry.",
+  "生成失败，请稍后重试": "Generation failed, please try again",
   "本期共": "This period",
   "环比": "vs. prior period",
   "关键发现": "Key Findings",

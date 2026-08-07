@@ -1064,7 +1064,7 @@ export const fetchVocWeeklyDigest = (weekStart: string = "") =>
 export const generateVocWeeklyDigest = (weekStart: string = "", force: boolean = false) =>
   request<VocWeeklyDigest>(
     `/voc/weekly-digest/generate?${weekStart ? `week_start=${weekStart}&` : ""}force=${force}`,
-    { method: "POST" },
+    { method: "POST", timeoutMs: 330_000 },  // backend LLM call can take up to voc.digest_timeout_seconds (default 300s)
   );
 
 export const fetchVocWeeklyDigests = (limit: number = 12) =>

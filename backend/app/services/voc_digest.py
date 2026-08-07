@@ -1,5 +1,5 @@
-"""VOC weekly insight digest — deterministic stats layer (this file) plus
-LLM narrative generation (generate_weekly_digest, added by a later task).
+"""VOC weekly insight digest — deterministic stats layer plus LLM narrative
+generation, both living in this one module.
 
 Pure functions in this section take rows shaped like
 app.db.database.get_voc_analysis_rows()'s return value and do no I/O — kept
@@ -115,7 +115,11 @@ def aggregate_movers(
         delta_pct = round(delta / prev * 100, 1) if prev else None
         movers.append({"key": key, "cur": cur, "prev": prev, "delta": delta, "delta_pct": delta_pct})
 
-    movers.sort(key=lambda m: abs(m["delta"]), reverse=True)
+    # Sort by |delta| descending; ties (e.g. two keys both +3, order otherwise
+    # non-deterministic since `keys` comes from a set union) break
+    # alphabetically by key. The -abs(...) trick makes ascending sort behave
+    # like "descending by magnitude, then ascending by key" in one pass.
+    movers.sort(key=lambda m: (-abs(m["delta"]), m["key"]))
     return movers
 
 
@@ -126,7 +130,18 @@ def compute_weekly_stats(
     total volume + week-over-week delta, top movers (label level), the
     needs_engineer rate, and device distribution. This is the ONLY source
     of numbers the LLM narrative (Task 8) is allowed to cite — see that
-    task's system prompt."""
+    task's system prompt.
+
+    `total_cur`/`total_prev` count ALL analyses in the window (tagged and
+    untagged), while `groups` only covers rows with a primary VOC tag —
+    `total_tagged`/`total_tagged_prev` make that split explicit so callers
+    (and the LLM) have a reconcilable denominator for category-share math."""
+    # Local import (not module-level) to avoid giving voc_digest.py an
+    # unconditional dependency on app.db.database — this module is otherwise
+    # DB-agnostic pure functions plus LLM orchestration that takes rows as
+    # plain dicts.
+    from app.db.database import normalize_device_type
+
     group_counts = _count_by_key(cur_rows, level="group")
     groups = [{"group": g, "count": c} for g, c in sorted(group_counts.items(), key=lambda x: -x[1])]
 
@@ -135,6 +150,9 @@ def compute_weekly_stats(
     total_delta = total_cur - total_prev
     total_delta_pct = round(total_delta / total_prev * 100, 1) if total_prev else None
 
+    total_tagged = sum(1 for r in cur_rows if _primary_tag(r) is not None)
+    total_tagged_prev = sum(1 for r in prev_rows if _primary_tag(r) is not None)
+
     top_movers = aggregate_movers(cur_rows, prev_rows, level="label", min_base=min_base)[:10]
 
     needs_engineer_cur = sum(1 for r in cur_rows if r.get("needs_engineer"))
@@ -142,7 +160,7 @@ def compute_weekly_stats(
 
     device_counts: Dict[str, int] = {}
     for r in cur_rows:
-        d = r.get("device_type") or "未知"
+        d = normalize_device_type(r.get("device_type") or "") or "未知"
         device_counts[d] = device_counts.get(d, 0) + 1
     devices = [{"device_type": d, "count": c} for d, c in sorted(device_counts.items(), key=lambda x: -x[1])]
 
@@ -151,6 +169,8 @@ def compute_weekly_stats(
         "total_prev": total_prev,
         "total_delta": total_delta,
         "total_delta_pct": total_delta_pct,
+        "total_tagged": total_tagged,
+        "total_tagged_prev": total_tagged_prev,
         "groups": groups,
         "top_movers": top_movers,
         "needs_engineer_rate": needs_engineer_rate,
@@ -188,6 +208,12 @@ def sample_root_causes(
 
     return {g: v for g, v in samples.items() if v}
 
+
+# ---- LLM orchestration ----
+# Everything below builds the prompt/schema for the weekly narrative, calls
+# the headless LLM CLI, renders the final markdown, and wires the whole
+# thing to the DB cache + cron loop. Everything above is pure, DB/LLM-free
+# aggregation over rows already fetched by the caller.
 
 _DIGEST_SCHEMA = {
     "type": "object",
@@ -239,6 +265,10 @@ def _build_digest_system_prompt() -> str:
         "- Every number you mention (counts, percentages, deltas) MUST come "
         "verbatim from `stats`. Never compute, round, or restate a number "
         "that isn't already there.\n"
+        "- `stats.groups` only covers tickets with a primary VOC tag, while "
+        "`stats.total_cur` counts ALL tickets (tagged and untagged). When "
+        "discussing a category's share of the week's volume, the correct "
+        "denominator is `stats.total_tagged`, not `stats.total_cur`.\n"
         "- `key_findings` should call out the categories with the highest "
         "volume or the sharpest movers from `stats`.\n"
         "- `product_opportunities` is the most important output. For each "
@@ -273,9 +303,10 @@ def _render_markdown(
         lines += [f"**{narrative['headline']}**", ""]
 
     total_cur = stats.get("total_cur", 0)
+    total_tagged = stats.get("total_tagged", 0)
     total_delta_pct = stats.get("total_delta_pct")
     delta_str = f"{total_delta_pct:+.1f}%" if total_delta_pct is not None else "N/A（上周无基线）"
-    lines += [f"本周共 {total_cur} 单，环比 {delta_str}。", ""]
+    lines += [f"本周共 {total_cur} 单（{total_tagged} 单已打标），环比 {delta_str}。", ""]
 
     if narrative and narrative.get("key_findings"):
         lines.append("## 关键发现")

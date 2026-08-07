@@ -109,6 +109,15 @@ def test_aggregate_movers_sorted_by_absolute_delta_descending():
     assert [m["key"] for m in movers] == ["A", "B"]  # A's delta=6 > B's delta=1
 
 
+def test_aggregate_movers_ties_break_alphabetically_by_key():
+    """Equal |delta| ties come from a Python set union — order would
+    otherwise be non-deterministic; the secondary sort key on `key` pins it."""
+    cur = [_row("2026-08-10", group="Z")] * 6 + [_row("2026-08-10", group="A")] * 6
+    prev = [_row("2026-08-03", group="Z")] * 3 + [_row("2026-08-03", group="A")] * 3
+    movers = voc_digest.aggregate_movers(cur, prev, level="group", min_base=3)
+    assert [m["key"] for m in movers] == ["A", "Z"]  # both delta=3, "A" < "Z"
+
+
 # ---------------------------------------------------------------------------
 # compute_weekly_stats
 # ---------------------------------------------------------------------------
@@ -126,6 +135,8 @@ def test_compute_weekly_stats_shape_and_totals():
     assert groups == {"蓝牙连接": 1, "固件升级": 1}
     assert isinstance(stats["top_movers"], list)
     assert isinstance(stats["devices"], list)
+    assert stats["total_tagged"] == 2
+    assert stats["total_tagged_prev"] == 1
 
 
 def test_compute_weekly_stats_zero_prev_total_has_none_delta_pct():
@@ -140,6 +151,32 @@ def test_compute_weekly_stats_empty_input_does_not_raise():
     assert stats["total_cur"] == 0
     assert stats["groups"] == []
     assert stats["top_movers"] == []
+    assert stats["total_tagged"] == 0
+    assert stats["total_tagged_prev"] == 0
+
+
+def test_compute_weekly_stats_total_tagged_excludes_untagged_rows():
+    """total_cur counts ALL rows (tagged + untagged); total_tagged should
+    only count rows with a primary VOC tag — the denominator mismatch this
+    field exists to make explicit for the LLM narrative."""
+    cur = [_row("2026-08-10"), _row("2026-08-10", group="固件升级"), _untagged_row("2026-08-10"), _untagged_row("2026-08-11")]
+    prev = [_row("2026-08-03"), _untagged_row("2026-08-03")]
+    stats = voc_digest.compute_weekly_stats(cur, prev, min_base=1)
+    assert stats["total_cur"] == 4
+    assert stats["total_tagged"] == 2
+    assert stats["total_prev"] == 2
+    assert stats["total_tagged_prev"] == 1
+
+
+def test_compute_weekly_stats_normalizes_device_type():
+    """device_counts should fold casing/spacing variants together via
+    normalize_device_type(), same as every other device-counting path in
+    database.py — otherwise "note"/"Note"/"NOTE" would fragment into
+    separate buckets."""
+    cur = [_row("2026-08-10", device_type="note"), _row("2026-08-10", device_type="Note")]
+    stats = voc_digest.compute_weekly_stats(cur, [], min_base=1)
+    devices = {d["device_type"]: d["count"] for d in stats["devices"]}
+    assert devices == {"Note": 2}
 
 
 # ---------------------------------------------------------------------------
