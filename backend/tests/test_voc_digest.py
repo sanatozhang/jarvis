@@ -170,3 +170,12 @@ def test_sample_root_causes_only_includes_top_n_groups_by_volume():
     )
     samples = voc_digest.sample_root_causes(rows, top_n_groups=1, max_per_group=8)
     assert set(samples.keys()) == {"A"}
+
+
+def test_sample_root_causes_caps_at_max_per_group():
+    rows = [
+        _row("2026-08-10", group="蓝牙连接", root_cause=f"cause-{i}")
+        for i in range(12)  # 12 distinct root causes, well over max_per_group=8
+    ]
+    samples = voc_digest.sample_root_causes(rows, top_n_groups=5, max_per_group=8)
+    assert len(samples["蓝牙连接"]) == 8
