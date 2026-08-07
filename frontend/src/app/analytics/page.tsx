@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { CountUp } from "@/components/CountUp";
 import { useEffect, useState, useCallback } from "react";
-import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, fetchVocClassificationStats, fetchVocTrend, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem, type VocClassificationStats, type VocTrend } from "@/lib/api";
+import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, fetchVocClassificationStats, fetchVocTrend, fetchVocMovers, fetchVocWeeklyDigest, generateVocWeeklyDigest, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem, type VocClassificationStats, type VocTrend, type VocMoversResponse, type VocWeeklyDigest } from "@/lib/api";
 
 interface FailReasonItem {
   issue_id?: string;
@@ -77,6 +77,10 @@ export default function AnalyticsPage() {
   const [clsStats, setClsStats] = useState<ClassificationStats | null>(null);
   const [vocStats, setVocStats] = useState<VocClassificationStats | null>(null);
   const [vocTrend, setVocTrend] = useState<VocTrend | null>(null);
+  const [vocMovers, setVocMovers] = useState<VocMoversResponse | null>(null);
+  const [digest, setDigest] = useState<VocWeeklyDigest | null>(null);
+  const [digestLoading, setDigestLoading] = useState(false);
+  const [digestRegenerating, setDigestRegenerating] = useState(false);
   const [taxonomyMode, setTaxonomyMode] = useState<"voc" | "legacy">("voc");
   const [expandedVocGroup, setExpandedVocGroup] = useState<string | null>(null);
   const [expandedCat, setExpandedCat] = useState<string | null>(null);
@@ -99,13 +103,14 @@ export default function AnalyticsPage() {
   const load = async (d: number) => {
     setLoading(true);
     try {
-      const [res, ra, pt, cls, voc, vocTrendRes] = await Promise.all([
+      const [res, ra, pt, cls, voc, vocTrendRes, vocMoversRes] = await Promise.all([
         fetch(`/api/analytics/dashboard?days=${d}`),
         fetchRuleAccuracy(d).catch(() => []),
         fetchProblemTypeStats(d).catch(() => null),
         fetchClassificationStats(d).catch(() => null),
         fetchVocClassificationStats(d).catch(() => null),
         fetchVocTrend(d, "group").catch(() => null),
+        fetchVocMovers(7, "label", 3).catch(() => null),
       ]);
       if (res.ok) setData(await res.json());
       setRuleAccuracy(ra);
@@ -113,10 +118,24 @@ export default function AnalyticsPage() {
       setClsStats(cls);
       setVocStats(voc);
       setVocTrend(vocTrendRes);
+      setVocMovers(vocMoversRes);
     } catch {} finally { setLoading(false); }
   };
 
   useEffect(() => { load(days); }, [days]);
+
+  useEffect(() => {
+    setDigestLoading(true);
+    fetchVocWeeklyDigest().then(setDigest).catch(() => setDigest(null)).finally(() => setDigestLoading(false));
+  }, []);
+
+  const regenerateDigest = async () => {
+    setDigestRegenerating(true);
+    try {
+      const result = await generateVocWeeklyDigest("", true);
+      setDigest(result);
+    } catch {} finally { setDigestRegenerating(false); }
+  };
 
   const dailyDates = data ? Object.keys(data.daily).sort() : [];
 
@@ -233,6 +252,90 @@ export default function AnalyticsPage() {
             <p className="mt-4 text-[11px] font-mono" style={{ color: S.text3 }}>
               {t("对比")}: {t("人工处理")} ~{data.value_metrics.estimated_manual_hours}h → {t("AI 处理")} ~{data.value_metrics.estimated_ai_hours}h
             </p>
+          </section>
+
+          {/* Weekly digest summary card */}
+          <section className="rounded-2xl p-6 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.02s" }}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <span className="rounded-lg px-2 py-0.5 text-[11px] font-semibold"
+                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
+                  {t("上周焦点")}
+                </span>
+                {digest && <span className="text-xs" style={{ color: S.text3 }}>{digest.week_start}</span>}
+              </div>
+              <button
+                onClick={regenerateDigest}
+                disabled={digestRegenerating}
+                className="rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all"
+                style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)", opacity: digestRegenerating ? 0.5 : 1 }}>
+                {digestRegenerating ? t("生成中...") : t("重新生成")}
+              </button>
+            </div>
+
+            {digestLoading ? (
+              <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("加载中")}...</p>
+            ) : !digest ? (
+              <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("本周暂无汇总，点击「重新生成」创建。")}</p>
+            ) : (
+              <div className="space-y-4">
+                {digest.narrative ? (
+                  <p className="text-lg font-semibold" style={{ color: S.text1 }}>{digest.narrative.headline}</p>
+                ) : (
+                  <p className="text-sm" style={{ color: "#DC2626" }}>{t("洞察生成失败，以下为确定性统计，可点击「重新生成」重试。")}</p>
+                )}
+
+                <p className="text-xs" style={{ color: S.text3 }}>
+                  {t("本期共")} {digest.stats.total_cur} {t("单")}
+                  {digest.stats.total_delta_pct !== null && (
+                    <> · {t("环比")} {digest.stats.total_delta_pct > 0 ? "+" : ""}{digest.stats.total_delta_pct}%</>
+                  )}
+                </p>
+
+                {digest.narrative && digest.narrative.key_findings.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-semibold mb-2" style={{ color: S.text2 }}>{t("关键发现")}</h3>
+                    <ul className="space-y-1">
+                      {digest.narrative.key_findings.map((f, i) => (
+                        <li key={i} className="text-xs" style={{ color: S.text2 }}>
+                          <span className="font-medium" style={{ color: S.text1 }}>{f.scope}</span>：{f.finding}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {digest.narrative && digest.narrative.product_opportunities.length > 0 && (
+                  <div className="rounded-xl p-4" style={{ background: S.accentBg, border: "1px solid rgba(14,124,134,0.25)" }}>
+                    <h3 className="text-xs font-semibold mb-2" style={{ color: S.accent }}>{t("产品优化建议")}</h3>
+                    <ul className="space-y-2">
+                      {digest.narrative.product_opportunities.map((o, i) => (
+                        <li key={i} className="text-xs" style={{ color: S.text1 }}>
+                          <span className="font-semibold">{o.area}</span>：{o.problem} → <span className="font-medium">{o.suggestion}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {digest.stats.top_movers.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-semibold mb-2" style={{ color: S.text2 }}>{t("环比变动")}</h3>
+                    <div className="space-y-1">
+                      {digest.stats.top_movers.slice(0, 5).map((m) => (
+                        <div key={m.key} className="flex items-center justify-between text-xs">
+                          <span className="truncate" style={{ color: S.text2 }} title={m.key}>{m.key}</span>
+                          <span className="font-mono tabular-nums flex-shrink-0 ml-2"
+                            style={{ color: m.delta > 0 ? "#DC2626" : m.delta < 0 ? "#16A34A" : S.text3 }}>
+                            {m.prev} → {m.cur} ({m.delta_pct !== null ? `${m.delta_pct > 0 ? "+" : ""}${m.delta_pct}%` : t("新增")})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
 
           {/* Key metrics */}
@@ -766,6 +869,48 @@ export default function AnalyticsPage() {
                       );
                     })}
                   </div>
+                </div>
+              </section>
+            );
+          })()}
+
+          {/* VOC movers: week-over-week diverging bar chart */}
+          {taxonomyMode === "voc" && vocMovers && vocMovers.movers.length > 0 && (() => {
+            const maxAbs = Math.max(1, ...vocMovers.movers.map((m) => Math.abs(m.delta)));
+            const top = vocMovers.movers.slice(0, 10);
+            return (
+              <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("周环比变动")}</h2>
+                  <span className="text-[11px] font-mono" style={{ color: S.text3 }}>
+                    {vocMovers.prev_from} ~ {vocMovers.prev_to} → {vocMovers.cur_from} ~ {vocMovers.cur_to}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {top.map((m) => {
+                    const widthPct = (Math.abs(m.delta) / maxAbs) * 50; // half-width max, diverges from center
+                    const isUp = m.delta > 0;
+                    return (
+                      <div key={m.key} className="flex items-center gap-2">
+                        <span className="text-xs w-1/3 truncate text-right" style={{ color: S.text2 }} title={m.key}>{m.key}</span>
+                        <div className="flex-1 flex items-center h-4" style={{ position: "relative" }}>
+                          <div className="absolute left-1/2 top-0 bottom-0 w-px" style={{ background: S.border }} />
+                          <div className="h-full rounded"
+                            style={{
+                              position: "absolute",
+                              left: isUp ? "50%" : `${50 - widthPct}%`,
+                              width: `${widthPct}%`,
+                              background: isUp ? "#DC2626" : "#16A34A",
+                              opacity: 0.75,
+                            }} />
+                        </div>
+                        <span className="text-[11px] font-mono tabular-nums w-20 flex-shrink-0"
+                          style={{ color: isUp ? "#DC2626" : "#16A34A" }}>
+                          {m.prev}→{m.cur} ({m.delta_pct !== null ? `${m.delta_pct > 0 ? "+" : ""}${m.delta_pct}%` : t("新增")})
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
             );
