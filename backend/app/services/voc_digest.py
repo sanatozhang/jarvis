@@ -10,9 +10,10 @@ endpoints and the weekly digest generator.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from app.config import get_settings
@@ -366,3 +367,65 @@ async def generate_weekly_digest(week_start: str, force: bool = False) -> Dict[s
         markdown=markdown,
         model=settings.digest_model if narrative else "",
     )
+
+
+def _parse_weekly_cron(expr: str) -> Optional[tuple]:
+    """Parse the 'M H * * D' shape only (fixed minute/hour/day-of-week, DOM
+    and MON must be '*') — returns (minute, hour, dow) or None. Deliberately
+    NOT a general cron parser and NOT shared with crashguard.workers.
+    scheduler._cron_matches — that module is inside the crashguard isolation
+    contract (backend/app/crashguard/CLAUDE.md); importing it here would
+    violate lint-imports. DOW follows Unix cron convention: Sun=0..Sat=6,
+    i.e. (datetime.weekday() + 1) % 7.
+    """
+    parts = expr.split()
+    if len(parts) != 5:
+        return None
+    minute_f, hour_f, dom_f, month_f, dow_f = parts
+    if dom_f != "*" or month_f != "*":
+        return None
+    try:
+        return int(minute_f), int(hour_f), int(dow_f)
+    except ValueError:
+        return None
+
+
+async def voc_digest_loop() -> None:
+    """Hourly-tick loop: once the current UTC time is at/after this week's
+    scheduled cron slot (voc.digest_cron) and no digest is cached yet for
+    the target week, generate one (and push to Feishu if digest_push_enabled).
+    Checking "does a cached digest already exist" instead of matching the
+    exact minute makes this robust to a missed tick — it just fires on the
+    next hourly check instead of waiting a full week."""
+    from app.db import database as db
+
+    settings = get_settings().voc
+    if not settings.digest_enabled:
+        logger.info("VOC weekly digest loop disabled (voc.digest_enabled=false)")
+        return
+    parsed = _parse_weekly_cron(settings.digest_cron)
+    if parsed is None:
+        logger.warning("voc.digest_cron=%r is not a supported 'M H * * D' expression — loop disabled",
+                        settings.digest_cron)
+        return
+    minute, hour, dow = parsed
+
+    while True:
+        try:
+            now = datetime.utcnow()
+            cron_dow = (now.weekday() + 1) % 7
+            scheduled_today = cron_dow == dow and (now.hour, now.minute) >= (hour, minute)
+            if scheduled_today:
+                ws = default_week_start(now.date())
+                existing = await db.get_voc_weekly_digest(ws)
+                if existing is None:
+                    logger.info("VOC weekly digest cron window reached — generating week_start=%s", ws)
+                    record = await generate_weekly_digest(ws, force=False)
+                    if settings.digest_push_enabled and settings.digest_chat_id:
+                        from app.services import feishu_cli
+                        await feishu_cli.send_message(chat_id=settings.digest_chat_id, markdown=record["markdown"])
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning("VOC weekly digest loop tick failed (will retry next tick): %s", e)
+        await asyncio.sleep(3600)

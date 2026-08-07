@@ -133,3 +133,25 @@ async def get_movers(
         "prev_from": prev_from.isoformat(), "prev_to": prev_to.isoformat(),
         "level": level, "movers": movers,
     }
+
+
+@router.get("/weekly-digest")
+async def get_weekly_digest(
+    week_start: str = Query("", description="YYYY-MM-DD Monday; default = most recent complete week"),
+):
+    ws = week_start or voc_digest.default_week_start()
+    return await db.get_voc_weekly_digest(ws)
+
+
+@router.post("/weekly-digest/generate")
+async def generate_weekly_digest_endpoint(
+    week_start: str = Query("", description="YYYY-MM-DD Monday; default = most recent complete week"),
+    force: bool = Query(False),
+):
+    ws = week_start or voc_digest.default_week_start()
+    return await voc_digest.generate_weekly_digest(ws, force=force)
+
+
+@router.get("/weekly-digests")
+async def list_weekly_digests(limit: int = Query(12, ge=1, le=52)):
+    return {"digests": await db.list_voc_weekly_digests(limit=limit)}

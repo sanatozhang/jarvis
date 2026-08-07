@@ -191,6 +191,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("VOC taxonomy sync disabled (voc.sync_enabled=false) — using DB/seed snapshot only")
 
+    from app.services.voc_digest import voc_digest_loop
+    voc_digest_task = asyncio.create_task(voc_digest_loop())
+
     # Start periodic zombie task cleanup
     zombie_task = asyncio.create_task(_zombie_cleanup_loop())
 
@@ -257,6 +260,8 @@ async def lifespan(app: FastAPI):
 
     if voc_sync_task is not None:
         voc_sync_task.cancel()
+    if voc_digest_task is not None:
+        voc_digest_task.cancel()
     if reminder_task is not None:
         reminder_task.cancel()
     if oncall_feishu_sync_task is not None:

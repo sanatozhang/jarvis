@@ -163,3 +163,32 @@ async def test_reseed_taxonomy_forces_upsert(client):
     assert body["status"] == "ok"
     assert body["added"] == ["ai-01"]
     mock_sync.assert_called_once_with(force=True)
+
+
+async def test_get_weekly_digest_defaults_to_most_recent_complete_week(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    with _patch("app.db.database.get_voc_weekly_digest", new_callable=AsyncMock, return_value=None) as mock_get:
+        resp = await client.get("/api/voc/weekly-digest")
+    assert resp.status_code == 200
+    assert resp.json() is None
+    assert mock_get.call_count == 1
+
+
+async def test_generate_weekly_digest_endpoint(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    fake_record = {"week_start": "2026-08-03", "stats": {}, "narrative": None, "markdown": "x"}
+    with _patch("app.services.voc_digest.generate_weekly_digest", new_callable=AsyncMock,
+                return_value=fake_record) as mock_gen:
+        resp = await client.post("/api/voc/weekly-digest/generate", params={"week_start": "2026-08-03", "force": True})
+    assert resp.status_code == 200
+    assert resp.json()["week_start"] == "2026-08-03"
+    mock_gen.assert_called_once_with("2026-08-03", force=True)
+
+
+async def test_list_weekly_digests_endpoint(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    with _patch("app.db.database.list_voc_weekly_digests", new_callable=AsyncMock,
+                return_value=[{"week_start": "2026-08-03"}]):
+        resp = await client.get("/api/voc/weekly-digests", params={"limit": 5})
+    assert resp.status_code == 200
+    assert resp.json()["digests"] == [{"week_start": "2026-08-03"}]
