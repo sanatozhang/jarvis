@@ -19,18 +19,13 @@ agentic analysis pipeline) — just a scratch cwd for process isolation.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import shutil
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.agents.claude_code import _make_cli_env, parse_cli_result_envelope
 from app.config import get_settings
-from app.services import voc_taxonomy
+from app.services import claude_headless, voc_taxonomy
 from app.services.categories import category_label
 from app.services.issue_text import strip_leading_metadata
 
@@ -265,10 +260,9 @@ async def classify_ticket(evidence: TicketEvidence) -> List[Dict[str, Any]]:
     non-empty list (falls back to FALLBACK_TAG_ID rather than raising) so
     callers can write the result unconditionally.
 
-    Runs the local `claude` CLI headless (`-p`, `--tools ""`, no session, no
-    settings/MCP pickup) with the taxonomy as system prompt and a JSON schema
-    forcing the {primary, secondary} shape — see module docstring for why this
-    goes through the CLI rather than a direct Messages API call.
+    Delegates the actual CLI subprocess call to app.services.claude_headless
+    (see that module's docstring for why this goes through the local CLI
+    rather than a direct Messages API call).
     """
     active = voc_taxonomy.active_tags()
     active_ids = {t["id"] for t in active}
@@ -277,59 +271,15 @@ async def classify_ticket(evidence: TicketEvidence) -> List[Dict[str, Any]]:
         return _fallback("no active VOC taxonomy loaded")
 
     settings = get_settings()
-    cmd = [
-        "claude", "-p",
-        "--output-format", "json",
-        "--model", settings.voc.classifier_model,
-        "--tools", "",
-        "--no-session-persistence",
-        "--setting-sources", "",
-        "--strict-mcp-config",
-        "--system-prompt", _build_system_prompt(),
-        "--json-schema", json.dumps(_CLASSIFY_TOOL["input_schema"]),
-    ]
-    timeout = float(settings.voc.classifier_timeout_seconds)
-
-    scratch = Path(tempfile.mkdtemp(prefix="voc_classify_"))
-    try:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(scratch),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=_make_cli_env(),
-            )
-        except FileNotFoundError:
-            logger.warning("VOC classifier: claude CLI binary not found — falling back")
-            return _fallback("claude CLI not available")
-
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=evidence.to_prompt_text().encode("utf-8")),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            logger.warning("VOC classifier CLI call timed out after %ss — falling back", timeout)
-            return _fallback(f"cli call timed out after {timeout}s")
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
-
-    if proc.returncode != 0:
-        stderr = stderr_bytes.decode("utf-8", errors="replace")
-        logger.warning("VOC classifier CLI exited %d: %s — falling back", proc.returncode, stderr[:300])
-        return _fallback(f"cli exit {proc.returncode}")
-
-    stdout_raw = stdout_bytes.decode("utf-8", errors="replace")
-    text, _usage, _cost, _source = parse_cli_result_envelope(stdout_raw)
-
-    try:
-        data = json.loads(text)
-    except (ValueError, TypeError):
-        logger.warning("VOC classifier CLI returned non-JSON output: %s — falling back", text[:300])
-        return _fallback("non-JSON output from CLI")
+    data = await claude_headless.run_json(
+        system_prompt=_build_system_prompt(),
+        user_input=evidence.to_prompt_text(),
+        schema=_CLASSIFY_TOOL["input_schema"],
+        model=settings.voc.classifier_model,
+        timeout=float(settings.voc.classifier_timeout_seconds),
+        log_prefix="voc_classify",
+    )
+    if data is None:
+        return _fallback("classifier CLI call failed")
 
     return _validate_tags(data, active_ids)

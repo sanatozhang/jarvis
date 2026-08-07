@@ -3,7 +3,6 @@ the CLI-agent path (base.py's _safe_voc_tags) and the dedicated classify_ticket(
 LLM call used by the backfill script."""
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -112,56 +111,10 @@ def test_validate_flat_voc_tags_duplicate_secondary_ignored():
 
 
 # ---------------------------------------------------------------------------
-# classify_ticket() — the dedicated LLM-call path, now a headless `claude` CLI
-# subprocess (`-p --output-format json`) instead of a direct API call. Fake
-# asyncio.create_subprocess_exec rather than httpx.
+# classify_ticket() — the dedicated LLM-call path. Mocks
+# voc_classifier.claude_headless.run_json directly (the subprocess-level
+# behavior of run_json itself is covered by tests/test_claude_headless.py).
 # ---------------------------------------------------------------------------
-
-class _FakeProcess:
-    def __init__(self, stdout=b"", stderr=b"", returncode=0, delay=0.0):
-        self._stdout = stdout
-        self._stderr = stderr
-        self.returncode = returncode
-        self._delay = delay
-        self.killed = False
-
-    async def communicate(self, input=None):
-        if self._delay:
-            await asyncio.sleep(self._delay)
-        return self._stdout, self._stderr
-
-    def kill(self):
-        self.killed = True
-
-    async def wait(self):
-        return self.returncode
-
-
-_next_process: "_FakeProcess | None" = None
-_raise_not_found = False
-
-
-async def _fake_create_subprocess_exec(*args, **kwargs):
-    if _raise_not_found:
-        raise FileNotFoundError("claude: command not found")
-    return _next_process
-
-
-def _set_fake_process(proc: "_FakeProcess | None", raise_not_found: bool = False):
-    global _next_process, _raise_not_found
-    _next_process = proc
-    _raise_not_found = raise_not_found
-
-
-def _envelope(result_obj) -> bytes:
-    """Build a `claude -p --output-format json` stdout envelope wrapping the
-    given object as the JSON-encoded `.result` string (structured output)."""
-    import json as _json
-    return _json.dumps({
-        "type": "result", "is_error": False, "stop_reason": "tool_use",
-        "result": _json.dumps(result_obj, ensure_ascii=False),
-    }).encode("utf-8")
-
 
 @pytest.fixture(autouse=True)
 def classifier_settings(monkeypatch):
@@ -169,78 +122,67 @@ def classifier_settings(monkeypatch):
         voc=SimpleNamespace(classifier_model="claude-test", classifier_timeout_seconds=5),
     )
     monkeypatch.setattr(voc_classifier, "get_settings", lambda: fake_settings)
-    monkeypatch.setattr(voc_classifier, "_make_cli_env", lambda: {})
-    monkeypatch.setattr(voc_classifier.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
-    _set_fake_process(_FakeProcess())
     yield
-    _set_fake_process(_FakeProcess())
 
 
 def _evidence():
     return voc_classifier.TicketEvidence(description="蓝牙配对一直失败，提示 token mismatch")
 
 
-async def test_classify_ticket_valid_response():
-    _set_fake_process(_FakeProcess(stdout=_envelope({
-        "primary": {"tag_id": "ai-01", "confidence": "high", "reason": "matches token mismatch"},
-        "secondary": [],
-    })))
+async def test_classify_ticket_valid_response(monkeypatch):
+    async def fake_run_json(**kwargs):
+        return {"primary": {"tag_id": "ai-01", "confidence": "high", "reason": "matches token mismatch"},
+                "secondary": []}
+    monkeypatch.setattr(voc_classifier.claude_headless, "run_json", fake_run_json)
     tags = await voc_classifier.classify_ticket(_evidence())
     assert len(tags) == 1
     assert tags[0]["tag_id"] == "ai-01"
     assert tags[0]["role"] == "primary"
 
 
-async def test_classify_ticket_unknown_primary_tag_id_falls_back():
-    _set_fake_process(_FakeProcess(stdout=_envelope({
-        "primary": {"tag_id": "does-not-exist", "confidence": "high", "reason": "hallucinated"},
-        "secondary": [],
-    })))
+async def test_classify_ticket_unknown_primary_tag_id_falls_back(monkeypatch):
+    async def fake_run_json(**kwargs):
+        return {"primary": {"tag_id": "does-not-exist", "confidence": "high", "reason": "hallucinated"},
+                "secondary": []}
+    monkeypatch.setattr(voc_classifier.claude_headless, "run_json", fake_run_json)
     tags = await voc_classifier.classify_ticket(_evidence())
     assert len(tags) == 1
     assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
     assert tags[0]["confidence"] == "low"
 
 
-async def test_classify_ticket_non_json_output_falls_back():
-    _set_fake_process(_FakeProcess(stdout=b"not a json envelope at all"))
+async def test_classify_ticket_run_json_failure_falls_back(monkeypatch):
+    async def fake_run_json(**kwargs):
+        return None
+    monkeypatch.setattr(voc_classifier.claude_headless, "run_json", fake_run_json)
     tags = await voc_classifier.classify_ticket(_evidence())
     assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
 
 
-async def test_classify_ticket_nonzero_exit_falls_back():
-    _set_fake_process(_FakeProcess(stdout=b"", stderr=b"boom", returncode=1))
-    tags = await voc_classifier.classify_ticket(_evidence())
-    assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
-
-
-async def test_classify_ticket_timeout_falls_back():
-    _set_fake_process(_FakeProcess(delay=999))
-    fake_settings = SimpleNamespace(
-        voc=SimpleNamespace(classifier_model="claude-test", classifier_timeout_seconds=0.05),
-    )
-    import app.services.voc_classifier as mod
-    orig_get_settings = mod.get_settings
-    mod.get_settings = lambda: fake_settings
-    try:
-        tags = await voc_classifier.classify_ticket(_evidence())
-    finally:
-        mod.get_settings = orig_get_settings
-    assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
-    assert _next_process.killed is True
-
-
-async def test_classify_ticket_cli_not_found_falls_back():
-    _set_fake_process(None, raise_not_found=True)
-    tags = await voc_classifier.classify_ticket(_evidence())
-    assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
-
-
-async def test_classify_ticket_empty_active_taxonomy_falls_back_without_subprocess(monkeypatch):
+async def test_classify_ticket_empty_active_taxonomy_falls_back_without_calling_run_json(monkeypatch):
     monkeypatch.setattr(voc_taxonomy, "active_tags", lambda: [])
-    # No fake process configured for this call — if the code tried to spawn
-    # one it would get None back and crash on .communicate(); success here
-    # proves it short-circuited before that.
-    _set_fake_process(None)
+    called = False
+    async def fake_run_json(**kwargs):
+        nonlocal called
+        called = True
+        return {"primary": {"tag_id": "ai-01", "confidence": "high", "reason": "x"}, "secondary": []}
+    monkeypatch.setattr(voc_classifier.claude_headless, "run_json", fake_run_json)
     tags = await voc_classifier.classify_ticket(_evidence())
     assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
+    assert called is False
+
+
+async def test_classify_ticket_passes_taxonomy_and_evidence_through(monkeypatch):
+    """The system prompt must embed the active taxonomy and the user input
+    must be the evidence text — regression guard against silently passing
+    the wrong strings into run_json after this refactor."""
+    captured = {}
+    async def fake_run_json(**kwargs):
+        captured.update(kwargs)
+        return {"primary": {"tag_id": "ai-01", "confidence": "high", "reason": "x"}, "secondary": []}
+    monkeypatch.setattr(voc_classifier.claude_headless, "run_json", fake_run_json)
+    await voc_classifier.classify_ticket(_evidence())
+    assert "ai-01" in captured["system_prompt"]  # active tag id present in taxonomy payload
+    assert "token mismatch" in captured["user_input"]
+    assert captured["model"] == "claude-test"
+    assert captured["timeout"] == 5.0
