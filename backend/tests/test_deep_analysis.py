@@ -1,10 +1,11 @@
 """深度分析：deep_analysis 标志贯穿 + 跳窗 + 结果 tag。"""
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.models.schemas import TaskCreate
-from tests.conftest import seed_issue, seed_task
+from tests.conftest import seed_analysis, seed_issue, seed_task
 
 
 # ── Fix 1: 深度分析绕过超时冷却 ────────────────────────────────────────────────
@@ -150,3 +151,61 @@ async def test_system_failure_does_not_retrigger_during_deep_analysis(client, db
         )
         assert resp.status_code == 200
         mock_auto_deep.assert_not_awaited()
+
+
+# ── Fix 3: 历史闸门——上一条 analysis 已经是深度分析产物就不再升级 ──────────────
+# 2026-08-07 生产事故 fb_865f6d2f15：deep_analysis 局部参数只挡得住
+# _maybe_trigger_auto_deep_analysis 内部的同协程递归调用，挡不住任何重新进入
+# _run_task 的外部路径（/api/tasks、feedback.py 重新提交等）。只要新一轮分析
+# 结果又是 confidence=low，就会不断派发新的深度分析，无限循环。
+
+async def test_auto_deep_analysis_skipped_when_latest_analysis_already_deep(client, db_session):
+    """该 issue 最近一条 analysis 已经 is_deep_analysis=True → 即使配置开着、也没有
+    别的任务在跑，也不应该再派发一次深度分析。"""
+    from app.api.tasks import _maybe_trigger_auto_deep_analysis
+    from app.api.settings import AUTO_DEEP_ANALYSIS_KEY
+    from app.db.database import set_oncall_config, get_all_analyses_by_issue
+
+    await seed_issue(db_session, "issue_sysfail_deep_loop")
+    await seed_task(db_session, "task_prev_deep", "issue_sysfail_deep_loop", status="done")
+    await seed_analysis(
+        db_session, "task_prev_deep", "issue_sysfail_deep_loop",
+        confidence="low", is_deep_analysis=True,
+    )
+    await set_oncall_config(AUTO_DEEP_ANALYSIS_KEY, json.dumps({"enabled": True}))
+
+    with patch("app.api.tasks._run_task", new_callable=AsyncMock) as mock_run_task:
+        triggered = await _maybe_trigger_auto_deep_analysis(
+            issue_id="issue_sysfail_deep_loop", username="testuser",
+        )
+
+    assert triggered is False
+    mock_run_task.assert_not_awaited()
+    # 也没有凭空多出一个新 task
+    analyses = await get_all_analyses_by_issue("issue_sysfail_deep_loop")
+    assert len(analyses) == 1
+
+
+async def test_auto_deep_analysis_still_triggers_when_latest_analysis_is_not_deep(client, db_session):
+    """回归保护：最近一条 analysis 不是深度分析产物（普通分析 confidence=low）时，
+    历史闸门不应该误伤正常的「第一次自动升级」。"""
+    from app.api.tasks import _maybe_trigger_auto_deep_analysis
+    from app.api.settings import AUTO_DEEP_ANALYSIS_KEY
+    from app.db.database import set_oncall_config
+
+    await seed_issue(db_session, "issue_first_low")
+    await seed_task(db_session, "task_first_low", "issue_first_low", status="done")
+    await seed_analysis(
+        db_session, "task_first_low", "issue_first_low",
+        confidence="low", is_deep_analysis=False,
+    )
+    await set_oncall_config(AUTO_DEEP_ANALYSIS_KEY, json.dumps({"enabled": True}))
+
+    with patch("app.api.tasks._run_task", new_callable=AsyncMock) as mock_run_task:
+        triggered = await _maybe_trigger_auto_deep_analysis(
+            issue_id="issue_first_low", username="testuser",
+        )
+
+    assert triggered is True
+    mock_run_task.assert_awaited_once()
+    assert mock_run_task.await_args.kwargs["deep_analysis"] is True

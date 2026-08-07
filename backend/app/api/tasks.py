@@ -492,6 +492,20 @@ async def _maybe_trigger_auto_deep_analysis(*, issue_id: str, username: str) -> 
         logger.warning("auto_deep_analysis config read failed, skip: %s", e)
         return False
 
+    # 历史幂等闸门：只挡"这次调用自己是不是深度分析"（deep_analysis 局部参数）不够——
+    # 任何重新进入 _run_task 的外部入口（/api/tasks、feedback.py 等）都不受那个局部
+    # 参数约束。这里改查该 issue 最近一条 AnalysisRecord.is_deep_analysis，只要历史上
+    # 已经自动升级过一次深度分析，不管这次是从哪条路径判定 low/system_failure，都不再
+    # 触发，避免深度分析结果依然 low 时无限递归升级（2026-08-07 fb_865f6d2f15 生产事故）。
+    try:
+        latest_analysis = await db.get_analysis_by_issue(issue_id)
+        if latest_analysis is not None and bool(getattr(latest_analysis, "is_deep_analysis", False)):
+            logger.info("auto_deep_analysis skipped: issue %s already has a deep analysis result", issue_id)
+            return False
+    except Exception as e:
+        logger.warning("auto_deep_analysis history check failed, skip: %s", e)
+        return False
+
     # 只挡"真的正在跑"的任务（queued/analyzing），不挡刚存成 done 的当前 task_id 自己
     # —— get_recent_active_task_for_issue 把 done 也算"非失败"，用它会把自己刚落库的
     # done 状态误判成"已有任务在跑"，导致自动升级永远不触发。
