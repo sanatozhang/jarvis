@@ -171,6 +171,26 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Rule sync failed (non-fatal): %s", e)
 
+    # VOC Portal taxonomy — bootstrap from checked-in seed (no-op once DB has data),
+    # then load the active-tags cache. Live daily sync only starts if voc.sync_enabled
+    # (default False until a VOC service account is provisioned).
+    try:
+        from app.services import voc_taxonomy
+        seeded = await voc_taxonomy.sync_seed_to_db()
+        await voc_taxonomy.reload_from_db()
+        if seeded:
+            logger.info("VOC taxonomy bootstrapped from seed: %d tags", seeded)
+    except Exception as e:
+        logger.warning("VOC taxonomy bootstrap failed (non-fatal): %s", e)
+
+    voc_sync_task = None
+    if settings.voc.sync_enabled:
+        from app.services.voc_taxonomy import voc_sync_loop
+        voc_sync_task = asyncio.create_task(voc_sync_loop())
+        logger.info("VOC taxonomy daily sync loop started (every %dh)", settings.voc.sync_interval_hours)
+    else:
+        logger.info("VOC taxonomy sync disabled (voc.sync_enabled=false) — using DB/seed snapshot only")
+
     # Start periodic zombie task cleanup
     zombie_task = asyncio.create_task(_zombie_cleanup_loop())
 
@@ -235,6 +255,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if voc_sync_task is not None:
+        voc_sync_task.cancel()
     if reminder_task is not None:
         reminder_task.cancel()
     if oncall_feishu_sync_task is not None:
@@ -299,6 +321,7 @@ from app.api.eval import router as eval_router
 from app.api.tools import router as tools_router
 from app.api.wishes import router as wishes_router
 from app.api.release import router as release_router
+from app.api.voc import router as voc_router
 
 app.include_router(issues_router, prefix="/api/issues", tags=["Issues"])
 app.include_router(tasks_router, prefix="/api/tasks", tags=["Tasks"])
@@ -321,6 +344,7 @@ app.include_router(eval_router, prefix="/api/eval", tags=["Eval"])
 app.include_router(tools_router, prefix="/api/tools", tags=["Tools"])
 app.include_router(wishes_router, prefix="/api/wishes", tags=["Wishes"])
 app.include_router(release_router, prefix="/api/release", tags=["Release"])
+app.include_router(voc_router, prefix="/api/voc", tags=["VOC"])
 
 # Crashguard API（独立子模块，prefix 在 router 内部声明 /api/crash）
 from app.crashguard.api import crash as _crash_api  # noqa: E402

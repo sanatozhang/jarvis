@@ -1,0 +1,3879 @@
+{
+  "source": "voc-portal MCP (mcp__voc-portal__voc_taxonomy, include_examples=true)",
+  "fetched_at": "2026-08-07",
+  "tag_count": 158,
+  "tags": [
+    {
+      "id": "ai-00",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Other",
+      "level_3_diagnosis": "Other",
+      "definition": "Catch-all for AI Performance complaints; use when no other ai-xx tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-01",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Transcript",
+      "level_3_diagnosis": "Transcription Accuracy",
+      "definition": "Confirmed transcription accuracy is below acceptable level for clear audio (misheard words, omissions) beyond normal edge cases.",
+      "positive_examples": [
+        "'The transcription is very poor for the price point. Messes up few words per line'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Wrong Language Detection (language correct but words wrong → `ai-01`; language wrong → `ai-02`)",
+          "distinct_from": "ai-02"
+        },
+        {
+          "reason": "Audio Quality (hardware capture quality, not algorithm accuracy)",
+          "distinct_from": "hw-09"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Transcription never finishes' — availability issue",
+          "redirect_to": "ai-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-02",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Transcript",
+      "level_3_diagnosis": "Language Detection Accuracy",
+      "definition": "Confirmed automatic language detection selects incorrect language for the recording, impacting transcription/summary.",
+      "positive_examples": [
+        "'English transcription flagged as Welsh — completely wrong language'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Transcription Inaccurate (language detected correctly, words are wrong → `ai-01`; language itself detected wrong → `ai-02`)",
+          "distinct_from": "ai-01"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Transcription never finishes' — availability issue",
+          "redirect_to": "ai-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-03",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Summary",
+      "level_3_diagnosis": "Summary Quality",
+      "definition": "Confirmed AI summary output is low quality (missing key points, hallucinations, poor structure) for typical inputs.",
+      "positive_examples": [
+        "'Summary completely missed the main decision we made'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Templates (template selection/application, not summary content quality)",
+          "distinct_from": "ai-07"
+        },
+        {
+          "reason": "Safety (when hallucination is harmful, not just inaccurate)",
+          "distinct_from": "pri-02"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Can't find the right template'",
+          "redirect_to": "ai-07"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-04",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Transcript",
+      "level_3_diagnosis": "Timestamp Alignment",
+      "definition": "Confirmed timestamps are misaligned with the audio (segments/speaker turns not synced) beyond minor drift.",
+      "positive_examples": [
+        "'Transcript has been processing for 6 hours — still not done'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "ASR (word errors in transcript, not timing)",
+          "distinct_from": "ai-01"
+        },
+        {
+          "reason": "Audio Quality (hardware capture, not timestamp alignment)",
+          "distinct_from": "hw-09"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Transcription errors everywhere' — processed fine but wrong",
+          "redirect_to": "ai-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-05",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Translation",
+      "level_3_diagnosis": "Translation Availability",
+      "definition": "Confirmed translation output is missing or cannot be generated when translation should be available for the selected languages.",
+      "positive_examples": [
+        "'But I would like to see if the Plaud can translate to Khmer Language.'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "ASR (source-language accuracy before translation)",
+          "distinct_from": "ai-01"
+        },
+        {
+          "reason": "Localization (app interface language, not content translation)",
+          "distinct_from": "sw-09"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'App interface not translated into my language'",
+          "redirect_to": "sw-09"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-06",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Transcript",
+      "level_3_diagnosis": "Speaker Diarization",
+      "definition": "Confirmed speaker diarization issues (wrong speaker count, speaker mix-up, poor separation) for typical multi-speaker recordings.",
+      "positive_examples": [
+        "'Speaker 1 and Speaker 2 are completely mixed up'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "ASR (word-level accuracy, not speaker assignment)",
+          "distinct_from": "ai-01"
+        },
+        {
+          "reason": "Timestamp Misalignment (timing issues, not speaker attribution)",
+          "distinct_from": "ai-04"
+        }
+      ],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-07",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Summary",
+      "level_3_diagnosis": "Template Selection & Quality",
+      "definition": "Template library issues and template auto-recommendation issues: can't find a suitable template, template content is inaccurate, requests for new template types, auto-suggested template is wrong for the context.",
+      "positive_examples": [
+        "'With some many templates alive, can't find a medical SOAP note template'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Summary (quality of generated summary content, not template selection)",
+          "distinct_from": "ai-03"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Summary quality is wrong / hallucinating'",
+          "redirect_to": "ai-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-09",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Ask",
+      "level_3_diagnosis": "Ask Answer Accuracy",
+      "definition": "Ask Plaud' conversational Q&A feature: incorrect answers, failure to reference actual recording content, or feature unavailable.",
+      "positive_examples": [
+        "'Asked 'what were the action items?' and got completely wrong answers'",
+        "It got wiped after getting out of the ask plaud page. It should retain the answers for future continuation just like in all chatbots."
+      ],
+      "mece_rules": [
+        {
+          "reason": "Agent (cross-recording memory and context retrieval) — use ai-09 for single recording; use ai-11 when searching across all recordings",
+          "distinct_from": "ai-11"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Can't search across all my recordings'",
+          "redirect_to": "ai-11"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-11",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Agent",
+      "level_3_diagnosis": "Agent Memory & Workflow",
+      "definition": "The Plaud Agent layer: cross-recording memory and context, intelligent project/folder organisation, and multi-step automated workflow execution. Absorbed from former Memory + Project + Live Agent tags.",
+      "positive_examples": [
+        "'Memory feature seems to forget context after a few days'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Ask (single-recording Q&A)",
+          "distinct_from": "ai-09"
+        },
+        {
+          "reason": "Autoflow (rule-based automation, not AI-driven agent)",
+          "distinct_from": "sw-16"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Ask gave me the wrong answer for this recording'",
+          "redirect_to": "ai-09"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-12",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Multimodal & Highlights",
+      "level_3_diagnosis": "Highlights & Visual Integration",
+      "definition": "Image/visual content integration (screenshots linked to timestamps, whiteboard capture) or AI-generated Highlights quality issues.",
+      "positive_examples": [
+        "'Screenshot integration isn't linking to the right timestamp in the transcript'",
+        "Add option to add color and highlighting option to summaries\nwould be great if color was added to emphasize important portions of texts and highlights instead of just simply bolded"
+      ],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-13",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Summary",
+      "level_3_diagnosis": "AI Generation Failure",
+      "definition": "AI summary/report fails, errors, or stalls during generation; never completes.",
+      "positive_examples": [
+        "'AI summary generation failing for all recordings over 2 days'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "generated but low quality",
+          "distinct_from": "ai-03"
+        },
+        {
+          "reason": "transcription stage",
+          "distinct_from": "ai-14"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'summary missed the main decision'",
+          "redirect_to": "ai-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-14",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Transcript",
+      "level_3_diagnosis": "Transcription Processing Failure",
+      "definition": "Transcription stuck generating or fails to complete (processing), not word-accuracy.",
+      "positive_examples": [
+        "'transcription stuck generating for over 24 hours'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "completes but wrong",
+          "distinct_from": "ai-01"
+        },
+        {
+          "reason": "summary stage",
+          "distinct_from": "ai-13"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'messes up a few words per line'",
+          "redirect_to": "ai-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-15",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Agent",
+      "level_3_diagnosis": "Visual Summary Outputs (Mindmap & Infographic)",
+      "definition": "Mindmap/infographic outputs poor, uneditable, or non-exportable.",
+      "positive_examples": [
+        "'mindmap quality is poor and illogical'",
+        "'cannot edit or export the mindmap'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "text summary content",
+          "distinct_from": "ai-03"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'text summary missed the decision'",
+          "redirect_to": "ai-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-16",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Transcript",
+      "level_3_diagnosis": "Custom Vocabulary & Dictionary",
+      "definition": "Custom vocabulary not applied; cannot add terms; vocabulary limit too low.",
+      "positive_examples": [
+        "'custom vocabulary list is not applied'",
+        "'cannot add my own terms'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "general ASR accuracy",
+          "distinct_from": "ai-01"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'random word errors in transcript'",
+          "redirect_to": "ai-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-17",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Multimodal & Highlights",
+      "level_3_diagnosis": "Multimodal Attachment Reading",
+      "definition": "Attached image/video/link not read or cross-referenced; slide perspective correction poor.",
+      "positive_examples": [
+        "'attached image not read or cross-referenced'",
+        "'attached link/video not processed'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "highlight capture",
+          "distinct_from": "ai-12"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'screenshot not linking to right timestamp'",
+          "redirect_to": "ai-12"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-18",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Ask",
+      "level_3_diagnosis": "Cross-Recording & Agentic",
+      "definition": "Cannot ask/search across recordings; cannot do tasks outside a recording (calendar/to-do/agentic).",
+      "positive_examples": [
+        "'cannot ask across multiple recordings'",
+        "'wants assistant to do calendar/to-do tasks'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "single-product memory",
+          "distinct_from": "ai-11"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'memory forgets within one recording'",
+          "redirect_to": "ai-11"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "ai-19",
+      "level_1_category": "AI Performance",
+      "level_2_label": "Summary",
+      "level_3_diagnosis": "Live Translation & Summarization",
+      "definition": "Real-time translation/summarization during recording absent.",
+      "positive_examples": [
+        "'live translation not available in meetings'",
+        "'wants real-time summarization'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "post-recording translation",
+          "distinct_from": "ai-05"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'cannot translate a finished transcript'",
+          "redirect_to": "ai-05"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "b2b-00",
+      "level_1_category": "B2B / Enterprise",
+      "level_2_label": "Other",
+      "level_3_diagnosis": "Other",
+      "definition": "Catch-all for B2B / Enterprise feedback; use when no other b2b-xx applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "b2b-01",
+      "level_1_category": "B2B / Enterprise",
+      "level_2_label": "Account & Team",
+      "level_3_diagnosis": "Setup, Invite & Seat Management",
+      "definition": "Everything that happens after the Team seat purchase to get the team's seats and access actually working, excluding personal-to-team migration/visibility issues and day-to-day admin/governance configuration. Specifically covers: initial Team workspace setup and vendor procurement coordination; two distinct invite failure modes — the invite email/code never being delivered at all, and an invite being delivered but joining/access still failing; an admin losing access to the whole team's backend after deleting a prior admin account (an access-recovery scenario, not a governance configuration); the product gap where the admin/billing contact's own email consumes a full paid seat with no free manage-only role; and whether one purchased license can be shared across multiple devices or users.",
+      "positive_examples": [
+        "'needs vendor onboarding documents to proceed with a team purchase'",
+        "'how to set up a Team plan with multiple seats'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Admin & Group Controls (ongoing governance, not initial setup)",
+          "distinct_from": "b2b-02"
+        },
+        {
+          "reason": "License Sharing & Multi-Device (consumer multi-device, not formal team)",
+          "distinct_from": "mon-28"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'wants centralized admin/data controls'",
+          "redirect_to": "b2b-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "b2b-02",
+      "level_1_category": "B2B / Enterprise",
+      "level_2_label": "Account & Team",
+      "level_3_diagnosis": "Admin & Group Controls",
+      "definition": "Admin/governance needs for teams — centralized admin, member/permission management, data-sharing controls across an org.",
+      "positive_examples": [
+        "'wants centralized IT admin and data-sharing controls for 25-50 devices'",
+        "'cannot prevent cross-department data sharing in Team plan'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Account Setup (provisioning, not governance)",
+          "distinct_from": "b2b-01"
+        },
+        {
+          "reason": "Knowledge Base (self-service content)",
+          "distinct_from": "sup-06"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'how do I create the team account?'",
+          "redirect_to": "b2b-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "b2b-03",
+      "level_1_category": "B2B / Enterprise",
+      "level_2_label": "Team Presale Inquiry",
+      "level_3_diagnosis": "Team Pricing & Plan Fit",
+      "definition": "Covers every decision-support inquiry a prospect raises before committing to buy a Team plan, in two parts: (1) pricing and quotation itself -- minimum seat requirements, per-seat pricing rules, currency confusion (e.g. SGD/USD), volume/bulk pricing, and requests for a formal quote/PDF for internal procurement approval; and (2) plan-fit capability evaluation -- whether every team member needs their own hardware device, whether recordings are private by default and whether an admin can see members' recordings, how Team differs from Personal/Unlimited plans in features and benefits, and what admin control capabilities the Team plan offers. All of these occur while the prospect has not yet committed to purchase and is still evaluating.",
+      "positive_examples": [
+        "'How many seats are required at minimum to start a Team plan'",
+        "'Asks whether bulk seat purchases qualify for dedicated discount pricing'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Invoice Access & Download (general/B2C invoice retrieval)",
+          "distinct_from": "mon-16"
+        },
+        {
+          "reason": "Team Account Setup",
+          "distinct_from": "b2b-01"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'cannot find where to download my invoice'",
+          "redirect_to": "mon-16"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "b2b-04",
+      "level_1_category": "B2B / Enterprise",
+      "level_2_label": "Licensing",
+      "level_3_diagnosis": "Procurement Gating",
+      "definition": "Invoicing and tax/procurement documentation enterprise buyers need around a Team purchase, typically owned by Finance/Procurement rather than Product. Covers post-purchase invoice corrections (company name/VAT, B2C-to-B2B conversion) and pre-purchase requests for a purchase order (PO), tax-exempt proof, or a W-9 form",
+      "positive_examples": [
+        "\"Needs a Team invoice updated with VAT number and company details\"",
+        "\"Requests a DPA after purchase the Team plan\""
+      ],
+      "mece_rules": [
+        {
+          "reason": "Team Account Setup (provisioning)",
+          "distinct_from": "b2b-01"
+        },
+        {
+          "reason": "Subscription Status Sync (plan not applying)",
+          "distinct_from": "mon-22"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'how do I set up a Team plan?'",
+          "redirect_to": "b2b-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "b2b-05",
+      "level_1_category": "B2B / Enterprise",
+      "level_2_label": "License",
+      "level_3_diagnosis": "Compliance",
+      "definition": "Compliance and certification documents enterprise buyers require before they can purchase or renew Team, typically owned by Legal/Privacy rather than Product -- response latency here directly determines whether a deal can proceed. Covers HIPAA/BAA for healthcare use, a Data Processing Agreement (DPA) and GDPR/EU data-residency confirmation, and SSO single-sign-on requirements. Note: DPA is currently Team-only, which itself pushes some solo/regulated users toward Team just to obtain it.",
+      "positive_examples": [
+        "'Is Plaud Team GDPR compliant?'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Content Safety / general data compliance (GDPR/DPA)",
+          "distinct_from": "pri-02"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'requests GDPR DPA and EU data residency'",
+          "redirect_to": "pri-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-00",
+      "level_1_category": "General Retention",
+      "level_2_label": "Other",
+      "level_3_diagnosis": "Other",
+      "definition": "Catch-all for General Retention complaints; use when no other gen-xx tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-01",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "Buyers Remorse",
+      "definition": "Customer requests refund due to change of mind, not due to product defect or service failure. Looking for discounts included",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-02",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "Wrong Item Ordered",
+      "definition": "Customer subjectively selected the wrong SKU/model/color/accessory combination and requests a refund or exchange, including duplicate orders. Exclude cases where the accessory was already included/duplicated.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-03",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "Accessory Already Included",
+      "definition": "Refund caused by a duplicate purchase or by customers assuming they needed to buy an accessory when it was already included in the box / bundled/gifted as a promotion, leading to a duplicate order.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-04",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "Test Order",
+      "definition": "Plaud placed an order for testing purposes and requests cancellation/refund.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-05",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "Tax/VAT/Duties",
+      "definition": "Customer disputes or refuses to pay tax/VAT/duties (or rejects the package due to fees) and requests a refund. If the clearance delay is caused by customs processes or documents, use LOG-05.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-06",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "Other-Channel Purchase",
+      "definition": "Customer decided to cancel the order because they preferred to purchase the same product through another sales channel.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-07",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "Discount-Seeking",
+      "definition": "Customer requested a partial refund in the hope of repurchasing the product at a lower price.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-08",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "No Reason Given",
+      "definition": "Customer requests a return/refund (or order cancellation leading to a refund) within the 30-day no-questions-asked return window without providing any specific reason, or explicitly declines to share a reason. This label is used only when no other refund reason is stated.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "gen-09",
+      "level_1_category": "General Retention",
+      "level_2_label": "Refund Reason",
+      "level_3_diagnosis": "Tax Exemption",
+      "definition": "Tax-exempt entity requests exemption or refund of tax charged.",
+      "positive_examples": [
+        "'tax-exempt org requests exemption / refund of tax'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "disputes/refuses to pay",
+          "distinct_from": "gen-05"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'refuses to pay customs duties'",
+          "redirect_to": "gen-05"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-00",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Other Hardware",
+      "level_3_diagnosis": "Other Hardware",
+      "definition": "Catch-all for Hardware R&D complaints; use when no other hw-xx tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-01",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Power & Battery",
+      "level_3_diagnosis": "Power-On Failure",
+      "definition": "Confirmed device cannot power on or boot (no response when pressing power) after basic troubleshooting (charging, reset).",
+      "positive_examples": [
+        "'My Note Pro won't turn on anymore — pressing the record button does nothing'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "battery drains fast but device still powers on",
+          "distinct_from": "hw-04"
+        },
+        {
+          "reason": "device powers on but recording is silent",
+          "distinct_from": "hw-08"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Battery runs out in 2 hours but device still powers on'",
+          "redirect_to": "hw-04"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-02",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Connectivity",
+      "level_3_diagnosis": "Device Pairing & Connection",
+      "definition": "Confirmed device cannot pair/connect to the phone via Bluetooth (not discoverable or pairing fails) after standard troubleshooting.",
+      "positive_examples": [
+        "'App can't find my device — Bluetooth is on but nothing shows up'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Fast Transfer (WiFi-based file transfer, not Bluetooth device pairing)",
+          "distinct_from": "hw-18"
+        },
+        {
+          "reason": "Cloud & Sync (cloud upload, not local device connection)",
+          "distinct_from": "sw-12"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'WiFi fast transfer not completing'",
+          "redirect_to": "hw-18"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-03",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Power & Battery",
+      "level_3_diagnosis": "Charging Failure",
+      "definition": "Confirmed device does not charge when connected to power (no charging indicator / battery % not increasing) with known-good cable/adapter.",
+      "positive_examples": [
+        "'My Note Pro won't charge '"
+      ],
+      "mece_rules": [
+        {
+          "reason": "battery drains fast but charges normally",
+          "distinct_from": "hw-04"
+        },
+        {
+          "reason": "charging cable physically damaged — accessory, not device circuit",
+          "distinct_from": "hw-21"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Battery runs out in 2 hours but device still powers on'",
+          "redirect_to": "hw-04"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-04",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Power & Battery",
+      "level_3_diagnosis": "Battery Life",
+      "definition": "Confirmed battery runtime is significantly below expected under normal use.",
+      "positive_examples": [
+        "'Battery drains within 2 hours on a full charge'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "device won't power on at all",
+          "distinct_from": "hw-01"
+        },
+        {
+          "reason": "charging cable physical damage",
+          "distinct_from": "hw-21"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Device won't turn on at all'",
+          "redirect_to": "hw-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-05",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Power & Battery",
+      "level_3_diagnosis": "Battery Failure",
+      "definition": "Confirmed battery cannot hold charge, shows abnormal battery behavior, or requires frequent recharging beyond normal expectations.",
+      "positive_examples": [
+        "'Battery drains within 2 hours on a full charge'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "device won't power on at all",
+          "distinct_from": "hw-01"
+        },
+        {
+          "reason": "charging cable physical damage",
+          "distinct_from": "hw-21"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Device won't turn on at all'",
+          "redirect_to": "hw-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-06",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Power & Battery",
+      "level_3_diagnosis": "General Device Defect",
+      "definition": "Confirmed hardware malfunction not covered by a more specific hardware diagnosis tag.",
+      "positive_examples": [
+        "'The de broke after 3 weeks of normal use'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "design preference with no failure",
+          "distinct_from": "hw-17"
+        },
+        {
+          "reason": "separate accessory physical damage, not device body",
+          "distinct_from": "hw-21"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I dropped it from 2m — that's beyond the spec' (user-caused, outside stated 0.8m / 1.2m with case)",
+          "redirect_to": "hw-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-07",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Button",
+      "level_3_diagnosis": "Button Responsiveness",
+      "definition": "Confirmed physical button issue (stuck, hard to press, unresponsive, or inconsistent actuation).",
+      "positive_examples": [
+        "'Press hard but still not working'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Recording Failure (recording process fails silently after a correct button press)",
+          "distinct_from": "hw-08"
+        },
+        {
+          "reason": "Device Unusable (entire device unresponsive, not just the button)",
+          "distinct_from": "hw-01"
+        },
+        {
+          "reason": "Capture (app-side in-app recording control, not physical button hardware)",
+          "distinct_from": "sw-11"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Recording started but file is silent'",
+          "redirect_to": "hw-08"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-08",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Button",
+      "level_3_diagnosis": "Unexpected Recording Trigger",
+      "definition": "Confirmed recording starts/stops unexpectedly or fails to maintain recording due to device behavior (not user operation).",
+      "positive_examples": [
+        "'NotePin records automatically without me pressing anything'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "audio captured but sounds bad",
+          "distinct_from": "hw-09"
+        },
+        {
+          "reason": "storage error prevents saving",
+          "distinct_from": "hw-19"
+        },
+        {
+          "reason": "Button (physical button not registering press or phantom press — hardware layer, not recording-process failure)",
+          "distinct_from": "hw-07"
+        },
+        {
+          "reason": "Button (physical button not registering press or phantom press — hardware layer, not recording-process failure)",
+          "distinct_from": "hw-16"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Audio sounds muffled / can only hear one side of the call'",
+          "redirect_to": "hw-09"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-09",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Audio Quality",
+      "level_3_diagnosis": "Audio Quality",
+      "definition": "Confirmed audio quality degradation (such as distortion, clipping, or abnormal artifacts) under normal recording conditions, excluding issues primarily caused by low signal-to-noise ratio (SNR), speaker recognition errors, or unexpected recording start/stop behavior.",
+      "positive_examples": [
+        "'The mic only picks up someone talking directly into it — everyone else is inaudible'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "ASR (algorithm-level errors on captured audio)",
+          "distinct_from": "ai-01"
+        },
+        {
+          "reason": "Recording Failure (no audio captured at all)",
+          "distinct_from": "hw-08"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Transcription has lots of errors' — audio captured OK",
+          "redirect_to": "ai-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-10",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Audio Quality",
+      "level_3_diagnosis": "Signal-to-Noise Ratio",
+      "definition": "Confirmed signal-to-noise ratio (SNR) is below acceptable level, resulting in recordings where target speech is significantly masked by environmental noise or distance-related attenuation under normal use conditions.",
+      "positive_examples": [
+        "'The audio quality is poor when I am on the train'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "ASR (algorithm-level errors on captured audio)",
+          "distinct_from": "ai-01"
+        },
+        {
+          "reason": "Recording Failure (no audio captured at all)",
+          "distinct_from": "hw-08"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Transcription has lots of errors' — audio captured OK",
+          "redirect_to": "ai-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-11",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Build Quality",
+      "level_3_diagnosis": "Build Quality",
+      "definition": "User perceives build quality as low (materials/fit/finish) without a verifiable functional defect.",
+      "positive_examples": [
+        "'The wristband is cheap. Not worth it'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "design preference with no failure",
+          "distinct_from": "hw-17"
+        },
+        {
+          "reason": "separate accessory physical damage, not device body",
+          "distinct_from": "hw-21"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I dropped it from 2m — that's beyond the spec' (user-caused, outside stated 0.8m / 1.2m with case)",
+          "redirect_to": "hw-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-12",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Screen",
+      "level_3_diagnosis": "Screen Damage",
+      "definition": "Confirmed display glass/panel is cracked, shattered, or has abnormal display (lines, black screen, dead pixels) caused by damage or defect.",
+      "positive_examples": [
+        "'Screen cracked after a light drop — feels very fragile for the price'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "app UI visual issues, not physical screen",
+          "distinct_from": "sw-06"
+        },
+        {
+          "reason": "device completely unresponsive, not just screen",
+          "distinct_from": "hw-01"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'App UI looks off on my phone screen'",
+          "redirect_to": "sw-06"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-13",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Firmware",
+      "level_3_diagnosis": "Firmware Update",
+      "definition": "Feature regressions introduced by firmware updates, firmware update failures, or unexpected behavioral changes tied to a specific firmware version.",
+      "positive_examples": [
+        "'After the latest firmware update, recording quality dropped significantly'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "App Performance & Stability (app-side update issues)",
+          "distinct_from": "sw-01"
+        },
+        {
+          "reason": "hw-09 through hw-21 (hardware defects not tied to a firmware change)",
+          "distinct_from": null
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'App crashed after app update'",
+          "redirect_to": "sw-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-14",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Find My",
+      "level_3_diagnosis": "Lost-Device Tracking",
+      "definition": "Find My location feature unavailable, inaccurate, or failing to integrate with Apple's Find My network. Primarily NotePin S.",
+      "positive_examples": [
+        "'Already delete the Find My, but it keeps beeping in the meeting, Can't stop it'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Account & Login (account issues)",
+          "distinct_from": "sw-15"
+        },
+        {
+          "reason": "App Connection (Bluetooth connectivity)",
+          "distinct_from": "hw-02"
+        }
+      ],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-15",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Serial Number",
+      "level_3_diagnosis": "SN Activation Failure",
+      "definition": "Serial number (SN) is invalid in the system, the SN on box doesn't match the physical device, or device cannot be activated because the SN is already registered to another account.",
+      "positive_examples": [
+        "'The SN on the box doesn't match what the app shows'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Activation (software-side activation code failures after SN is validated)",
+          "distinct_from": "op-03"
+        },
+        {
+          "reason": "Account & Login (login credential issues)",
+          "distinct_from": "sw-15"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Activation code invalid'",
+          "redirect_to": "op-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-16",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Button",
+      "level_3_diagnosis": "Button Critical Failure",
+      "definition": "Physical recording button malfunction: button does not register press (unresponsive), triggers recording accidentally without user input (phantom presses / inconsistent actuation）",
+      "positive_examples": [
+        "'NotePin records automatically without me pressing anything'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Recording Failure (recording process fails silently after a correct button press)",
+          "distinct_from": "hw-08"
+        },
+        {
+          "reason": "Device Unusable (entire device unresponsive, not just the button)",
+          "distinct_from": "hw-01"
+        },
+        {
+          "reason": "Capture (app-side in-app recording control, not physical button hardware)",
+          "distinct_from": "sw-11"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Recording started but file is silent'",
+          "redirect_to": "hw-08"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-17",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Device & Accessory Design",
+      "level_3_diagnosis": "Design & Ergonomics",
+      "definition": "Subjective design preference on device body or any accessory — aesthetics, color, material feel, form factor choices, wishlist items (lanyard, matte finish, new colors). No functional defect involved.",
+      "positive_examples": [
+        "'Wish it came in more color options'",
+        "'The wristband is cheap. Not worth it'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "functional failure: it used to work, now doesn't",
+          "distinct_from": "hw-06"
+        },
+        {
+          "reason": "portability/size UX, not aesthetics",
+          "distinct_from": "hw-20"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'The clip broke / magnet weakened after weeks' — functional failure",
+          "redirect_to": "hw-06"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-18",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Fast Transfer",
+      "level_3_diagnosis": "Fast Transfer Reliability",
+      "definition": "WiFi-based fast transfer between device and PC/Mac fails, is slow, or shows errors. Covers the Quick Transfer / Fast Transfer feature only.",
+      "positive_examples": [
+        "'Fast Transfer just spins and never completes'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Bluetooth pairing, not WiFi file transfer",
+          "distinct_from": "hw-02"
+        },
+        {
+          "reason": "cloud sync, not local WiFi transfer",
+          "distinct_from": "sw-12"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Bluetooth keeps dropping'",
+          "redirect_to": "hw-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-19",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Storage",
+      "level_3_diagnosis": "Storage Capacity",
+      "definition": "Device local storage issues: false \"storage full\" alerts when space exists, failure to save new recordings due to storage errors, or storage capacity displaying incorrectly.",
+      "positive_examples": [
+        "'Getting 'storage full' but the device shows 60% available'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "recording process failure unrelated to storage",
+          "distinct_from": "hw-08"
+        },
+        {
+          "reason": "Cloud & Sync (cloud storage issues)",
+          "distinct_from": "sw-12"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Files disappeared from cloud'",
+          "redirect_to": "sw-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-20",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Portability",
+      "level_3_diagnosis": "Portability & Form Factor",
+      "definition": "User feedback (positive or negative) on device size, weight, and ease of carrying. No functional defect — purely a form-factor experience opinion.",
+      "positive_examples": [
+        "'It's so small I forget I'm wearing it — great for all-day use'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Build Quality (functional structural failure)",
+          "distinct_from": "hw-06"
+        },
+        {
+          "reason": "Device & Accessory Design (aesthetic/visual design preference)",
+          "distinct_from": "hw-17"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'The clip keeps falling off after weeks of use'",
+          "redirect_to": "hw-06"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-21",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Accessories",
+      "level_3_diagnosis": "Accessory Defect",
+      "definition": "Accessories (charging cable, clip, adapter, case, etc.) have functional physical damage — frayed cables, snapped clips, faulty connectors. The accessory no longer works as intended.",
+      "positive_examples": [
+        "'The charging cable started fraying after 2 weeks of normal use'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "device body failure, not separate accessory",
+          "distinct_from": "hw-06"
+        },
+        {
+          "reason": "design preference on accessory with no functional damage",
+          "distinct_from": "hw-17"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'The clip feels cheap / I don't like the clip design'",
+          "redirect_to": "hw-17"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-22",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Indicators & Alerts",
+      "level_3_diagnosis": "Indicators & Alerts",
+      "definition": "Device feedback signals — screen/LED indicator faults, unexpected beeping, and hardware highlight-button capture. Sub-types as L4.",
+      "positive_examples": [
+        "'cannot tell if recording without a visible indicator'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "physical crack",
+          "distinct_from": "hw-12"
+        },
+        {
+          "reason": "audible",
+          "distinct_from": "hw-23"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'screen cracked after a drop'",
+          "redirect_to": "hw-12"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-23",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Indicators & Alerts",
+      "level_3_diagnosis": "Unexpected Beeping",
+      "definition": "Device beeps unexpectedly/continuously, user cannot explain or stop it.",
+      "positive_examples": [
+        "'NotePin continuously beeps; reset did not fix it'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "visual",
+          "distinct_from": "hw-22"
+        },
+        {
+          "reason": "Find My",
+          "distinct_from": "hw-14"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'no indicator light to tell if recording'",
+          "redirect_to": "hw-22"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-24",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Accessories",
+      "level_3_diagnosis": "Accessory Compatibility",
+      "definition": "Accessory does not fit/work with device or phone (model mismatch).",
+      "positive_examples": [
+        "'replacement cable does not fit older device port'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "accessory itself faulty",
+          "distinct_from": "hw-21"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'magnetic backing peeling'",
+          "redirect_to": "hw-21"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-25",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Storage",
+      "level_3_diagnosis": "Storage-Full Blocks Recording",
+      "definition": "Onboard storage full prevents recording or throws a storage error.",
+      "positive_examples": [
+        "'storage problem error when recording'",
+        "'device full and will not record'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "wants more storage",
+          "distinct_from": "hw-19"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'wishes device had more storage'",
+          "redirect_to": "hw-19"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-26",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Onboarding & Manual",
+      "level_3_diagnosis": "Setup Instructions & Manual",
+      "definition": "Hardware setup unclear; no paper manual in box; manual not in user's language.",
+      "positive_examples": [
+        "'setup instructions unclear/incomplete'",
+        "'no manual in box / not in my language'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "in-app guidance",
+          "distinct_from": "sw-07"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'in-app instructions do not match screens'",
+          "redirect_to": "sw-07"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "hw-27",
+      "level_1_category": "Hardware R&D",
+      "level_2_label": "Indicators & Alerts",
+      "level_3_diagnosis": "Hardware Highlight Capture",
+      "definition": "Physical highlight button hard to trigger; unsure if captured; not reflected in app.",
+      "positive_examples": [
+        "'unsure if highlight captured mid-recording'",
+        "'highlight button hard to trigger'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "recording indicator",
+          "distinct_from": "hw-22"
+        },
+        {
+          "reason": "AI highlight quality",
+          "distinct_from": "ai-12"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'AI highlights low quality'",
+          "redirect_to": "ai-12"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-00",
+      "level_1_category": "Logistics",
+      "level_2_label": "Other",
+      "level_3_diagnosis": "Other",
+      "definition": "Catch-all for Logistics complaints; use when no other log-xx tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-01",
+      "level_1_category": "Logistics",
+      "level_2_label": "Delivery & Fulfillment",
+      "level_3_diagnosis": "Lost Package",
+      "definition": "Shipment is confirmed lost by carrier tracking or fulfillment investigation.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-02",
+      "level_1_category": "Logistics",
+      "level_2_label": "Delivery & Fulfillment",
+      "level_3_diagnosis": "Delivered Not Received",
+      "definition": "Tracking status shows Delivered, but the customer reports not receiving it (possible misdelivery, theft, wrong address, or missing proof of delivery.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-03",
+      "level_1_category": "Logistics",
+      "level_2_label": "Delivery & Fulfillment",
+      "level_3_diagnosis": "Shipping Delay",
+      "definition": "The package has not been delivered (status: not delivered), and shipping has exceeded the promised SLA / shows repeated delays, resulting in a refund/cancellation.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-04",
+      "level_1_category": "Logistics",
+      "level_2_label": "Delivery & Fulfillment",
+      "level_3_diagnosis": "Shipping Damage",
+      "definition": "Product/package arrived with visible damage affecting usability or condition (not customer-caused).",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-05",
+      "level_1_category": "Logistics",
+      "level_2_label": "Delivery & Fulfillment",
+      "level_3_diagnosis": "Customs Clearance Delay",
+      "definition": "The shipment is stuck due to issues with customs clearance (missing/incorrect documents, a customs hold, or a clearance failure).",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-06",
+      "level_1_category": "Logistics",
+      "level_2_label": "Delivery & Fulfillment",
+      "level_3_diagnosis": "Shipping Address Correction",
+      "definition": "Wrong shipping address entered; needs correction before dispatch.",
+      "positive_examples": [
+        "'wrong shipping address; correct before shipment'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "post-delivery",
+          "distinct_from": "log-02"
+        },
+        {
+          "reason": "delay",
+          "distinct_from": "log-03"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'marked delivered but not received'",
+          "redirect_to": "log-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-07",
+      "level_1_category": "Logistics",
+      "level_2_label": "Delivery & Fulfillment",
+      "level_3_diagnosis": "Wrong Item Shipped",
+      "definition": "Received a different item than ordered (fulfillment error).",
+      "positive_examples": [
+        "'received a different item than ordered'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "customer selected wrong",
+          "distinct_from": "gen-02"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I ordered the wrong model'",
+          "redirect_to": "gen-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "log-08",
+      "level_1_category": "Logistics",
+      "level_2_label": "Delivery & Fulfillment",
+      "level_3_diagnosis": "Out of Stock / Availability",
+      "definition": "Item out of stock / cannot be ordered / unavailable (non-region-lock).",
+      "positive_examples": [
+        "'item out of stock / cannot order'",
+        "'replacement accessory out of stock'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "region-blocked",
+          "distinct_from": "op-05"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'app blocked in my region'",
+          "redirect_to": "op-05"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mkt-00",
+      "level_1_category": "Marketing",
+      "level_2_label": "Other Marketing",
+      "level_3_diagnosis": "Other Marketing",
+      "definition": "Catch-all for Marketing complaints; use when no other mkt-xx tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mkt-01",
+      "level_1_category": "Monetization",
+      "level_2_label": "Referral",
+      "level_3_diagnosis": "Referral Program",
+      "definition": "Referral program issues: rewards not credited, referral links not working, friends not receiving promised discounts.",
+      "positive_examples": [
+        "'My referral link never gave my friend the promised discount'",
+        "'My referral link doesn't work'"
+      ],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mkt-02",
+      "level_1_category": "Marketing",
+      "level_2_label": "Professional Fit",
+      "level_3_diagnosis": "Professional Fit",
+      "definition": "Target professional persona (lawyer, doctor, financial advisor, consultant, sales professional) explicitly expresses that Plaud is indispensable to their professional workflow",
+      "positive_examples": [
+        "'As a defense attorney, I record all client meetings — this is now indispensable'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Price Sensitivity ('expensive but worth it' = pricing perception) — requires professional identity + use-case match, not just value expression",
+          "distinct_from": "op-09"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Saved me time — totally worth the price' (no professional identity)",
+          "redirect_to": null
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mkt-06",
+      "level_1_category": "Marketing",
+      "level_2_label": "Competitive Positioning",
+      "level_3_diagnosis": "Competitive Signal",
+      "definition": "User explicitly compares Plaud to a competing product, tool, or method — including switching reasons, side-by-side comparisons, or references to a prior solution (\"I used to use X\"). Covers both positive comparisons (Plaud wins) and negative (competitor cited as better).",
+      "positive_examples": [
+        "'Switched from Otter.ai — transcription accuracy is noticeably better'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "3H2L Professional Fit (professional persona signal without competitor mention)",
+          "distinct_from": "mkt-02"
+        },
+        {
+          "reason": "PDP Claim (marketing copy vs. reality) — use mkt-06 only when a named or implied alternative is referenced in the feedback",
+          "distinct_from": "op-06"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Transcription accuracy is poor' (no competitor mentioned)",
+          "redirect_to": "ai-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mkt-08",
+      "level_1_category": "Marketing",
+      "level_2_label": "Claim Accuracy",
+      "level_3_diagnosis": "Marketing Claim Accuracy",
+      "definition": "Advertised feature doesn't work/exist; spec overstated; contents differ from listing.",
+      "positive_examples": [
+        "'advertised feature does not work / does not exist'",
+        "'contents differ from listing; spec overstated'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "pre-sale inquiry",
+          "distinct_from": "sup-04"
+        },
+        {
+          "reason": "general expectation gap",
+          "distinct_from": "op-03"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'feature exists but errors out'",
+          "redirect_to": "sw-00"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-00",
+      "level_1_category": "Monetization",
+      "level_2_label": "Other Commerce",
+      "level_3_diagnosis": "Other Commerce",
+      "definition": "Catch-all for Commercial & Growth complaints; use when no other op-xx tag & Commercial & Growth applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-01",
+      "level_1_category": "Monetization",
+      "level_2_label": "Subscription Plan",
+      "level_3_diagnosis": "Subscription Requirement Surprise",
+      "definition": "Customer discovers (often after buying the device) that a paid subscription is required for full functionality or additional transcription quota, and was unaware at purchase. Includes channel listings that did not disclose the requirement.",
+      "positive_examples": [
+        "'Subscription fee required to use device was not clearly disclosed at purchase'",
+        "'ran out of included minutes and didn't know more required a subscription'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Billing & Auto-Renewal (user knew about subscription, billing mechanics are the problem)",
+          "distinct_from": "op-10"
+        },
+        {
+          "reason": "PDP Clarity (channel-specific page cited as root cause)",
+          "distinct_from": "mkt-04"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Was charged automatically without any reminder' (already knew about subscription)",
+          "redirect_to": "op-10"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-02",
+      "level_1_category": "Monetization",
+      "level_2_label": "Digital Fulfillment",
+      "level_3_diagnosis": "Digital Code Delivery",
+      "definition": "Customer did not receive a purchased digital code/activation entitlement after payment confirmation.",
+      "positive_examples": [
+        "'Paid for the annual plan — no confirmation email received and account still shows free tier'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Activation (activation code rejected after received)",
+          "distinct_from": "op-03"
+        },
+        {
+          "reason": "Billing & Auto-Renewal (charge confirmed but billing UX confusing)",
+          "distinct_from": "op-10"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Activation code I received is invalid'",
+          "redirect_to": "op-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-04",
+      "level_1_category": "Monetization",
+      "level_2_label": "Pricing & Value",
+      "level_3_diagnosis": "Plan Inclusions Unclear",
+      "definition": "Customer cannot tell what features or usage limits each plan/tier includes, before or after purchase.",
+      "positive_examples": [
+        "'unclear what features each tier includes before subscribing'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "price level complaint, not comprehension confusion",
+          "distinct_from": "op-09"
+        },
+        {
+          "reason": "didn't know subscription existed at all",
+          "distinct_from": "op-01"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I didn't know I needed a subscription'",
+          "redirect_to": "op-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-05",
+      "level_1_category": "Marketing",
+      "level_2_label": "Pricing & Value",
+      "level_3_diagnosis": "Price Sensitivity",
+      "definition": "Pure price-level perception: \"too expensive,\" \"not worth the price,\" \"costs more than competitors.\"",
+      "positive_examples": [
+        "'Device is way overpriced for what it does'",
+        "'Subscription is way overpriced for what it does'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "user knows the price but can't understand the value — actionable",
+          "distinct_from": "op-08"
+        },
+        {
+          "reason": "pricing structure unclear, not price level opinion",
+          "distinct_from": "op-14"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I didn't know I needed a subscription'",
+          "redirect_to": "op-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-06",
+      "level_1_category": "Monetization",
+      "level_2_label": "Billing & Auto-Renewal",
+      "level_3_diagnosis": "Unexpected Renewal Charge",
+      "definition": "User knows they have a subscription but billing UX is problematic: auto-renew with no reminder, difficult cancellation, can't find invoice, or refund status is opaque. Act → Finance / Operations.",
+      "positive_examples": [
+        "'Was charged automatically without any reminder — couldn't find how to cancel'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "didn't know subscription existed — information failure",
+          "distinct_from": "op-01"
+        },
+        {
+          "reason": "Refund Process Clarity (doesn't know how to request a refund)",
+          "distinct_from": "op-11"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I didn't know there was a subscription' (no billing complaint)",
+          "redirect_to": "op-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-07",
+      "level_1_category": "Monetization",
+      "level_2_label": "Refunds",
+      "level_3_diagnosis": "Refund Eligibility & How-To Unclear",
+      "definition": "Customer is unsure whether they are eligible for a refund or how to request one.",
+      "positive_examples": [
+        "'can't tell if I'm eligible or how to request a refund'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Refund Timing (refund submitted but slow to arrive)",
+          "distinct_from": "op-21"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I want to return this — it doesn't work' (clear intent, no process friction)",
+          "redirect_to": null
+        },
+        {
+          "example": "refund already submitted but slow to arrive",
+          "redirect_to": "op-21"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-09",
+      "level_1_category": "Monetization",
+      "level_2_label": "Pricing & Value",
+      "level_3_diagnosis": "Price Display Inconsistency",
+      "definition": "Price shown at sign-up/website/app differs from what is charged, or wrong currency/region.",
+      "positive_examples": [
+        "'subscription price on website differs from app'",
+        "'region shows Canada but prices in USD'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "price level opinion",
+          "distinct_from": "op-09"
+        },
+        {
+          "reason": "value comprehension",
+          "distinct_from": "op-08"
+        },
+        {
+          "reason": "checkout technical friction",
+          "distinct_from": "op-05"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'It's too expensive'",
+          "redirect_to": "op-09"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-10",
+      "level_1_category": "Monetization",
+      "level_2_label": "Promotions",
+      "level_3_diagnosis": "Promo Terms Unclear / Misleading",
+      "definition": "Promotion conditions ambiguous, or customer felt misled by a promo's terms.",
+      "positive_examples": [
+        "'promo code from the email did not apply as advertised'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "checkout technical friction",
+          "distinct_from": "op-05"
+        },
+        {
+          "reason": "product page content issues",
+          "distinct_from": "mkt-04"
+        },
+        {
+          "reason": "product page content issues",
+          "distinct_from": "op-06"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Checkout page not loading'",
+          "redirect_to": "op-05"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-11",
+      "level_1_category": "Monetization",
+      "level_2_label": "Digital Fulfillment",
+      "level_3_diagnosis": "Digital Delivery Failure",
+      "definition": "Delivery failures of digital purchase items: subscription confirmation email not arriving, plan license code not sent, subscription not reflected in account after successful payment.",
+      "positive_examples": [
+        "'Paid for the annual plan — no confirmation email received and account still shows free tier'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Activation (activation code rejected after received)",
+          "distinct_from": "op-03"
+        },
+        {
+          "reason": "Billing & Auto-Renewal (charge confirmed but billing UX confusing)",
+          "distinct_from": "op-10"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Activation code I received is invalid'",
+          "redirect_to": "op-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-12",
+      "level_1_category": "Monetization",
+      "level_2_label": "Plan Changes",
+      "level_3_diagnosis": "Upgrade Experience",
+      "definition": "UX friction when upgrading a plan: can't find the upgrade button, upgrade CTA is buried, trial-to-paid conversion flow is unclear.",
+      "positive_examples": [
+        "'Couldn't find where to upgrade to Pro — took 10 minutes to locate the button'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "system didn't apply upgrade correctly after user completed it",
+          "distinct_from": "op-03"
+        },
+        {
+          "reason": "billing issue post-upgrade",
+          "distinct_from": "op-10"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Upgraded but features not unlocked'",
+          "redirect_to": "op-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-13",
+      "level_1_category": "Monetization",
+      "level_2_label": "Plan Changes",
+      "level_3_diagnosis": "Downgrade Experience",
+      "definition": "UX friction when downgrading a plan: can't find how to downgrade, unclear which features are lost, confusion about when downgrade takes effect.",
+      "positive_examples": [
+        "'I want to downgrade to the free tier but can't find where to do it'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "billing issue after downgrade",
+          "distinct_from": "op-10"
+        },
+        {
+          "reason": "Plan Transfer (moving plan between accounts, not changing tier)",
+          "distinct_from": "op-20"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Downgraded but was still charged at higher rate'",
+          "redirect_to": "op-14"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-14",
+      "level_1_category": "Monetization",
+      "level_2_label": "Plan Changes",
+      "level_3_diagnosis": "Plan Transfer",
+      "definition": "Transferring a subscription or plan between accounts, devices, or userse.g., gifting a plan, reassigning a team seat, or moving a license.",
+      "positive_examples": [
+        "'Bought a plan as a gift — can't find how to transfer it to someone else's account'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "upgrading tier, not transferring between accounts",
+          "distinct_from": "op-18"
+        },
+        {
+          "reason": "downgrading tier, not transferring between accounts",
+          "distinct_from": "op-19"
+        }
+      ],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-15",
+      "level_1_category": "Monetization",
+      "level_2_label": "Refunds",
+      "level_3_diagnosis": "Refund Timing",
+      "definition": "Refund was approved or submitted but has not arrived within the expected timeframe. The process was initiated correctly — the issue is the speed or status visibility.",
+      "positive_examples": [
+        "'Refund was approved 2 weeks ago — still not in my account'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Refund Process Clarity (doesn't know how to start the refund)",
+          "distinct_from": "op-11"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Don't know how to request a refund'",
+          "redirect_to": "op-11"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-16",
+      "level_1_category": "Monetization",
+      "level_2_label": "Invoicing",
+      "level_3_diagnosis": "Invoice Access & Download",
+      "definition": "Customer cannot find or download an invoice/receipt after purchase (general/B2C), incl. Apple/Google Play. (VAT/B2B invoicing moved to b2b-03.)",
+      "positive_examples": [
+        "'cannot find where to download the invoice'",
+        "'Google Play does not provide PLAUD invoice'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Detail correction",
+          "distinct_from": "mon-17"
+        },
+        {
+          "reason": "Digital Code Delivery",
+          "distinct_from": "mon-02"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'needs invoice updated with VAT'",
+          "redirect_to": "mon-17"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-19",
+      "level_1_category": "Monetization",
+      "level_2_label": "Billing & Auto-Renewal",
+      "level_3_diagnosis": "Post-Cancellation Charge",
+      "definition": "Charged after believing the subscription/trial was cancelled.",
+      "positive_examples": [
+        "'charged for subscription they believed was cancelled'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "no prior cancellation",
+          "distinct_from": "mon-06"
+        },
+        {
+          "reason": "can't find how to cancel",
+          "distinct_from": "mon-21"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'no cancellation option visible'",
+          "redirect_to": "mon-21"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-20",
+      "level_1_category": "Monetization",
+      "level_2_label": "Billing & Auto-Renewal",
+      "level_3_diagnosis": "Duplicate / Unexpected Charge",
+      "definition": "Double-charged or an unexpected/unrecognized subscription charge.",
+      "positive_examples": [
+        "'charged twice for single annual subscription'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "follows cancellation",
+          "distinct_from": "mon-19"
+        },
+        {
+          "reason": "a renewal",
+          "distinct_from": "mon-06"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'auto-renewed without me knowing'",
+          "redirect_to": "mon-06"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-21",
+      "level_1_category": "Monetization",
+      "level_2_label": "Billing & Auto-Renewal",
+      "level_3_diagnosis": "Cancellation Discoverability",
+      "definition": "Cannot find where/how to cancel a subscription.",
+      "positive_examples": [
+        "'no cancellation option on website, Stripe, or Google Play'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "already cancelled but billed",
+          "distinct_from": "mon-19"
+        },
+        {
+          "reason": "refund speed",
+          "distinct_from": "mon-15"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'charged again after I cancelled'",
+          "redirect_to": "mon-19"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-22",
+      "level_1_category": "Monetization",
+      "level_2_label": "Subscription Plan",
+      "level_3_diagnosis": "Subscription Status Sync",
+      "definition": "Paid plan not applied; account still shows lower tier despite payment.",
+      "positive_examples": [
+        "'account still shows Starter after purchasing Unlimited'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "upgrade flow error",
+          "distinct_from": "mon-12"
+        },
+        {
+          "reason": "wrong account",
+          "distinct_from": "mon-14"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'purchased under wrong email'",
+          "redirect_to": "mon-14"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-23",
+      "level_1_category": "Monetization",
+      "level_2_label": "Minutes & Entitlement",
+      "level_3_diagnosis": "Transcription Minutes & Entitlement",
+      "definition": "All transcription-minute entitlement issues — promised/bonus minutes not credited, plus how the allowance counts/resets/rolls over. Sub-types as L4.",
+      "positive_examples": [
+        "'did not receive promised 600 free minutes'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "counting/reset",
+          "distinct_from": "mon-24"
+        },
+        {
+          "reason": "activation code",
+          "distinct_from": "mon-02"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'do unused minutes roll over?'",
+          "redirect_to": "mon-24"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-24",
+      "level_1_category": "Monetization",
+      "level_2_label": "Minutes & Entitlement",
+      "level_3_diagnosis": "Minute Allowance & Rollover",
+      "definition": "How the minute allowance is counted, resets, or rolls over (already knows a plan applies).",
+      "positive_examples": [
+        "'do unused transcription minutes roll over each cycle?'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "missing credit",
+          "distinct_from": "mon-23"
+        },
+        {
+          "reason": "didn't know sub needed",
+          "distinct_from": "mon-01"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'promised 600 free minutes never credited'",
+          "redirect_to": "mon-23"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-25",
+      "level_1_category": "Marketing",
+      "level_2_label": "Pricing & Value",
+      "level_3_diagnosis": "Discount & Coupon Availability",
+      "definition": "Pre-purchase inquiry about coupons, discounts, student/edu/nonprofit pricing.",
+      "positive_examples": [
+        "'asks about available coupons or discounts'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "has code, fails",
+          "distinct_from": "mon-26"
+        },
+        {
+          "reason": "refund-side",
+          "distinct_from": "gen-07"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'my discount code does not work at checkout'",
+          "redirect_to": "mon-26"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-26",
+      "level_1_category": "Monetization",
+      "level_2_label": "Promotions",
+      "level_3_diagnosis": "Promo Code Checkout Failure",
+      "definition": "An existing promo/discount code fails or is rejected at checkout.",
+      "positive_examples": [
+        "'discount code does not work on current order'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "asking if exists",
+          "distinct_from": "mon-25"
+        },
+        {
+          "reason": "payment fails",
+          "distinct_from": "op-02"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'is there a student discount?'",
+          "redirect_to": "mon-25"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-27",
+      "level_1_category": "Marketing",
+      "level_2_label": "Pricing & Value",
+      "level_3_diagnosis": "Price-Match & Adjustment",
+      "definition": "Price dropped after purchase; requests price match/adjustment.",
+      "positive_examples": [
+        "'price dropped 15% the day after purchase; requests price match'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "too high in general",
+          "distinct_from": "mon-05"
+        },
+        {
+          "reason": "refund leverage",
+          "distinct_from": "gen-07"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'subscription too expensive vs competitors'",
+          "redirect_to": "mon-05"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-29",
+      "level_1_category": "Marketing",
+      "level_2_label": "Pricing & Value",
+      "level_3_diagnosis": "Device Requirement Dispute",
+      "definition": "Customer objects to needing the hardware device to use the service (distinct from subscription).",
+      "positive_examples": [
+        "'I cannot use the PLAUD app without buying and linking a device'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "paid subscription requirement",
+          "distinct_from": "mon-05"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "It restricts you considerably on using it without an ongoing paid subscription",
+          "redirect_to": "mon-05"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "mon-31",
+      "level_1_category": "Marketing",
+      "level_2_label": "Minutes & Entitlement",
+      "level_3_diagnosis": "Free Trial Limitations",
+      "definition": "Free trial limitations — trial period too short or trial scope insufficient (free-minutes volume is tracked under mon-23).",
+      "positive_examples": [
+        "'free trial period too short'",
+        "'included free minutes too low'",
+        "'300 free monthly minutes are not enough if you use the device daily'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "how allowance counts",
+          "distinct_from": "mon-24"
+        },
+        {
+          "reason": "price too high",
+          "distinct_from": "mon-05"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'do unused minutes roll over?'",
+          "redirect_to": "mon-24"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "op-00",
+      "level_1_category": "Ops",
+      "level_2_label": "Other Ops",
+      "level_3_diagnosis": "Other Ops",
+      "definition": "Catch-all for Ops complaints; use when no other op-xx tag & Ops applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "op-01",
+      "level_1_category": "Ops",
+      "level_2_label": "Risk Order",
+      "level_3_diagnosis": "Risk Order Review",
+      "definition": "Order cancelled/refunded due to fraud screening or verification failure (e.g., 3DS, identity verification, anti-fraud policy). The customer may complain they were blocked “for no reason.”",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "op-02",
+      "level_1_category": "Ops",
+      "level_2_label": "Checkout Friction",
+      "level_3_diagnosis": "Payment Failure",
+      "definition": "Customer cannot complete payment due to payment failure, a charge error/duplicate charge, card decline, an unavailable payment method, or checkout payment processing issues.",
+      "positive_examples": [
+        "'Checkout page just shows a loading spinner — never completes'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "pricing information transparency",
+          "distinct_from": "op-14"
+        },
+        {
+          "reason": "promo code validity",
+          "distinct_from": "op-15"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I don't understand the pricing'",
+          "redirect_to": "op-14"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "op-03",
+      "level_1_category": "Ops",
+      "level_2_label": "Expectation Management",
+      "level_3_diagnosis": "Expectation Mismatch",
+      "definition": "Customer claims the product/feature does not match marketing claims; requires verification against specs and actual behavior.",
+      "positive_examples": [
+        "'Website says 'perfect for 10-person meetings' — it barely handles 3'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "PDP Clarity (information missing) vs op-06 (information present but misleading/false)",
+          "distinct_from": "mkt-04"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Transcription isn't accurate' (no marketing claim cited)",
+          "redirect_to": "ai-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "op-04",
+      "level_1_category": "Ops",
+      "level_2_label": "Onboarding",
+      "level_3_diagnosis": "Pre-Order Confusion",
+      "definition": "Refund triggered because the customer misunderstood the pre-order / pre-sale nature (e.g., ship date, in-stock vs pre-order status, pre-order rules, deposit/cancellation policy, what’s included). Any SKU selection mistake should NOT be categorized here.",
+      "positive_examples": [
+        "'Do not know it is pre-order!'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Activation (technical system failure during activation, not UX confusion about steps)",
+          "distinct_from": "op-03"
+        }
+      ],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "op-05",
+      "level_1_category": "Ops",
+      "level_2_label": "Region Lock",
+      "level_3_diagnosis": "Region Lock Restriction",
+      "definition": "Device or account blocked from activation or certain features due to geographic region restrictions.",
+      "positive_examples": [
+        "'Device says activation is not supported in my region'"
+      ],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "pri-00",
+      "level_1_category": "Security & Privacy",
+      "level_2_label": "Other Trust & Support",
+      "level_3_diagnosis": "Other Trust & Support",
+      "definition": "Catch-all for Trust & Support complaints; use when no other pri-xx tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "pri-02",
+      "level_1_category": "Security & Privacy",
+      "level_2_label": "Safety & Reliability",
+      "level_3_diagnosis": "Content Safety",
+      "definition": "User's direct personal experience or fear relating to data security or AI output harm. Covers two sub-types: data security or AI output harm",
+      "positive_examples": [
+        "'Plaud Recording Data Leak! Someone Else’s Data Appears in My Account！\n \nIt makes me worry about data security—could my conversations also end up in other people’s accounts?'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Compliance Concerns (institutional/regulatory requests — GDPR, HIPAA, SOC2 documentation)",
+          "distinct_from": "sw-08"
+        },
+        {
+          "reason": "Summary (output inaccurate but not harmful) — use pri-02 when the concern is the user's own personal data or AI safety, not institutional compliance",
+          "distinct_from": "ai-03"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Summary missed the main decision we made' — inaccurate but not harmful",
+          "redirect_to": "ai-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "pri-04",
+      "level_1_category": "Security & Privacy",
+      "level_2_label": "Private Cloud Sync",
+      "level_3_diagnosis": "Cloud Safety",
+      "definition": "User concerns about safety, security, privacy, or data residency of recordings stored/synced via Private Cloud Sync — encryption, access, hosting, retention/deletion.",
+      "positive_examples": [
+        "'concerned about data security if a lost device's cloud recordings can be accessed'",
+        "'asks where Private Cloud Sync stores data and whether recordings are encrypted'"
+      ],
+      "mece_rules": [],
+      "negative_examples": [
+        {
+          "example": "'recordings not appearing on Web despite Private Cloud Sync' — sync failure",
+          "redirect_to": "sw-04"
+        },
+        {
+          "example": "'requests GDPR DPA documentation' — formal compliance",
+          "redirect_to": "pri-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sup-00",
+      "level_1_category": "Customer Support",
+      "level_2_label": "Other",
+      "level_3_diagnosis": "Other",
+      "definition": "Catch-all for Support complaints; use when no other sup-xx tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sup-01",
+      "level_1_category": "Customer Support",
+      "level_2_label": "Warranty & Service",
+      "level_3_diagnosis": "Return Process Difficulty",
+      "definition": "Customers have difficulty completing a return due to RMA/label issues, unclear steps, a complex process, or operational friction, resulting in a refund request or purchase abandonment.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sup-02",
+      "level_1_category": "Customer Support",
+      "level_2_label": "Warranty & Service",
+      "level_3_diagnosis": "Support Responsiveness",
+      "definition": "Customer dissatisfaction due to slow response, poor communication, or issue not resolved after multiple contacts (not primarily a return-process mechanics issue).",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sup-03",
+      "level_1_category": "Customer Support",
+      "level_2_label": "Product Inquiry",
+      "level_3_diagnosis": "Product & Usage Questions",
+      "definition": "General 'what is it / how do I use it' questions about an owned PLAUD product or feature — usage, setup, capabilities, lights/indicators, charging — where nothing is broken and no new feature is requested.",
+      "positive_examples": [
+        "'asks what the difference is between PLAUD Note and Note Pro'",
+        "'asks how to charge the device / what an indicator light means'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Reseller & Pre-Purchase (sales-channel / before buying)",
+          "distinct_from": "sup-04"
+        },
+        {
+          "reason": "Instruction Clarity (a specific in-app instruction is unclear)",
+          "distinct_from": "sw-07"
+        },
+        {
+          "reason": "If the how-to is about one feature with its own tag, route there + voc_type=enquiry",
+          "distinct_from": "*"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'where do I download my invoice?' — route to the feature",
+          "redirect_to": "mon-16"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sup-04",
+      "level_1_category": "Customer Support",
+      "level_2_label": "Product Inquiry",
+      "level_3_diagnosis": "Reseller & Pre-Purchase Questions",
+      "definition": "Pre-purchase or sales-channel questions — buying via Amazon/Best Buy/resellers, warranty or authorization differences by channel, product selection/fit before purchase, and partnership/wholesale inquiries.",
+      "positive_examples": [
+        "'is the warranty the same buying on Amazon vs directly from PLAUD?'",
+        "'which device best fits medical dictation before I buy?'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Product & Usage Questions (post-purchase use of an owned product)",
+          "distinct_from": "sup-03"
+        },
+        {
+          "reason": "Professional Fit (target-persona indispensability signal)",
+          "distinct_from": "mkt-02"
+        },
+        {
+          "reason": "B2B / Team Account Setup (formal team provisioning)",
+          "distinct_from": "b2b-01"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'how do I use the device I already own?'",
+          "redirect_to": "sup-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sup-05",
+      "level_1_category": "Customer Support",
+      "level_2_label": "Warranty & Service",
+      "level_3_diagnosis": "Resolution Quality",
+      "definition": "Issue not actually resolved, or resolution poor/generic (distinct from response speed).",
+      "positive_examples": [
+        "'support replied but issue never resolved'",
+        "'resolution was poor/generic'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "speed/replies",
+          "distinct_from": "sup-02"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'support never replied for days'",
+          "redirect_to": "sup-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sup-06",
+      "level_1_category": "Customer Support",
+      "level_2_label": "Self-Service & Knowledge Base",
+      "level_3_diagnosis": "Knowledge Base / Help Content Gap",
+      "definition": "Self-service help content (help center, docs, FAQ, in-box manual) is missing, incomplete, or users cannot find the answer — distinct from a user directly asking support.",
+      "positive_examples": [
+        "'cannot find help documentation / FAQ for this'",
+        "'knowledge base does not cover my issue'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Product & Usage Questions (user asks support directly = inbound enquiry)",
+          "distinct_from": "sup-03"
+        },
+        {
+          "reason": "Instruction Clarity (in-app, in-context guidance)",
+          "distinct_from": "sw-07"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'how do I use feature X?' asked to support",
+          "redirect_to": "sup-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-00",
+      "level_1_category": "Software & App",
+      "level_2_label": "Other Software & AI",
+      "level_3_diagnosis": "Other Software & AI",
+      "definition": "Catch-all for Software & App complaints; use when no other sw-xx tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-01",
+      "level_1_category": "Software & App",
+      "level_2_label": "App Performance & Stability",
+      "level_3_diagnosis": "App Crash & Freeze",
+      "definition": "Confirmed app freezes/crashes or gets stuck during syncing, generating, exporting, or other core workflows.",
+      "positive_examples": [
+        "'App crashes every time I try to open a recording'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "UI/UX design, not stability",
+          "distinct_from": "sw-06"
+        },
+        {
+          "reason": "cloud sync failures, not app runtime",
+          "distinct_from": "sw-12"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Cloud sync is failing'",
+          "redirect_to": "sw-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-02",
+      "level_1_category": "Software & App",
+      "level_2_label": "Cloud & Sync",
+      "level_3_diagnosis": "USB Transfer",
+      "definition": "User expects USB transfer; confirmed feature is unavailable on their model/plan or does not work as designed despite following official instructions.",
+      "positive_examples": [
+        "'Feedback concentrated on strong backlash following USB direct-transfer feature removal in Note firmware v2.2.'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "App Connection (Bluetooth device pairing)",
+          "distinct_from": "hw-02"
+        },
+        {
+          "reason": "Fast Transfer (local WiFi file transfer, not cloud)",
+          "distinct_from": "hw-18"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Bluetooth disconnects'",
+          "redirect_to": "hw-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-03",
+      "level_1_category": "Software & App",
+      "level_2_label": "Cloud & Sync",
+      "level_3_diagnosis": "File Transfer Failure",
+      "definition": "Confirmed file transfer/export fails (USB/app/desktop) due to software issues such as errors, timeouts, or incomplete transfers.",
+      "positive_examples": [
+        "'Wi-Fi transfer fails'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "App Connection (Bluetooth device pairing)",
+          "distinct_from": "hw-02"
+        },
+        {
+          "reason": "Fast Transfer (local WiFi file transfer, not cloud)",
+          "distinct_from": "hw-18"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Bluetooth disconnects'",
+          "redirect_to": "hw-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-04",
+      "level_1_category": "Software & App",
+      "level_2_label": "Cloud & Sync",
+      "level_3_diagnosis": "Recording Retrieval Failure",
+      "definition": "Confirmed recordings cannot be accessed/recovered (missing files, failed sync, corrupted storage) after standard recovery steps.",
+      "positive_examples": [
+        "'My recording was crashed. Can'tretrieve my recording'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "App Connection (Bluetooth device pairing)",
+          "distinct_from": "hw-02"
+        },
+        {
+          "reason": "Fast Transfer (local WiFi file transfer, not cloud)",
+          "distinct_from": "hw-18"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Bluetooth disconnects'",
+          "redirect_to": "hw-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-05",
+      "level_1_category": "Software & App",
+      "level_2_label": "Playback",
+      "level_3_diagnosis": "Playback Reliability",
+      "definition": "Confirmed playback fails or is abnormal (no sound, stutter, file won’t play) across supported players/apps.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-06",
+      "level_1_category": "Software & App",
+      "level_2_label": "UX / UI & App Design",
+      "level_3_diagnosis": "Operation Flow Friction",
+      "definition": "The operation flow works but is tedious, inefficient, or stressful — too many steps, repetitive manual actions, high effort to finish a task.",
+      "positive_examples": [
+        "'Too many steps to export files'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "app crashes/slowness",
+          "distinct_from": "sw-01"
+        },
+        {
+          "reason": "Device Adaptation (platform-specific layout breakage)",
+          "distinct_from": "sw-19"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'App is laggy / crashing'",
+          "redirect_to": "sw-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-07",
+      "level_1_category": "Software & App",
+      "level_2_label": "UX / UI & App Design",
+      "level_3_diagnosis": "Instruction Clarity",
+      "definition": "User reports instructions/guide are unclear, incomplete, or misleading for setup or core tasks.",
+      "positive_examples": [
+        "'The navigation is confusing — can't find where to export files'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "app crashes/slowness",
+          "distinct_from": "sw-01"
+        },
+        {
+          "reason": "Device Adaptation (platform-specific layout breakage)",
+          "distinct_from": "sw-19"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'App is laggy / crashing'",
+          "redirect_to": "sw-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-09",
+      "level_1_category": "Software & App",
+      "level_2_label": "Localization",
+      "level_3_diagnosis": "App Localization",
+      "definition": "Incorrect or missing translations in the app interface, language-switching failures, or non-English UI unexpectedly displaying in English.",
+      "positive_examples": [
+        "'German translation is incorrect in the settings menu'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Translation (content translation of recordings, not app interface language)",
+          "distinct_from": "ai-05"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Real-time subtitle translation is wrong'",
+          "redirect_to": "ai-05"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-10",
+      "level_1_category": "Software & App",
+      "level_2_label": "Device",
+      "level_3_diagnosis": "Device Connectivity & Transfer Reliability",
+      "definition": "Hardware-to-app connectivity and transfer reliability — is the connection smooth, does the recording actually transfer over (WiFi upload or Bluetooth upload), and is it fast enough. Also owns OTA firmware download/transfer to the device (stuck/failed/slow OTA), since that's the same transfer-channel question.",
+      "positive_examples": [
+        "‘Recordings sit undelivered over WiFi despite a fine connection’;",
+        "‘Bluetooth upload much slower than before‘;",
+        "’pairs over BT but transfer stalls/fails partway’;",
+        "‘OTA download stuck at a percentage; unclear/unreliable whether upload goes over WiFi or Bluetooth.’"
+      ],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-11",
+      "level_1_category": "Software & App",
+      "level_2_label": "Capture",
+      "level_3_diagnosis": "Recording Capture",
+      "definition": "Recording initiation and control issues not covered by more specific tags: unexpected auto-start, inability to change recording mode, or recording process control bugs. Distinct from hardware-level silent recording.",
+      "positive_examples": [
+        "'The in-app recording pause button is missing / doesn't work'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "recording completes but file is silent",
+          "distinct_from": "hw-08"
+        },
+        {
+          "reason": "audio quality during recording",
+          "distinct_from": "hw-09"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Silent recording after correct start sequence'",
+          "redirect_to": "hw-08"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-12",
+      "level_1_category": "Software & App",
+      "level_2_label": "Cloud & Sync",
+      "level_3_diagnosis": "Other",
+      "definition": "Cloud sync failures, uploads stuck, recordings showing as 'locked,' or data inconsistencies across devices.",
+      "positive_examples": [
+        "'Recordings show as locked and won't open'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "App Connection (Bluetooth device pairing)",
+          "distinct_from": "hw-02"
+        },
+        {
+          "reason": "Fast Transfer (local WiFi file transfer, not cloud)",
+          "distinct_from": "hw-18"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Bluetooth disconnects'",
+          "redirect_to": "hw-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-13",
+      "level_1_category": "Software & App",
+      "level_2_label": "Edit",
+      "level_3_diagnosis": "Review & Editing",
+      "definition": "Post-processing editing issues: transcript edits not saving, content reverting after reopening, inability to rename recordings.",
+      "positive_examples": [
+        "'Edits to the transcript don't save — it reverts every time I reopen the file'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "App Performance & Stability (app crashes/freezes in general, not specifically edit-save failures)",
+          "distinct_from": "sw-01"
+        }
+      ],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-14",
+      "level_1_category": "Software & App",
+      "level_2_label": "Share / Export",
+      "level_3_diagnosis": "Sharing & Export",
+      "definition": "Issues exporting or sharing recordings, transcripts, or summaries: unsupported formats, export failures, expiring share links, speaker labels lost in export.",
+      "positive_examples": [
+        "'Can't export the transcript as a DOCX file'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Cloud & Sync (cloud sync failures, not intentional export/share actions)",
+          "distinct_from": "sw-12"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Recordings not syncing to cloud automatically'",
+          "redirect_to": "sw-02"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-15",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Account Ownership & Attribution Conflict",
+      "definition": "Asset-attribution axis: device, membership, or data are attached to the 'wrong' account (device bound to another/old account, subscription on wrong account, data in another account, duplicate/split accounts). Login itself may work — the problem is the asset-to-account mapping.",
+      "positive_examples": [
+        "'Second-hand device says linked to another account'",
+        "'Membership shows on my purchase email but not my login email'",
+        "'Recordings disappeared after logging into another account'",
+        "'Two accounts from the same email via different login methods'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Pure Bluetooth/hardware pairing -> Hardware",
+          "distinct_from": "hw-02"
+        },
+        {
+          "reason": "Same-account cloud sync failure -> Cloud & Sync",
+          "distinct_from": "sw-04"
+        },
+        {
+          "reason": "Has access, only re-binding a device -> Device Management",
+          "distinct_from": "sw-10"
+        },
+        {
+          "reason": "Subscription status sync on the SAME account -> Monetization",
+          "distinct_from": "mon-22"
+        },
+        {
+          "reason": "Primary ask is account recovery",
+          "distinct_from": "sw-35"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Bluetooth pairing fails though account is fine'",
+          "redirect_to": "hw-02"
+        },
+        {
+          "example": "'Paid on same account but plan shows expired'",
+          "redirect_to": "mon-22"
+        },
+        {
+          "example": "'Recordings fail to sync to cloud on same account'",
+          "redirect_to": "sw-04"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-16",
+      "level_1_category": "Software & App",
+      "level_2_label": "Autoflow",
+      "level_3_diagnosis": "Autoflow Automation",
+      "definition": "Rule-based automation (\"when X happens, do Y\") issues: rules not triggering, unexpected default behavior, or automation action errors. Distinct from AI Agent actions.",
+      "positive_examples": [
+        "'Set up Autoflow to send summaries by email but it never triggers'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Agent (AI-driven multi-step agent)",
+          "distinct_from": "ai-11"
+        },
+        {
+          "reason": "Integration (third-party tool connection issues, not automation rule logic)",
+          "distinct_from": "sw-17"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Notion integration keeps disconnecting'",
+          "redirect_to": "sw-17"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-17",
+      "level_1_category": "Software & App",
+      "level_2_label": "Integration",
+      "level_3_diagnosis": "Third-Party Integration",
+      "definition": "Third-party tool integrations (Notion, Slack, Zoom, Salesforce, HubSpot, Zapier, etc.) failing to connect, syncing inconsistently, or requests for new integration support.",
+      "positive_examples": [
+        "'Notion integration keeps disconnecting — syncs about 50% of the time'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Autoflow (automation rule logic, not the connection itself)",
+          "distinct_from": "sw-16"
+        },
+        {
+          "reason": "API (developer API/webhook issues, not end-user integration)",
+          "distinct_from": "sw-18"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'API key not working for our custom integration'",
+          "redirect_to": "sw-18"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-18",
+      "level_1_category": "Software & App",
+      "level_2_label": "API",
+      "level_3_diagnosis": "API Access",
+      "definition": "API key access, Webhook configuration, or OAuth integration technical issues and developer requests.",
+      "positive_examples": [
+        "'Need an API key to integrate Plaud with our internal system'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Integration (end-user third-party tool connections, not developer API)",
+          "distinct_from": "sw-17"
+        }
+      ],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-19",
+      "level_1_category": "Software & App",
+      "level_2_label": "Device Adaptation",
+      "level_3_diagnosis": "Device/OS Compatibility",
+      "definition": "Compatibility issues across iPad, multi-screen layouts, or different OS versions (iOS/Android).",
+      "positive_examples": [
+        "'iPad app doesn't support split-screen mode'"
+      ],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-20",
+      "level_1_category": "Software & App",
+      "level_2_label": "Capture",
+      "level_3_diagnosis": "Phone-Call Recording",
+      "definition": "Recording phone/VoIP calls — capability or failures (only own voice, no auto-detect).",
+      "positive_examples": [
+        "'other party's voice not recorded on phone calls'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "audio quality",
+          "distinct_from": "hw-09"
+        },
+        {
+          "reason": "general capture",
+          "distinct_from": "sw-11"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'recording full of echo'",
+          "redirect_to": "hw-09"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-21",
+      "level_1_category": "B2B / Enterprise",
+      "level_2_label": "Workspace",
+      "level_3_diagnosis": "Workspace Access & Migration",
+      "definition": "Personal < -> Team migration/visibility issues. \nA Team workspace is PLAUD's collaborative workspace for businesses, serving as a governed container for team collaboration, admin controls, billing, and data boundaries\nIt allows organizations to create a shared workspace, invite and manage team members, handle billing, manage security and offboarding, and collaborate on meeting content together. Each seat includes full Plaud Unlimited Plan benefits, and it's priced per seat with a minimum of 2 seats required for sign-up.",
+      "positive_examples": [
+        "'switching between Personal and Team workspaces'",
+        "'Manage the workspace via Settings'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "recordings missing",
+          "distinct_from": "sw-04"
+        },
+        {
+          "reason": "subscription moves",
+          "distinct_from": "mon-14"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'recordings synced but missing'",
+          "redirect_to": "sw-04"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-22",
+      "level_1_category": "Software & App",
+      "level_2_label": "Capture",
+      "level_3_diagnosis": "In-App Recording",
+      "definition": "In-app recording: cannot pause, auto-stops when backgrounded, fails to start.",
+      "positive_examples": [
+        "'cannot pause recording in app'",
+        "'recording auto-stops when backgrounded'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "general capture",
+          "distinct_from": "sw-11"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'device button starts/stops on its own'",
+          "redirect_to": "hw-08"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-23",
+      "level_1_category": "Software & App",
+      "level_2_label": "Cloud & Sync",
+      "level_3_diagnosis": "Audio Import",
+      "definition": "Importing external audio: format unsupported, quality degraded, fails, or size/length limit.",
+      "positive_examples": [
+        "'cannot import MP3; upload fails'",
+        "'format not supported on import'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "device->app transfer",
+          "distinct_from": "sw-03"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'recordings not syncing from device'",
+          "redirect_to": "sw-03"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-24",
+      "level_1_category": "Software & App",
+      "level_2_label": "App Performance & Stability",
+      "level_3_diagnosis": "App Update Issues",
+      "definition": "App update fails, breaks/disconnects, removes a feature, or too slow (not firmware).",
+      "positive_examples": [
+        "'app update fails'",
+        "'update removed a feature'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "device firmware",
+          "distinct_from": "hw-13"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'firmware update fails on device'",
+          "redirect_to": "hw-13"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-25",
+      "level_1_category": "Software & App",
+      "level_2_label": "Recording Management",
+      "level_3_diagnosis": "File Organization",
+      "definition": "No/poor folders, poor naming/dating, inadequate sorting, no bulk actions.",
+      "positive_examples": [
+        "'no folder system / poor sorting'",
+        "'no bulk actions on files'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "recordings missing",
+          "distinct_from": "sw-04"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'recordings missing from app'",
+          "redirect_to": "sw-04"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-26",
+      "level_1_category": "Software & App",
+      "level_2_label": "Edit",
+      "level_3_diagnosis": "Transcript Editing",
+      "definition": "Edits not saved, hard to correct, find&replace broken, cannot rename, low-confidence not flagged.",
+      "positive_examples": [
+        "'edits to transcript not saved'",
+        "'find & replace broken; cannot rename file'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "model output accuracy",
+          "distinct_from": "ai-01"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'transcription has many word errors'",
+          "redirect_to": "ai-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-27",
+      "level_1_category": "Software & App",
+      "level_2_label": "UX / UI & App Design",
+      "level_3_diagnosis": "Settings & Personalization",
+      "definition": "No dark mode, weak notification controls, limited personalization, no battery level in app.",
+      "positive_examples": [
+        "'no dark mode'",
+        "'cannot see device battery in app'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "overall ease of use",
+          "distinct_from": "sw-06"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'app generally hard to use'",
+          "redirect_to": "sw-06"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-28",
+      "level_1_category": "Software & App",
+      "level_2_label": "UX / UI & App Design",
+      "level_3_diagnosis": "In-App Ads Opt-Out",
+      "definition": "Cannot turn off in-app ads / upgrade promotion pop-ups.",
+      "positive_examples": [
+        "'cannot turn off in-app ads/promotions'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "promotion content/trust",
+          "distinct_from": "mon-10"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'promo terms misleading'",
+          "redirect_to": "mon-10"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-29",
+      "level_1_category": "Software & App",
+      "level_2_label": "Accessibility",
+      "level_3_diagnosis": "Accessibility Support",
+      "definition": "No read-aloud/screen-reader; text size or contrast insufficient.",
+      "positive_examples": [
+        "'no screen-reader support'",
+        "'text size/contrast insufficient'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "general usability",
+          "distinct_from": "sw-06"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'UI confusing to navigate'",
+          "redirect_to": "sw-06"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-30",
+      "level_1_category": "Software & App",
+      "level_2_label": "Desktop App",
+      "level_3_diagnosis": "Desktop Limitations",
+      "definition": "Desktop limited vs mobile, no Linux, virtual audio driver conflict, no screen-record or speaker-name capture.",
+      "positive_examples": [
+        "'desktop limited vs mobile / no Linux'",
+        "'cannot screen-record; audio driver conflict'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "general OS compat",
+          "distinct_from": "sw-19"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'app crashes on launch'",
+          "redirect_to": "sw-01"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-31",
+      "level_1_category": "Software & App",
+      "level_2_label": "Tablet",
+      "level_3_diagnosis": "Tablet & iPad Experience",
+      "definition": "No dedicated iPad app, iPhone-mode poor scaling, landscape unsupported.",
+      "positive_examples": [
+        "'no iPad app; runs in iPhone mode'",
+        "'landscape unsupported'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "general OS compat",
+          "distinct_from": "sw-19"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'desktop limited vs mobile'",
+          "redirect_to": "sw-30"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-32",
+      "level_1_category": "Software & App",
+      "level_2_label": "Onboarding",
+      "level_3_diagnosis": "App Onboarding",
+      "definition": "No in-app feature introduction; profile setup friction at first launch.",
+      "positive_examples": [
+        "'no in-app feature introduction'",
+        "'profile setup friction at first launch'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "hardware setup",
+          "distinct_from": "hw-26"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'physical manual missing from box'",
+          "redirect_to": "hw-26"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-33",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Registration & Verification",
+      "definition": "New-account creation stage: whether a user can successfully register a new account and pass email / OTP verification. Covers ONLY failures creating an account from scratch — not login on an existing account.",
+      "positive_examples": [
+        "'The email verification code never arrives to my Apple relay alias'",
+        "'Codes I enter are rejected as incorrect'",
+        "'System treats my existing email as unregistered and forces new account creation'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Reset / lost-credential is Recovery, not registration",
+          "distinct_from": "sw-35"
+        },
+        {
+          "reason": "Existing-account login failure",
+          "distinct_from": "sw-34"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Password reset verification codes are not received'",
+          "redirect_to": "sw-35"
+        },
+        {
+          "example": "'App says the email/password are wrong'",
+          "redirect_to": "sw-34"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-34",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Login Authentication",
+      "definition": "Authentication stage: for an existing account, failures between entering credentials and a successful login (credentials rejected, SSO failure, login flow error/stuck, account locked). Only 'why THIS login attempt failed'.",
+      "positive_examples": [
+        "'Wrong account or password, but the same credentials work on mobile'",
+        "'Google sign-in loop, cannot authenticate'",
+        "'Login page white-screens / crashes'",
+        "'Too many attempts, account locked'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "User forgot/lost credentials -> Recovery",
+          "distinct_from": "sw-35"
+        },
+        {
+          "reason": "Wants to change/switch login method (is already in)",
+          "distinct_from": "sw-36"
+        },
+        {
+          "reason": "Session dropped after a successful login",
+          "distinct_from": "sw-37"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Forgot the old password and the reset flow is broken'",
+          "redirect_to": "sw-35"
+        },
+        {
+          "example": "'Cannot switch from Apple SSO to email login'",
+          "redirect_to": "sw-36"
+        },
+        {
+          "example": "'Suspicious activity, someone accessed my account'",
+          "redirect_to": "sw-40"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-35",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Credential & Account Recovery",
+      "definition": "Recovery stage: the user has lost credentials or account-identity info (password reset, forgotten registration email/method, manual back-office recovery) and needs to regain access. It includes users who have simply lost their own credentials/identity.",
+      "positive_examples": [
+        "'Forgot which email I used and the reset link is invalid'",
+        "'Forgot password and the forgot-password flow errors out'",
+        "'Do not remember whether I signed up with Google or Apple'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Credentials in hand but rejected",
+          "distinct_from": "sw-34"
+        },
+        {
+          "reason": "Asset is on a different/other account",
+          "distinct_from": "sw-38"
+        },
+        {
+          "reason": "Handover to another person",
+          "distinct_from": "sw-39"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Sign-up verification email never arrives'",
+          "redirect_to": "sw-33"
+        },
+        {
+          "example": "'Device is bound to my father's account'",
+          "redirect_to": "sw-38"
+        },
+        {
+          "example": "'Want to transfer the account to a colleague'",
+          "redirect_to": "sw-39"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-36",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Login Method & Account Info Management",
+      "definition": "Attribute-change stage: the user CAN access the account but wants to change the login method or account attributes (change login email, switch/add login method, region/country correction). User is 'in'; the ask is to 'change'.",
+      "positive_examples": [
+        "'Change primary login email to my work Outlook address'",
+        "'Switch from Apple SSO to email+password'",
+        "'Registered under wrong country via VPN, need region corrected'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "The login method itself fails (cannot get in)",
+          "distinct_from": "sw-34"
+        },
+        {
+          "reason": "Changing email to hand the account to another person",
+          "distinct_from": "sw-39"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Google sign-in loop, cannot authenticate'",
+          "redirect_to": "sw-34"
+        },
+        {
+          "example": "'Charged in wrong currency'",
+          "redirect_to": "mon-06"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-37",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Session & Multi-Platform Access",
+      "definition": "Session-maintenance stage: authentication succeeded, but keeping the session or reusing login state across surfaces (unexpected logout, Web/desktop login, third-party connector authorization) fails.",
+      "positive_examples": [
+        "'App logs me out every few days'",
+        "'Web says my email is not registered though the app works'",
+        "'Clicking Launch Plaud Desktop does nothing'",
+        "'MCP connector only offers Google/email, my Apple account cannot authorize'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Login fails everywhere",
+          "distinct_from": "sw-34"
+        },
+        {
+          "reason": "Missing desktop features (not login)",
+          "distinct_from": "sw-30"
+        },
+        {
+          "reason": "Connector feature bug (not authorization)",
+          "distinct_from": "sw-17"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'After logout, Google SSO now fails with a loop'",
+          "redirect_to": "sw-34"
+        },
+        {
+          "example": "'Desktop app lacks editing features'",
+          "redirect_to": "sw-30"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-39",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Account Lifecycle & Handover",
+      "definition": "Account termination/handover axis: deletion requests, post-deletion residual issues, and transfer of an account between people (offboarding, gifting, changing the responsible owner). Focus on the account entity's existence and change of owner.",
+      "positive_examples": [
+        "'Please delete my account and data'",
+        "'After deletion my device is still linked to the deleted account'",
+        "'Employee left, re-bind the company account to a new owner'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "User changes their OWN email, same person",
+          "distinct_from": "sw-36"
+        },
+        {
+          "reason": "Transfer subscription only -> Monetization > Plan Transfer",
+          "distinct_from": "mon-14"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'I want to change my own login email'",
+          "redirect_to": "sw-36"
+        },
+        {
+          "example": "'Transfer only my subscription, not the account'",
+          "redirect_to": "mon-14"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-40",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Account Security",
+      "definition": "Security axis: the fact or fear of UNAUTHORIZED access to the account (suspected compromise, abnormal access). Here the worry is someone ELSE getting in.",
+      "positive_examples": [
+        "'I see abnormal login activity / my content changed'",
+        "'My Google account was hacked and now my PLAUD access is affected'"
+      ],
+      "mece_rules": [
+        {
+          "reason": "Plain login failure, no compromise signs",
+          "distinct_from": "sw-34"
+        },
+        {
+          "reason": "2FA/security settings requests & data-storage concerns -> Security & Privacy",
+          "distinct_from": "pri-02"
+        }
+      ],
+      "negative_examples": [
+        {
+          "example": "'Please add 2FA / two-step verification'",
+          "redirect_to": "pri-02"
+        },
+        {
+          "example": "'Worried about how recordings are stored'",
+          "redirect_to": "pri-04"
+        }
+      ],
+      "updated_by": "",
+      "retired": false
+    },
+    {
+      "id": "sw-41",
+      "level_1_category": "Software & App",
+      "level_2_label": "Account & Login",
+      "level_3_diagnosis": "Other Account",
+      "definition": "Catch-all for Account & Login; use when no other account and login tag applies.",
+      "positive_examples": [],
+      "mece_rules": [],
+      "negative_examples": [],
+      "updated_by": "",
+      "retired": false
+    }
+  ]
+}

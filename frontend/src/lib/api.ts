@@ -918,6 +918,69 @@ export const backfillClassifications = (limit: number = 500) =>
   );
 
 // ============================================================
+// VOC Portal taxonomy (new classification, replaces the above for new data)
+// ============================================================
+
+export interface VocTaxonomyDiagnosis {
+  tag_id: string;
+  diagnosis: string;
+  definition: string;
+}
+
+export interface VocTaxonomyLabel {
+  label: string;
+  diagnoses: VocTaxonomyDiagnosis[];
+}
+
+export interface VocTaxonomyGroup {
+  group: string;
+  labels: VocTaxonomyLabel[];
+}
+
+export interface VocTaxonomyTree {
+  total_active_tags: number;
+  tree: VocTaxonomyGroup[];
+}
+
+export const fetchVocTaxonomy = () => request<VocTaxonomyTree>(`/voc/taxonomy`);
+
+export const syncVocTaxonomy = () =>
+  request<{ status: string; added: string[]; changed: string[]; retired: string[] }>(
+    `/voc/taxonomy/sync`,
+    { method: "POST" },
+  );
+
+export interface VocDiagnosisCount {
+  diagnosis: string;
+  count: number;
+}
+
+export interface VocLabelCount {
+  label: string;
+  count: number;
+  diagnoses: VocDiagnosisCount[];
+}
+
+export interface VocGroupCount {
+  group: string;
+  count: number;
+  labels: VocLabelCount[];
+}
+
+export interface VocClassificationStats {
+  date_from: string;
+  date_to: string;
+  total: number;
+  total_tagged: number;
+  groups: VocGroupCount[];
+}
+
+export const fetchVocClassificationStats = (days: number = 30, includeSecondary: boolean = false) =>
+  request<VocClassificationStats>(
+    `/voc/classification-stats?days=${days}&include_secondary=${includeSecondary}`,
+  );
+
+// ============================================================
 // Eval Pipeline
 // ============================================================
 

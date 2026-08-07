@@ -167,6 +167,19 @@ jenkins:
     - sanato.zhang@plaud.ai
 
 # ===========================
+# VOC Portal taxonomy 集成
+# ===========================
+# https://voc-portal-apse1.nicebuild.click 的工单分类 taxonomy 接入。
+# client_id/client_secret 是 secret，走 .env（VOC_CLIENT_ID / VOC_CLIENT_SECRET），不写这里。
+# sync_enabled 默认关闭：凭证到位、端到端验证过再手动打开。
+voc:
+  base_url: https://voc-portal-apse1.nicebuild.click
+  token_url: https://voc-portal-apse1.nicebuild.click/oauth/token
+  sync_enabled: false
+  sync_interval_hours: 24
+  classifier_model: claude-sonnet-5
+
+# ===========================
 # Crashguard 模块配置
 # ===========================
 crashguard:

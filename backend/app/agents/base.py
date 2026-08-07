@@ -658,6 +658,7 @@ output/       ← 请将 result.json 写入此目录
             problem_type=_raw_type_zh,        # Chinese stays in main field for DB compat
             problem_type_en=_raw_type_en,
             problem_categories=_safe_problem_categories(data.get("problem_categories", [])),
+            voc_tags=_safe_voc_tags(data.get("voc_tags", [])),
             device_type=str(data.get("device_type", "")).strip(),
             root_cause=_clean_system_lines(_raw_rc_zh),
             root_cause_en=_clean_system_lines(_raw_rc_en),
@@ -754,6 +755,9 @@ def _compose_prompt(
     "problem_categories": [
         {{"category": "Level-1 category", "subcategory": "Level-2 subcategory"}}
     ],
+    "voc_tags": [
+        {{"tag_id": "one tag_id from context/voc_taxonomy.json", "role": "primary", "confidence": "high/medium/low", "reason": "why this tag"}}
+    ],
     "device_type": "Device model (extract from logs device/bind or device/info API, empty string if unknown)",
     "root_cause": "Root cause analysis in English (5-10 sentences: 1. Problem summary 2. Specific root cause 3. Key log evidence 4. Impact scope)",
     "root_cause_en": "Same as root_cause (English is the primary language)",
@@ -781,6 +785,8 @@ needs_engineer / system_failure / needs_user_retry — **mutually exclusive flag
 ```
 
 problem_categories and device_type taxonomy: see `context/classification_taxonomy.json` — **read it before analysis**. One issue can belong to multiple categories.
+
+voc_tags taxonomy: see `context/voc_taxonomy.json` — **read it before analysis**. Pick exactly 1 tag with `"role": "primary"` (the single best match) plus up to 2 more with `"role": "secondary"` for other clearly-relevant aspects. Only use `tag_id` values that appear in that file. Respect each tag's `mece_rules`/`negative_examples` — if the ticket matches a tag's negative example or a `distinct_from` tag fits better, use that one instead. If the taxonomy file is empty or nothing fits, omit `voc_tags` entirely (leave it `[]`) rather than guessing an id.
 
 **Primary language: English** — All main fields (problem_type, root_cause, user_reply, key_evidence, confidence_reason, fix_suggestion) MUST be written in English first.
 
@@ -905,6 +911,23 @@ def _safe_problem_categories(value: Any) -> list:
                 subcategory=str(item.get("subcategory", "")).strip(),
             ))
     return result
+
+
+def _safe_voc_tags(value: Any) -> list:
+    """Ensure voc_tags is a list of validated VocTag dicts.
+
+    Delegates the actual tag_id/cardinality validation to
+    app.services.voc_classifier.validate_flat_voc_tags — the CLI agent
+    writes free-text tag_ids into result.json just like it does for
+    problem_categories, so this needs the same "unknown id → dropped"
+    quality gate as the classify_ticket() path, not just a shape check.
+    """
+    from app.models.schemas import VocTag
+    from app.services.voc_classifier import validate_flat_voc_tags
+    if not isinstance(value, list):
+        return []
+    validated = validate_flat_voc_tags(value)
+    return [VocTag(**item) for item in validated]
 
 
 def _is_file_path_not_evidence(s: str) -> bool:

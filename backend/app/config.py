@@ -304,6 +304,32 @@ class StorageSettings(BaseSettings):
     data_dir: str = "./data"
 
 
+class VOCSettings(BaseSettings):
+    """VOC Portal taxonomy 集成（https://voc-portal-apse1.nicebuild.click）。
+
+    真相源在 VOC 侧，本地是 seed（首次灌库）+ 定期同步（DB 为 runtime 缓存），
+    模式仿 rule_engine.py（文件是 seed，DB 是 runtime 真源）。
+
+    client_id / client_secret 是 secret，只走 env（VOC_CLIENT_ID / VOC_CLIENT_SECRET），
+    不放 config.yaml。sync_enabled 默认 False —— 凭证到位、端到端验证过再开。
+    """
+
+    base_url: str = "https://voc-portal-apse1.nicebuild.click"
+    token_url: str = "https://voc-portal-apse1.nicebuild.click/oauth/token"
+    client_id: str = ""
+    client_secret: str = ""
+    sync_enabled: bool = False
+    sync_interval_hours: int = 24
+    classifier_model: str = "claude-sonnet-5"
+
+    model_config = {
+        "env_prefix": "VOC_",
+        "env_file": str(PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+
 class Settings(BaseSettings):
     # --- Env-based settings ---
     redis_url: str = "redis://localhost:6379/0"
@@ -333,6 +359,7 @@ class Settings(BaseSettings):
     concurrency: ConcurrencySettings = Field(default_factory=ConcurrencySettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     jenkins: JenkinsSettings = Field(default_factory=JenkinsSettings)
+    voc: VOCSettings = Field(default_factory=VOCSettings)
 
     # 模型定价（每 Mtok USD），仅用于 API 路径成本估算（condenser haiku / claude_api agent）。
     # claude_code CLI 直接用 --output-format json 的 total_cost_usd，不查此表。
@@ -477,6 +504,12 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
         for model_name, rates in pr.items():
             if isinstance(rates, dict):
                 settings.pricing[model_name] = {**settings.pricing.get(model_name, {}), **rates}
+
+    # VOC taxonomy — client_id/secret 是 secret，只走 env，yaml 只覆盖非 secret 字段
+    voc_cfg = cfg.get("voc", {})
+    for k in ("base_url", "token_url", "sync_enabled", "sync_interval_hours", "classifier_model"):
+        if k in voc_cfg and not os.getenv(f"VOC_{k.upper()}"):
+            setattr(settings.voc, k, voc_cfg[k])
 
     # repo_routing (repo_router bands)
     rr = cfg.get("repo_routing", {})

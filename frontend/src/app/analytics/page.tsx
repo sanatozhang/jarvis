@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { CountUp } from "@/components/CountUp";
 import { useEffect, useState, useCallback } from "react";
-import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem } from "@/lib/api";
+import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, fetchVocClassificationStats, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem, type VocClassificationStats } from "@/lib/api";
 
 interface FailReasonItem {
   issue_id?: string;
@@ -75,6 +75,9 @@ export default function AnalyticsPage() {
   const [ruleAccuracy, setRuleAccuracy] = useState<RuleAccuracyStat[]>([]);
   const [ptStats, setPtStats] = useState<ProblemTypeStats | null>(null);
   const [clsStats, setClsStats] = useState<ClassificationStats | null>(null);
+  const [vocStats, setVocStats] = useState<VocClassificationStats | null>(null);
+  const [classificationTab, setClassificationTab] = useState<"voc" | "legacy">("voc");
+  const [expandedVocGroup, setExpandedVocGroup] = useState<string | null>(null);
   const [expandedCat, setExpandedCat] = useState<string | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<string>("all");
   const [backfilling, setBackfilling] = useState(false);
@@ -95,16 +98,18 @@ export default function AnalyticsPage() {
   const load = async (d: number) => {
     setLoading(true);
     try {
-      const [res, ra, pt, cls] = await Promise.all([
+      const [res, ra, pt, cls, voc] = await Promise.all([
         fetch(`/api/analytics/dashboard?days=${d}`),
         fetchRuleAccuracy(d).catch(() => []),
         fetchProblemTypeStats(d).catch(() => null),
         fetchClassificationStats(d).catch(() => null),
+        fetchVocClassificationStats(d).catch(() => null),
       ]);
       if (res.ok) setData(await res.json());
       setRuleAccuracy(ra);
       setPtStats(pt);
       setClsStats(cls);
+      setVocStats(voc);
     } catch {} finally { setLoading(false); }
   };
 
@@ -536,8 +541,96 @@ export default function AnalyticsPage() {
             );
           })()}
 
-          {/* Classification: Pie chart + Device breakdown */}
-          {clsStats && clsStats.category_distribution.length > 0 && (() => {
+          {/* Classification tab switcher — VOC Portal taxonomy (new, default) vs legacy pie chart (frozen) */}
+          {(vocStats || (clsStats && clsStats.category_distribution.length > 0)) && (
+            <div className="flex items-center gap-1 rounded-lg p-1 j-rise" style={{ background: S.overlay, ["--d" as string]: "0.15s", width: "fit-content" }}>
+              <button
+                onClick={() => setClassificationTab("voc")}
+                className="rounded-md px-3 py-1.5 text-xs font-medium transition-all"
+                style={classificationTab === "voc"
+                  ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
+                  : { color: S.text3 }}>
+                {t("VOC 分类")}
+              </button>
+              <button
+                onClick={() => setClassificationTab("legacy")}
+                className="rounded-md px-3 py-1.5 text-xs font-medium transition-all"
+                style={classificationTab === "legacy"
+                  ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
+                  : { color: S.text3 }}>
+                {t("旧分类（冻结）")}
+              </button>
+            </div>
+          )}
+
+          {/* VOC Portal taxonomy: group → label → diagnosis drill-down (new, default) */}
+          {classificationTab === "voc" && vocStats && vocStats.groups.length > 0 && (() => {
+            const totalTagged = vocStats.total_tagged;
+            return (
+              <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.16s" }}>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("VOC 分类分布")}</h2>
+                  <span className="text-[11px] font-mono" style={{ color: S.text3 }}>
+                    {t("共")} {vocStats.groups.length} {t("个分类组")} / {totalTagged} {t("单已打标")}
+                    {vocStats.total > totalTagged && (
+                      <> · {vocStats.total - totalTagged} {t("单未打标")}</>
+                    )}
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {vocStats.groups.map((g) => {
+                    const isExpanded = expandedVocGroup === g.group;
+                    const pct = totalTagged > 0 ? (g.count / totalTagged * 100).toFixed(1) : "0";
+                    return (
+                      <div key={g.group}>
+                        <button
+                          onClick={() => setExpandedVocGroup(isExpanded ? null : g.group)}
+                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 transition-colors text-left"
+                          onMouseEnter={(e) => (e.currentTarget.style.background = S.overlay)}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                          <span className="text-[9px] flex-shrink-0" style={{ color: S.text3 }}>{isExpanded ? "▼" : "▶"}</span>
+                          <span className="text-xs flex-1 truncate font-medium" style={{ color: S.text2 }}>{g.group}</span>
+                          <span className="text-[11px] font-mono tabular-nums flex-shrink-0" style={{ color: S.text1 }}>{g.count}</span>
+                          <span className="text-[10px] font-mono flex-shrink-0 w-12 text-right" style={{ color: S.text3 }}>{pct}%</span>
+                        </button>
+                        {isExpanded && (
+                          <div className="ml-6 mt-0.5 mb-1 space-y-1">
+                            {g.labels.map((l) => (
+                              <div key={l.label} className="rounded px-2 py-1" style={{ background: "var(--j-hover)" }}>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-medium" style={{ color: S.text2 }}>{l.label || t("(无二级标签)")}</span>
+                                  <span className="text-[11px] font-mono tabular-nums" style={{ color: S.text1 }}>{l.count}</span>
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-1.5">
+                                  {l.diagnoses.map((d) => (
+                                    <span key={d.diagnosis} title={d.diagnosis}
+                                      className="rounded-full px-2 py-0.5 text-[10px]"
+                                      style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
+                                      {d.diagnosis || t("(无三级诊断)")} · {d.count}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })()}
+          {classificationTab === "voc" && (!vocStats || vocStats.groups.length === 0) && (
+            <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.16s" }}>
+              <p className="text-xs" style={{ color: S.text3 }}>
+                {t("暂无 VOC 分类数据——taxonomy 尚未同步，或所选时间范围内还没有打标结果。")}
+              </p>
+            </section>
+          )}
+
+          {/* Classification: Pie chart + Device breakdown (legacy, frozen for comparison) */}
+          {classificationTab === "legacy" && clsStats && clsStats.category_distribution.length > 0 && (() => {
             const PIE_COLORS = [
               "#0E7C86","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C",
               "#0891B2","#DB2777","#4F46E5","#65A30D","#D97706","#059669",

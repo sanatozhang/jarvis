@@ -106,7 +106,11 @@ class AnalysisRecord(Base):
     engineer_label_feedback_at = Column(DateTime, nullable=True)
     engineer_label_feedback_note = Column(Text, default="")
     fix_suggestion = Column(Text, default="")
-    problem_categories_json = Column(Text, default="[]")  # JSON: [{"category":"蓝牙连接","subcategory":"搜索不到设备"},...]
+    problem_categories_json = Column(Text, default="[]")  # JSON: [{"category":"蓝牙连接","subcategory":"搜索不到设备"},...] — 冻结只读
+    # VOC taxonomy 分类（新字段并存，与上面 problem_categories_json 独立）：
+    # JSON: [{"tag_id","level_1_category","level_2_label","level_3_diagnosis",
+    #         "role":"primary"|"secondary","confidence","reason"}, ...]
+    voc_tags_json = Column(Text, default="[]")
     device_type = Column(String(64), default="")           # "Note" / "Note Pin" / "Note Pro" / "NotePin 2" / "iZYREC"
     rule_type = Column(String(64), default="")
     agent_type = Column(String(32), default="")
@@ -125,6 +129,31 @@ class AnalysisRecord(Base):
     # 默认 "app"——每条 AnalysisRecord 必然对应一个具体工单，工单必然有平台（老 app 工单隐含平台即 app）。
     platform = Column(String(16), default="app")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class VocTagRecord(Base):
+    """VOC Portal taxonomy tag — runtime cache of https://voc-portal-apse1.nicebuild.click 的
+    /api/taxonomy/tags。DB 是 runtime 真源（可被 UI/回填读），VOC 侧才是 taxonomy 真相源；
+    模式仿 rule_engine.py（文件是 seed，DB 是 runtime 真源）。
+
+    retired: VOC 的 /api/taxonomy/tags 只返回 active tags；本地把"存在于 DB 但这次同步
+    没再收到"的 tag 标记为 retired（不再进新记录打标 prompt），已打标记录保留直到 re-tag。
+    """
+    __tablename__ = "voc_tags"
+
+    id = Column(String(64), primary_key=True)              # "ai-01"
+    level_1_category = Column(String(128), default="")     # group
+    level_2_label = Column(String(128), default="")
+    level_3_diagnosis = Column(String(128), default="")
+    definition = Column(Text, default="")                  # 归类定义
+    positive_examples_json = Column(Text, default="[]")    # ["...", ...]
+    mece_rules_json = Column(Text, default="[]")            # [{"distinct_from":..,"reason":..}]
+    negative_examples_json = Column(Text, default="[]")     # [{"example":..,"redirect_to":..}]
+    updated_by = Column(String(128), default="")
+    retired = Column(Boolean, default=False)
+    synced_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class EventRecord(Base):
@@ -474,6 +503,10 @@ async def init_db():
             ("cost_source", "VARCHAR(16)", "''"),      # 计量：cli_reported/computed/partial
             ("is_deep_analysis", "BOOLEAN", "0"),      # 深度分析标记
             ("platform", "VARCHAR(16)", "'app'"),      # 多平台工单（阶段 2）：analytics 打标
+            # VOC taxonomy 分类（新字段并存，problem_categories_json 冻结只读做对比）
+            # JSON: [{"tag_id","level_1_category","level_2_label","level_3_diagnosis",
+            #         "role":"primary"|"secondary","confidence","reason"}, ...]
+            ("voc_tags_json", "TEXT", "'[]'"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE analyses ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -993,6 +1026,14 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             data.get("root_cause", ""),
         )
 
+    # VOC taxonomy (new classification, stored alongside problem_categories above,
+    # which stays frozen). Unlike problem_categories, there is deliberately NO
+    # backend keyword fallback here — an LLM call inside the hot save_analysis
+    # path would add network latency/failure modes to every ticket write.
+    # Rows the AI left empty are picked up later by the backfill script's
+    # only_empty scan (see app.services.voc_classifier / scripts/backfill_voc_tags.py).
+    voc_tags = data.get("voc_tags", []) or []
+
     # 多平台工单（阶段 2）：platform 优先取顶层 "platform" key（未来 pt_tickets 流程 / 测试可直传），
     # 否则退化到 AnalysisResult 里 denormalized 的 issue.platform（tasks.py/queue.py 的 result.issue 主路径）。
     # 老式调用（既无顶层 platform 也无 issue）→ normalize_platform("") == "app"，向后兼容零改动。
@@ -1012,6 +1053,7 @@ async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
             problem_type=data.get("problem_type", ""),
             problem_type_en=data.get("problem_type_en", ""),
             problem_categories_json=json.dumps(categories, ensure_ascii=False),
+            voc_tags_json=json.dumps(voc_tags, ensure_ascii=False),
             device_type=normalize_device_type(data.get("device_type", "")),
             root_cause=data.get("root_cause", ""),
             root_cause_en=data.get("root_cause_en", ""),
@@ -2134,6 +2176,246 @@ async def update_analysis_classification(analysis_id: int, categories: list, dev
             if device_type:
                 record.device_type = device_type
             await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# VOC Portal taxonomy — tag CRUD + classification read/write
+#
+# 新字段并存策略：problem_categories_json（旧分类）冻结只读，voc_tags_json（新分类）
+# 独立写入，可随时对比迁移矩阵、可回滚。见 docs/superpowers/specs 对应设计文档。
+# ---------------------------------------------------------------------------
+def _voc_tag_to_dict(row: "VocTagRecord") -> Dict[str, Any]:
+    return {
+        "id": row.id,
+        "level_1_category": row.level_1_category or "",
+        "level_2_label": row.level_2_label or "",
+        "level_3_diagnosis": row.level_3_diagnosis or "",
+        "definition": row.definition or "",
+        "positive_examples": json.loads(row.positive_examples_json or "[]"),
+        "mece_rules": json.loads(row.mece_rules_json or "[]"),
+        "negative_examples": json.loads(row.negative_examples_json or "[]"),
+        "updated_by": row.updated_by or "",
+        "retired": bool(row.retired),
+    }
+
+
+async def upsert_voc_tags(tags: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """Upsert a full snapshot of *active* VOC tags (as returned by GET /api/taxonomy/tags).
+
+    VOC 只返回 active tags，因此"这次同步没收到、但 DB 里已有"的 tag id 被视为已在
+    VOC 侧 retire —— 本地打 retired=True（不再进新记录打标 prompt，已打标记录不受影响）。
+    幂等：同一份 snapshot 重复跑，added/changed/retired 都应为空。
+    """
+    remote_ids = {t["id"] for t in tags}
+    added: List[str] = []
+    changed: List[str] = []
+    retired: List[str] = []
+
+    async with get_session() as session:
+        from sqlalchemy import select
+
+        existing_rows = (await session.execute(select(VocTagRecord))).scalars().all()
+        existing_by_id = {r.id: r for r in existing_rows}
+
+        for tag in tags:
+            tag_id = tag["id"]
+            positive_examples_json = json.dumps(tag.get("positive_examples") or [], ensure_ascii=False)
+            mece_rules_json = json.dumps(tag.get("mece_rules") or [], ensure_ascii=False)
+            negative_examples_json = json.dumps(tag.get("negative_examples") or [], ensure_ascii=False)
+
+            row = existing_by_id.get(tag_id)
+            if row is None:
+                row = VocTagRecord(id=tag_id)
+                session.add(row)
+                added.append(tag_id)
+            else:
+                is_changed = (
+                    row.level_1_category != (tag.get("level_1_category") or "")
+                    or row.level_2_label != (tag.get("level_2_label") or "")
+                    or row.level_3_diagnosis != (tag.get("level_3_diagnosis") or "")
+                    or row.definition != (tag.get("definition") or "")
+                    or row.positive_examples_json != positive_examples_json
+                    or row.mece_rules_json != mece_rules_json
+                    or row.negative_examples_json != negative_examples_json
+                    or bool(row.retired)
+                )
+                if is_changed:
+                    changed.append(tag_id)
+
+            row.level_1_category = tag.get("level_1_category") or ""
+            row.level_2_label = tag.get("level_2_label") or ""
+            row.level_3_diagnosis = tag.get("level_3_diagnosis") or ""
+            row.definition = tag.get("definition") or ""
+            row.positive_examples_json = positive_examples_json
+            row.mece_rules_json = mece_rules_json
+            row.negative_examples_json = negative_examples_json
+            row.updated_by = tag.get("updated_by") or ""
+            row.retired = False
+            row.synced_at = datetime.utcnow()
+
+        for row in existing_rows:
+            if row.id not in remote_ids and not row.retired:
+                row.retired = True
+                retired.append(row.id)
+
+        await session.commit()
+
+    return {"added": added, "changed": changed, "retired": retired}
+
+
+async def get_voc_tags(include_retired: bool = False) -> List[Dict[str, Any]]:
+    """All VOC tags from the local DB cache, optionally including retired ones."""
+    async with get_session() as session:
+        from sqlalchemy import select
+
+        stmt = select(VocTagRecord)
+        if not include_retired:
+            stmt = stmt.where(VocTagRecord.retired.is_(False))
+        rows = (await session.execute(stmt)).scalars().all()
+        return [_voc_tag_to_dict(r) for r in rows]
+
+
+async def get_analyses_for_voc_backfill(
+    since: str, limit: int = 500, only_empty: bool = True,
+) -> List[Dict[str, Any]]:
+    """Analyses created since `since` (YYYY-MM-DD) that need VOC tag backfill.
+
+    Joins issues for description/category — the classifier's evidence package
+    needs the original ticket text, not just the AI analysis conclusion.
+    only_empty=True (default) skips analyses that already have voc_tags_json —
+    makes the backfill script naturally idempotent / resumable.
+    """
+    async with get_session() as session:
+        from sqlalchemy import select, or_, and_
+
+        start = datetime.fromisoformat(since)
+        conditions = [AnalysisRecord.created_at >= start]
+        if only_empty:
+            conditions.append(or_(
+                AnalysisRecord.voc_tags_json == "[]",
+                AnalysisRecord.voc_tags_json == "",
+                AnalysisRecord.voc_tags_json.is_(None),
+            ))
+
+        stmt = (
+            select(
+                AnalysisRecord.id,
+                AnalysisRecord.issue_id,
+                AnalysisRecord.problem_type,
+                AnalysisRecord.problem_type_en,
+                AnalysisRecord.root_cause,
+                AnalysisRecord.root_cause_en,
+                AnalysisRecord.device_type,
+                AnalysisRecord.platform,
+                IssueRecord.description,
+                IssueRecord.category,
+            )
+            .outerjoin(IssueRecord, IssueRecord.id == AnalysisRecord.issue_id)
+            .where(and_(*conditions))
+            .order_by(AnalysisRecord.created_at.asc())
+            .limit(limit)
+        )
+        rows = (await session.execute(stmt)).fetchall()
+        return [
+            {
+                "analysis_id": r.id,
+                "issue_id": r.issue_id,
+                "problem_type": r.problem_type or "",
+                "problem_type_en": r.problem_type_en or "",
+                "root_cause": r.root_cause or "",
+                "root_cause_en": r.root_cause_en or "",
+                "device_type": r.device_type or "",
+                "platform": r.platform or "",
+                "description": r.description or "",
+                "category": r.category or "",
+            }
+            for r in rows
+        ]
+
+
+async def update_analysis_voc_tags(analysis_id: int, tags: List[Dict[str, Any]]) -> bool:
+    """Write VOC tags onto an existing analysis. Returns False if the row doesn't exist."""
+    async with get_session() as session:
+        record = await session.get(AnalysisRecord, analysis_id)
+        if not record:
+            return False
+        record.voc_tags_json = json.dumps(tags, ensure_ascii=False)
+        await session.commit()
+        return True
+
+
+async def get_voc_classification_stats(
+    date_from: str, date_to: str, include_secondary: bool = False,
+) -> Dict[str, Any]:
+    """Three-level (group → label → diagnosis) VOC classification stats for a date range.
+
+    Counts only the primary tag by default to avoid double-counting a ticket across
+    both a pie chart and a drill-down tree (an analyses row usually has 1 primary +
+    up to 2 secondary tags). include_secondary=True folds secondary tags into the
+    same tree for a "where does this diagnosis co-occur" view.
+    """
+    async with get_session() as session:
+        from sqlalchemy import select, and_
+
+        start = datetime.fromisoformat(date_from)
+        end = datetime.fromisoformat(date_to + "T23:59:59")
+
+        stmt = select(AnalysisRecord.voc_tags_json).where(and_(
+            AnalysisRecord.created_at >= start,
+            AnalysisRecord.created_at <= end,
+        ))
+        rows = (await session.execute(stmt)).fetchall()
+
+        # tree[group][label][diagnosis] = count
+        tree: Dict[str, Dict[str, Dict[str, int]]] = {}
+        group_counts: Dict[str, int] = {}
+        total_tagged = 0
+
+        def _add(tag: Dict[str, Any]) -> None:
+            group = tag.get("level_1_category") or "未分类"
+            label = tag.get("level_2_label") or ""
+            diagnosis = tag.get("level_3_diagnosis") or ""
+            group_counts[group] = group_counts.get(group, 0) + 1
+            tree.setdefault(group, {}).setdefault(label, {})
+            tree[group][label][diagnosis] = tree[group][label].get(diagnosis, 0) + 1
+
+        for row in rows:
+            try:
+                tags = json.loads(row.voc_tags_json or "[]")
+            except Exception:
+                continue
+            if not tags:
+                continue
+            total_tagged += 1
+            for tag in tags:
+                if tag.get("role") == "primary":
+                    _add(tag)
+                elif include_secondary and tag.get("role") == "secondary":
+                    _add(tag)
+
+        groups = []
+        for group, count in sorted(group_counts.items(), key=lambda x: x[1], reverse=True):
+            labels = []
+            for label, diag_counts in tree.get(group, {}).items():
+                diagnoses = [
+                    {"diagnosis": d, "count": c}
+                    for d, c in sorted(diag_counts.items(), key=lambda x: x[1], reverse=True)
+                ]
+                labels.append({
+                    "label": label,
+                    "count": sum(diag_counts.values()),
+                    "diagnoses": diagnoses,
+                })
+            labels.sort(key=lambda x: x["count"], reverse=True)
+            groups.append({"group": group, "count": count, "labels": labels})
+
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "total": len(rows),
+            "total_tagged": total_tagged,
+            "groups": groups,
+        }
 
 
 # ---------------------------------------------------------------------------

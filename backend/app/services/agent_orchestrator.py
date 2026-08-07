@@ -448,4 +448,16 @@ def _materialize_analysis_context(
         CLASSIFICATION_TAXONOMY,
     )
 
+    # VOC Portal taxonomy — new classification system, written alongside (not
+    # replacing) classification_taxonomy.json above. AI reads this to fill
+    # voc_tags; problem_categories/classification_taxonomy.json stay frozen
+    # for old-data comparison. Empty tag list degrades gracefully — the
+    # agent just won't have anything to pick from and voc_tags stays empty
+    # (caught by the backfill script's only_empty scan, not retried here).
+    from app.services import voc_taxonomy
+    context_files["voc_taxonomy"] = _write_json_file(
+        context_dir / "voc_taxonomy.json",
+        voc_taxonomy.to_prompt_payload(),
+    )
+
     return context_files

@@ -123,12 +123,26 @@ class ProblemCategory(BaseModel):
     subcategory: str = ""
 
 
+class VocTag(BaseModel):
+    """One VOC Portal taxonomy tag assignment. See app.services.voc_taxonomy /
+    app.services.voc_classifier — problem_categories above is the frozen old
+    classification, this is the new one, stored separately (voc_tags_json)."""
+    tag_id: str = ""
+    level_1_category: str = ""
+    level_2_label: str = ""
+    level_3_diagnosis: str = ""
+    role: str = "primary"       # "primary" | "secondary"
+    confidence: str = "medium"  # "high" | "medium" | "low"
+    reason: str = ""
+
+
 class AnalysisResult(BaseModel):
     task_id: str
     issue_id: str
     problem_type: str = ""
     problem_type_en: str = ""
     problem_categories: List[ProblemCategory] = Field(default_factory=list)
+    voc_tags: List[VocTag] = Field(default_factory=list)
     device_type: str = ""  # e.g. "Note", "Note Pin", "Note Pro", "NotePin 2", "iZYREC"
     root_cause: str = ""
     root_cause_en: str = ""
