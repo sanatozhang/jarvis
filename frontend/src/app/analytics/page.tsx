@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { CountUp } from "@/components/CountUp";
 import { useEffect, useState, useCallback } from "react";
-import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, fetchVocClassificationStats, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem, type VocClassificationStats } from "@/lib/api";
+import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, fetchVocClassificationStats, fetchVocTrend, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem, type VocClassificationStats, type VocTrend } from "@/lib/api";
 
 interface FailReasonItem {
   issue_id?: string;
@@ -76,7 +76,8 @@ export default function AnalyticsPage() {
   const [ptStats, setPtStats] = useState<ProblemTypeStats | null>(null);
   const [clsStats, setClsStats] = useState<ClassificationStats | null>(null);
   const [vocStats, setVocStats] = useState<VocClassificationStats | null>(null);
-  const [classificationTab, setClassificationTab] = useState<"voc" | "legacy">("voc");
+  const [vocTrend, setVocTrend] = useState<VocTrend | null>(null);
+  const [taxonomyMode, setTaxonomyMode] = useState<"voc" | "legacy">("voc");
   const [expandedVocGroup, setExpandedVocGroup] = useState<string | null>(null);
   const [expandedCat, setExpandedCat] = useState<string | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<string>("all");
@@ -98,18 +99,20 @@ export default function AnalyticsPage() {
   const load = async (d: number) => {
     setLoading(true);
     try {
-      const [res, ra, pt, cls, voc] = await Promise.all([
+      const [res, ra, pt, cls, voc, vocTrendRes] = await Promise.all([
         fetch(`/api/analytics/dashboard?days=${d}`),
         fetchRuleAccuracy(d).catch(() => []),
         fetchProblemTypeStats(d).catch(() => null),
         fetchClassificationStats(d).catch(() => null),
         fetchVocClassificationStats(d).catch(() => null),
+        fetchVocTrend(d, "group").catch(() => null),
       ]);
       if (res.ok) setData(await res.json());
       setRuleAccuracy(ra);
       setPtStats(pt);
       setClsStats(cls);
       setVocStats(voc);
+      setVocTrend(vocTrendRes);
     } catch {} finally { setLoading(false); }
   };
 
@@ -137,6 +140,24 @@ export default function AnalyticsPage() {
                   {d >= 365 ? `${d / 365}${t("年")}` : d >= 30 ? `${d / 30}${t("月")}` : `${d}${t("天")}`}
                 </button>
               ))}
+            </div>
+            <div className="flex items-center gap-1 rounded-lg p-1" style={{ background: S.overlay }}>
+              <button
+                onClick={() => setTaxonomyMode("voc")}
+                className="rounded-md px-3 py-1.5 text-sm font-medium transition-all"
+                style={taxonomyMode === "voc"
+                  ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
+                  : { color: S.text3 }}>
+                {t("VOC 分类")}
+              </button>
+              <button
+                onClick={() => setTaxonomyMode("legacy")}
+                className="rounded-md px-3 py-1.5 text-sm font-medium transition-all"
+                style={taxonomyMode === "legacy"
+                  ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
+                  : { color: S.text3 }}>
+                {t("旧分类（冻结）")}
+              </button>
             </div>
             <form onSubmit={(e) => {
               e.preventDefault();
@@ -381,8 +402,159 @@ export default function AnalyticsPage() {
             })()}
           </section>
 
-          {/* Problem type distribution + trend */}
-          {ptStats && ptStats.top10.length > 0 && (() => {
+          {/* VOC Portal taxonomy: Top 10 (group › label) + multi-line trend (top 6 groups) */}
+          {taxonomyMode === "voc" && vocStats && vocStats.groups.length > 0 && (() => {
+            // Flatten group>label into a single ranked list for Top 10 — L1 alone is
+            // too coarse (11 groups), L3 too sparse at ~400 tickets/month.
+            const flat: { key: string; count: number }[] = [];
+            for (const g of vocStats.groups) {
+              for (const l of g.labels) {
+                flat.push({ key: l.label ? `${g.group} › ${l.label}` : g.group, count: l.count });
+              }
+            }
+            flat.sort((a, b) => b.count - a.count);
+            const top10 = flat.slice(0, 10);
+            const maxCount = top10[0]?.count || 1;
+            const COLORS = ["#0E7C86","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C","#0891B2","#DB2777","#4F46E5","#65A30D"];
+
+            const trendDates = vocTrend ? Object.keys(vocTrend.trend).sort() : [];
+            const topGroups = vocStats.groups.slice(0, 6).map((g) => g.group);
+
+            return (
+              <div className="grid grid-cols-2 gap-4 j-rise" style={{ ["--d" as string]: "0.12s" }}>
+                <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("VOC 分类 Top 10")}</h2>
+                    <span className="text-[11px] font-mono" style={{ color: S.text3 }}>
+                      {t("共")} {flat.length} {t("类")} / {vocStats.total_tagged} {t("单已打标")}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {top10.map((item, i) => {
+                      const pct = Math.max(4, (item.count / maxCount) * 100);
+                      return (
+                        <div key={item.key} className="flex items-center gap-2">
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold flex-shrink-0"
+                            style={{ background: `${COLORS[i]}15`, color: COLORS[i] }}>
+                            {i + 1}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-0.5">
+                              <span className="text-xs truncate" style={{ color: S.text2 }} title={item.key}>{item.key}</span>
+                              <span className="text-xs tabular-nums font-mono flex-shrink-0 ml-2" style={{ color: S.text1 }}>
+                                {item.count}
+                              </span>
+                            </div>
+                            <div className="h-3 w-full overflow-hidden rounded-full" style={{ background: S.hover }}>
+                              <div className="h-full rounded-full transition-all duration-700"
+                                style={{ width: `${pct}%`, background: COLORS[i], opacity: 0.75 }} />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                  <h2 className="mb-4 text-sm font-semibold" style={{ color: S.text1 }}>{t("VOC 分类趋势")}</h2>
+                  {trendDates.length < 2 ? (
+                    <p className="py-8 text-center text-sm" style={{ color: S.text3 }}>{t("暂无数据")}</p>
+                  ) : (() => {
+                    let maxY = 1;
+                    for (const d of trendDates) {
+                      for (const g of topGroups) {
+                        const v = vocTrend!.trend[d]?.[g] || 0;
+                        if (v > maxY) maxY = v;
+                      }
+                    }
+                    const gridStep = maxY <= 5 ? 1 : maxY <= 20 ? 5 : Math.ceil(maxY / 4 / 5) * 5;
+                    maxY = Math.ceil(maxY / gridStep) * gridStep;
+
+                    const W = 400, H = 200;
+                    const pad = { top: 8, right: 12, bottom: 22, left: 28 };
+                    const cw = W - pad.left - pad.right;
+                    const ch = H - pad.top - pad.bottom;
+                    const xStep = trendDates.length > 1 ? cw / (trendDates.length - 1) : 0;
+                    const toX = (i: number) => pad.left + i * xStep;
+                    const toY = (v: number) => pad.top + ch - (v / maxY) * ch;
+
+                    const buildPath = (pts: [number, number][]) => {
+                      if (pts.length < 2) return "";
+                      let d = `M${pts[0][0]},${pts[0][1]}`;
+                      for (let i = 0; i < pts.length - 1; i++) {
+                        const p0 = pts[Math.max(0, i - 1)];
+                        const p1 = pts[i];
+                        const p2 = pts[i + 1];
+                        const p3 = pts[Math.min(pts.length - 1, i + 2)];
+                        const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+                        const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+                        const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+                        const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+                        d += ` C${cp1x},${cp1y} ${cp2x},${cp2y} ${p2[0]},${p2[1]}`;
+                      }
+                      return d;
+                    };
+                    const labelInterval = Math.max(1, Math.floor(trendDates.length / 6));
+
+                    return (
+                      <div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 mb-2">
+                          {topGroups.map((g, i) => (
+                            <div key={g} className="flex items-center gap-1">
+                              <span className="inline-block h-2 w-2 rounded-full" style={{ background: COLORS[i] }} />
+                              <span className="text-[10px]" style={{ color: S.text3 }}>{g}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ overflow: "visible" }}>
+                          {Array.from({ length: Math.floor(maxY / gridStep) + 1 }, (_, i) => {
+                            const v = i * gridStep;
+                            const y = toY(v);
+                            return (
+                              <g key={v}>
+                                <line x1={pad.left} x2={W - pad.right} y1={y} y2={y} stroke={S.border} strokeWidth={0.5} />
+                                <text x={pad.left - 4} y={y + 3} textAnchor="end"
+                                  style={{ fontSize: 8, fill: S.text3, fontFamily: "monospace" }}>{v}</text>
+                              </g>
+                            );
+                          })}
+                          {topGroups.map((g, gi) => {
+                            const pts: [number, number][] = trendDates.map((d, di) => [toX(di), toY(vocTrend!.trend[d]?.[g] || 0)]);
+                            return (
+                              <path key={g} d={buildPath(pts)} fill="none" stroke={COLORS[gi]} strokeWidth={1.8}
+                                strokeLinecap="round" strokeLinejoin="round" opacity={0.85} />
+                            );
+                          })}
+                          {topGroups.map((g, gi) =>
+                            trendDates.map((d, di) => {
+                              const v = vocTrend!.trend[d]?.[g] || 0;
+                              if (v === 0) return null;
+                              return (
+                                <circle key={`${gi}-${di}`} cx={toX(di)} cy={toY(v)} r={2.5} fill="#fff" stroke={COLORS[gi]} strokeWidth={1.5}>
+                                  <title>{`${d} ${g}: ${v}`}</title>
+                                </circle>
+                              );
+                            })
+                          )}
+                          {trendDates.map((d, i) => {
+                            if (i % labelInterval !== 0 && i !== trendDates.length - 1) return null;
+                            return (
+                              <text key={d} x={toX(i)} y={H - 2} textAnchor="middle"
+                                style={{ fontSize: 8, fill: S.text3, fontFamily: "monospace" }}>{d.slice(5)}</text>
+                            );
+                          })}
+                        </svg>
+                      </div>
+                    );
+                  })()}
+                </section>
+              </div>
+            );
+          })()}
+
+          {/* Problem type distribution + trend (legacy, frozen for comparison) */}
+          {taxonomyMode === "legacy" && ptStats && ptStats.top10.length > 0 && (() => {
             const top10 = ptStats.top10;
             const maxCount = top10[0]?.count || 1;
             const trendDates = Object.keys(ptStats.trend).sort();
@@ -541,30 +713,66 @@ export default function AnalyticsPage() {
             );
           })()}
 
-          {/* Classification tab switcher — VOC Portal taxonomy (new, default) vs legacy pie chart (frozen) */}
-          {(vocStats || (clsStats && clsStats.category_distribution.length > 0)) && (
-            <div className="flex items-center gap-1 rounded-lg p-1 j-rise" style={{ background: S.overlay, ["--d" as string]: "0.15s", width: "fit-content" }}>
-              <button
-                onClick={() => setClassificationTab("voc")}
-                className="rounded-md px-3 py-1.5 text-xs font-medium transition-all"
-                style={classificationTab === "voc"
-                  ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
-                  : { color: S.text3 }}>
-                {t("VOC 分类")}
-              </button>
-              <button
-                onClick={() => setClassificationTab("legacy")}
-                className="rounded-md px-3 py-1.5 text-xs font-medium transition-all"
-                style={classificationTab === "legacy"
-                  ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
-                  : { color: S.text3 }}>
-                {t("旧分类（冻结）")}
-              </button>
-            </div>
-          )}
+          {/* VOC Portal taxonomy: donut chart (new, default) */}
+          {taxonomyMode === "voc" && vocStats && vocStats.groups.length > 0 && (() => {
+            const PIE_COLORS = ["#0E7C86","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C","#0891B2","#DB2777","#4F46E5","#65A30D","#D97706"];
+            const total = vocStats.total_tagged;
+            const R = 100, cx = 120, cy = 120;
+            let angle = 0;
+            const slices = vocStats.groups.map((g, i) => {
+              const pct = total > 0 ? g.count / total : 0;
+              const startAngle = angle;
+              angle += pct * 360;
+              const endAngle = angle;
+              const large = pct > 0.5 ? 1 : 0;
+              const rad1 = (startAngle - 90) * Math.PI / 180;
+              const rad2 = (endAngle - 90) * Math.PI / 180;
+              const x1 = cx + R * Math.cos(rad1), y1 = cy + R * Math.sin(rad1);
+              const x2 = cx + R * Math.cos(rad2), y2 = cy + R * Math.sin(rad2);
+              const d = pct >= 1
+                ? `M${cx},${cy - R} A${R},${R} 0 1,1 ${cx},${cy + R} A${R},${R} 0 1,1 ${cx},${cy - R}Z`
+                : `M${cx},${cy} L${x1},${y1} A${R},${R} 0 ${large},1 ${x2},${y2} Z`;
+              return { d, color: PIE_COLORS[i % PIE_COLORS.length], group: g.group, count: g.count, pct };
+            });
+
+            return (
+              <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+                <h2 className="mb-4 text-sm font-semibold" style={{ color: S.text1 }}>{t("VOC 分类占比")}</h2>
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="flex items-center justify-center">
+                    <svg viewBox="0 0 240 240" className="w-full max-w-[240px]">
+                      {slices.map((s, i) => (
+                        <path key={i} d={s.d} fill={s.color} opacity={0.85}
+                          className="transition-opacity hover:opacity-100 cursor-pointer"
+                          onClick={() => setExpandedVocGroup(expandedVocGroup === s.group ? null : s.group)}>
+                          <title>{`${s.group}: ${s.count} (${(s.pct * 100).toFixed(1)}%)`}</title>
+                        </path>
+                      ))}
+                      <circle cx={cx} cy={cy} r={50} fill="var(--j-surface)" />
+                      <text x={cx} y={cy - 6} textAnchor="middle" style={{ fontSize: 18, fontWeight: 700, fill: S.text1 }}>{total}</text>
+                      <text x={cx} y={cy + 12} textAnchor="middle" style={{ fontSize: 9, fill: S.text3 }}>{t("已打标工单")}</text>
+                    </svg>
+                  </div>
+                  <div className="space-y-1 max-h-[320px] overflow-y-auto pr-1">
+                    {vocStats.groups.map((g, i) => {
+                      const pct = total > 0 ? (g.count / total * 100).toFixed(1) : "0";
+                      return (
+                        <div key={g.group} className="flex items-center gap-2 rounded-lg px-2 py-1.5">
+                          <span className="inline-block h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                          <span className="text-xs flex-1 truncate" style={{ color: S.text2 }}>{g.group}</span>
+                          <span className="text-[11px] font-mono tabular-nums flex-shrink-0" style={{ color: S.text1 }}>{g.count}</span>
+                          <span className="text-[10px] font-mono flex-shrink-0 w-12 text-right" style={{ color: S.text3 }}>{pct}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </section>
+            );
+          })()}
 
           {/* VOC Portal taxonomy: group → label → diagnosis drill-down (new, default) */}
-          {classificationTab === "voc" && vocStats && vocStats.groups.length > 0 && (() => {
+          {taxonomyMode === "voc" && vocStats && vocStats.groups.length > 0 && (() => {
             const totalTagged = vocStats.total_tagged;
             return (
               <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.16s" }}>
@@ -621,7 +829,7 @@ export default function AnalyticsPage() {
               </section>
             );
           })()}
-          {classificationTab === "voc" && (!vocStats || vocStats.groups.length === 0) && (
+          {taxonomyMode === "voc" && (!vocStats || vocStats.groups.length === 0) && (
             <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.16s" }}>
               <p className="text-xs" style={{ color: S.text3 }}>
                 {t("暂无 VOC 分类数据——taxonomy 尚未同步，或所选时间范围内还没有打标结果。")}
@@ -630,7 +838,7 @@ export default function AnalyticsPage() {
           )}
 
           {/* Classification: Pie chart + Device breakdown (legacy, frozen for comparison) */}
-          {classificationTab === "legacy" && clsStats && clsStats.category_distribution.length > 0 && (() => {
+          {taxonomyMode === "legacy" && clsStats && clsStats.category_distribution.length > 0 && (() => {
             const PIE_COLORS = [
               "#0E7C86","#2563EB","#16A34A","#DC2626","#7C3AED","#EA580C",
               "#0891B2","#DB2777","#4F46E5","#65A30D","#D97706","#059669",
