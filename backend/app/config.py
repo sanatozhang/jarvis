@@ -321,6 +321,11 @@ class VOCSettings(BaseSettings):
     sync_enabled: bool = False
     sync_interval_hours: int = 24
     classifier_model: str = "claude-sonnet-5"
+    # voc_classifier.classify_ticket() calls the local claude CLI (OAuth login,
+    # no ANTHROPIC_API_KEY needed) headless (--tools "", no workspace) — single
+    # classification turn, should return in a few seconds; generous ceiling to
+    # absorb CLI cold-start under load without hanging a backfill worker forever.
+    classifier_timeout_seconds: int = 90
 
     model_config = {
         "env_prefix": "VOC_",
@@ -507,7 +512,7 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
 
     # VOC taxonomy — client_id/secret 是 secret，只走 env，yaml 只覆盖非 secret 字段
     voc_cfg = cfg.get("voc", {})
-    for k in ("base_url", "token_url", "sync_enabled", "sync_interval_hours", "classifier_model"):
+    for k in ("base_url", "token_url", "sync_enabled", "sync_interval_hours", "classifier_model", "classifier_timeout_seconds"):
         if k in voc_cfg and not os.getenv(f"VOC_{k.upper()}"):
             setattr(settings.voc, k, voc_cfg[k])
 

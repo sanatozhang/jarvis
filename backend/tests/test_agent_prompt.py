@@ -88,6 +88,7 @@ def test_build_prompt_enforces_budget_with_large_inputs(tmp_path: Path):
         "followup_question",
         "issue",
         "previous_analysis",
+        "voc_taxonomy",
     ]
     assert "rules/cloud-sync.md" in prompt
     assert "context/extraction_full.json" in prompt

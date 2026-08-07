@@ -3,10 +3,9 @@ the CLI-agent path (base.py's _safe_voc_tags) and the dedicated classify_ticket(
 LLM call used by the backfill script."""
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
 
-import httpx
 import pytest
 
 from app.services import voc_classifier, voc_taxonomy
@@ -113,59 +112,68 @@ def test_validate_flat_voc_tags_duplicate_secondary_ignored():
 
 
 # ---------------------------------------------------------------------------
-# classify_ticket() — the dedicated LLM-call path (structured primary/secondary)
+# classify_ticket() — the dedicated LLM-call path, now a headless `claude` CLI
+# subprocess (`-p --output-format json`) instead of a direct API call. Fake
+# asyncio.create_subprocess_exec rather than httpx.
 # ---------------------------------------------------------------------------
 
-class _FakeResponse:
-    def __init__(self, status_code=200, json_data=None, text=""):
-        self.status_code = status_code
-        self._json = json_data or {}
-        self.text = text
+class _FakeProcess:
+    def __init__(self, stdout=b"", stderr=b"", returncode=0, delay=0.0):
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode = returncode
+        self._delay = delay
+        self.killed = False
 
-    def json(self):
-        return self._json
+    async def communicate(self, input=None):
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return self._stdout, self._stderr
 
+    def kill(self):
+        self.killed = True
 
-class _FakeAsyncClient:
-    """Drop-in for httpx.AsyncClient — swallows constructor kwargs (timeout=...)."""
-    _next_response = None
-    _raise_request_error = False
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def post(self, url, json=None, headers=None):
-        if _FakeAsyncClient._raise_request_error:
-            raise httpx.RequestError("connection refused")
-        return _FakeAsyncClient._next_response
+    async def wait(self):
+        return self.returncode
 
 
-def _set_fake_response(resp: "_FakeResponse | None", raise_request_error: bool = False):
-    _FakeAsyncClient._next_response = resp
-    _FakeAsyncClient._raise_request_error = raise_request_error
+_next_process: "_FakeProcess | None" = None
+_raise_not_found = False
+
+
+async def _fake_create_subprocess_exec(*args, **kwargs):
+    if _raise_not_found:
+        raise FileNotFoundError("claude: command not found")
+    return _next_process
+
+
+def _set_fake_process(proc: "_FakeProcess | None", raise_not_found: bool = False):
+    global _next_process, _raise_not_found
+    _next_process = proc
+    _raise_not_found = raise_not_found
+
+
+def _envelope(result_obj) -> bytes:
+    """Build a `claude -p --output-format json` stdout envelope wrapping the
+    given object as the JSON-encoded `.result` string (structured output)."""
+    import json as _json
+    return _json.dumps({
+        "type": "result", "is_error": False, "stop_reason": "tool_use",
+        "result": _json.dumps(result_obj, ensure_ascii=False),
+    }).encode("utf-8")
 
 
 @pytest.fixture(autouse=True)
 def classifier_settings(monkeypatch):
-    """Provide a fake claude_api provider config + API key so classify_ticket
-    doesn't short-circuit into the "misconfigured" fallback before it even
-    gets to build a request."""
     fake_settings = SimpleNamespace(
-        agent=SimpleNamespace(providers={"claude_api": SimpleNamespace(base_url="http://fake-proxy", per_turn_timeout=5)}),
-        voc=SimpleNamespace(classifier_model="claude-test"),
+        voc=SimpleNamespace(classifier_model="claude-test", classifier_timeout_seconds=5),
     )
     monkeypatch.setattr(voc_classifier, "get_settings", lambda: fake_settings)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setattr(voc_classifier.httpx, "AsyncClient", _FakeAsyncClient)
-    _set_fake_response(None)
+    monkeypatch.setattr(voc_classifier, "_make_cli_env", lambda: {})
+    monkeypatch.setattr(voc_classifier.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    _set_fake_process(_FakeProcess())
     yield
-    _set_fake_response(None)
+    _set_fake_process(_FakeProcess())
 
 
 def _evidence():
@@ -173,13 +181,10 @@ def _evidence():
 
 
 async def test_classify_ticket_valid_response():
-    _set_fake_response(_FakeResponse(200, {
-        "stop_reason": "tool_use",
-        "content": [{"type": "tool_use", "input": {
-            "primary": {"tag_id": "ai-01", "confidence": "high", "reason": "matches token mismatch"},
-            "secondary": [],
-        }}],
-    }))
+    _set_fake_process(_FakeProcess(stdout=_envelope({
+        "primary": {"tag_id": "ai-01", "confidence": "high", "reason": "matches token mismatch"},
+        "secondary": [],
+    })))
     tags = await voc_classifier.classify_ticket(_evidence())
     assert len(tags) == 1
     assert tags[0]["tag_id"] == "ai-01"
@@ -187,53 +192,55 @@ async def test_classify_ticket_valid_response():
 
 
 async def test_classify_ticket_unknown_primary_tag_id_falls_back():
-    _set_fake_response(_FakeResponse(200, {
-        "stop_reason": "tool_use",
-        "content": [{"type": "tool_use", "input": {
-            "primary": {"tag_id": "does-not-exist", "confidence": "high", "reason": "hallucinated"},
-            "secondary": [],
-        }}],
-    }))
+    _set_fake_process(_FakeProcess(stdout=_envelope({
+        "primary": {"tag_id": "does-not-exist", "confidence": "high", "reason": "hallucinated"},
+        "secondary": [],
+    })))
     tags = await voc_classifier.classify_ticket(_evidence())
     assert len(tags) == 1
     assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
     assert tags[0]["confidence"] == "low"
 
 
-async def test_classify_ticket_refusal_falls_back():
-    _set_fake_response(_FakeResponse(200, {"stop_reason": "refusal", "content": []}))
+async def test_classify_ticket_non_json_output_falls_back():
+    _set_fake_process(_FakeProcess(stdout=b"not a json envelope at all"))
     tags = await voc_classifier.classify_ticket(_evidence())
     assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
 
 
-async def test_classify_ticket_no_tool_use_block_falls_back():
-    _set_fake_response(_FakeResponse(200, {"stop_reason": "end_turn", "content": [{"type": "text", "text": "oops"}]}))
+async def test_classify_ticket_nonzero_exit_falls_back():
+    _set_fake_process(_FakeProcess(stdout=b"", stderr=b"boom", returncode=1))
     tags = await voc_classifier.classify_ticket(_evidence())
     assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
 
 
-async def test_classify_ticket_http_error_falls_back():
-    _set_fake_response(_FakeResponse(500, text="internal error"))
+async def test_classify_ticket_timeout_falls_back():
+    _set_fake_process(_FakeProcess(delay=999))
+    fake_settings = SimpleNamespace(
+        voc=SimpleNamespace(classifier_model="claude-test", classifier_timeout_seconds=0.05),
+    )
+    import app.services.voc_classifier as mod
+    orig_get_settings = mod.get_settings
+    mod.get_settings = lambda: fake_settings
+    try:
+        tags = await voc_classifier.classify_ticket(_evidence())
+    finally:
+        mod.get_settings = orig_get_settings
+    assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
+    assert _next_process.killed is True
+
+
+async def test_classify_ticket_cli_not_found_falls_back():
+    _set_fake_process(None, raise_not_found=True)
     tags = await voc_classifier.classify_ticket(_evidence())
     assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
 
 
-async def test_classify_ticket_network_error_falls_back():
-    _set_fake_response(None, raise_request_error=True)
-    tags = await voc_classifier.classify_ticket(_evidence())
-    assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
-
-
-async def test_classify_ticket_empty_active_taxonomy_falls_back_without_network(monkeypatch):
+async def test_classify_ticket_empty_active_taxonomy_falls_back_without_subprocess(monkeypatch):
     monkeypatch.setattr(voc_taxonomy, "active_tags", lambda: [])
-    # No fake response configured — if the code tried to hit the network it
-    # would get None back from post() and crash; success here proves it
-    # short-circuited before that.
-    tags = await voc_classifier.classify_ticket(_evidence())
-    assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID
-
-
-async def test_classify_ticket_missing_api_key_falls_back(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # No fake process configured for this call — if the code tried to spawn
+    # one it would get None back and crash on .communicate(); success here
+    # proves it short-circuited before that.
+    _set_fake_process(None)
     tags = await voc_classifier.classify_ticket(_evidence())
     assert tags[0]["tag_id"] == voc_classifier.FALLBACK_TAG_ID

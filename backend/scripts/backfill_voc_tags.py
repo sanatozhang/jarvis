@@ -1,4 +1,4 @@
-"""存量回填：给 2026-07-13 起的历史工单打上 VOC Portal taxonomy 分类标签。
+"""存量回填：给 2026-07-05 起的历史工单打上 VOC Portal taxonomy 分类标签。
 
 背景：Jarvis 的 AI 分析分类改用公司 VOC Portal 的 taxonomy（三层 + definition +
 MECE 规则，见 backend/app/services/voc_taxonomy.py）取代原来硬编码在
@@ -12,7 +12,7 @@ voc_classifier.py），比重新跑一遍 agent CLI 快得多也便宜得多。
 
 安全约束：
 - **默认 dry-run**，只统计/预览，不调 LLM、不写 DB；`--execute` 才真跑。
-- 默认 `--since 2026-07-13`（历史工单只补这天起的，见设计决策）。
+- 默认 `--since 2026-07-05`（历史工单只补这天起的，见设计决策）。
 - 默认 `--only-empty`（跳过已有 voc_tags_json 的行）——**幂等**：重复跑只会
   处理上次失败/中断遗留的空行，不会重复打标已成功的行。用 `--include-tagged`
   强制重新跑全部（比如换了 taxonomy 版本要重新分类时）。
@@ -116,7 +116,7 @@ async def run_backfill(
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     parser = argparse.ArgumentParser(description="Backfill VOC Portal taxonomy tags for historical tickets")
-    parser.add_argument("--since", default="2026-07-13", help="只回填这天起创建的 analyses（默认 2026-07-13）")
+    parser.add_argument("--since", default="2026-07-05", help="只回填这天起创建的 analyses（默认 2026-07-05）")
     parser.add_argument("--limit", type=int, default=500, help="单次最多处理多少条（默认 500）")
     parser.add_argument("--concurrency", type=int, default=4, help="并发 LLM 请求数（默认 4）")
     parser.add_argument("--include-tagged", action="store_true",

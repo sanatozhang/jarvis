@@ -3,41 +3,38 @@ VOC tag classifier — assigns 1 primary + up to 2 secondary VOC Portal tags to 
 ticket, using the active taxonomy (definition + positive/negative examples +
 MECE rules) as the system prompt.
 
-This is a plain text-classification call — no workspace, no logs, no tools —
-so it talks to the Messages API directly rather than going through the agent
-CLI (see backend/scripts/spike_claude_api.py for the existing direct-API
-precedent in this repo). It deliberately does NOT use the official `anthropic`
-SDK: this deployment only has network access to the company's internal
-Vertex AI proxy (app/agents/claude_api.py `_MessagesClient`), which speaks the
-Vertex `rawPredict` wire format (model in the URL path, `x-api-key` auth,
-`anthropic_version` field) rather than the public Anthropic API — the SDK's
-default client would 404 against it. Used by both the historical backfill
-script and (optionally) the live analysis path.
+This is a plain text-classification call — no logs, no file tools — but it
+still goes through the local `claude` CLI binary (headless `-p` mode, same
+OAuth login state as app/agents/claude_code.py) rather than a direct Messages
+API call. Reason: this classifier needs to run in production, and production
+runs with `agent.call_mode: cli` — ANTHROPIC_API_KEY is deliberately never
+provisioned there (see app/agents/claude_code.py's _CLI_ENV_EXCLUDE comment:
+an API key present in the CLI's env triggers an interactive prompt that hangs
+a non-TTY subprocess). A direct-API version of this classifier (Vertex
+`rawPredict`, matching app/agents/claude_api.py) was tried first but is a
+dead end on this deployment for that reason. `--tools ""` means no file
+access is granted, so this call needs no workspace directory (unlike the full
+agentic analysis pipeline) — just a scratch cwd for process isolation.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import os
+import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import httpx
-
+from app.agents.claude_code import _make_cli_env, parse_cli_result_envelope
 from app.config import get_settings
 from app.services import voc_taxonomy
 from app.services.categories import category_label
 from app.services.issue_text import strip_leading_metadata
 
 logger = logging.getLogger("jarvis.voc_classifier")
-
-# Same wire format as app/agents/claude_api.py's _MessagesClient (duplicated,
-# not imported — that module is agent/tool-loop specific and its constants
-# are private; this classifier is a much smaller, standalone caller of the
-# same company Vertex proxy).
-_VERTEX_ANTHROPIC_VERSION = "vertex-2023-10-16"
-_VERTEX_MODEL_PATH_TPL = "/publishers/anthropic/models/{model}:rawPredict"
 
 # Local-only sentinel for "no active tag fit at all" — NOT a real VOC tag id.
 # Kept distinct from any VOC id (which are like "ai-01") so it's unmistakable
@@ -88,6 +85,15 @@ _CLASSIFY_TOOL = {
         "required": ["primary", "secondary"],
     },
 }
+
+
+def _fallback(reason: str) -> List[Dict[str, Any]]:
+    return [{
+        "tag_id": FALLBACK_TAG_ID,
+        "level_1_category": "", "level_2_label": "", "level_3_diagnosis": "",
+        "role": "primary", "confidence": "low",
+        "reason": reason,
+    }]
 
 
 @dataclass
@@ -161,12 +167,7 @@ def _validate_tags(
 
     if not primary_id or primary_id not in active_ids:
         logger.warning("VOC classifier returned unknown/missing primary tag_id=%r — falling back", primary_id)
-        return [{
-            "tag_id": FALLBACK_TAG_ID,
-            "level_1_category": "", "level_2_label": "", "level_3_diagnosis": "",
-            "role": "primary", "confidence": "low",
-            "reason": "classifier output failed validation",
-        }]
+        return _fallback("classifier output failed validation")
 
     tags_by_id = {t["id"]: t for t in voc_taxonomy.active_tags()}
     out = [_to_stored_tag(primary, primary_id, "primary", tags_by_id)]
@@ -263,89 +264,72 @@ async def classify_ticket(evidence: TicketEvidence) -> List[Dict[str, Any]]:
     secondary), already validated against the active taxonomy — always a
     non-empty list (falls back to FALLBACK_TAG_ID rather than raising) so
     callers can write the result unconditionally.
+
+    Runs the local `claude` CLI headless (`-p`, `--tools ""`, no session, no
+    settings/MCP pickup) with the taxonomy as system prompt and a JSON schema
+    forcing the {primary, secondary} shape — see module docstring for why this
+    goes through the CLI rather than a direct Messages API call.
     """
     active = voc_taxonomy.active_tags()
     active_ids = {t["id"] for t in active}
     if not active_ids:
         logger.warning("VOC classifier called with an empty active taxonomy — falling back")
-        return [{
-            "tag_id": FALLBACK_TAG_ID,
-            "level_1_category": "", "level_2_label": "", "level_3_diagnosis": "",
-            "role": "primary", "confidence": "low",
-            "reason": "no active VOC taxonomy loaded",
-        }]
+        return _fallback("no active VOC taxonomy loaded")
 
     settings = get_settings()
-    provider_cfg = settings.agent.providers.get("claude_api")
-    base_url = (provider_cfg.base_url if provider_cfg else "") or ""
-    timeout = float(provider_cfg.per_turn_timeout) if provider_cfg else 120.0
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not base_url or not api_key:
-        logger.warning(
-            "VOC classifier misconfigured (base_url=%r, api_key_set=%s) — falling back",
-            base_url, bool(api_key),
-        )
-        return [{
-            "tag_id": FALLBACK_TAG_ID,
-            "level_1_category": "", "level_2_label": "", "level_3_diagnosis": "",
-            "role": "primary", "confidence": "low",
-            "reason": "claude_api provider not configured (missing base_url/ANTHROPIC_API_KEY)",
-        }]
+    cmd = [
+        "claude", "-p",
+        "--output-format", "json",
+        "--model", settings.voc.classifier_model,
+        "--tools", "",
+        "--no-session-persistence",
+        "--setting-sources", "",
+        "--strict-mcp-config",
+        "--system-prompt", _build_system_prompt(),
+        "--json-schema", json.dumps(_CLASSIFY_TOOL["input_schema"]),
+    ]
+    timeout = float(settings.voc.classifier_timeout_seconds)
 
-    system_prompt = _build_system_prompt()
-    body = {
-        "anthropic_version": _VERTEX_ANTHROPIC_VERSION,
-        "max_tokens": 1024,
-        "system": [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-        "tools": [_CLASSIFY_TOOL],
-        "tool_choice": {"type": "tool", "name": "classify_ticket"},
-        "messages": [{"role": "user", "content": evidence.to_prompt_text()}],
-    }
-    url = base_url.rstrip("/") + _VERTEX_MODEL_PATH_TPL.format(model=settings.voc.classifier_model)
+    scratch = Path(tempfile.mkdtemp(prefix="voc_classify_"))
+    try:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(scratch),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_make_cli_env(),
+            )
+        except FileNotFoundError:
+            logger.warning("VOC classifier: claude CLI binary not found — falling back")
+            return _fallback("claude CLI not available")
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(input=evidence.to_prompt_text().encode("utf-8")),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning("VOC classifier CLI call timed out after %ss — falling back", timeout)
+            return _fallback(f"cli call timed out after {timeout}s")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    if proc.returncode != 0:
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        logger.warning("VOC classifier CLI exited %d: %s — falling back", proc.returncode, stderr[:300])
+        return _fallback(f"cli exit {proc.returncode}")
+
+    stdout_raw = stdout_bytes.decode("utf-8", errors="replace")
+    text, _usage, _cost, _source = parse_cli_result_envelope(stdout_raw)
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
-            resp = await client.post(
-                url,
-                json=body,
-                headers={"x-api-key": api_key, "content-type": "application/json"},
-            )
-        if resp.status_code >= 400:
-            logger.warning("VOC classifier HTTP %d: %s — falling back", resp.status_code, resp.text[:300])
-            return [{
-                "tag_id": FALLBACK_TAG_ID,
-                "level_1_category": "", "level_2_label": "", "level_3_diagnosis": "",
-                "role": "primary", "confidence": "low",
-                "reason": f"http {resp.status_code} from classifier model",
-            }]
-        response = resp.json()
-    except httpx.RequestError as e:
-        logger.warning("VOC classifier network error: %s — falling back", e)
-        return [{
-            "tag_id": FALLBACK_TAG_ID,
-            "level_1_category": "", "level_2_label": "", "level_3_diagnosis": "",
-            "role": "primary", "confidence": "low",
-            "reason": f"network error: {e}",
-        }]
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        logger.warning("VOC classifier CLI returned non-JSON output: %s — falling back", text[:300])
+        return _fallback("non-JSON output from CLI")
 
-    if response.get("stop_reason") == "refusal":
-        logger.warning("VOC classifier call refused — falling back")
-        return [{
-            "tag_id": FALLBACK_TAG_ID,
-            "level_1_category": "", "level_2_label": "", "level_3_diagnosis": "",
-            "role": "primary", "confidence": "low",
-            "reason": "model refused classification",
-        }]
-
-    content_blocks = response.get("content", []) or []
-    tool_use = next((b for b in content_blocks if b.get("type") == "tool_use"), None)
-    if tool_use is None:
-        logger.warning("VOC classifier returned no tool_use block — falling back")
-        return [{
-            "tag_id": FALLBACK_TAG_ID,
-            "level_1_category": "", "level_2_label": "", "level_3_diagnosis": "",
-            "role": "primary", "confidence": "low",
-            "reason": "no structured output from model",
-        }]
-
-    return _validate_tags(tool_use.get("input", {}) or {}, active_ids)
+    return _validate_tags(data, active_ids)
