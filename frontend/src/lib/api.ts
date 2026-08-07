@@ -940,6 +940,8 @@ export interface VocTaxonomyGroup {
 export interface VocTaxonomyTree {
   total_active_tags: number;
   tree: VocTaxonomyGroup[];
+  seed_fetched_at: string;
+  seed_tag_count: number;
 }
 
 export const fetchVocTaxonomy = () => request<VocTaxonomyTree>(`/voc/taxonomy`);
@@ -979,6 +981,94 @@ export const fetchVocClassificationStats = (days: number = 30, includeSecondary:
   request<VocClassificationStats>(
     `/voc/classification-stats?days=${days}&include_secondary=${includeSecondary}`,
   );
+
+export interface VocTrend {
+  date_from: string;
+  date_to: string;
+  level: "group" | "label";
+  trend: Record<string, Record<string, number>>; // date -> key -> count
+}
+
+export const fetchVocTrend = (days: number = 30, level: "group" | "label" = "group") =>
+  request<VocTrend>(`/voc/trend?days=${days}&level=${level}`);
+
+export interface VocMover {
+  key: string;
+  cur: number;
+  prev: number;
+  delta: number;
+  delta_pct: number | null;
+}
+
+export interface VocMoversResponse {
+  cur_from: string; cur_to: string;
+  prev_from: string; prev_to: string;
+  level: "group" | "label";
+  movers: VocMover[];
+}
+
+export const fetchVocMovers = (days: number = 7, level: "group" | "label" = "label", minBase: number = 3) =>
+  request<VocMoversResponse>(`/voc/movers?days=${days}&level=${level}&min_base=${minBase}`);
+
+export const reseedVocTaxonomy = () =>
+  request<{ status: string; added: string[]; changed: string[]; retired: string[]; skipped: boolean }>(
+    `/voc/taxonomy/reseed`,
+    { method: "POST" },
+  );
+
+export interface VocDigestFinding {
+  scope: string;
+  finding: string;
+  evidence?: string;
+}
+
+export interface VocDigestOpportunity {
+  area: string;
+  problem: string;
+  suggestion: string;
+  rationale?: string;
+}
+
+export interface VocDigestNarrative {
+  headline: string;
+  key_findings: VocDigestFinding[];
+  product_opportunities: VocDigestOpportunity[];
+  movers_commentary?: string;
+}
+
+export interface VocWeeklyDigestStats {
+  total_cur: number;
+  total_prev: number;
+  total_delta: number;
+  total_delta_pct: number | null;
+  groups: { group: string; count: number }[];
+  top_movers: VocMover[];
+  needs_engineer_rate: number;
+  devices: { device_type: string; count: number }[];
+}
+
+export interface VocWeeklyDigest {
+  week_start: string;
+  stats: VocWeeklyDigestStats;
+  narrative: VocDigestNarrative | null;
+  markdown: string;
+  model: string;
+  total_tokens: number;
+  total_cost_usd: number;
+  generated_at: string | null;
+}
+
+export const fetchVocWeeklyDigest = (weekStart: string = "") =>
+  request<VocWeeklyDigest | null>(`/voc/weekly-digest${weekStart ? `?week_start=${weekStart}` : ""}`);
+
+export const generateVocWeeklyDigest = (weekStart: string = "", force: boolean = false) =>
+  request<VocWeeklyDigest>(
+    `/voc/weekly-digest/generate?${weekStart ? `week_start=${weekStart}&` : ""}force=${force}`,
+    { method: "POST" },
+  );
+
+export const fetchVocWeeklyDigests = (limit: number = 12) =>
+  request<{ digests: VocWeeklyDigest[] }>(`/voc/weekly-digests?limit=${limit}`);
 
 // ============================================================
 // Eval Pipeline
