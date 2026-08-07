@@ -46,30 +46,45 @@ def load_seed() -> Dict[str, Any]:
         return json.load(f)
 
 
-async def sync_seed_to_db() -> int:
-    """Bootstrap voc_tags from the seed file, but ONLY if the table is currently
-    empty. This is a one-time bootstrap, not a recurring sync — once real data
-    exists (from a prior seed load or a live sync_from_voc() run), the seed
-    file is never consulted again, so it can't clobber newer VOC-side edits.
+async def sync_seed_to_db(force: bool = False) -> Dict[str, Any]:
+    """Bootstrap (or, with force=True, forcibly re-upsert) voc_tags from the
+    checked-in seed file.
 
-    Returns the number of tags seeded (0 if skipped because DB already has data,
-    or because no seed file exists yet).
+    Default (force=False): ONLY runs if the table is currently empty — a
+    one-time bootstrap, not a recurring sync, so a stale seed file can't
+    clobber newer VOC-side edits once real data exists.
+
+    force=True: re-upserts the seed regardless of existing data (added/
+    changed/retired diff, same semantics as sync_from_voc()) — the manual
+    substitute for the VOC service-account sync loop
+    (voc.sync_enabled=False until Keycloak credentials are provisioned):
+    pull a fresh snapshot via the voc-portal MCP tool, overwrite
+    backend/seeds/voc_taxonomy_seed.json, redeploy, then call this with
+    force=True (exposed as POST /api/voc/taxonomy/reseed).
+
+    Returns {"added": [...], "changed": [...], "retired": [...], "skipped": bool}.
+    skipped=True means nothing was written (already-bootstrapped DB with
+    force=False, or no seed file/tags available).
     """
     from app.db.database import get_voc_tags, upsert_voc_tags
 
     existing = await get_voc_tags(include_retired=True)
-    if existing:
-        return 0
+    if existing and not force:
+        return {"added": [], "changed": [], "retired": [], "skipped": True}
 
     seed = load_seed()
     tags = seed.get("tags", [])
     if not tags:
-        return 0
+        return {"added": [], "changed": [], "retired": [], "skipped": True}
 
     diff = await upsert_voc_tags(tags)
     await reload_from_db()
-    logger.info("Seeded %d VOC tags from %s", len(tags), SEED_PATH)
-    return len(diff.get("added", []))
+    logger.info(
+        "VOC taxonomy %s from %s: %d added, %d changed, %d retired",
+        "reseeded" if (existing and force) else "seeded", SEED_PATH,
+        len(diff["added"]), len(diff["changed"]), len(diff["retired"]),
+    )
+    return {**diff, "skipped": False}
 
 
 async def reload_from_db() -> None:

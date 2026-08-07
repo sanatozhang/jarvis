@@ -129,8 +129,9 @@ async def test_sync_seed_to_db_skips_when_db_already_has_tags(db_engine, db_sess
     try:
         await db_mod.upsert_voc_tags([_tag("ai-01")])
         with patch.object(voc_taxonomy, "load_seed", return_value={"tags": [_tag("ai-99")]}):
-            seeded = await voc_taxonomy.sync_seed_to_db()
-        assert seeded == 0
+            result = await voc_taxonomy.sync_seed_to_db()
+        assert result["skipped"] is True
+        assert result["added"] == []
         tags = await db_mod.get_voc_tags()
         assert {t["id"] for t in tags} == {"ai-01"}  # seed's ai-99 was NOT inserted
     finally:
@@ -144,8 +145,9 @@ async def test_sync_seed_to_db_bootstraps_empty_db(db_engine, db_session):
     db_mod._engine, db_mod._session_factory = db_engine, db_session
     try:
         with patch.object(voc_taxonomy, "load_seed", return_value={"tags": [_tag("ai-01"), _tag("ai-02")]}):
-            seeded = await voc_taxonomy.sync_seed_to_db()
-        assert seeded == 2
+            result = await voc_taxonomy.sync_seed_to_db()
+        assert result["skipped"] is False
+        assert set(result["added"]) == {"ai-01", "ai-02"}
         tags = await db_mod.get_voc_tags()
         assert {t["id"] for t in tags} == {"ai-01", "ai-02"}
     finally:
@@ -159,8 +161,30 @@ async def test_sync_seed_to_db_no_seed_file_is_a_noop(db_engine, db_session):
     db_mod._engine, db_mod._session_factory = db_engine, db_session
     try:
         with patch.object(voc_taxonomy, "load_seed", return_value={}):
-            seeded = await voc_taxonomy.sync_seed_to_db()
-        assert seeded == 0
+            result = await voc_taxonomy.sync_seed_to_db()
+        assert result["skipped"] is True
+    finally:
+        db_mod._engine, db_mod._session_factory = original_engine, original_factory
+
+
+async def test_sync_seed_to_db_force_true_upserts_over_existing_data(db_engine, db_session):
+    """force=True is the manual-reseed path (/api/voc/taxonomy/reseed, Task 7)
+    used to push a freshly re-pulled MCP snapshot into a DB that already has
+    older taxonomy data — the whole point is that it must NOT skip."""
+    import app.db.database as db_mod
+    from app.services import voc_taxonomy
+    original_engine, original_factory = db_mod._engine, db_mod._session_factory
+    db_mod._engine, db_mod._session_factory = db_engine, db_session
+    try:
+        await db_mod.upsert_voc_tags([_tag("ai-01", definition="旧定义")])
+        with patch.object(voc_taxonomy, "load_seed",
+                           return_value={"tags": [_tag("ai-01", definition="新定义"), _tag("ai-02")]}):
+            result = await voc_taxonomy.sync_seed_to_db(force=True)
+        assert result["skipped"] is False
+        assert result["changed"] == ["ai-01"]
+        assert result["added"] == ["ai-02"]
+        tags = await db_mod.get_voc_tags()
+        assert {t["id"] for t in tags} == {"ai-01", "ai-02"}
     finally:
         db_mod._engine, db_mod._session_factory = original_engine, original_factory
 

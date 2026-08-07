@@ -176,10 +176,10 @@ async def lifespan(app: FastAPI):
     # (default False until a VOC service account is provisioned).
     try:
         from app.services import voc_taxonomy
-        seeded = await voc_taxonomy.sync_seed_to_db()
+        seed_result = await voc_taxonomy.sync_seed_to_db()
         await voc_taxonomy.reload_from_db()
-        if seeded:
-            logger.info("VOC taxonomy bootstrapped from seed: %d tags", seeded)
+        if not seed_result["skipped"]:
+            logger.info("VOC taxonomy bootstrapped from seed: %d tags", len(seed_result["added"]))
     except Exception as e:
         logger.warning("VOC taxonomy bootstrap failed (non-fatal): %s", e)
 
