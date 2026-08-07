@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException, Query
 
 from app.db import database as db
-from app.services import voc_taxonomy
+from app.services import voc_digest, voc_taxonomy
 from app.services.voc_client import VocApiError, VocAuthError, VocCredentialsMissing
 
 logger = logging.getLogger("jarvis.api.voc")
@@ -75,3 +75,39 @@ async def get_classification_stats(
     date_to = datetime.utcnow().strftime("%Y-%m-%d")
     date_from = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     return await db.get_voc_classification_stats(date_from, date_to, include_secondary=include_secondary)
+
+
+@router.get("/trend")
+async def get_trend(
+    days: int = Query(30, ge=1, le=3650),
+    level: str = Query("group", pattern="^(group|label)$"),
+):
+    """Multi-line trend data for the VOC analytics tab — date -> {key: count}."""
+    date_to = datetime.utcnow().strftime("%Y-%m-%d")
+    date_from = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    rows = await db.get_voc_analysis_rows(date_from, date_to)
+    trend = voc_digest.aggregate_trend(rows, level=level)
+    return {"date_from": date_from, "date_to": date_to, "level": level, "trend": trend}
+
+
+@router.get("/movers")
+async def get_movers(
+    days: int = Query(7, ge=1, le=90),
+    level: str = Query("label", pattern="^(group|label)$"),
+    min_base: int = Query(3, ge=1, le=100),
+):
+    """Week-over-week (or `days`-over-`days`) movers for the diverging bar chart."""
+    cur_to = datetime.utcnow().date()
+    cur_from = cur_to - timedelta(days=days - 1)
+    prev_to = cur_from - timedelta(days=1)
+    prev_from = prev_to - timedelta(days=days - 1)
+
+    cur_rows = await db.get_voc_analysis_rows(cur_from.isoformat(), cur_to.isoformat())
+    prev_rows = await db.get_voc_analysis_rows(prev_from.isoformat(), prev_to.isoformat())
+    movers = voc_digest.aggregate_movers(cur_rows, prev_rows, level=level, min_base=min_base)
+
+    return {
+        "cur_from": cur_from.isoformat(), "cur_to": cur_to.isoformat(),
+        "prev_from": prev_from.isoformat(), "prev_to": prev_to.isoformat(),
+        "level": level, "movers": movers,
+    }

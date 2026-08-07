@@ -82,3 +82,51 @@ async def test_classification_stats(client, db_session):
     assert body["total_tagged"] == 1
     assert body["groups"][0]["group"] == "蓝牙连接"
     assert body["groups"][0]["count"] == 1
+
+
+async def _seed_voc_row(db_session, issue_id, created_at, group="蓝牙连接", label="配对失败"):
+    from app.db.database import IssueRecord, AnalysisRecord
+    import json as _json
+    async with db_session() as s:
+        s.add(IssueRecord(id=issue_id, description="desc", category="hardware"))
+        s.add(AnalysisRecord(
+            task_id=f"t-{issue_id}", issue_id=issue_id, created_at=created_at,
+            voc_tags_json=_json.dumps([{
+                "tag_id": "ai-01", "level_1_category": group, "level_2_label": label,
+                "level_3_diagnosis": "", "role": "primary", "confidence": "high", "reason": "x",
+            }]),
+        ))
+        await s.commit()
+
+
+async def test_get_trend_groups_by_date_and_level(client, db_session):
+    from datetime import datetime
+    await _seed_voc_row(db_session, "i1", datetime.utcnow())
+    resp = await client.get("/api/voc/trend", params={"days": 7, "level": "group"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["level"] == "group"
+    assert any("蓝牙连接" in day for day in body["trend"].values())
+
+
+async def test_get_trend_rejects_invalid_level(client):
+    resp = await client.get("/api/voc/trend", params={"level": "diagnosis"})
+    assert resp.status_code == 422
+
+
+async def test_get_movers_min_base_filters_noise(client, db_session):
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    for i in range(3):
+        await _seed_voc_row(db_session, f"cur{i}", now, group="A")
+    await _seed_voc_row(db_session, "prev0", now - timedelta(days=8), group="A")
+
+    resp = await client.get("/api/voc/movers", params={"days": 7, "level": "group", "min_base": 5})
+    assert resp.status_code == 200
+    assert resp.json()["movers"] == []  # 1 -> 3 filtered out by min_base=5
+
+    resp2 = await client.get("/api/voc/movers", params={"days": 7, "level": "group", "min_base": 1})
+    movers = resp2.json()["movers"]
+    assert movers[0]["key"] == "A"
+    assert movers[0]["cur"] == 3
+    assert movers[0]["prev"] == 1
