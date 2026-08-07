@@ -45,10 +45,21 @@ def _build_tree(tags: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 @router.get("/taxonomy")
 async def get_taxonomy():
     """Full active-tag tree (group → label → diagnosis) for the analytics
-    drill-down UI. Reads the in-memory cache (see voc_taxonomy.reload_from_db,
-    refreshed at startup and after every sync) — not a live DB hit."""
+    drill-down UI, plus metadata about which checked-in seed snapshot is
+    currently deployed (seed_fetched_at/seed_tag_count) — surfaced so a
+    stale taxonomy (VOC changed something upstream, nobody re-pulled) is
+    visible in the UI rather than a silent gap. Reads the in-memory active-
+    tags cache (refreshed at startup and after every sync) for the tree, and
+    the seed file directly for the metadata (the seed file, not the DB, is
+    "what snapshot are we running" — see voc_taxonomy.sync_seed_to_db)."""
     tags = voc_taxonomy.active_tags()
-    return {"total_active_tags": len(tags), "tree": _build_tree(tags)}
+    seed = voc_taxonomy.load_seed()
+    return {
+        "total_active_tags": len(tags),
+        "tree": _build_tree(tags),
+        "seed_fetched_at": seed.get("fetched_at", ""),
+        "seed_tag_count": seed.get("tag_count", 0),
+    }
 
 
 @router.post("/taxonomy/sync")
@@ -63,6 +74,17 @@ async def sync_taxonomy():
         raise HTTPException(status_code=412, detail=str(e))
     except (VocAuthError, VocApiError) as e:
         raise HTTPException(status_code=502, detail=str(e))
+    return {"status": "ok", **diff}
+
+
+@router.post("/taxonomy/reseed")
+async def reseed_taxonomy():
+    """Force re-upsert voc_tags from the checked-in seed file (backend/seeds/
+    voc_taxonomy_seed.json), bypassing sync_seed_to_db()'s bootstrap-only
+    skip. Use this after pulling a fresh MCP snapshot and redeploying — VOC
+    has no service account provisioned yet so the daily sync_from_voc() loop
+    (POST /taxonomy/sync) can't run; this is the manual substitute."""
+    diff = await voc_taxonomy.sync_seed_to_db(force=True)
     return {"status": "ok", **diff}
 
 

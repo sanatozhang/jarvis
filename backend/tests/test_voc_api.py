@@ -38,9 +38,12 @@ async def test_get_taxonomy_builds_tree(client, monkeypatch):
 
 async def test_get_taxonomy_empty(client, monkeypatch):
     monkeypatch.setattr(voc_taxonomy, "active_tags", lambda: [])
+    monkeypatch.setattr(voc_taxonomy, "load_seed", lambda: {})
     resp = await client.get("/api/voc/taxonomy")
     assert resp.status_code == 200
-    assert resp.json() == {"total_active_tags": 0, "tree": []}
+    assert resp.json() == {
+        "total_active_tags": 0, "tree": [], "seed_fetched_at": "", "seed_tag_count": 0,
+    }
 
 
 async def test_sync_taxonomy_missing_credentials_returns_412(client):
@@ -130,3 +133,33 @@ async def test_get_movers_min_base_filters_noise(client, db_session):
     assert movers[0]["key"] == "A"
     assert movers[0]["cur"] == 3
     assert movers[0]["prev"] == 1
+
+
+async def test_get_taxonomy_includes_seed_metadata(client, monkeypatch):
+    monkeypatch.setattr(voc_taxonomy, "active_tags", lambda: ACTIVE_TAGS)
+    monkeypatch.setattr(voc_taxonomy, "load_seed", lambda: {"fetched_at": "2026-08-07", "tag_count": 158})
+    resp = await client.get("/api/voc/taxonomy")
+    body = resp.json()
+    assert body["seed_fetched_at"] == "2026-08-07"
+    assert body["seed_tag_count"] == 158
+
+
+async def test_get_taxonomy_seed_metadata_missing_seed_file_is_empty(client, monkeypatch):
+    monkeypatch.setattr(voc_taxonomy, "active_tags", lambda: [])
+    monkeypatch.setattr(voc_taxonomy, "load_seed", lambda: {})
+    resp = await client.get("/api/voc/taxonomy")
+    body = resp.json()
+    assert body["seed_fetched_at"] == ""
+    assert body["seed_tag_count"] == 0
+
+
+async def test_reseed_taxonomy_forces_upsert(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    with _patch("app.services.voc_taxonomy.sync_seed_to_db", new_callable=AsyncMock,
+                return_value={"added": ["ai-01"], "changed": [], "retired": [], "skipped": False}) as mock_sync:
+        resp = await client.post("/api/voc/taxonomy/reseed")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["added"] == ["ai-01"]
+    mock_sync.assert_called_once_with(force=True)
