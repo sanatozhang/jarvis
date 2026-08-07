@@ -1036,14 +1036,16 @@ def normalize_device_type(raw: str) -> str:
 
 
 async def save_analysis(data: Dict[str, Any]) -> AnalysisRecord:
-    # Auto-classify if AI didn't provide categories (backend-side, zero AI cost)
+    # problem_categories / classify_problem() keyword classification retired
+    # 2026-08 in favor of the VOC Portal taxonomy (voc_tags below) — the
+    # agent no longer outputs problem_categories (see app.agents.base), and
+    # this backend-side fallback is intentionally NOT re-enabled for new
+    # rows: doing so would keep repopulating a field this feature explicitly
+    # freezes. classify_problem()/classification_taxonomy.py stay in the
+    # repo (used only by the historical /api/analytics/backfill-classifications
+    # endpoint, now also guarded — see get_analyses_for_backfill below) so
+    # old pre-cutover data stays comparable.
     categories = data.get("problem_categories", [])
-    if not categories:
-        from app.classification_taxonomy import classify_problem
-        categories = classify_problem(
-            data.get("problem_type", ""),
-            data.get("root_cause", ""),
-        )
 
     # VOC taxonomy (new classification, stored alongside problem_categories above,
     # which stays frozen). Unlike problem_categories, there is deliberately NO
@@ -2160,7 +2162,7 @@ async def get_classification_stats(date_from: str, date_to: str) -> Dict[str, An
 
 
 async def get_analyses_for_backfill(limit: int = 500) -> List[Dict[str, Any]]:
-    """Get analyses that need classification backfill (empty problem_categories_json)."""
+    """Get PRE-VOC-CUTOVER analyses that need legacy classification backfill (empty problem_categories_json AND empty voc_tags_json — see the guard comment below)."""
     async with get_session() as session:
         from sqlalchemy import select, or_
 
@@ -2169,6 +2171,7 @@ async def get_analyses_for_backfill(limit: int = 500) -> List[Dict[str, Any]]:
 
         stmt = select(
             AnalysisRecord.id,
+            AnalysisRecord.issue_id,
             AnalysisRecord.problem_type,
             AnalysisRecord.root_cause,
             AnalysisRecord.device_type,
@@ -2180,10 +2183,23 @@ async def get_analyses_for_backfill(limit: int = 500) -> List[Dict[str, Any]]:
                 AnalysisRecord.problem_categories_json == "",
                 AnalysisRecord.problem_categories_json.is_(None),
             ),
+            # Guard added 2026-08: since save_analysis() stopped auto-
+            # classifying, ALL new (VOC-era) rows also have empty
+            # problem_categories_json. Without this second condition the
+            # legacy /api/analytics/backfill-classifications button would
+            # immediately re-classify brand-new VOC-tagged tickets with the
+            # retired keyword system, un-freezing the field this feature
+            # deliberately stopped touching. A row with any voc_tags_json is
+            # definitionally post-cutover and must never match here.
+            or_(
+                AnalysisRecord.voc_tags_json == "[]",
+                AnalysisRecord.voc_tags_json == "",
+                AnalysisRecord.voc_tags_json.is_(None),
+            ),
         ).order_by(AnalysisRecord.created_at.desc()).limit(limit)
         rows = (await session.execute(stmt)).fetchall()
-        return [{"id": r.id, "problem_type": r.problem_type, "root_cause": r.root_cause,
-                 "device_type": r.device_type} for r in rows]
+        return [{"id": r.id, "issue_id": r.issue_id, "problem_type": r.problem_type,
+                 "root_cause": r.root_cause, "device_type": r.device_type} for r in rows]
 
 
 async def update_analysis_classification(analysis_id: int, categories: list, device_type: str = ""):

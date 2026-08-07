@@ -57,7 +57,11 @@ async def test_save_analysis_persists_ai_provided_voc_tags(db_engine, db_session
 
 async def test_save_analysis_leaves_voc_tags_empty_when_ai_omits_it(db_engine, db_session):
     """No backend LLM fallback in the hot save_analysis path — an empty/missing
-    voc_tags from the AI must stay empty, picked up later by the backfill script."""
+    voc_tags from the AI must stay empty, picked up later by the backfill script.
+    Also: the OLD classify_problem() keyword fallback was retired 2026-08 (VOC
+    taxonomy replaced it) — problem_categories_json must now stay '[]' for new
+    rows too, not silently repopulate via the backend-side fallback that used
+    to run unconditionally here."""
     import app.db.database as db_mod
     original_engine, original_factory = db_mod._engine, db_mod._session_factory
     db_mod._engine, db_mod._session_factory = db_engine, db_session
@@ -67,8 +71,30 @@ async def test_save_analysis_leaves_voc_tags_empty_when_ai_omits_it(db_engine, d
             "problem_type": "录音丢失", "root_cause": "unknown",
         })
         assert json.loads(record.voc_tags_json) == []
-        # And the OLD classification path still auto-classifies as before —
-        # this change must not have touched that behavior.
-        assert record.problem_categories_json != "[]"
+        assert record.problem_categories_json == "[]"
+    finally:
+        db_mod._engine, db_mod._session_factory = original_engine, original_factory
+
+
+async def test_get_analyses_for_backfill_excludes_rows_with_voc_tags(db_engine, db_session):
+    """A row that already has voc_tags_json populated (a new, VOC-classified
+    ticket) must never be picked up by the legacy backfill scan, even though
+    its problem_categories_json is empty (new analyses stopped writing it)."""
+    import app.db.database as db_mod
+    original_engine, original_factory = db_mod._engine, db_mod._session_factory
+    db_mod._engine, db_mod._session_factory = db_engine, db_session
+    try:
+        await db_mod.save_analysis({
+            "task_id": "t1", "issue_id": "i1", "problem_type": "蓝牙连接失败",
+            "root_cause": "token mismatch",
+            "voc_tags": [{"tag_id": "ai-01", "level_1_category": "蓝牙连接",
+                          "role": "primary", "confidence": "high", "reason": "x"}],
+        })
+        await db_mod.save_analysis({
+            "task_id": "t2", "issue_id": "i2", "problem_type": "录音丢失",
+            "root_cause": "unknown",
+        })
+        rows = await db_mod.get_analyses_for_backfill(limit=10)
+        assert [r["issue_id"] for r in rows] == ["i2"]  # t1 excluded: it has voc_tags
     finally:
         db_mod._engine, db_mod._session_factory = original_engine, original_factory

@@ -441,19 +441,12 @@ def _materialize_analysis_context(
         question_path.write_text(followup_question, encoding="utf-8")
         context_files["followup_question"] = str(question_path.relative_to(workspace))
 
-    # Classification taxonomy — AI reads this file to fill problem_categories + device_type
-    from app.classification_taxonomy import CLASSIFICATION_TAXONOMY
-    context_files["classification"] = _write_json_file(
-        context_dir / "classification_taxonomy.json",
-        CLASSIFICATION_TAXONOMY,
-    )
-
-    # VOC Portal taxonomy — new classification system, written alongside (not
-    # replacing) classification_taxonomy.json above. AI reads this to fill
-    # voc_tags; problem_categories/classification_taxonomy.json stay frozen
-    # for old-data comparison. Empty tag list degrades gracefully — the
-    # agent just won't have anything to pick from and voc_tags stays empty
-    # (caught by the backfill script's only_empty scan, not retried here).
+    # VOC Portal taxonomy is now the only classification system new analyses
+    # write to — classification_taxonomy.json / problem_categories retired
+    # (see docs/superpowers/plans/2026-08-07-voc-analytics-weekly-digest.md
+    # Task 10). Empty tag list degrades gracefully — the agent just won't
+    # have anything to pick from and voc_tags stays empty (caught by the
+    # backfill script's only_empty scan, not retried here).
     from app.services import voc_taxonomy
     context_files["voc_taxonomy"] = _write_json_file(
         context_dir / "voc_taxonomy.json",

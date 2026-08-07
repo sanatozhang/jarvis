@@ -657,7 +657,6 @@ output/       ← 请将 result.json 写入此目录
             issue_id="",
             problem_type=_raw_type_zh,        # Chinese stays in main field for DB compat
             problem_type_en=_raw_type_en,
-            problem_categories=_safe_problem_categories(data.get("problem_categories", [])),
             voc_tags=_safe_voc_tags(data.get("voc_tags", [])),
             device_type=str(data.get("device_type", "")).strip(),
             root_cause=_clean_system_lines(_raw_rc_zh),
@@ -752,9 +751,6 @@ def _compose_prompt(
 {{
     "problem_type": "Problem Type in English (e.g.: Bluetooth Connection Failure, Recording Lost, Firmware Update Failed)",
     "problem_type_en": "Same as problem_type (English is the primary language)",
-    "problem_categories": [
-        {{"category": "Level-1 category", "subcategory": "Level-2 subcategory"}}
-    ],
     "voc_tags": [
         {{"tag_id": "one tag_id from context/voc_taxonomy.json", "role": "primary", "confidence": "high/medium/low", "reason": "why this tag"}}
     ],
@@ -783,8 +779,6 @@ needs_engineer / system_failure / needs_user_retry — **mutually exclusive flag
 - needs_user_retry=true : Logs corrupted / missing key screenshots — CS contacts user, NOT engineering
 - Default all to false. If the case is clearly answerable with full user_reply, set all three to false.
 ```
-
-problem_categories and device_type taxonomy: see `context/classification_taxonomy.json` — **read it before analysis**. One issue can belong to multiple categories.
 
 voc_tags taxonomy: see `context/voc_taxonomy.json` — **read it before analysis**. Pick exactly 1 tag with `"role": "primary"` (the single best match) plus up to 2 more with `"role": "secondary"` for other clearly-relevant aspects. Only use `tag_id` values that appear in that file. Respect each tag's `mece_rules`/`negative_examples` — if the ticket matches a tag's negative example or a `distinct_from` tag fits better, use that one instead. If the taxonomy file is empty or nothing fits, omit `voc_tags` entirely (leave it `[]`) rather than guessing an id.
 
