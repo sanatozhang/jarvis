@@ -5,24 +5,24 @@ Rule accuracy statistics service.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 from app.db import database as db
+from app.services.date_window import to_datetime_bounds
 
 logger = logging.getLogger("jarvis.rule_accuracy")
 
 _CONFIDENCE_SCORE = {"high": 3, "medium": 2, "low": 1}
 
 
-async def get_rule_accuracy_stats(days: int = 30) -> List[Dict[str, Any]]:
+async def get_rule_accuracy_stats(date_from: str, date_to: str) -> List[Dict[str, Any]]:
     """
     Compute per-rule accuracy stats by joining analyses and issues.
 
     Returns list of dicts with:
     - rule_type, total, done, inaccurate, accuracy_rate, avg_confidence_score
     """
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    start, end = to_datetime_bounds(date_from, date_to)
 
     async with db.get_session() as session:
         from sqlalchemy import select, and_
@@ -34,7 +34,7 @@ async def get_rule_accuracy_stats(days: int = 30) -> List[Dict[str, Any]]:
             db.IssueRecord,
             db.AnalysisRecord.issue_id == db.IssueRecord.id,
         ).where(
-            db.AnalysisRecord.created_at >= cutoff,
+            and_(db.AnalysisRecord.created_at >= start, db.AnalysisRecord.created_at <= end),
         )
         result = await session.execute(stmt)
         rows = result.fetchall()

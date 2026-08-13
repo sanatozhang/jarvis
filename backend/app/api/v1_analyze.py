@@ -339,6 +339,16 @@ async def _finish_task(
     except Exception as ne:
         logger.warning("notify_creator_v1_failed task=%s err=%s", task_id, ne)
 
+    # Recurrence check — deliberately NOT inside notify_issue_creator_on_complete,
+    # which early-returns for created_by="" (API-sourced tickets have no
+    # jarvis username), so this path would silently never get checked otherwise.
+    if not is_failure:
+        try:
+            from app.services.recurrence import detect_and_alert
+            await detect_and_alert(record_id)
+        except Exception as rec_err:
+            logger.warning("recurrence_detect_failed issue=%s err=%s", record_id, rec_err)
+
     # Webhook callback
     if webhook_url:
         try:

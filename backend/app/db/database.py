@@ -9,7 +9,7 @@ import re
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import Column, Date, DateTime, Integer, String, Text, Boolean, Float, func, text
+from sqlalchemy import Column, Date, DateTime, Integer, String, Text, Boolean, Float, UniqueConstraint, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -59,6 +59,14 @@ class IssueRecord(Base):
     escalation_chat_id = Column(String(128), default="")    # Feishu group chat_id for sending resolve msg
     escalation_share_link = Column(String(512), default="") # Feishu group invite link for "join group" button
     escalation_reminded_at = Column(DateTime, nullable=True) # Last day-after reminder timestamp (avoid duplicate pings)
+    # Fix-version + recurrence memory (see app.services.recurrence): recorded
+    # at mark-complete time, optional — not every issue maps to an app/firmware
+    # release (could be user error, a one-off, etc).
+    fix_target = Column(String(16), default="")             # "" | app | firmware | other
+    fix_version = Column(String(32), default="")             # raw user input, parsed lazily at comparison time
+    resolve_reason = Column(Text, default="")                # queryable projection of events.detail_json.reason
+    resolved_at = Column(DateTime, nullable=True)             # when mark-complete happened (recurrence window + analytics denominator)
+    resolved_by = Column(String(64), default="")
     created_at_ms = Column(Integer, default=0)             # creation time (Unix ms)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -189,6 +197,38 @@ class EventRecord(Base):
     # 是通用埋点（无平台语境，如 page_visit），空串代表"未标注"，不能强行归一化成 app 掩盖这个事实。
     platform = Column(String(16), default="")
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class IssueRecurrenceRecord(Base):
+    """One row per detected "this looks like a previously fixed issue,
+    recurring" hit — see app.services.recurrence. Persisted (not computed
+    on every read) so alert dedup (`alerted_at`) survives restarts and
+    recurrence-rate analytics can aggregate by `detected_at` without
+    recomputing similarity for every historical issue on every request.
+
+    A brand-new table needs no ALTER-TABLE migration — Base.metadata.create_all
+    picks it up on next startup automatically."""
+    __tablename__ = "issue_recurrences"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    new_issue_id = Column(String(64), index=True)
+    prior_issue_id = Column(String(64), index=True)
+    severity = Column(String(8), default="")          # "red" | "yellow"
+    similarity = Column(Float, default=0.0)
+    reason_code = Column(String(32), default="")      # version_gte_fix / no_fix_version / version_unparseable / no_version_target
+    rule_type = Column(String(64), default="")
+    fix_target = Column(String(16), default="")
+    fix_version = Column(String(32), default="")
+    compared_version = Column(String(32), default="")  # the new ticket's version actually used in the comparison
+    version_source = Column(String(16), default="")    # log_metadata | issue_field | ""
+    prior_resolved_at = Column(DateTime, nullable=True)
+    prior_resolve_reason = Column(Text, default="")
+    detected_at = Column(DateTime, default=datetime.utcnow, index=True)
+    alerted_at = Column(DateTime, nullable=True)        # NULL = not yet pushed to Feishu
+
+    __table_args__ = (
+        UniqueConstraint("new_issue_id", "prior_issue_id", name="uq_recurrence_pair"),
+    )
 
 
 class RuleRecord(Base):
@@ -494,6 +534,11 @@ async def init_db():
             ("escalation_chat_id", "VARCHAR(128)", "''"),
             ("escalation_share_link", "VARCHAR(512)", "''"),
             ("escalation_reminded_at", "DATETIME", "NULL"),
+            ("fix_target", "VARCHAR(16)", "''"),
+            ("fix_version", "VARCHAR(32)", "''"),
+            ("resolve_reason", "TEXT", "''"),
+            ("resolved_at", "DATETIME", "NULL"),
+            ("resolved_by", "VARCHAR(64)", "''"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE issues ADD COLUMN {col} {coltype} DEFAULT {default}"))
@@ -556,11 +601,52 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_issues_deleted ON issues(deleted)",
             "CREATE INDEX IF NOT EXISTS idx_analyses_issue_id_created ON analyses(issue_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_tasks_issue_id_created ON tasks(issue_id, created_at DESC)",
+            # Recurrence detection: candidate lookup is "same rule_type, resolved
+            # recently" — this composite index is the query's main index.
+            "CREATE INDEX IF NOT EXISTS idx_issues_rule_type_resolved ON issues(rule_type, resolved_at)",
+            "CREATE INDEX IF NOT EXISTS idx_issues_resolved_at ON issues(resolved_at)",
+            "CREATE INDEX IF NOT EXISTS idx_recurrence_new_issue ON issue_recurrences(new_issue_id)",
+            "CREATE INDEX IF NOT EXISTS idx_recurrence_detected ON issue_recurrences(detected_at)",
+            "CREATE INDEX IF NOT EXISTS idx_recurrence_prior ON issue_recurrences(prior_issue_id)",
         ]:
             try:
                 await conn.execute(text(idx_sql))
             except Exception:
                 pass
+
+        # One-time, idempotent backfill: stamp resolved_at/resolve_reason/resolved_by
+        # on already-done issues from their most recent mark_complete event, so
+        # historical issues aren't permanently excluded from the recurrence
+        # candidate pool and analytics denominator. The `resolved_at IS NULL`
+        # guard is load-bearing — without it, this would re-run and clobber a
+        # human's later correction to resolve_reason on every restart.
+        try:
+            await conn.execute(text("""
+                UPDATE issues
+                SET resolved_at = (
+                    SELECT e.created_at FROM events e
+                    WHERE e.issue_id = issues.id AND e.event_type = 'mark_complete'
+                    ORDER BY e.created_at DESC LIMIT 1
+                ),
+                resolve_reason = COALESCE((
+                    SELECT json_extract(e.detail_json, '$.reason') FROM events e
+                    WHERE e.issue_id = issues.id AND e.event_type = 'mark_complete'
+                    ORDER BY e.created_at DESC LIMIT 1
+                ), ''),
+                resolved_by = COALESCE((
+                    SELECT e.username FROM events e
+                    WHERE e.issue_id = issues.id AND e.event_type = 'mark_complete'
+                    ORDER BY e.created_at DESC LIMIT 1
+                ), '')
+                WHERE issues.resolved_at IS NULL
+                  AND issues.status = 'done'
+                  AND EXISTS (
+                    SELECT 1 FROM events e
+                    WHERE e.issue_id = issues.id AND e.event_type = 'mark_complete'
+                  )
+            """))
+        except Exception:
+            pass
 
 
 async def close_db():
@@ -725,6 +811,279 @@ async def update_issue_status(issue_id: str, status: str):
         if record:
             record.status = status
             record.updated_at = datetime.utcnow()
+            await session.commit()
+
+
+async def update_issue_resolution(
+    issue_id: str, reason: str, fix_target: str = "", fix_version: str = "", resolved_by: str = "",
+) -> bool:
+    """Mark an issue done AND stamp the structured resolution fields used by
+    recurrence detection (app.services.recurrence) and the fix-effectiveness
+    analytics panel. `fix_target`/`fix_version` are optional — not every
+    issue maps to an app/firmware release (could be user error, hardware
+    replacement, etc). Returns False if the issue doesn't exist (caller
+    decides whether that's a 404)."""
+    async with get_session() as session:
+        record = await get_ticket_record(session, issue_id)
+        if not record:
+            return False
+        now = datetime.utcnow()
+        record.status = "done"
+        record.updated_at = now
+        record.resolved_at = now
+        record.resolve_reason = reason
+        record.fix_target = fix_target
+        record.fix_version = fix_version
+        record.resolved_by = resolved_by
+        await session.commit()
+        return True
+
+
+async def load_resolved_candidates(
+    rule_type: str, exclude_issue_id: str = "", since: Optional[datetime] = None, limit: int = 500,
+):
+    """Completed issues (status='done', not deleted) sharing `rule_type`,
+    resolved on/after `since` — the recurrence-detection candidate pool for
+    one incoming ticket. `since` defaults to 365 days back (comfortably
+    longer than the 90-day yellow window, since red hits have no time
+    limit and can still legitimately match an old fix)."""
+    from sqlalchemy import select, and_
+
+    since = since or (datetime.utcnow() - timedelta(days=365))
+    async with get_session() as session:
+        stmt = select(IssueRecord).where(and_(
+            IssueRecord.status == "done",
+            IssueRecord.deleted == False,  # noqa: E712 (SQLAlchemy needs `==`, not `is`)
+            IssueRecord.rule_type == rule_type,
+            IssueRecord.resolved_at.is_not(None),
+            IssueRecord.resolved_at >= since,
+        )).order_by(IssueRecord.resolved_at.desc()).limit(limit)
+        if exclude_issue_id:
+            stmt = stmt.where(IssueRecord.id != exclude_issue_id)
+        rows = (await session.execute(stmt)).scalars().all()
+        return [
+            {
+                "issue_id": r.id, "description": r.description or "", "rule_type": r.rule_type or "",
+                "fix_target": r.fix_target or "", "fix_version": r.fix_version or "",
+                "resolved_at": r.resolved_at, "resolve_reason": r.resolve_reason or "",
+            }
+            for r in rows
+        ]
+
+
+async def upsert_issue_recurrence(hit: Dict[str, Any]) -> None:
+    """Idempotent upsert keyed on (new_issue_id, prior_issue_id) — re-running
+    detection for the same ticket (e.g. a re-analysis) must not duplicate
+    rows or reset `alerted_at` (which would defeat alert dedup)."""
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        stmt = select(IssueRecurrenceRecord).where(
+            IssueRecurrenceRecord.new_issue_id == hit["new_issue_id"],
+            IssueRecurrenceRecord.prior_issue_id == hit["prior_issue_id"],
+        )
+        existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing:
+            for k in ("severity", "similarity", "reason_code", "rule_type", "fix_target", "fix_version",
+                      "compared_version", "version_source", "prior_resolved_at", "prior_resolve_reason"):
+                if k in hit:
+                    setattr(existing, k, hit[k])
+        else:
+            session.add(IssueRecurrenceRecord(**hit, detected_at=datetime.utcnow()))
+        await session.commit()
+
+
+async def list_recurrences_for_issues(issue_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Batch lookup for list-page enrichment — one indexed IN query rather
+    than one request per row. Returns {new_issue_id: [hit_dict, ...]},
+    ordered red-first then similarity descending, keys absent from the dict
+    mean "no recurrence hit for that issue"."""
+    from sqlalchemy import select
+
+    if not issue_ids:
+        return {}
+    async with get_session() as session:
+        stmt = select(IssueRecurrenceRecord).where(IssueRecurrenceRecord.new_issue_id.in_(issue_ids))
+        rows = (await session.execute(stmt)).scalars().all()
+
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(r.new_issue_id, []).append({
+            "prior_issue_id": r.prior_issue_id, "severity": r.severity, "similarity": r.similarity,
+            "reason_code": r.reason_code, "fix_target": r.fix_target, "fix_version": r.fix_version,
+            "compared_version": r.compared_version, "prior_resolved_at": r.prior_resolved_at,
+            "prior_resolve_reason": r.prior_resolve_reason,
+        })
+    for hits in out.values():
+        hits.sort(key=lambda h: (h["severity"] != "red", -h["similarity"]))
+    return out
+
+
+async def is_recurrence_alerted(new_issue_id: str, prior_issue_id: str) -> bool:
+    """Pair-level alert dedup: True once this exact (new, prior) pair has
+    ever been alerted — a lifetime cap, independent of the 12h per-prior
+    rate limit in count_recurrence_alerts_since."""
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        stmt = select(IssueRecurrenceRecord.alerted_at).where(
+            IssueRecurrenceRecord.new_issue_id == new_issue_id,
+            IssueRecurrenceRecord.prior_issue_id == prior_issue_id,
+        )
+        alerted_at = (await session.execute(stmt)).scalar_one_or_none()
+        return alerted_at is not None
+
+
+async def count_recurrence_alerts_since(prior_issue_id: str, since: datetime) -> int:
+    from sqlalchemy import select, func, and_
+
+    async with get_session() as session:
+        stmt = select(func.count()).select_from(IssueRecurrenceRecord).where(and_(
+            IssueRecurrenceRecord.prior_issue_id == prior_issue_id,
+            IssueRecurrenceRecord.alerted_at.is_not(None),
+            IssueRecurrenceRecord.alerted_at >= since,
+        ))
+        return (await session.execute(stmt)).scalar() or 0
+
+
+async def get_fix_effectiveness(date_from: str, date_to: str) -> Dict[str, Any]:
+    """Fix-effectiveness metrics for the /analytics/fix-effectiveness panel.
+
+    Two DIFFERENT recurrence rates, both reported because they answer
+    different questions and must not be conflated:
+    - recurrence_rate_by_detection: recurrences DETECTED in this window,
+      over this window's resolved count. Answers "how much recurrence blew
+      up this period" — but its numerator can point at issues resolved in
+      an EARLIER period (a fix from 3 weeks ago recurring today still counts
+      as a detection this week).
+    - cohort_recurrence_rate: of the issues RESOLVED in this window, what
+      fraction have EVER (as of now, not bounded by this window) gone on to
+      recur. Answers "did what we fixed this period actually stay fixed" —
+      the number can still climb after the window closes as more time
+      passes for a recurrence to show up.
+    """
+    from sqlalchemy import select, func, and_
+
+    start, end = datetime.fromisoformat(date_from), datetime.fromisoformat(date_to + "T23:59:59")
+
+    async with get_session() as session:
+        resolved_stmt = select(IssueRecord).where(and_(
+            IssueRecord.resolved_at >= start, IssueRecord.resolved_at <= end,
+        ))
+        resolved_issues = list((await session.execute(resolved_stmt)).scalars().all())
+        resolved_ids = [i.id for i in resolved_issues]
+        resolved_count = len(resolved_issues)
+        resolved_with_fix_version = sum(1 for i in resolved_issues if i.fix_version)
+
+        detection_stmt = select(
+            IssueRecurrenceRecord.severity, func.count(),
+        ).where(and_(
+            IssueRecurrenceRecord.detected_at >= start, IssueRecurrenceRecord.detected_at <= end,
+        )).group_by(IssueRecurrenceRecord.severity)
+        detection_counts = dict((await session.execute(detection_stmt)).all())
+        red_hits = detection_counts.get("red", 0)
+        yellow_hits = detection_counts.get("yellow", 0)
+
+        recurred_prior_stmt = select(func.count(func.distinct(IssueRecurrenceRecord.prior_issue_id))).where(and_(
+            IssueRecurrenceRecord.severity == "red",
+            IssueRecurrenceRecord.detected_at >= start, IssueRecurrenceRecord.detected_at <= end,
+        ))
+        recurred_prior_count = (await session.execute(recurred_prior_stmt)).scalar() or 0
+
+        # Cohort recurrence: NOT bounded by the detection window — a fix from
+        # this period can recur any time after it, so "ever recurred" is
+        # queried against the full issue_recurrences table.
+        cohort_recurred_ids: set = set()
+        recurrence_count_by_prior: Dict[str, int] = {}
+        if resolved_ids:
+            cohort_stmt = select(
+                IssueRecurrenceRecord.prior_issue_id, func.count(func.distinct(IssueRecurrenceRecord.new_issue_id)),
+            ).where(and_(
+                IssueRecurrenceRecord.severity == "red",
+                IssueRecurrenceRecord.prior_issue_id.in_(resolved_ids),
+            )).group_by(IssueRecurrenceRecord.prior_issue_id)
+            for prior_id, cnt in (await session.execute(cohort_stmt)).all():
+                cohort_recurred_ids.add(prior_id)
+                recurrence_count_by_prior[prior_id] = cnt
+
+    cohort_recurrence_rate = round(len(cohort_recurred_ids) / resolved_count * 100, 1) if resolved_count else None
+    recurrence_rate_by_detection = round(recurred_prior_count / resolved_count * 100, 1) if resolved_count else None
+    fix_version_fill_rate = round(resolved_with_fix_version / resolved_count * 100, 1) if resolved_count else None
+
+    by_rule_type_agg: Dict[str, Dict[str, int]] = {}
+    for issue in resolved_issues:
+        rt = issue.rule_type or "general"
+        entry = by_rule_type_agg.setdefault(rt, {"resolved": 0, "recurred": 0})
+        entry["resolved"] += 1
+        if issue.id in cohort_recurred_ids:
+            entry["recurred"] += 1
+    by_rule_type = [
+        {"rule_type": rt, "resolved": v["resolved"], "recurred": v["recurred"]}
+        for rt, v in sorted(by_rule_type_agg.items(), key=lambda kv: -kv[1]["resolved"])
+    ]
+
+    offenders = [i for i in resolved_issues if i.id in cohort_recurred_ids]
+    offenders.sort(key=lambda i: -recurrence_count_by_prior.get(i.id, 0))
+    top_offenders = [
+        {
+            "prior_issue_id": i.id, "description": i.description or "",
+            "fix_target": i.fix_target or "", "fix_version": i.fix_version or "",
+            "resolved_at": i.resolved_at.isoformat() + "Z" if i.resolved_at else "",
+            "recurrence_count": recurrence_count_by_prior.get(i.id, 0),
+        }
+        for i in offenders[:10]
+    ]
+
+    return {
+        "date_from": date_from, "date_to": date_to,
+        "resolved_count": resolved_count,
+        "resolved_with_fix_version": resolved_with_fix_version,
+        "fix_version_fill_rate": fix_version_fill_rate,
+        "red_hits": red_hits, "yellow_hits": yellow_hits,
+        "recurred_prior_count": recurred_prior_count,
+        "recurrence_rate_by_detection": recurrence_rate_by_detection,
+        "cohort_recurrence_rate": cohort_recurrence_rate,
+        "by_rule_type": by_rule_type,
+        "top_offenders": top_offenders,
+    }
+
+
+async def get_recurrence_rows(date_from: str, date_to: str) -> List[Dict[str, Any]]:
+    """issue_recurrences rows with `detected_at` in the inclusive [date_from,
+    date_to] window, as plain dicts — feeds both the VOC weekly digest's
+    recurrence section (app.services.recurrence.compute_recurrence_stats)
+    and the /analytics/fix-effectiveness panel."""
+    from sqlalchemy import select, and_
+
+    start, end = datetime.fromisoformat(date_from), datetime.fromisoformat(date_to + "T23:59:59")
+    async with get_session() as session:
+        stmt = select(IssueRecurrenceRecord).where(and_(
+            IssueRecurrenceRecord.detected_at >= start,
+            IssueRecurrenceRecord.detected_at <= end,
+        ))
+        rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {
+            "new_issue_id": r.new_issue_id, "prior_issue_id": r.prior_issue_id,
+            "severity": r.severity, "similarity": r.similarity, "reason_code": r.reason_code,
+            "rule_type": r.rule_type, "fix_target": r.fix_target, "fix_version": r.fix_version,
+            "compared_version": r.compared_version, "detected_at": r.detected_at,
+        }
+        for r in rows
+    ]
+
+
+async def mark_recurrence_alerted(new_issue_id: str, prior_issue_id: str) -> None:
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        stmt = select(IssueRecurrenceRecord).where(
+            IssueRecurrenceRecord.new_issue_id == new_issue_id,
+            IssueRecurrenceRecord.prior_issue_id == prior_issue_id,
+        )
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row and row.alerted_at is None:
+            row.alerted_at = datetime.utcnow()
             await session.commit()
 
 
@@ -1338,15 +1697,46 @@ async def _enrich_issues_batch(
         if t.issue_id not in tasks:  # first one is latest (ordered by created_at desc)
             tasks[t.issue_id] = t
 
+    # 4. Recurrence hits — one indexed IN query for the whole page rather than
+    # a per-row lookup (see app.services.recurrence). PlatformTicket rows
+    # simply never appear as keys here (issue_recurrences only ever has
+    # IssueRecord ids on either side) — no special-casing needed, `.get()`
+    # against a dict that doesn't have the key already returns the [] default.
+    recurrences = await list_recurrences_for_issues(issue_ids)
+
     return [
         _issue_to_dict(
             issue,
             analysis=analyses.get(issue.id),
             task=tasks.get(issue.id),
             analysis_count=a_counts.get(issue.id, 0),
+            recurrence_hits=recurrences.get(issue.id),
         )
         for issue in issues
     ]
+
+
+def _recurrence_summary(hits: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """{severity, count, top} from a sorted (severity, -similarity) hit list,
+    or None for "no recurrence detected" — the null case list pages and the
+    detail page both need to distinguish from "recurrence checked and clean"."""
+    if not hits:
+        return None
+    top = hits[0]
+    return {
+        "severity": top["severity"],
+        "count": len(hits),
+        "top": {
+            "prior_issue_id": top["prior_issue_id"],
+            "similarity": top["similarity"],
+            "reason_code": top["reason_code"],
+            "fix_target": top["fix_target"],
+            "fix_version": top["fix_version"],
+            "compared_version": top["compared_version"],
+            "prior_resolved_at": (top["prior_resolved_at"].isoformat() + "Z") if top["prior_resolved_at"] else "",
+            "prior_resolve_reason": top["prior_resolve_reason"],
+        },
+    }
 
 
 def _issue_to_dict(
@@ -1354,6 +1744,7 @@ def _issue_to_dict(
     analysis: Optional[AnalysisRecord] = None,
     task: Optional[TaskRecord] = None,
     analysis_count: int = 0,
+    recurrence_hits: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Convert DB records to a dict matching the frontend Issue+Result shape.
 
@@ -1402,6 +1793,7 @@ def _issue_to_dict(
         # 没有 payload_json 属性 → 给 {}。这是本阶段唯一新增的输出字段，其余现
         # 有字段的值/结构必须与改前完全一致。
         "platform_meta": json.loads(payload_json) if payload_json else {},
+        "recurrence": _recurrence_summary(recurrence_hits),
     }
 
     if analysis:

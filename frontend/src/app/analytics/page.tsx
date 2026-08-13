@@ -2,37 +2,17 @@
 
 import { useT } from "@/lib/i18n";
 import { CountUp } from "@/components/CountUp";
-import { useEffect, useState, useCallback } from "react";
-import { fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats, backfillClassifications, fetchIssueDetail, formatLocalTime, fetchVocClassificationStats, fetchVocTrend, fetchVocMovers, fetchVocWeeklyDigest, generateVocWeeklyDigest, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats, type LocalIssueItem, type VocClassificationStats, type VocTrend, type VocMoversResponse, type VocWeeklyDigest } from "@/lib/api";
-
-interface FailReasonItem {
-  issue_id?: string;
-  reason?: string;
-  error?: string;
-  username?: string;
-  duration_ms?: number;
-  created_at?: string;
-}
-
-interface Analytics {
-  date_from: string; date_to: string;
-  event_counts: Record<string, number>;
-  unique_users: number;
-  avg_analysis_duration_ms: number; avg_analysis_duration_min: number;
-  total_analyses: number; successful_analyses: number; failed_analyses: number;
-  followup_done: number; followup_fail: number;
-  external_failures: number;
-  feedback_submitted: number; escalations: number;
-  fail_reasons: FailReasonItem[];
-  daily: Record<string, Record<string, number>>;
-  total_tokens?: number;
-  total_cost_usd?: number;
-  top_users: { username: string; count: number }[];
-  value_metrics: {
-    time_saved_hours: number; time_saved_per_ticket_min: number;
-    success_rate: number; estimated_manual_hours: number; estimated_ai_hours: number;
-  };
-}
+import { Suspense, useEffect, useState, useCallback, useMemo } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  fetchAnalyticsDashboard, fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats,
+  backfillClassifications, fetchIssueDetail, formatLocalTime, fetchVocClassificationStats,
+  fetchVocTrend, fetchVocMovers, fetchVocWeeklyDigest, generateVocWeeklyDigest, fetchFixEffectiveness,
+  type AnalyticsDashboard, type FailReasonItem, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats,
+  type LocalIssueItem, type VocClassificationStats, type VocTrend, type VocMoversResponse, type VocWeeklyDigest,
+  type FixEffectiveness,
+} from "@/lib/api";
+import { thisMonday, lastMonday, isMondayISO, resolveRange, alignedPrevWeek, type TimeRange } from "@/lib/timeRange";
 
 const S = {
   surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
@@ -66,10 +46,53 @@ function StatCard({ label, value, sub, color, index = 0 }: { label: string; valu
   );
 }
 
-export default function AnalyticsPage() {
+// 深链：?week=YYYY-MM-DD（自然周，须为周一）或 ?days=N；两者互斥，缺省 = 上周。
+// 坏值（非周一 / 非法数字）静默降级到默认值，绝不 throw —— 一个错的分享链接
+// 不该让页面挂掉。
+function parseRange(sp: URLSearchParams): TimeRange {
+  const wk = sp.get("week");
+  if (wk && isMondayISO(wk)) return { kind: "week", weekStart: wk };
+  const n = parseInt(sp.get("days") || "", 10);
+  if (Number.isFinite(n) && n >= 1 && n <= 3650) return { kind: "days", days: n };
+  return { kind: "week", weekStart: lastMonday() };
+}
+
+function AnalyticsPageInner() {
   const t = useT();
-  const [data, setData] = useState<Analytics | null>(null);
-  const [days, setDays] = useState(7);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const range = useMemo(() => parseRange(searchParams), [searchParams]);
+  const resolved = useMemo(() => resolveRange(range), [range.kind, range.kind === "week" ? range.weekStart : range.days]);
+
+  const updateQuery = useCallback((patch: { week?: string; days?: number }) => {
+    const next = new URLSearchParams(searchParams.toString());
+    if (patch.week !== undefined) {
+      next.delete("days");
+      if (patch.week === lastMonday()) next.delete("week");
+      else next.set("week", patch.week);
+    }
+    if (patch.days !== undefined) {
+      next.delete("week");
+      next.set("days", String(patch.days));
+    }
+    const qs = next.toString();
+    router.replace(qs ? `?${qs}` : "?", { scroll: false });
+  }, [router, searchParams]);
+
+  const PRESETS = useMemo(() => [
+    { key: "cur", range: { kind: "week", weekStart: thisMonday() } as TimeRange, label: t("本周（进行中）") },
+    { key: "last", range: { kind: "week", weekStart: lastMonday() } as TimeRange, label: t("上周") },
+    { key: "m1", range: { kind: "days", days: 30 } as TimeRange, label: t("近 1 个月") },
+    { key: "m3", range: { kind: "days", days: 90 } as TimeRange, label: t("近 3 个月") },
+    { key: "m6", range: { kind: "days", days: 180 } as TimeRange, label: t("近 6 个月") },
+    { key: "y1", range: { kind: "days", days: 365 } as TimeRange, label: t("近 1 年") },
+  ], [t]);
+
+  const isPresetActive = (p: TimeRange) =>
+    p.kind === range.kind && (p.kind === "week" ? p.weekStart === (range as { weekStart: string }).weekStart : p.days === (range as { days: number }).days);
+
+  const [data, setData] = useState<AnalyticsDashboard | null>(null);
   const [customDays, setCustomDays] = useState("");
   const [loading, setLoading] = useState(true);
   const [ruleAccuracy, setRuleAccuracy] = useState<RuleAccuracyStat[]>([]);
@@ -78,6 +101,7 @@ export default function AnalyticsPage() {
   const [vocStats, setVocStats] = useState<VocClassificationStats | null>(null);
   const [vocTrend, setVocTrend] = useState<VocTrend | null>(null);
   const [vocMovers, setVocMovers] = useState<VocMoversResponse | null>(null);
+  const [fixEffectiveness, setFixEffectiveness] = useState<FixEffectiveness | null>(null);
   const [digest, setDigest] = useState<VocWeeklyDigest | null>(null);
   const [digestLoading, setDigestLoading] = useState(false);
   const [digestRegenerating, setDigestRegenerating] = useState(false);
@@ -101,40 +125,55 @@ export default function AnalyticsPage() {
     }
   }, [issueDetails]);
 
-  const load = async (d: number) => {
+  const load = useCallback(async () => {
     setLoading(true);
+    const w = { dateFrom: resolved.dateFrom, dateTo: resolved.dateTo };
+    // 选中「当周」时用对齐的上周同段（同星期跨度）做 movers 基线，而不是
+    // 默认推导的「紧邻前一段」——本周三看「本周一~周三」时，紧邻前段是
+    // 「上周五~周日」，工作日 vs 周末不可比。其它窗口（月/季/年/上周）用
+    // 后端默认推导即可。
+    const prev = range.kind === "week" ? alignedPrevWeek(resolved) ?? undefined : undefined;
     try {
-      const [res, ra, pt, cls, voc, vocTrendRes, vocMoversRes] = await Promise.all([
-        fetch(`/api/analytics/dashboard?days=${d}`),
-        fetchRuleAccuracy(d).catch(() => []),
-        fetchProblemTypeStats(d).catch(() => null),
-        fetchClassificationStats(d).catch(() => null),
-        fetchVocClassificationStats(d).catch(() => null),
-        fetchVocTrend(d, "group").catch(() => null),
-        fetchVocMovers(7, "label", 3).catch(() => null),
+      const [dash, ra, pt, cls, voc, vocTrendRes, vocMoversRes, fixEff] = await Promise.all([
+        fetchAnalyticsDashboard(w).catch(() => null),
+        fetchRuleAccuracy(w).catch(() => []),
+        fetchProblemTypeStats(w).catch(() => null),
+        fetchClassificationStats(w).catch(() => null),
+        fetchVocClassificationStats(w).catch(() => null),
+        fetchVocTrend(w, "group").catch(() => null),
+        fetchVocMovers(w, "label", 3, prev).catch(() => null),
+        fetchFixEffectiveness(w).catch(() => null),
       ]);
-      if (res.ok) setData(await res.json());
+      setData(dash);
       setRuleAccuracy(ra);
       setPtStats(pt);
       setClsStats(cls);
       setVocStats(voc);
       setVocTrend(vocTrendRes);
       setVocMovers(vocMoversRes);
+      setFixEffectiveness(fixEff);
     } catch {} finally { setLoading(false); }
-  };
+  }, [resolved.dateFrom, resolved.dateTo, range.kind]);
 
-  useEffect(() => { load(days); }, [days]);
+  useEffect(() => { load(); }, [load]);
+
+  // Weekly digest cards are pinned to a completed natural week: when the
+  // main window IS a completed week (last week or any historical week),
+  // sync the digest to it; for the in-progress current week (no digest
+  // exists yet) or non-week windows (month/quarter/custom), keep the
+  // backend default (most recently completed week) by passing "".
+  const digestWeek = range.kind === "week" && !resolved.inProgress ? resolved.weekStart! : "";
 
   useEffect(() => {
     setDigestLoading(true);
-    fetchVocWeeklyDigest().then(setDigest).catch(() => setDigest(null)).finally(() => setDigestLoading(false));
-  }, []);
+    fetchVocWeeklyDigest(digestWeek).then(setDigest).catch(() => setDigest(null)).finally(() => setDigestLoading(false));
+  }, [digestWeek]);
 
   const regenerateDigest = async () => {
     setDigestRegenerating(true);
     setDigestError("");
     try {
-      const result = await generateVocWeeklyDigest("", true);
+      const result = await generateVocWeeklyDigest(digestWeek, true);
       setDigest(result);
     } catch {
       setDigestError(t("生成失败，请稍后重试"));
@@ -154,13 +193,17 @@ export default function AnalyticsPage() {
           </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 rounded-lg p-1" style={{ background: S.overlay }}>
-              {[7, 30, 90, 180, 365].map((d) => (
-                <button key={d} onClick={() => { setDays(d); setCustomDays(""); }}
+              {PRESETS.map((p) => (
+                <button key={p.key} onClick={() => {
+                  setCustomDays("");
+                  if (p.range.kind === "week") updateQuery({ week: p.range.weekStart });
+                  else updateQuery({ days: p.range.days });
+                }}
                   className="rounded-md px-3 py-1.5 text-sm font-medium transition-all"
-                  style={days === d && !customDays
+                  style={isPresetActive(p.range) && !customDays
                     ? { background: S.surface, color: S.text1, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
                     : { color: S.text3 }}>
-                  {d >= 365 ? `${d / 365}${t("年")}` : d >= 30 ? `${d / 30}${t("月")}` : `${d}${t("天")}`}
+                  {p.label}
                 </button>
               ))}
             </div>
@@ -185,7 +228,7 @@ export default function AnalyticsPage() {
             <form onSubmit={(e) => {
               e.preventDefault();
               const v = parseInt(customDays);
-              if (v > 0) setDays(v);
+              if (v > 0) updateQuery({ days: v });
             }} className="flex items-center gap-1">
               <input
                 type="number" min={1} max={3650}
@@ -204,6 +247,12 @@ export default function AnalyticsPage() {
               )}
             </form>
           </div>
+        </div>
+        <div className="px-6 pb-2 -mt-1">
+          <span className="text-[11px] font-mono" style={{ color: S.text3 }}>
+            {t("统计区间")}: {resolved.dateFrom} ~ {resolved.dateTo}
+            {resolved.inProgress && ` (${t("进行中")})`}
+          </span>
         </div>
       </header>
 
@@ -228,7 +277,7 @@ export default function AnalyticsPage() {
                 style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
                 {t("项目价值")}
               </span>
-              <span className="text-xs" style={{ color: S.text3 }}>{t("过去")} {days} {t("天")}</span>
+              <span className="text-xs" style={{ color: S.text3 }}>{resolved.dateFrom} ~ {resolved.dateTo}</span>
             </div>
             <div className="grid grid-cols-3 gap-6 relative">
               <div>
@@ -267,6 +316,12 @@ export default function AnalyticsPage() {
                   {t("上周焦点")}
                 </span>
                 {digest && <span className="text-xs" style={{ color: S.text3 }}>{digest.week_start}</span>}
+                {!digestWeek && (
+                  <span className="rounded-full px-2 py-0.5 text-[10px] font-medium" title={t("当前窗口未结束，周报固定展示最近一个完整周")}
+                    style={{ background: S.overlay, color: S.text3, border: `1px solid ${S.border}` }}>
+                    {t("上周汇总")}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {digestError && (
@@ -285,7 +340,7 @@ export default function AnalyticsPage() {
             {digestLoading ? (
               <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("加载中")}...</p>
             ) : !digest ? (
-              <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("本周暂无汇总，点击「重新生成」创建。")}</p>
+              <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("该周暂无周报，点击「重新生成」创建。")}</p>
             ) : (
               <div className="space-y-4">
                 {digest.narrative ? (
@@ -369,6 +424,76 @@ export default function AnalyticsPage() {
             <StatCard label={t("本期总 Token")} value={fmtTokens(data.total_tokens || 0)} sub={`${dailyDates.length} ${t("天")}`} color="#B8922E" index={0} />
             <StatCard label={t("本期总费用")} value={`$${fmtCost(data.total_cost_usd || 0)}`} sub={t("USD")} color="#16A34A" index={1} />
           </div>
+
+          {/* 修复有效性面板 — cohort 口径为主展示（"我们修的东西真修好了吗"），
+              detection 口径小字副标（"这期爆了多少复发"）——两个分子分母不同源，
+              绝不能合并成一个数字。 */}
+          {fixEffectiveness && fixEffectiveness.resolved_count > 0 && (
+            <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("修复有效性")}</h2>
+                <span className="text-[11px] font-mono" style={{ color: S.text3 }}>
+                  {t("本期完成")} {fixEffectiveness.resolved_count} {t("单")}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-3 mb-4">
+                <StatCard
+                  label={t("复发率（截至今日）")}
+                  value={fixEffectiveness.cohort_recurrence_rate ?? "—"}
+                  sub={fixEffectiveness.cohort_recurrence_rate != null ? "%" : t("暂无数据")}
+                  color={fixEffectiveness.cohort_recurrence_rate ? "#DC2626" : undefined}
+                />
+                <StatCard
+                  label={t("本期复发命中")}
+                  value={fixEffectiveness.red_hits}
+                  sub={`${t("疑似复发")} · ${fixEffectiveness.recurrence_rate_by_detection ?? 0}%`}
+                  color="#DC2626"
+                />
+                <StatCard
+                  label={t("修复版本填报率")}
+                  value={fixEffectiveness.fix_version_fill_rate ?? "—"}
+                  sub={fixEffectiveness.fix_version_fill_rate != null ? "%" : t("暂无数据")}
+                />
+                <StatCard
+                  label={t("历史类似（弱信号）")}
+                  value={fixEffectiveness.yellow_hits}
+                  color="#CA8A04"
+                />
+              </div>
+
+              {fixEffectiveness.by_rule_type.length > 0 && (
+                <div className="mb-4">
+                  <h3 className="text-xs font-semibold mb-2" style={{ color: S.text2 }}>{t("按规则分类")}</h3>
+                  <div className="space-y-1">
+                    {fixEffectiveness.by_rule_type.map((r) => (
+                      <div key={r.rule_type} className="flex items-center justify-between text-xs">
+                        <span style={{ color: S.text2 }}>{r.rule_type}</span>
+                        <span className="font-mono tabular-nums" style={{ color: r.recurred > 0 ? "#DC2626" : S.text3 }}>
+                          {r.recurred} / {r.resolved}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {fixEffectiveness.top_offenders.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold mb-2" style={{ color: S.text2 }}>{t("高频复发工单")}</h3>
+                  <div className="space-y-1">
+                    {fixEffectiveness.top_offenders.map((o) => (
+                      <a key={o.prior_issue_id} href={`/?detail=${o.prior_issue_id}`}
+                        className="flex items-center justify-between text-xs rounded-lg px-2 py-1.5 hover:opacity-80"
+                        style={{ background: S.overlay }}>
+                        <span className="truncate" style={{ color: S.text1 }} title={o.description}>{o.description}</span>
+                        <span className="font-mono flex-shrink-0 ml-2" style={{ color: "#DC2626" }}>×{o.recurrence_count}</span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
 
           {/* Daily trend — 双轴折线（工单数 + Token 消耗）*/}
           <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}`, ["--d" as string]: "0.08s" }}>
@@ -1057,7 +1182,7 @@ export default function AnalyticsPage() {
                           setBackfilling(true);
                           try {
                             const res = await backfillClassifications(1000);
-                            if (res.updated > 0) load(days);
+                            if (res.updated > 0) load();
                           } catch {} finally { setBackfilling(false); }
                         }}
                         disabled={backfilling}
@@ -1364,5 +1489,18 @@ export default function AnalyticsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function AnalyticsPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center py-24">
+        <div className="h-8 w-8 animate-spin rounded-full border-4"
+          style={{ borderColor: "var(--j-border)", borderTopColor: "var(--j-accent)" }} />
+      </div>
+    }>
+      <AnalyticsPageInner />
+    </Suspense>
   );
 }

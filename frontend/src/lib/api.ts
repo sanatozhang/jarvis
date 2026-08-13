@@ -520,6 +520,23 @@ export const testRule = (ruleId: string, description: string) =>
 // Local (Jarvis-tracked issues)
 // ============================================================
 
+export interface RecurrenceHitSummary {
+  prior_issue_id: string;
+  similarity: number;
+  reason_code: string;   // version_gte_fix | no_fix_version | version_unparseable | no_version_target
+  fix_target: string;    // "" | app | firmware | other
+  fix_version: string;
+  compared_version: string;
+  prior_resolved_at: string;
+  prior_resolve_reason: string;
+}
+
+export interface RecurrenceSummary {
+  severity: "red" | "yellow";
+  count: number;
+  top: RecurrenceHitSummary;
+}
+
 export interface LocalIssueItem {
   record_id: string;
   description: string;
@@ -554,6 +571,7 @@ export interface LocalIssueItem {
   analysis_count?: number;
   analysis?: AnalysisResult;
   task?: { task_id: string; status: string; progress: number; message: string; error?: string };
+  recurrence?: RecurrenceSummary | null;
 }
 
 export const fetchIssueDetail = (issueId: string) =>
@@ -685,8 +703,13 @@ export const getOncallTickets = (status?: string, weeks?: number) => {
   );
 };
 
-export const resolveOncallTicket = (issueId: string) =>
-  request<{ status: string; issue_id: string; feishu_notified: boolean }>(`/oncall/tickets/${issueId}/resolve`, { method: "PUT" });
+export const resolveOncallTicket = (issueId: string, username: string = "", p?: CompletionPayload) =>
+  request<{ status: string; issue_id: string; fix_target: string; fix_version: string; feishu_synced: boolean; feishu_notified: boolean }>(
+    `/oncall/tickets/${issueId}/resolve`, {
+      method: "PUT",
+      body: JSON.stringify({ username, reason: p?.reason || "", fix_target: p?.fixTarget || "", fix_version: p?.fixVersion || "" }),
+    },
+  );
 
 // Feishu tickets handled directly in Feishu (not escalated through the site).
 // status: "open" (pending+in_progress, default) | "done" | "all"
@@ -697,9 +720,12 @@ export const getOncallFeishuTickets = (status: string = "open", oncallOnly: bool
   );
 
 // Mark a Feishu ticket done (确认提交=true on the bitable)
-export const resolveFeishuTicket = (recordId: string) =>
-  request<{ status: string; record_id: string }>(
-    `/oncall/feishu-tickets/${recordId}/resolve`, { method: "PUT" }
+export const resolveFeishuTicket = (recordId: string, username: string = "", p?: CompletionPayload) =>
+  request<{ status: string; record_id: string; fix_target: string; fix_version: string; local_issue_updated: boolean }>(
+    `/oncall/feishu-tickets/${recordId}/resolve`, {
+      method: "PUT",
+      body: JSON.stringify({ username, reason: p?.reason || "", fix_target: p?.fixTarget || "", fix_version: p?.fixVersion || "" }),
+    },
   );
 
 export interface OncallWeekStat {
@@ -734,11 +760,22 @@ export const escalateIssue = (issueId: string, note: string = "", escalatedBy: s
 export const markInaccurate = (issueId: string) =>
   request<{ status: string }>(`/local/${issueId}/inaccurate`, { method: "POST" });
 
-export const markComplete = (issueId: string, username: string = "", reason: string = "") =>
-  request<{ status: string; feishu_synced: boolean; feishu_notified: boolean }>(`/local/${issueId}/complete`, {
-    method: "POST",
-    body: JSON.stringify({ username, reason }),
-  });
+// Shared payload for all 3 mark-complete endpoints (local issue, oncall
+// escalated ticket, oncall Feishu-only ticket) — same shape the backend's
+// MarkCompleteRequest expects, and what MarkCompleteDialog produces.
+export interface CompletionPayload {
+  reason: string;
+  fixTarget?: string;   // "" | app | firmware | other
+  fixVersion?: string;
+}
+
+export const markComplete = (issueId: string, username: string = "", p: CompletionPayload) =>
+  request<{ status: string; fix_target: string; fix_version: string; feishu_synced: boolean; feishu_notified: boolean }>(
+    `/local/${issueId}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ username, reason: p.reason, fix_target: p.fixTarget || "", fix_version: p.fixVersion || "" }),
+    },
+  );
 
 export const fetchInaccurate = (page = 1, pageSize = 20) =>
   request<PaginatedResponse<LocalIssueItem>>(`/local/inaccurate?page=${page}&page_size=${pageSize}`);
@@ -839,6 +876,80 @@ export const deleteGoldenSample = (id: number) =>
 // Rule Accuracy
 // ============================================================
 
+// A resolved [date_from, date_to] inclusive window — see src/lib/timeRange.ts
+// for how the analytics page computes one (natural-week or rolling-days).
+export interface TimeWindow {
+  dateFrom: string;
+  dateTo: string;
+}
+
+const windowQS = (w: TimeWindow) => `date_from=${w.dateFrom}&date_to=${w.dateTo}`;
+
+export interface FailReasonItem {
+  issue_id?: string;
+  reason?: string;
+  error?: string;
+  username?: string;
+  duration_ms?: number;
+  created_at?: string;
+}
+
+export interface AnalyticsDashboard {
+  date_from: string; date_to: string;
+  event_counts: Record<string, number>;
+  unique_users: number;
+  avg_analysis_duration_ms: number; avg_analysis_duration_min: number;
+  total_analyses: number; successful_analyses: number; failed_analyses: number;
+  followup_done: number; followup_fail: number;
+  external_failures: number;
+  feedback_submitted: number; escalations: number;
+  fail_reasons: FailReasonItem[];
+  daily: Record<string, Record<string, number>>;
+  total_tokens?: number;
+  total_cost_usd?: number;
+  top_users: { username: string; count: number }[];
+  value_metrics: {
+    time_saved_hours: number; time_saved_per_ticket_min: number;
+    success_rate: number; estimated_manual_hours: number; estimated_ai_hours: number;
+  };
+}
+
+export const fetchAnalyticsDashboard = (w: TimeWindow) =>
+  request<AnalyticsDashboard>(`/analytics/dashboard?${windowQS(w)}`);
+
+export interface FixEffectivenessRuleTypeRow {
+  rule_type: string;
+  resolved: number;
+  recurred: number;
+}
+
+export interface FixEffectivenessOffender {
+  prior_issue_id: string;
+  description: string;
+  fix_target: string;
+  fix_version: string;
+  resolved_at: string;
+  recurrence_count: number;
+}
+
+export interface FixEffectiveness {
+  date_from: string;
+  date_to: string;
+  resolved_count: number;
+  resolved_with_fix_version: number;
+  fix_version_fill_rate: number | null;
+  red_hits: number;
+  yellow_hits: number;
+  recurred_prior_count: number;
+  recurrence_rate_by_detection: number | null;
+  cohort_recurrence_rate: number | null;
+  by_rule_type: FixEffectivenessRuleTypeRow[];
+  top_offenders: FixEffectivenessOffender[];
+}
+
+export const fetchFixEffectiveness = (w: TimeWindow) =>
+  request<FixEffectiveness>(`/analytics/fix-effectiveness?${windowQS(w)}`);
+
 export interface RuleAccuracyStat {
   rule_type: string;
   total: number;
@@ -848,8 +959,8 @@ export interface RuleAccuracyStat {
   avg_confidence_score: number;
 }
 
-export const fetchRuleAccuracy = (days: number = 30) =>
-  request<RuleAccuracyStat[]>(`/analytics/rule-accuracy?days=${days}`);
+export const fetchRuleAccuracy = (w: TimeWindow) =>
+  request<RuleAccuracyStat[]>(`/analytics/rule-accuracy?${windowQS(w)}`);
 
 // ============================================================
 // Problem Type Statistics
@@ -870,8 +981,8 @@ export interface ProblemTypeStats {
   trend: Record<string, Record<string, number>>; // { "2026-04-01": { "蓝牙连接": 3, ... } }
 }
 
-export const fetchProblemTypeStats = (days: number = 30) =>
-  request<ProblemTypeStats>(`/analytics/problem-types?days=${days}`);
+export const fetchProblemTypeStats = (w: TimeWindow) =>
+  request<ProblemTypeStats>(`/analytics/problem-types?${windowQS(w)}`);
 
 // ============================================================
 // Classification Statistics (category + device breakdown)
@@ -908,8 +1019,8 @@ export interface ClassificationStats {
   device_distribution: DeviceDistItem[];
 }
 
-export const fetchClassificationStats = (days: number = 30) =>
-  request<ClassificationStats>(`/analytics/classification-stats?days=${days}`);
+export const fetchClassificationStats = (w: TimeWindow) =>
+  request<ClassificationStats>(`/analytics/classification-stats?${windowQS(w)}`);
 
 export const backfillClassifications = (limit: number = 500) =>
   request<{ status: string; updated: number; total_candidates: number }>(
@@ -977,9 +1088,9 @@ export interface VocClassificationStats {
   groups: VocGroupCount[];
 }
 
-export const fetchVocClassificationStats = (days: number = 30, includeSecondary: boolean = false) =>
+export const fetchVocClassificationStats = (w: TimeWindow, includeSecondary: boolean = false) =>
   request<VocClassificationStats>(
-    `/voc/classification-stats?days=${days}&include_secondary=${includeSecondary}`,
+    `/voc/classification-stats?${windowQS(w)}&include_secondary=${includeSecondary}`,
   );
 
 export interface VocTrend {
@@ -989,8 +1100,8 @@ export interface VocTrend {
   trend: Record<string, Record<string, number>>; // date -> key -> count
 }
 
-export const fetchVocTrend = (days: number = 30, level: "group" | "label" = "group") =>
-  request<VocTrend>(`/voc/trend?days=${days}&level=${level}`);
+export const fetchVocTrend = (w: TimeWindow, level: "group" | "label" = "group") =>
+  request<VocTrend>(`/voc/trend?${windowQS(w)}&level=${level}`);
 
 export interface VocMover {
   key: string;
@@ -1007,8 +1118,16 @@ export interface VocMoversResponse {
   movers: VocMover[];
 }
 
-export const fetchVocMovers = (days: number = 7, level: "group" | "label" = "label", minBase: number = 3) =>
-  request<VocMoversResponse>(`/voc/movers?days=${days}&level=${level}&min_base=${minBase}`);
+export const fetchVocMovers = (
+  w: TimeWindow,
+  level: "group" | "label" = "label",
+  minBase: number = 3,
+  prev?: { prevFrom: string; prevTo: string },
+) =>
+  request<VocMoversResponse>(
+    `/voc/movers?${windowQS(w)}&level=${level}&min_base=${minBase}` +
+    (prev ? `&prev_from=${prev.prevFrom}&prev_to=${prev.prevTo}` : ""),
+  );
 
 export const reseedVocTaxonomy = () =>
   request<{ status: string; added: string[]; changed: string[]; retired: string[]; skipped: boolean }>(

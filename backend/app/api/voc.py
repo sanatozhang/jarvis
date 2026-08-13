@@ -6,13 +6,15 @@ and a manual sync trigger.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
-from typing import Any, Dict, List
+from datetime import date, timedelta
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api._window import window_params
 from app.db import database as db
 from app.services import voc_digest, voc_taxonomy
+from app.services.date_window import MAX_MOVERS_SPAN_DAYS, InvalidWindow, resolve_window
 from app.services.voc_client import VocApiError, VocAuthError, VocCredentialsMissing
 
 logger = logging.getLogger("jarvis.api.voc")
@@ -90,23 +92,21 @@ async def reseed_taxonomy():
 
 @router.get("/classification-stats")
 async def get_classification_stats(
-    days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),
+    window: tuple = Depends(window_params(30)),
     include_secondary: bool = Query(False, description="Fold secondary tags into the same tree"),
 ):
     """Three-level VOC classification stats for the analytics drill-down."""
-    date_to = datetime.utcnow().strftime("%Y-%m-%d")
-    date_from = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    date_from, date_to = window
     return await db.get_voc_classification_stats(date_from, date_to, include_secondary=include_secondary)
 
 
 @router.get("/trend")
 async def get_trend(
-    days: int = Query(30, ge=1, le=3650),
+    window: tuple = Depends(window_params(30)),
     level: str = Query("group", pattern="^(group|label)$"),
 ):
     """Multi-line trend data for the VOC analytics tab — date -> {key: count}."""
-    date_to = datetime.utcnow().strftime("%Y-%m-%d")
-    date_from = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    date_from, date_to = window
     rows = await db.get_voc_analysis_rows(date_from, date_to)
     trend = voc_digest.aggregate_trend(rows, level=level)
     return {"date_from": date_from, "date_to": date_to, "level": level, "trend": trend}
@@ -114,23 +114,46 @@ async def get_trend(
 
 @router.get("/movers")
 async def get_movers(
-    days: int = Query(7, ge=1, le=90),
+    days: Optional[int] = Query(None, ge=1, le=90, description="Lookback days (default 7); ignored when date_from/date_to given"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    prev_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Explicit baseline start; defaults to the same-length period immediately before cur_from"),
+    prev_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Explicit baseline end"),
     level: str = Query("label", pattern="^(group|label)$"),
     min_base: int = Query(3, ge=1, le=100),
 ):
-    """Week-over-week (or `days`-over-`days`) movers for the diverging bar chart."""
-    cur_to = datetime.utcnow().date()
-    cur_from = cur_to - timedelta(days=days - 1)
-    prev_to = cur_from - timedelta(days=1)
-    prev_from = prev_to - timedelta(days=days - 1)
+    """Week-over-week (or `days`-over-`days`) movers for the diverging bar chart.
+
+    The `days` path keeps its historical `le=90` cap (zero risk to existing
+    callers). An explicit date_from/date_to range gets a wider cap
+    (MAX_MOVERS_SPAN_DAYS) so a "last 1 year" selection doesn't 422 — it costs
+    scanning roughly 2x the range (current + baseline period) so is capped
+    well short of the 3650-day ceiling other analytics endpoints allow.
+    """
+    try:
+        cur_from_s, cur_to_s = resolve_window(days, date_from, date_to, default_days=7, max_span_days=MAX_MOVERS_SPAN_DAYS)
+    except InvalidWindow as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    cur_from = date.fromisoformat(cur_from_s)
+    cur_to = date.fromisoformat(cur_to_s)
+
+    if (prev_from is None) != (prev_to is None):
+        raise HTTPException(status_code=422, detail="prev_from and prev_to must be provided together")
+    if prev_from is not None and prev_to is not None:
+        prev_from_d, prev_to_d = date.fromisoformat(prev_from), date.fromisoformat(prev_to)
+    else:
+        span = (cur_to - cur_from).days + 1
+        prev_to_d = cur_from - timedelta(days=1)
+        prev_from_d = prev_to_d - timedelta(days=span - 1)
 
     cur_rows = await db.get_voc_analysis_rows(cur_from.isoformat(), cur_to.isoformat())
-    prev_rows = await db.get_voc_analysis_rows(prev_from.isoformat(), prev_to.isoformat())
+    prev_rows = await db.get_voc_analysis_rows(prev_from_d.isoformat(), prev_to_d.isoformat())
     movers = voc_digest.aggregate_movers(cur_rows, prev_rows, level=level, min_base=min_base)
 
     return {
         "cur_from": cur_from.isoformat(), "cur_to": cur_to.isoformat(),
-        "prev_from": prev_from.isoformat(), "prev_to": prev_to.isoformat(),
+        "prev_from": prev_from_d.isoformat(), "prev_to": prev_to_d.isoformat(),
         "level": level, "movers": movers,
     }
 

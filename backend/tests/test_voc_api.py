@@ -234,6 +234,60 @@ async def test_get_weekly_digest_empty_week_start_uses_default(client):
     assert mock_get.call_count == 1
 
 
+# ---------------------------------------------------------------------------
+# date_from/date_to window support (analytics natural-week refactor)
+# ---------------------------------------------------------------------------
+
+async def test_trend_accepts_explicit_date_range(client, db_session):
+    from datetime import datetime
+    await _seed_voc_row(db_session, "i1", datetime.utcnow())
+    resp = await client.get("/api/voc/trend", params={"date_from": "2020-01-01", "date_to": "2026-08-12", "level": "group"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["date_from"] == "2020-01-01"
+    assert body["date_to"] == "2026-08-12"
+
+
+async def test_classification_stats_only_one_of_date_from_to_is_422(client):
+    resp = await client.get("/api/voc/classification-stats", params={"date_from": "2026-08-01"})
+    assert resp.status_code == 422
+
+
+async def test_movers_days_cap_unchanged_at_90(client):
+    resp = await client.get("/api/voc/movers", params={"days": 91})
+    assert resp.status_code == 422
+
+
+async def test_movers_explicit_range_allows_365_days(client):
+    resp = await client.get("/api/voc/movers", params={"date_from": "2025-08-13", "date_to": "2026-08-12"})
+    assert resp.status_code == 200
+
+
+async def test_movers_default_baseline_is_immediately_prior_same_length(client, db_session):
+    resp = await client.get("/api/voc/movers", params={"date_from": "2026-08-06", "date_to": "2026-08-12"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cur_from"] == "2026-08-06"
+    assert body["prev_to"] == "2026-08-05"
+    assert body["prev_from"] == "2026-07-30"  # 7-day span immediately before cur_from
+
+
+async def test_movers_explicit_baseline_is_used_verbatim(client, db_session):
+    resp = await client.get("/api/voc/movers", params={
+        "date_from": "2026-08-10", "date_to": "2026-08-12",
+        "prev_from": "2026-08-03", "prev_to": "2026-08-05",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["prev_from"] == "2026-08-03"
+    assert body["prev_to"] == "2026-08-05"
+
+
+async def test_movers_only_one_of_prev_from_to_is_422(client):
+    resp = await client.get("/api/voc/movers", params={"prev_from": "2026-08-01"})
+    assert resp.status_code == 422
+
+
 async def test_generate_weekly_digest_omitted_week_start_uses_default(client):
     from unittest.mock import AsyncMock, patch as _patch
     fake_record = {"week_start": "2026-08-03", "stats": {}, "narrative": None, "markdown": "x"}

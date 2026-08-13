@@ -22,7 +22,10 @@ from sqlalchemy import select, func
 
 from app.config import get_settings
 from app.db import database as db
-from app.services.feishu_cli import FeishuCLI, add_members_to_chat, create_escalation_group, is_feishu_source
+from app.models.schemas import MarkCompleteRequest, validate_completion
+from app.services.feishu_cli import (
+    FeishuCLI, add_members_to_chat, create_escalation_group, is_feishu_source, sync_completion_to_bitable,
+)
 
 logger = logging.getLogger("jarvis.api.local")
 router = APIRouter()
@@ -204,7 +207,14 @@ async def get_issue_detail(issue_id: str):
         ).order_by(db.TaskRecord.created_at.desc()).limit(1)
         task = (await session.execute(t_stmt)).scalar_one_or_none()
 
-        return db._issue_to_dict(issue, analysis=analysis, task=task, analysis_count=a_count)
+    # get_issue_detail bypasses _enrich_issues_batch (single-issue lookup, not
+    # a page), so the recurrence-hit batch fetch has to be repeated here —
+    # otherwise the detail-page banner never has anything to show.
+    recurrences = await db.list_recurrences_for_issues([issue_id])
+    return db._issue_to_dict(
+        issue, analysis=analysis, task=task, analysis_count=a_count,
+        recurrence_hits=recurrences.get(issue_id),
+    )
 
 
 @router.get("/{issue_id}/files/{filename:path}")
@@ -515,40 +525,34 @@ async def mark_inaccurate(issue_id: str):
     return {"status": "ok"}
 
 
-class MarkCompleteRequest(BaseModel):
-    username: str = ""
-    reason: str = ""  # 标记完成原因（必填）
-
-
 @router.post("/{issue_id}/complete")
 @_handle_exceptions("Failed to mark complete")
 async def mark_complete(issue_id: str, body: MarkCompleteRequest):
     """Mark issue as completed — syncs to Feishu if feishu-sourced.
 
-    必须提供 reason（标记完成原因），否则 400。原因记入事件日志便于追溯。
+    必须提供 reason（标记完成原因），否则 400。原因 + 修复版本记入 issues 表
+    结构化字段（供 app.services.recurrence 做复发检测）和事件日志（审计流水）。
     """
-    reason = (body.reason or "").strip()
-    if not reason:
-        raise HTTPException(status_code=400, detail="标记完成需填写原因")
+    try:
+        reason = validate_completion(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     async with db.get_session() as session:
         issue = await db.get_ticket_record(session, issue_id)
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found")
 
-    await db.update_issue_status(issue_id, "done")
-    await db.log_event("mark_complete", issue_id=issue_id, username=body.username, detail={"reason": reason},
-                       platform=issue.platform or "")
+    await db.update_issue_resolution(
+        issue_id, reason, fix_target=body.fix_target, fix_version=body.fix_version, resolved_by=body.username,
+    )
+    await db.log_event(
+        "mark_complete", issue_id=issue_id, username=body.username,
+        detail={"reason": reason, "fix_target": body.fix_target, "fix_version": body.fix_version},
+        platform=issue.platform or "",
+    )
 
-    # Sync to Feishu bitable: only set 确认提交=true (don't touch other fields)
-    feishu_synced = False
-    if is_feishu_source(issue_id):
-        try:
-            await FeishuCLI().update_record(issue_id, {"确认提交": True})
-            feishu_synced = True
-            logger.info("Feishu issue %s marked as completed", issue_id)
-        except Exception as e:
-            logger.error("Failed to sync completion to Feishu for %s: %s", issue_id, e)
+    feishu_synced = await sync_completion_to_bitable(issue_id)
 
     # 若该工单已 escalate（建过飞书群），同步 resolve + 在群里发完成通知。
     # 复用 oncall resolve 同一条逻辑，避免两套实现漂移（详情页按钮历史上完全漏掉了这步）。
@@ -558,6 +562,8 @@ async def mark_complete(issue_id: str, body: MarkCompleteRequest):
     return {
         "status": "done",
         "issue_id": issue_id,
+        "fix_target": body.fix_target,
+        "fix_version": body.fix_version,
         "feishu_synced": feishu_synced,
         "feishu_notified": esc["feishu_notified"],
     }

@@ -773,6 +773,16 @@ async def _run_task(task_id: str, issue_id: str, agent_override: Optional[str] =
             except Exception as ne:
                 logger.warning("notify_creator_failed task=%s err=%s", task_id, ne)
 
+            # Recurrence check (see queue.py's identical insertion for the
+            # other analysis-completion path) — only meaningful once the
+            # analysis actually succeeded and rule_type is set.
+            if not is_real_failure:
+                try:
+                    from app.services.recurrence import detect_and_alert
+                    await detect_and_alert(issue_id)
+                except Exception as rec_err:
+                    logger.warning("recurrence_detect_failed issue=%s err=%s", issue_id, rec_err)
+
     except Exception as e:
         logger.error("Task %s failed: %s", task_id, e, exc_info=True)
         error_str = str(e)[:500]

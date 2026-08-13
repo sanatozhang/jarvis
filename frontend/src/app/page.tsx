@@ -4,7 +4,10 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
 import { useCurrentUser } from "@/components/AuthProvider";
 import { Toast } from "@/components/Toast";
-import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
+import {
+  S, PriorityBadge, SourceBadge, FeishuLinkBadge,
+  RecurrenceBadge, RecurrenceBanner, MarkCompleteDialog, type CompletionPayload,
+} from "@/components/IssueComponents";
 import { trackEvent } from "@/lib/track";
 import { CountUp } from "@/components/CountUp";
 import { AnalysisResultView } from "@/components/AnalysisResultView";
@@ -198,9 +201,8 @@ export default function HomePage() {
   const [tabInd, setTabInd] = useState<{ left: number; width: number }>({ left: 0, width: 0 });
   // Deep-analysis confirmation: holds the issue id pending confirmation, or null
   const [deepConfirmId, setDeepConfirmId] = useState<string | null>(null);
-  // Mark-complete reason dialog: holds the issue id pending a reason, or null
+  // Mark-complete dialog: holds the issue id pending a reason, or null
   const [completeId, setCompleteId] = useState<string | null>(null);
-  const [completeReason, setCompleteReason] = useState("");
 
   // Import state
   const [importQuery, setImportQuery] = useState("");
@@ -474,7 +476,7 @@ export default function HomePage() {
       setToast(groupExists ? t("已通知值周工程师（飞书群已存在）") : t("已转交工程师"));
       setShowEscalateDialog(false);
       setEscalateNote("");
-      // Store share_link for this issue so "已转交" section can show "打开飞书群"
+      // Store share_link for this issue so "已转交" section can show "加入飞书群"
       if (res.share_link) {
         setEscalateLinks(prev => ({ ...prev, [issueId]: res.share_link! }));
       }
@@ -496,9 +498,9 @@ export default function HomePage() {
     } catch (e: any) { setToast(`${t("失败")}: ${e.message}`); }
   };
 
-  const handleMarkComplete = async (issueId: string, reason: string) => {
+  const handleMarkComplete = async (issueId: string, p: CompletionPayload) => {
     try {
-      const res = await markComplete(issueId, username || "", reason);
+      const res = await markComplete(issueId, username || "", p);
       const msg = res.feishu_notified
         ? t("工单已标记完成，已通知飞书群")
         : res.feishu_synced ? t("已标记完成（飞书已同步）") : t("已标记完成");
@@ -1067,7 +1069,12 @@ export default function HomePage() {
                                 className="text-xs font-medium hover:underline" style={{ color: "#2563EB" }}>{item.zendesk_id}</a>
                             : <span className="text-xs" style={{ color: S.text3 }}>—</span>}
                         </td>
-                        <td className={tdBase} style={{ width: "112px" }}><LocalStatusBadge item={item} /></td>
+                        <td className={tdBase} style={{ width: "112px" }}>
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <LocalStatusBadge item={item} />
+                            <RecurrenceBadge recurrence={item.recurrence} />
+                          </div>
+                        </td>
                         <td className={`${tdBase} text-right`} style={{ width: "160px" }} onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1">
                             {item.local_status === "failed" && (
@@ -1141,12 +1148,20 @@ export default function HomePage() {
             </div>
 
             <div className="p-5 space-y-5">
+              {detailData.localItem?.recurrence && (
+                <RecurrenceBanner
+                  recurrence={detailData.localItem.recurrence}
+                  onOpenPrior={(priorId) => openDetail(priorId, "done")}
+                />
+              )}
+
               {/* Badges row */}
               <section>
                 <div className="flex items-center gap-2 mb-3 flex-wrap">
                   <PriorityBadge p={detailData.issue.priority} />
                   <SourceBadge source={detailData.issue.source || detailData.localItem?.source} linearUrl={detailData.issue.linear_issue_url || detailData.localItem?.linear_issue_url} />
                   {detailData.localItem && <LocalStatusBadge item={detailData.localItem} />}
+                  {detailData.localItem?.recurrence && <RecurrenceBadge recurrence={detailData.localItem.recurrence} />}
                   {detailData.issue.zendesk_id && (
                     <a href={detailData.issue.zendesk} target="_blank"
                       className="text-xs font-medium hover:underline" style={{ color: "#2563EB" }}>
@@ -1410,7 +1425,7 @@ export default function HomePage() {
                       <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
                       </svg>
-                      {t("打开飞书群")}
+                      {t("加入飞书群")}
                     </a>
                   )}
                 </section>
@@ -1420,7 +1435,7 @@ export default function HomePage() {
               <section className="pt-4 space-y-2" style={{ borderTop: `1px solid ${S.border}` }}>
                 {/* Mark complete — for done/failed, syncs to Feishu */}
                 {(detailData.localItem?.local_status === "done" || detailData.localItem?.local_status === "failed") && (
-                  <button onClick={() => { setCompleteReason(""); setCompleteId(detailId!); }}
+                  <button onClick={() => setCompleteId(detailId!)}
                     className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
                     style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1429,6 +1444,21 @@ export default function HomePage() {
                     {t("标记完成")}
                   </button>
                 )}
+                {/* Already escalated → show "join group" CTA in the same slot as the escalate button */}
+                {(detailData.localItem?.local_status === "done" || detailData.localItem?.local_status === "failed") && detailData.localItem?.escalated_at && (() => {
+                  const link = escalateLinks[detailId!] || detailData.localItem?.escalation_share_link || "";
+                  if (!link) return null;
+                  return (
+                    <a href={link} target="_blank"
+                      className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+                      style={{ background: S.orange, color: "#FFFFFF", textDecoration: "none" }}>
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                      </svg>
+                      {t("加入飞书群")}
+                    </a>
+                  );
+                })()}
                 {/* Escalate button — show for done/failed (not already escalated) */}
                 {(detailData.localItem?.local_status === "done" || detailData.localItem?.local_status === "failed") && !detailData.localItem?.escalated_at && (
                   showEscalateDialog ? (
@@ -1584,58 +1614,17 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Mark-complete reason dialog — reason is required (功能 3) */}
-      {completeId && (
-        <div className="j-fade fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setCompleteId(null)}>
-          <div className="j-pop w-full max-w-md rounded-xl p-5" style={{ background: "var(--j-panel)", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(34,197,94,0.12)" }}>
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="#16A34A" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("标记完成")}</h3>
-                <p className="mt-1 text-xs" style={{ color: S.text2 }}>{t("请输入标记完成的原因")}</p>
-              </div>
-            </div>
-            <div className="mt-4">
-              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                {t("标记完成原因")}
-              </label>
-              <textarea
-                value={completeReason}
-                onChange={(e) => setCompleteReason(e.target.value)}
-                placeholder={t("输入标记完成的原因…")}
-                rows={3}
-                autoFocus
-                className="w-full resize-none rounded-lg px-3 py-2 text-sm outline-none"
-                style={{ background: S.overlay, border: `1px solid ${S.borderSm}`, color: S.text1 }}
-              />
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => setCompleteId(null)}
-                className="rounded-lg px-4 py-2 text-sm font-medium"
-                style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
-                {t("取消")}
-              </button>
-              <button
-                onClick={() => {
-                  const reason = completeReason.trim();
-                  if (!reason) { setToast(t("请填写原因")); return; }
-                  const id = completeId;
-                  setCompleteId(null);
-                  handleMarkComplete(id, reason);
-                }}
-                disabled={!completeReason.trim()}
-                className="rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-40"
-                style={{ background: "#16A34A", color: "#FFFFFF" }}>
-                {t("确定")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Mark-complete dialog — reason required, fix version optional (shared component) */}
+      <MarkCompleteDialog
+        open={completeId !== null}
+        onCancel={() => setCompleteId(null)}
+        onError={(msg) => setToast(msg)}
+        onConfirm={(p) => {
+          const id = completeId!;
+          setCompleteId(null);
+          handleMarkComplete(id, p);
+        }}
+      />
 
       {toast && <Toast msg={toast} onClose={() => setToast("")} />}
     </div>

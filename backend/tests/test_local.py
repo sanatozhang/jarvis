@@ -29,6 +29,66 @@ async def test_tracking_with_filters(client, db_session):
     assert "total_pages" in resp.json()
 
 
+# ---------------------------------------------------------------------------
+# recurrence key on list + detail responses (B7 — the "detail bypasses
+# _enrich_issues_batch" gap this fix specifically targets)
+# ---------------------------------------------------------------------------
+
+async def test_list_completed_recurrence_key_is_null_without_hits(client, db_session):
+    await seed_issue(db_session, "no_recur", status="done")
+    resp = await client.get("/api/local/completed")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["issues"] if i["record_id"] == "no_recur")
+    assert item["recurrence"] is None
+
+
+async def test_list_completed_includes_recurrence_hit(client, db_session):
+    from datetime import datetime
+    from app.services.recurrence import detect_and_record
+
+    await seed_issue(db_session, "fixed_prior", status="done", rule_type="bluetooth",
+                      resolved_at=datetime.utcnow(), fix_target="app", fix_version="3.16.0",
+                      resolve_reason="修复了重连逻辑", description="蓝牙连接总是断开重连失败")
+    await seed_issue(db_session, "new_recur", status="done", rule_type="bluetooth",
+                      app_version="3.17.0", description="蓝牙连接总是断开重连失败")
+    await detect_and_record("new_recur")
+
+    resp = await client.get("/api/local/completed")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["issues"] if i["record_id"] == "new_recur")
+    assert item["recurrence"] is not None
+    assert item["recurrence"]["severity"] == "red"
+    assert item["recurrence"]["top"]["prior_issue_id"] == "fixed_prior"
+
+
+async def test_detail_recurrence_key_is_null_without_hits(client, db_session):
+    """Regression for B7: get_issue_detail used to bypass the batch enrich
+    entirely, so this key was simply never present on the detail response."""
+    await seed_issue(db_session, "detail_no_recur", status="done")
+    resp = await client.get("/api/local/detail_no_recur/detail")
+    assert resp.status_code == 200
+    assert "recurrence" in resp.json()
+    assert resp.json()["recurrence"] is None
+
+
+async def test_detail_includes_recurrence_hit(client, db_session):
+    from datetime import datetime
+    from app.services.recurrence import detect_and_record
+
+    await seed_issue(db_session, "fixed_prior2", status="done", rule_type="bluetooth",
+                      resolved_at=datetime.utcnow(), fix_target="app", fix_version="3.16.0",
+                      description="蓝牙连接总是断开重连失败")
+    await seed_issue(db_session, "detail_recur", status="done", rule_type="bluetooth",
+                      app_version="3.17.0", description="蓝牙连接总是断开重连失败")
+    await detect_and_record("detail_recur")
+
+    resp = await client.get("/api/local/detail_recur/detail")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["recurrence"]["severity"] == "red"
+    assert body["recurrence"]["top"]["prior_issue_id"] == "fixed_prior2"
+
+
 async def test_tracking_pagination(client, db_session):
     for i in range(5):
         await seed_issue(db_session, f"pg_{i}", status="done")
@@ -233,3 +293,53 @@ async def test_mark_complete_requires_reason(client, db_session):
     assert resp.status_code == 400
     resp2 = await client.post("/api/local/need_reason/complete", json={"username": "tester", "reason": "  "})
     assert resp2.status_code == 400  # 空白也不行
+
+
+async def test_mark_complete_stores_fix_version_fields(client, db_session):
+    """带 fix_target/fix_version → 5 个结构化字段全部落库（不再只留在 events.detail_json）。"""
+    from app.db.database import IssueRecord
+
+    await seed_issue(db_session, "with_fix", source="local", status="analyzing")
+    resp = await client.post("/api/local/with_fix/complete", json={
+        "username": "tester", "reason": "已修复蓝牙重连逻辑",
+        "fix_target": "app", "fix_version": "3.16.0",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["fix_target"] == "app"
+    assert body["fix_version"] == "3.16.0"
+
+    async with db_session() as s:
+        issue = await s.get(IssueRecord, "with_fix")
+        assert issue.status == "done"
+        assert issue.resolve_reason == "已修复蓝牙重连逻辑"
+        assert issue.fix_target == "app"
+        assert issue.fix_version == "3.16.0"
+        assert issue.resolved_at is not None
+        assert issue.resolved_by == "tester"
+
+
+async def test_mark_complete_invalid_fix_target_is_400(client, db_session):
+    await seed_issue(db_session, "bad_target", source="local", status="analyzing")
+    resp = await client.post("/api/local/bad_target/complete", json={
+        "username": "tester", "reason": "x", "fix_target": "not-a-real-target",
+    })
+    assert resp.status_code == 400
+
+
+async def test_mark_complete_fix_version_without_target_is_400(client, db_session):
+    """填了版本却没选类型 → 400——否则版本没有比较对象，复发检测的版本闸门
+    永远失效，这个字段等于白填。"""
+    await seed_issue(db_session, "version_no_target", source="local", status="analyzing")
+    resp = await client.post("/api/local/version_no_target/complete", json={
+        "username": "tester", "reason": "x", "fix_version": "1.0.0",
+    })
+    assert resp.status_code == 400
+
+
+async def test_mark_complete_without_new_fields_still_succeeds(client, db_session):
+    """旧请求体（不带 fix_target/fix_version）— 向后兼容回归。"""
+    await seed_issue(db_session, "old_style", source="local", status="analyzing")
+    resp = await client.post("/api/local/old_style/complete", json={"username": "tester", "reason": "old client"})
+    assert resp.status_code == 200
+    assert resp.json()["fix_target"] == ""

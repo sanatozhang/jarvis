@@ -18,21 +18,9 @@ from typing import Any, Dict, List, Optional
 
 from app.config import get_settings
 from app.services import claude_headless
+from app.services.date_window import default_week_start
 
 logger = logging.getLogger("jarvis.voc_digest")
-
-
-def default_week_start(today: Optional[date] = None) -> str:
-    """Most recent COMPLETE week's Monday (ISO date string). If `today` is
-    itself mid-week, that week isn't done yet, so this points at the week
-    before it — e.g. on Wed 2026-08-12, returns 2026-08-03 (last Monday),
-    not 2026-08-10 (this week's Monday, still in progress). On a Monday,
-    "today" is the very start of a new week, so this still returns the
-    prior Monday — the week that just finished."""
-    today = today or date.today()
-    this_monday = today - timedelta(days=today.weekday())
-    last_monday = this_monday - timedelta(days=7)
-    return last_monday.isoformat()
 
 
 def _primary_tag(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -340,6 +328,22 @@ def _render_markdown(
             lines.append(f"- {m['key']}：{m['prev']} → {m['cur']}（{pct}）")
         lines.append("")
 
+    recurrence = stats.get("recurrence") or {}
+    if recurrence.get("red_count", 0) > 0:
+        # "只显示异常" 铁律：零复发的周这段完全不出现（呼应 crashguard 日报
+        # 的既有约定），不留一个空标题在那里。黄色（未记录修复版本的弱信号）
+        # 不进周报——本身就是噪声较大的信号，放进确定性摘要只会添乱。
+        lines.append("## 修复复发")
+        lines.append(f"本周新增 {recurrence['red_count']} 单疑似复发（版本已达标但问题重现）：")
+        for hit in recurrence["red_hits"][:10]:
+            fix_target = hit.get("fix_target", "")
+            fix_label = {"app": "APP", "firmware": "固件"}.get(fix_target, fix_target or "?")
+            lines.append(
+                f"- {hit['new_issue_id']} 疑似复发 {hit['prior_issue_id']}"
+                f"（{fix_label} {hit.get('fix_version', '')}）"
+            )
+        lines.append("")
+
     if narrative is None:
         lines.append("_洞察生成失败，以上仅为确定性统计。可点击「重新生成」重试。_")
 
@@ -371,6 +375,13 @@ async def generate_weekly_digest(week_start: str, force: bool = False) -> Dict[s
 
     stats = compute_weekly_stats(cur_rows, prev_rows)
     root_cause_samples = sample_root_causes(cur_rows)
+
+    # Recurrence: deterministic, always computed (same rule as the rest of
+    # `stats`) — a "fixed" issue recurring is exactly the kind of anomaly
+    # this digest exists to surface.
+    from app.services.recurrence import compute_recurrence_stats
+    recurrence_rows = await db.get_recurrence_rows(ws.isoformat(), we.isoformat())
+    stats["recurrence"] = compute_recurrence_stats(recurrence_rows)
 
     settings = get_settings().voc
     narrative: Optional[Dict[str, Any]] = None

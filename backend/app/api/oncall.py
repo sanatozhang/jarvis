@@ -18,6 +18,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db import database as db
+from app.models.schemas import MarkCompleteRequest, validate_completion
+from app.services.feishu_cli import sync_completion_to_bitable
 
 logger = logging.getLogger("jarvis.api.oncall")
 router = APIRouter()
@@ -318,14 +320,42 @@ async def get_feishu_tickets(
 
 
 @router.put("/feishu-tickets/{record_id}/resolve")
-async def resolve_feishu_ticket(record_id: str):
-    """Mark a Feishu ticket as done (sets 确认提交=true on the bitable)."""
+async def resolve_feishu_ticket(record_id: str, body: MarkCompleteRequest):
+    """Mark a Feishu ticket as done (sets 确认提交=true on the bitable).
+
+    Best-effort local write: a Feishu record_id sometimes IS also a jarvis
+    IssueRecord id (analyzed tickets share the id), sometimes isn't (handled
+    purely in Feishu, never touched jarvis). When it resolves to a local
+    issue we stamp the same structured resolution fields as the other two
+    mark-complete paths, so it isn't permanently excluded from the
+    recurrence candidate pool and analytics denominator. When it doesn't,
+    we still log the event — EventRecord.issue_id has no foreign key, so
+    the audit trail survives even without a matching issue.
+    """
+    try:
+        reason = validate_completion(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     from app.services.feishu import FeishuClient
 
     ok = await FeishuClient().mark_completed(record_id)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to mark Feishu ticket complete")
-    return {"status": "resolved", "record_id": record_id}
+
+    local_issue_updated = await db.update_issue_resolution(
+        record_id, reason, fix_target=body.fix_target, fix_version=body.fix_version, resolved_by=body.username,
+    )
+    await db.log_event(
+        "mark_complete", issue_id=record_id, username=body.username,
+        detail={"reason": reason, "fix_target": body.fix_target, "fix_version": body.fix_version},
+    )
+
+    return {
+        "status": "resolved", "record_id": record_id,
+        "fix_target": body.fix_target, "fix_version": body.fix_version,
+        "local_issue_updated": local_issue_updated,
+    }
 
 
 @router.get("/stats")
@@ -492,12 +522,32 @@ async def get_my_workload(email: str = Query(..., description="Oncall member ema
 
 
 @router.put("/tickets/{issue_id}/resolve")
-async def resolve_ticket(issue_id: str):
-    """Mark an escalated ticket as resolved + notify Feishu group."""
+async def resolve_ticket(issue_id: str, body: MarkCompleteRequest):
+    """Mark an escalated ticket as resolved + notify Feishu group.
+
+    统一走 mark-complete 的完整闭环（此前这条路径只 resolve 了 escalation，
+    不写 issues.status='done'、不 log_event、不同步飞书 bitable 的确认提交——
+    工单在首页/tracking 看仍挂着未完成状态，是既有 bug，这次一并补上）。
+    """
+    try:
+        reason = validate_completion(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     async with db.get_session() as session:
         issue = await db.get_ticket_record(session, issue_id)
     if not issue or not issue.escalated_at:
         raise HTTPException(status_code=404, detail="Escalated issue not found")
+
+    await db.update_issue_resolution(
+        issue_id, reason, fix_target=body.fix_target, fix_version=body.fix_version, resolved_by=body.username,
+    )
+    await db.log_event(
+        "mark_complete", issue_id=issue_id, username=body.username,
+        detail={"reason": reason, "fix_target": body.fix_target, "fix_version": body.fix_version},
+        platform=getattr(issue, "platform", "") or "",
+    )
+    feishu_synced = await sync_completion_to_bitable(issue_id)
 
     # resolve + 群通知统一走 feishu_cli 的共享逻辑（详情页 mark_complete 也调它）
     from app.services.feishu_cli import resolve_escalation_and_notify
@@ -505,4 +555,8 @@ async def resolve_ticket(issue_id: str):
     if not esc["resolved"]:
         raise HTTPException(status_code=404, detail="Failed to resolve")
 
-    return {"status": "resolved", "issue_id": issue_id, "feishu_notified": esc["feishu_notified"]}
+    return {
+        "status": "resolved", "issue_id": issue_id,
+        "fix_target": body.fix_target, "fix_version": body.fix_version,
+        "feishu_synced": feishu_synced, "feishu_notified": esc["feishu_notified"],
+    }

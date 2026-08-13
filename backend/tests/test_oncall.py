@@ -1,5 +1,7 @@
 """Tests for /api/oncall endpoints."""
-from tests.conftest import seed_admin, seed_user
+from unittest.mock import AsyncMock, patch
+
+from tests.conftest import seed_admin, seed_issue, seed_user
 
 
 async def test_get_current_oncall(client):
@@ -337,3 +339,132 @@ async def test_sync_from_feishu_defaults_to_dry_run(client, monkeypatch):
     resp = await client.post("/api/oncall/sync-from-feishu", params={"username": "sanato"})
     assert resp.status_code == 200
     assert calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# PUT /tickets/{issue_id}/resolve — mark-complete unification (4-entry-point fix).
+# Previously this endpoint only resolved the escalation; it never wrote
+# issues.status='done', never logged the event, and never synced the Feishu
+# bitable confirmation field — the ticket looked unresolved everywhere else
+# in the UI. This is the regression test for that bug, now fixed by routing
+# through the same update_issue_resolution() call as api/local.py.
+# ---------------------------------------------------------------------------
+
+async def test_resolve_ticket_requires_reason(client, db_session):
+    from datetime import datetime
+    await seed_issue(db_session, "esc1", source="local", escalated_at=datetime.utcnow())
+    resp = await client.put("/api/oncall/tickets/esc1/resolve", json={"username": "tester", "reason": ""})
+    assert resp.status_code == 400
+
+
+async def test_resolve_ticket_404_when_not_escalated(client, db_session):
+    await seed_issue(db_session, "not_esc", source="local", escalated_at=None)
+    resp = await client.put("/api/oncall/tickets/not_esc/resolve", json={"username": "tester", "reason": "fixed"})
+    assert resp.status_code == 404
+
+
+async def test_resolve_ticket_stamps_resolution_and_status_done(client, db_session):
+    """Regression: status must become 'done' — this used to silently stay
+    whatever it was before (the bug this endpoint is being fixed for)."""
+    from datetime import datetime
+    from app.db.database import IssueRecord
+
+    await seed_issue(
+        db_session, "esc2", source="local", status="analyzing",
+        escalated_at=datetime.utcnow(), escalation_chat_id="oc_chat_x", escalation_status="in_progress",
+    )
+
+    with patch("app.services.feishu_cli.send_message", new_callable=AsyncMock, return_value=True):
+        resp = await client.put(
+            "/api/oncall/tickets/esc2/resolve",
+            json={"username": "tester", "reason": "已修复并验证", "fix_target": "app", "fix_version": "3.16.0"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["fix_target"] == "app"
+    assert body["fix_version"] == "3.16.0"
+
+    async with db_session() as s:
+        issue = await s.get(IssueRecord, "esc2")
+        assert issue.status == "done"
+        assert issue.resolve_reason == "已修复并验证"
+        assert issue.fix_target == "app"
+        assert issue.fix_version == "3.16.0"
+        assert issue.resolved_at is not None
+        assert issue.escalation_status == "resolved"
+
+
+async def test_resolve_ticket_invalid_fix_target_is_400(client, db_session):
+    from datetime import datetime
+    await seed_issue(db_session, "esc3", source="local", escalated_at=datetime.utcnow())
+    resp = await client.put(
+        "/api/oncall/tickets/esc3/resolve",
+        json={"username": "tester", "reason": "fixed", "fix_target": "bogus"},
+    )
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# PUT /feishu-tickets/{record_id}/resolve — best-effort local write
+# ---------------------------------------------------------------------------
+
+async def test_resolve_feishu_ticket_requires_reason(client):
+    with patch("app.services.feishu.FeishuClient.mark_completed", new_callable=AsyncMock, return_value=True):
+        resp = await client.put("/api/oncall/feishu-tickets/rec123/resolve", json={"reason": ""})
+    assert resp.status_code == 400
+
+
+async def test_resolve_feishu_ticket_local_hit_updates_issue(client, db_session):
+    """record_id happens to match a local IssueRecord — stamp the same
+    structured fields as the other two mark-complete paths."""
+    from app.db.database import IssueRecord
+
+    await seed_issue(db_session, "rec_hit", source="feishu", status="analyzing")
+
+    with patch("app.services.feishu.FeishuClient.mark_completed", new_callable=AsyncMock, return_value=True):
+        resp = await client.put(
+            "/api/oncall/feishu-tickets/rec_hit/resolve",
+            json={"username": "tester", "reason": "已在飞书处理完成"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["local_issue_updated"] is True
+
+    async with db_session() as s:
+        issue = await s.get(IssueRecord, "rec_hit")
+        assert issue.status == "done"
+        assert issue.resolve_reason == "已在飞书处理完成"
+
+
+async def test_resolve_feishu_ticket_local_miss_still_logs_event(client):
+    """record_id has no matching local IssueRecord (handled purely in
+    Feishu) — mark_completed still runs, local_issue_updated is False, but
+    the audit trail (events table) still gets a row."""
+    from app.db import database as db
+
+    with patch("app.services.feishu.FeishuClient.mark_completed", new_callable=AsyncMock, return_value=True) as mock_mc:
+        resp = await client.put(
+            "/api/oncall/feishu-tickets/no_such_local_issue/resolve",
+            json={"username": "tester", "reason": "纯飞书侧处理"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["local_issue_updated"] is False
+    mock_mc.assert_awaited_once()
+
+    async with db.get_session() as session:
+        from sqlalchemy import select
+        stmt = select(db.EventRecord).where(
+            db.EventRecord.issue_id == "no_such_local_issue",
+            db.EventRecord.event_type == "mark_complete",
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+    assert len(rows) == 1
+
+
+async def test_resolve_feishu_ticket_feishu_failure_is_500(client):
+    with patch("app.services.feishu.FeishuClient.mark_completed", new_callable=AsyncMock, return_value=False):
+        resp = await client.put(
+            "/api/oncall/feishu-tickets/whatever/resolve",
+            json={"username": "tester", "reason": "x"},
+        )
+    assert resp.status_code == 500

@@ -253,3 +253,36 @@ class DailyReport(BaseModel):
     analyses: List[AnalysisResult] = Field(default_factory=list)
     category_stats: Dict[str, int] = Field(default_factory=dict)
     markdown: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Mark-complete — shared by the 3 "mark issue as done" endpoints
+# (api/local.py, api/oncall.py x2) so the fix-version fields and their
+# cross-field validation live in exactly one place.
+# ---------------------------------------------------------------------------
+FIX_TARGETS = ("", "app", "firmware", "other")
+
+
+class MarkCompleteRequest(BaseModel):
+    username: str = ""
+    reason: str = ""          # required — enforced by validate_completion(), not here
+    fix_target: str = ""      # "" | app | firmware | other
+    fix_version: str = ""     # optional; only meaningful paired with fix_target in (app, firmware)
+
+
+def validate_completion(body: "MarkCompleteRequest") -> str:
+    """Shared cross-field validation for the mark-complete request body.
+    Returns the trimmed reason on success; raises ValueError on failure
+    (callers translate to HTTPException(400, str(e))).
+
+    填了 fix_version 却没选 fix_target 会让复发检测的版本闸门永远没有比较
+    对象——那种情况下这个字段等于白填，所以直接拒绝，而不是静默退化成"未
+    记录版本"的黄色路径。"""
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise ValueError("标记完成需填写原因")
+    if body.fix_target not in FIX_TARGETS:
+        raise ValueError(f"fix_target 必须是 {FIX_TARGETS} 之一")
+    if body.fix_version and not body.fix_target:
+        raise ValueError("填写修复版本时必须同时选择修复类型（APP/固件/其他）")
+    return reason

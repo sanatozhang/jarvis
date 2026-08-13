@@ -523,6 +523,16 @@ async def _run_linear_analysis(
         except Exception as ne:
             logger.warning("notify_creator_linear_failed task=%s err=%s", task_id, ne)
 
+        # Recurrence check — deliberately NOT inside notify_issue_creator_on_complete,
+        # which early-returns for created_by="" (Linear-sourced tickets have no
+        # jarvis username), so this path would silently never get checked otherwise.
+        if not is_failure:
+            try:
+                from app.services.recurrence import detect_and_alert
+                await detect_and_alert(record_id)
+            except Exception as rec_err:
+                logger.warning("recurrence_detect_failed issue=%s err=%s", record_id, rec_err)
+
     except Exception as e:
         logger.error("Linear analysis failed for issue %s: %s", linear_issue_id, e, exc_info=True)
         # Try to post error comment

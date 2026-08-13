@@ -32,7 +32,7 @@ def digest_settings(monkeypatch):
     yield
 
 
-async def _patch_db(monkeypatch, cur_rows, prev_rows, existing=None):
+async def _patch_db(monkeypatch, cur_rows, prev_rows, existing=None, recurrence_rows=None):
     import app.db.database as db_mod
     async def fake_get_rows(date_from, date_to):
         # First call in generate_weekly_digest is the current week, second is previous.
@@ -48,6 +48,10 @@ async def _patch_db(monkeypatch, cur_rows, prev_rows, existing=None):
     async def fake_get_existing(week_start):
         return existing
     monkeypatch.setattr(db_mod, "get_voc_weekly_digest", fake_get_existing)
+
+    async def fake_get_recurrence_rows(date_from, date_to):
+        return recurrence_rows or []
+    monkeypatch.setattr(db_mod, "get_recurrence_rows", fake_get_recurrence_rows)
 
     captured = {}
     async def fake_upsert(**kwargs):
@@ -128,3 +132,31 @@ async def test_generate_weekly_digest_digest_disabled_skips_llm_call(monkeypatch
     result = await voc_digest.generate_weekly_digest("2026-08-03", force=False)
     assert called is False
     assert result["narrative"] is None
+
+
+# ---------------------------------------------------------------------------
+# Recurrence section — "only show anomalies": absent when zero red hits,
+# present (and never silently dropped) when there's at least one.
+# ---------------------------------------------------------------------------
+
+async def test_digest_markdown_omits_recurrence_section_with_no_red_hits(monkeypatch):
+    await _patch_db(monkeypatch, [_seed_row(datetime(2026, 8, 10))], [], recurrence_rows=[
+        {"new_issue_id": "n1", "prior_issue_id": "p1", "severity": "yellow",
+         "fix_target": "", "fix_version": ""},
+    ])
+    result = await voc_digest.generate_weekly_digest("2026-08-03", force=False)
+    assert result["stats"]["recurrence"]["red_count"] == 0
+    assert result["stats"]["recurrence"]["yellow_count"] == 1
+    assert "修复复发" not in result["markdown"]
+
+
+async def test_digest_markdown_includes_recurrence_section_with_red_hits(monkeypatch):
+    await _patch_db(monkeypatch, [_seed_row(datetime(2026, 8, 10))], [], recurrence_rows=[
+        {"new_issue_id": "n1", "prior_issue_id": "p1", "severity": "red",
+         "fix_target": "app", "fix_version": "3.16.0"},
+    ])
+    result = await voc_digest.generate_weekly_digest("2026-08-03", force=False)
+    assert result["stats"]["recurrence"]["red_count"] == 1
+    assert "修复复发" in result["markdown"]
+    assert "n1" in result["markdown"]
+    assert "p1" in result["markdown"]

@@ -5,12 +5,13 @@ Analytics API: event tracking + dashboard data.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from app.api._window import window_params
 from app.db import database as db
+from app.services.date_window import to_datetime_bounds
 
 logger = logging.getLogger("jarvis.api.analytics")
 router = APIRouter()
@@ -36,12 +37,9 @@ async def track_event(req: TrackEventRequest):
 
 
 @router.get("/dashboard")
-async def get_dashboard(
-    days: int = Query(7, ge=1, le=3650, description="Number of days to look back"),
-):
+async def get_dashboard(window: tuple = Depends(window_params(7))):
     """Get analytics dashboard data."""
-    date_to = datetime.utcnow().strftime("%Y-%m-%d")
-    date_from = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    date_from, date_to = window
     data = await db.get_analytics(date_from, date_to)
 
     # Calculate value metrics
@@ -68,22 +66,16 @@ async def get_dashboard(
 
 
 @router.get("/problem-types")
-async def get_problem_type_stats(
-    days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),
-):
+async def get_problem_type_stats(window: tuple = Depends(window_params(30))):
     """Get problem type distribution, daily trend, and top 10."""
-    date_to = datetime.utcnow().strftime("%Y-%m-%d")
-    date_from = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    date_from, date_to = window
     return await db.get_problem_type_stats(date_from, date_to)
 
 
 @router.get("/classification-stats")
-async def get_classification_stats(
-    days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),
-):
+async def get_classification_stats(window: tuple = Depends(window_params(30))):
     """Get problem category + device type classification stats (pie chart data)."""
-    date_to = datetime.utcnow().strftime("%Y-%m-%d")
-    date_from = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    date_from, date_to = window
     return await db.get_classification_stats(date_from, date_to)
 
 
@@ -109,19 +101,30 @@ async def backfill_classifications(
     return {"status": "ok", "updated": updated, "total_candidates": len(records)}
 
 
+@router.get("/fix-effectiveness")
+async def get_fix_effectiveness(window: tuple = Depends(window_params(30))):
+    """Did what got marked 'done' this period actually stay fixed?
+
+    Reports two DIFFERENT recurrence rates — see db.get_fix_effectiveness's
+    docstring for why they aren't interchangeable. `cohort_recurrence_rate`
+    is the one the UI should lead with (answers "did our fixes hold");
+    `recurrence_rate_by_detection` is the smaller-print operational counter
+    (answers "how much recurrence fired this period").
+    """
+    date_from, date_to = window
+    return await db.get_fix_effectiveness(date_from, date_to)
+
+
 @router.get("/rule-accuracy")
-async def get_rule_accuracy(
-    days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),
-):
+async def get_rule_accuracy(window: tuple = Depends(window_params(30))):
     """Get rule accuracy statistics."""
     from app.services.rule_accuracy import get_rule_accuracy_stats
-    return await get_rule_accuracy_stats(days=days)
+    date_from, date_to = window
+    return await get_rule_accuracy_stats(date_from=date_from, date_to=date_to)
 
 
 @router.get("/engineer-label-accuracy")
-async def get_engineer_label_accuracy(
-    days: int = Query(30, ge=1, le=3650, description="Number of days to look back"),
-):
+async def get_engineer_label_accuracy(window: tuple = Depends(window_params(30))):
     """T3: AI needs_engineer 标签准确性 — 基于客服反馈做混淆矩阵 + precision/recall。
 
     抓手：让"AI 标得准不准"从拍脑袋变成可量化数据。
@@ -130,11 +133,10 @@ async def get_engineer_label_accuracy(
     - FN: AI=False, 实际=True（漏报，研发该接的被 AI 放过了——最危险）
     - TN: AI=False, 实际=False（正确放行）
     """
-    from sqlalchemy import select, func, and_, or_
-    from app.db import database as db
-    from datetime import datetime, timedelta
+    from sqlalchemy import select, func, and_
 
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    date_from, date_to = window
+    start, end = to_datetime_bounds(date_from, date_to)
 
     async with db.get_session() as session:
         # 只看有客服反馈的 analyses
@@ -144,7 +146,8 @@ async def get_engineer_label_accuracy(
             func.count(),
         ).where(
             and_(
-                db.AnalysisRecord.created_at >= cutoff,
+                db.AnalysisRecord.created_at >= start,
+                db.AnalysisRecord.created_at <= end,
                 db.AnalysisRecord.engineer_label_feedback.is_not(None),
             )
         ).group_by(
@@ -169,7 +172,9 @@ async def get_engineer_label_accuracy(
     accuracy = round((tp + tn) / total * 100, 2) if total else None
 
     return {
-        "window_days": days,
+        "window_days": (end.date() - start.date()).days + 1,
+        "date_from": date_from,
+        "date_to": date_to,
         "labeled_total": total,
         "confusion_matrix": matrix,
         "precision_pct": precision,   # AI 说要工程师里，实际真的要的占比（高 = 不乱甩单）
@@ -181,29 +186,27 @@ async def get_engineer_label_accuracy(
 
 
 @router.get("/fallback-extraction")
-async def get_fallback_extraction_rate(
-    days: int = Query(7, ge=1, le=3650, description="Number of days to look back"),
-):
+async def get_fallback_extraction_rate(window: tuple = Depends(window_params(7))):
     """L4.2 监控指标：AI 没写 result.json 走 Markdown 兜底的占比。
 
     阈值参考：> 5% 说明 prompt/平台合约不够强，需要排查。
     """
     from sqlalchemy import func, select, and_
-    from app.db import database as db
-    from datetime import datetime, timedelta
 
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    date_from, date_to = window
+    start, end = to_datetime_bounds(date_from, date_to)
     fallback_marker = "Agent 未生成 result.json，从 Markdown 输出中提取"
 
     async with db.get_session() as session:
         total_stmt = select(func.count()).select_from(db.AnalysisRecord).where(
-            db.AnalysisRecord.created_at >= cutoff,
+            and_(db.AnalysisRecord.created_at >= start, db.AnalysisRecord.created_at <= end),
         )
         total = (await session.execute(total_stmt)).scalar() or 0
 
         fallback_stmt = select(func.count()).select_from(db.AnalysisRecord).where(
             and_(
-                db.AnalysisRecord.created_at >= cutoff,
+                db.AnalysisRecord.created_at >= start,
+                db.AnalysisRecord.created_at <= end,
                 db.AnalysisRecord.confidence_reason == fallback_marker,
             )
         )
@@ -215,7 +218,8 @@ async def get_fallback_extraction_rate(
             func.count(),
         ).where(
             and_(
-                db.AnalysisRecord.created_at >= cutoff,
+                db.AnalysisRecord.created_at >= start,
+                db.AnalysisRecord.created_at <= end,
                 db.AnalysisRecord.confidence_reason == fallback_marker,
             )
         ).group_by(db.AnalysisRecord.agent_type)
@@ -223,7 +227,9 @@ async def get_fallback_extraction_rate(
 
     rate = round(fallback / total * 100, 2) if total else 0.0
     return {
-        "window_days": days,
+        "window_days": (end.date() - start.date()).days + 1,
+        "date_from": date_from,
+        "date_to": date_to,
         "total_analyses": total,
         "fallback_extractions": fallback,
         "fallback_rate_pct": rate,

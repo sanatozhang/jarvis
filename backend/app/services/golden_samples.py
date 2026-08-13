@@ -5,11 +5,11 @@ Golden Samples service — manage verified analysis samples and similarity searc
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Dict, List, Optional
 
 from app.db import database as db
 from app.services.issue_text import normalize_description_for_matching
+from app.services.text_similarity import bigrams as _bigrams, jaccard_similarity as _jaccard_similarity
 
 logger = logging.getLogger("jarvis.golden_samples")
 
@@ -39,36 +39,6 @@ async def promote_analysis_to_sample(analysis_id: int, created_by: str = "") -> 
     })
     logger.info("Promoted analysis %d to golden sample %d", analysis_id, sample.id)
     return db._golden_sample_to_dict(sample)
-
-
-def _bigrams(text: str) -> set:
-    """Generate bigram tokens from text. Chinese chars individually, English by word."""
-    tokens = []
-    # Split into Chinese chars and English words
-    for part in re.findall(r'[\u4e00-\u9fff]|[a-zA-Z0-9]+', text.lower()):
-        if len(part) == 1 and '\u4e00' <= part <= '\u9fff':
-            tokens.append(part)
-        else:
-            tokens.append(part)
-
-    # Generate bigrams
-    bigrams = set()
-    for i in range(len(tokens)):
-        bigrams.add(tokens[i])
-        if i + 1 < len(tokens):
-            bigrams.add(tokens[i] + tokens[i + 1])
-    return bigrams
-
-
-def _jaccard_similarity(text_a: str, text_b: str) -> float:
-    """Compute Jaccard similarity between two texts using bigram tokens."""
-    a = _bigrams(text_a)
-    b = _bigrams(text_b)
-    if not a or not b:
-        return 0.0
-    intersection = a & b
-    union = a | b
-    return len(intersection) / len(union) if union else 0.0
 
 
 async def find_similar_samples(

@@ -3,6 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { Toast } from "@/components/Toast";
+import { MarkCompleteDialog, type CompletionPayload } from "@/components/IssueComponents";
 import {
   getOncallSchedule, getOncallCurrent, updateOncallSchedule,
   getOncallTickets, resolveOncallTicket, getOncallStats, getOncallWeekGroups, getOncallFeishuTickets, resolveFeishuTicket,
@@ -232,10 +233,10 @@ export default function OncallPage() {
   const openFeishuTickets = feishuForGroupWeek(feishuTickets);
   const doneFeishuTickets = feishuForGroupWeek(feishuDone);
 
-  const handleResolve = async (issueId: string) => {
+  const handleResolve = async (issueId: string, p: CompletionPayload) => {
     setResolving(issueId);
     try {
-      const res = await resolveOncallTicket(issueId);
+      const res = await resolveOncallTicket(issueId, username, p);
       setAllTickets((prev) => prev.map((tk) =>
         tk.record_id === issueId
           ? { ...tk, escalation_status: "resolved", escalation_resolved_at: new Date().toISOString() }
@@ -249,16 +250,23 @@ export default function OncallPage() {
     finally { setResolving(null); }
   };
 
-  const handleResolveFeishu = async (recordId: string) => {
+  const handleResolveFeishu = async (recordId: string, p: CompletionPayload) => {
     setResolvingFeishu(recordId);
     try {
-      await resolveFeishuTicket(recordId);
+      await resolveFeishuTicket(recordId, username, p);
       // We only show open tickets → drop it from the list once marked done
       setFeishuTickets((prev) => prev.filter((tk) => tk.record_id !== recordId));
       setToast({ msg: t("工单已标记完成"), type: "success" });
     } catch (e: any) { setToast({ msg: e.message, type: "error" }); }
     finally { setResolvingFeishu(null); }
   };
+
+  // Shared mark-complete dialog target for both resolve buttons below — a
+  // reason is now required here too (previously these were one-click with
+  // no reason at all), because without it the recurrence-detection memory
+  // has nothing to compare future tickets against for the oncall path,
+  // which is exactly the escalated-ticket path most worth tracking.
+  const [completeTarget, setCompleteTarget] = useState<{ kind: "apollo" | "feishu"; id: string } | null>(null);
 
   // "开始处理" on a pending Feishu ticket → kick off AI analysis (the worker also
   // sets 开始处理=true on the bitable, moving it to in-progress).
@@ -387,11 +395,11 @@ export default function OncallPage() {
               <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
               </svg>
-              {t("加入群")}
+              {t("加入飞书群")}
             </a>
           )}
           {!isResolved && (
-            <button onClick={() => handleResolve(tk.record_id)}
+            <button onClick={() => setCompleteTarget({ kind: "apollo", id: tk.record_id })}
               disabled={resolving === tk.record_id}
               className="rounded-lg px-3 py-1.5 text-[11px] font-medium disabled:opacity-50"
               style={{ background: "rgba(34,197,94,0.1)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
@@ -470,7 +478,7 @@ export default function OncallPage() {
             </button>
           )}
           {!isDone && (
-            <button onClick={() => handleResolveFeishu(tk.record_id)}
+            <button onClick={() => setCompleteTarget({ kind: "feishu", id: tk.record_id })}
               disabled={resolvingFeishu === tk.record_id}
               className="rounded-lg px-3 py-1.5 text-[11px] font-medium disabled:opacity-50"
               style={{ background: "rgba(34,197,94,0.1)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
@@ -837,6 +845,19 @@ export default function OncallPage() {
           </main>
         </div>
       )}
+
+      <MarkCompleteDialog
+        open={completeTarget !== null}
+        submitting={completeTarget?.kind === "apollo" ? resolving === completeTarget.id : resolvingFeishu === completeTarget?.id}
+        onCancel={() => setCompleteTarget(null)}
+        onError={(msg) => setToast({ msg, type: "error" })}
+        onConfirm={(p) => {
+          const target = completeTarget!;
+          setCompleteTarget(null);
+          if (target.kind === "apollo") handleResolve(target.id, p);
+          else handleResolveFeishu(target.id, p);
+        }}
+      />
 
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
     </div>

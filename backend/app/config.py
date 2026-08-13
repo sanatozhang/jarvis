@@ -348,6 +348,30 @@ class VOCSettings(BaseSettings):
     }
 
 
+class RecurrenceSettings(BaseSettings):
+    """Fix-version recurrence detection (app.services.recurrence): did a
+    "fixed" issue actually get fixed, or is a version-gated duplicate
+    showing up again?
+
+    alert_enabled 默认 False —— 先跑一段时间只落库不推送，看命中量级/误报
+    率再决定要不要开飞书告警闸门（同 voc.digest_push_enabled 的谨慎路数）。
+    """
+
+    alert_enabled: bool = False
+    chat_id: str = ""
+    similarity_threshold: float = 0.30
+    general_rule_type_threshold: float = 0.45  # rule_type="general" 是分类兜底桶，硬条件形同虚设，需要更高阈值补偿
+    yellow_window_days: int = 90
+    max_alerts_per_prior_12h: int = 3
+
+    model_config = {
+        "env_prefix": "RECURRENCE_",
+        "env_file": str(PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+
 class Settings(BaseSettings):
     # --- Env-based settings ---
     redis_url: str = "redis://localhost:6379/0"
@@ -378,6 +402,7 @@ class Settings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     jenkins: JenkinsSettings = Field(default_factory=JenkinsSettings)
     voc: VOCSettings = Field(default_factory=VOCSettings)
+    recurrence: RecurrenceSettings = Field(default_factory=RecurrenceSettings)
 
     # 模型定价（每 Mtok USD），仅用于 API 路径成本估算（condenser haiku / claude_api agent）。
     # claude_code CLI 直接用 --output-format json 的 total_cost_usd，不查此表。
@@ -530,6 +555,14 @@ def _merge_yaml_into_settings(settings: Settings) -> Settings:
               "digest_chat_id", "digest_model", "digest_timeout_seconds"):
         if k in voc_cfg and not os.getenv(f"VOC_{k.upper()}"):
             setattr(settings.voc, k, voc_cfg[k])
+
+    # Recurrence detection (fix-version memory) — same yaml-overrides-default,
+    # env-overrides-yaml precedence as the voc block above.
+    rec_cfg = cfg.get("recurrence", {})
+    for k in ("alert_enabled", "chat_id", "similarity_threshold", "general_rule_type_threshold",
+              "yellow_window_days", "max_alerts_per_prior_12h"):
+        if k in rec_cfg and not os.getenv(f"RECURRENCE_{k.upper()}"):
+            setattr(settings.recurrence, k, rec_cfg[k])
 
     # repo_routing (repo_router bands)
     rr = cfg.get("repo_routing", {})

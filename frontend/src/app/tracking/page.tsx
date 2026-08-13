@@ -4,7 +4,10 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useT, useLang } from "@/lib/i18n";
 import { Toast } from "@/components/Toast";
 import { CountUp } from "@/components/CountUp";
-import { S, PriorityBadge, SourceBadge, FeishuLinkBadge } from "@/components/IssueComponents";
+import {
+  S, PriorityBadge, SourceBadge, FeishuLinkBadge,
+  RecurrenceBadge, RecurrenceBanner, MarkCompleteDialog, type CompletionPayload,
+} from "@/components/IssueComponents";
 import { AnalysisResultView } from "@/components/AnalysisResultView";
 import { trackEvent } from "@/lib/track";
 import { fetchTracking, markInaccurate, markComplete, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
@@ -107,9 +110,8 @@ export default function TrackingPage() {
   const [detailItem, setDetailItem] = useState<LocalIssueItem | null>(null);
   // Deep-analysis confirmation: holds the issue id pending confirmation, or null
   const [deepConfirmId, setDeepConfirmId] = useState<string | null>(null);
-  // Mark-complete reason dialog: holds the issue id pending a reason, or null
+  // Mark-complete dialog: holds the issue id pending a reason, or null
   const [completeId, setCompleteId] = useState<string | null>(null);
-  const [completeReason, setCompleteReason] = useState("");
 
   // Escalation state
   const [showEscalateDialog, setShowEscalateDialog] = useState(false);
@@ -363,9 +365,9 @@ export default function TrackingPage() {
     finally { setEscalateLoading(false); }
   };
 
-  const handleMarkComplete = async (issueId: string, reason: string) => {
+  const handleMarkComplete = async (issueId: string, p: CompletionPayload) => {
     try {
-      const res = await markComplete(issueId, username, reason);
+      const res = await markComplete(issueId, username, p);
       const msg = res.feishu_notified
         ? t("工单已标记完成，已通知飞书群")
         : res.feishu_synced ? t("已标记完成（飞书已同步）") : t("已标记完成");
@@ -520,7 +522,14 @@ export default function TrackingPage() {
                 return (
                 <tr key={item.record_id}
                   className="cursor-pointer transition-colors"
-                  style={{ borderBottom: `1px solid ${S.borderSm}`, background: rowBg, boxShadow: isSelected ? `inset 3px 0 0 ${S.accent}` : "inset 3px 0 0 transparent" }}
+                  style={{
+                    borderBottom: `1px solid ${S.borderSm}`, background: rowBg,
+                    boxShadow: isSelected
+                      ? `inset 3px 0 0 ${S.accent}`
+                      : item.recurrence?.severity === "red"
+                        ? "inset 3px 0 0 #DC2626"
+                        : "inset 3px 0 0 transparent",
+                  }}
                   onClick={() => openDetail(item)}
                   onMouseEnter={(e) => (e.currentTarget.style.background = isSelected ? S.accentBg : S.hover)}
                   onMouseLeave={(e) => (e.currentTarget.style.background = rowBg)}>
@@ -557,6 +566,7 @@ export default function TrackingPage() {
                           {t("追问")} ×{(item.analysis_count ?? 0) - 1}
                         </span>
                       )}
+                      <RecurrenceBadge recurrence={item.recurrence} />
                     </div>
                   </td>
                   <td className={tdBase} style={{ width: "64px" }}>
@@ -635,10 +645,18 @@ export default function TrackingPage() {
               </button>
             </div>
             <div className="p-5 space-y-5">
+              {detailItem.recurrence && (
+                <RecurrenceBanner
+                  recurrence={detailItem.recurrence}
+                  onOpenPrior={(priorId) => fetchIssueDetail(priorId).then(openDetail).catch(() => {})}
+                />
+              )}
+
               <section>
                 <div className="flex flex-wrap items-center gap-2 mb-3">
                   <PriorityBadge p={detailItem.priority} />
                   <StatusBadge status={detailItem.local_status} ruleType={detailItem.analysis?.rule_type} />
+                  {detailItem.recurrence && <RecurrenceBadge recurrence={detailItem.recurrence} />}
                   {(() => {
                     const la = detailItem.analysis || (issueAnalyses[detailItem.record_id]?.[0]) || null;
                     const deviceType = (la as any)?.device_type || la?.log_metadata?.device_model || "";
@@ -836,7 +854,7 @@ export default function TrackingPage() {
                         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
                         </svg>
-                        {t("打开飞书群")}
+                        {t("加入飞书群")}
                       </a>
                     )}
                   </section>
@@ -845,7 +863,7 @@ export default function TrackingPage() {
               <section className="pt-4 space-y-2" style={{ borderTop: `1px solid ${S.border}` }}>
                 {/* Mark complete — for done/failed, syncs to Feishu */}
                 {(detailItem.local_status === "done" || detailItem.local_status === "failed") && (
-                  <button onClick={() => { setCompleteReason(""); setCompleteId(detailItem.record_id); }}
+                  <button onClick={() => setCompleteId(detailItem.record_id)}
                     className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
                     style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A", border: "1px solid rgba(34,197,94,0.25)" }}>
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1022,58 +1040,17 @@ export default function TrackingPage() {
         </div>
       )}
 
-      {/* Mark-complete reason dialog — reason is required (功能 3) */}
-      {completeId && (
-        <div className="j-fade fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setCompleteId(null)}>
-          <div className="j-pop w-full max-w-md rounded-xl p-5" style={{ background: "var(--j-panel)", border: `1px solid ${S.border}` }} onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg" style={{ background: "rgba(34,197,94,0.12)" }}>
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="#16A34A" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("标记完成")}</h3>
-                <p className="mt-1 text-xs" style={{ color: S.text2 }}>{t("请输入标记完成的原因")}</p>
-              </div>
-            </div>
-            <div className="mt-4">
-              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-                {t("标记完成原因")}
-              </label>
-              <textarea
-                value={completeReason}
-                onChange={(e) => setCompleteReason(e.target.value)}
-                placeholder={t("输入标记完成的原因…")}
-                rows={3}
-                autoFocus
-                className="w-full resize-none rounded-lg px-3 py-2 text-sm outline-none"
-                style={{ background: S.overlay, border: `1px solid ${S.borderSm}`, color: S.text1 }}
-              />
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => setCompleteId(null)}
-                className="rounded-lg px-4 py-2 text-sm font-medium"
-                style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
-                {t("取消")}
-              </button>
-              <button
-                onClick={() => {
-                  const reason = completeReason.trim();
-                  if (!reason) { setToast(t("请填写原因")); return; }
-                  const id = completeId;
-                  setCompleteId(null);
-                  handleMarkComplete(id, reason);
-                }}
-                disabled={!completeReason.trim()}
-                className="rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-40"
-                style={{ background: "#16A34A", color: "#FFFFFF" }}>
-                {t("确定")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Mark-complete dialog — reason required, fix version optional (shared component) */}
+      <MarkCompleteDialog
+        open={completeId !== null}
+        onCancel={() => setCompleteId(null)}
+        onError={(msg) => setToast(msg)}
+        onConfirm={(p) => {
+          const id = completeId!;
+          setCompleteId(null);
+          handleMarkComplete(id, p);
+        }}
+      />
 
       {toast && <Toast msg={toast} onClose={() => setToast("")} />}
     </div>

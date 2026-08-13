@@ -827,6 +827,24 @@ async def resolve_escalation_and_notify(issue_id: str) -> Dict[str, bool]:
     return {"resolved": resolved, "feishu_notified": feishu_notified}
 
 
+async def sync_completion_to_bitable(issue_id: str) -> bool:
+    """Set 确认提交=true on the Feishu bitable record for a completed issue
+    (only that field — never touches anything else on the record). No-op
+    (returns False) for non-Feishu-sourced issues (local feedback `fb_`,
+    Linear `lin_`). Shared by api/local.py's mark_complete and
+    api/oncall.py's resolve_ticket so both completion paths stay in sync —
+    previously only the local.py path did this."""
+    if not is_feishu_source(issue_id):
+        return False
+    try:
+        await FeishuCLI().update_record(issue_id, {"确认提交": True})
+        logger.info("Feishu issue %s marked as completed", issue_id)
+        return True
+    except Exception as e:
+        logger.error("Failed to sync completion to Feishu for %s: %s", issue_id, e)
+        return False
+
+
 async def _emails_to_open_ids(emails: List[str]) -> List[str]:
     """Convert a list of emails to Feishu open_ids.
 

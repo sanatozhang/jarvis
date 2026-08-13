@@ -52,6 +52,18 @@ async def analyze_task(ctx: Dict[str, Any], task_id: str, issue_id: str, agent_o
         except Exception as notify_err:
             logger.warning("notify_creator_done_failed task=%s err=%s", task_id, notify_err)
 
+        # Recurrence check: does this newly-analyzed ticket look like a
+        # previously-fixed issue showing up again? Needs rule_type (just set
+        # by run_analysis_pipeline above) — deliberately NOT inside
+        # notify_issue_creator_on_complete, which early-returns when
+        # created_by is empty (Linear-webhook-sourced tickets would be
+        # silently skipped otherwise).
+        try:
+            from app.services.recurrence import detect_and_alert
+            await detect_and_alert(issue_id)
+        except Exception as rec_err:
+            logger.warning("recurrence_detect_failed issue=%s err=%s", issue_id, rec_err)
+
         # Soft-fail alert: pipeline finished but agent/CLI/quota broke (system_failure flag).
         if getattr(result, "system_failure", False):
             try:
