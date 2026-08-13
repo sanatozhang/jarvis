@@ -13,12 +13,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.config import get_settings
 from app.services import claude_headless
-from app.services.date_window import default_week_start
+from app.services.date_window import default_month_start, default_week_start, resolve_period
 
 logger = logging.getLogger("jarvis.voc_digest")
 
@@ -285,16 +285,18 @@ def _build_digest_user_input(
 
 def _render_markdown(
     week_start: str, week_end: str, stats: Dict[str, Any], narrative: Optional[Dict[str, Any]],
+    period_type: str = "week",
 ) -> str:
-    lines = [f"# VOC 周度洞察 · {week_start} ~ {week_end}", ""]
+    title = "VOC 周度洞察" if period_type == "week" else "VOC 月度洞察"
+    lines = [f"# {title} · {week_start} ~ {week_end}", ""]
     if narrative and narrative.get("headline"):
         lines += [f"**{narrative['headline']}**", ""]
 
     total_cur = stats.get("total_cur", 0)
     total_tagged = stats.get("total_tagged", 0)
     total_delta_pct = stats.get("total_delta_pct")
-    delta_str = f"{total_delta_pct:+.1f}%" if total_delta_pct is not None else "N/A（上周无基线）"
-    lines += [f"本周共 {total_cur} 单（{total_tagged} 单已打标），环比 {delta_str}。", ""]
+    delta_str = f"{total_delta_pct:+.1f}%" if total_delta_pct is not None else "N/A（上期无基线）"
+    lines += [f"本期共 {total_cur} 单（{total_tagged} 单已打标），环比 {delta_str}。", ""]
 
     if narrative and narrative.get("key_findings"):
         lines.append("## 关键发现")
@@ -350,37 +352,38 @@ def _render_markdown(
     return "\n".join(lines)
 
 
-async def generate_weekly_digest(week_start: str, force: bool = False) -> Dict[str, Any]:
-    """Generate (or return the cached) weekly digest for the week starting
-    `week_start` (Monday, "YYYY-MM-DD"). The deterministic stats half always
-    computes; the LLM narrative half degrades to None on any failure
-    (disabled, CLI unavailable, timeout, malformed output) — the record is
-    ALWAYS written either way, since the numbers alone are useful even
-    without a narrative (see _render_markdown's fallback line).
+async def generate_weekly_digest(
+    week_start: str, force: bool = False, period_type: str = "week",
+) -> Dict[str, Any]:
+    """Generate (or return the cached) digest for the period starting
+    `week_start` — a Monday for period_type="week", the 1st of a month for
+    period_type="month" ("YYYY-MM-DD" either way). The deterministic stats
+    half always computes; the LLM narrative half degrades to None on any
+    failure (disabled, CLI unavailable, timeout, malformed output) — the
+    record is ALWAYS written either way, since the numbers alone are useful
+    even without a narrative (see _render_markdown's fallback line).
     """
     from app.db import database as db
 
     if not force:
-        existing = await db.get_voc_weekly_digest(week_start)
+        existing = await db.get_voc_weekly_digest(week_start, period_type=period_type)
         if existing:
             return existing
 
-    ws = date.fromisoformat(week_start)
-    we = ws + timedelta(days=6)
-    prev_ws = ws - timedelta(days=7)
-    prev_we = ws - timedelta(days=1)
+    bounds = resolve_period(period_type, week_start)
 
-    cur_rows = await db.get_voc_analysis_rows(ws.isoformat(), we.isoformat())
-    prev_rows = await db.get_voc_analysis_rows(prev_ws.isoformat(), prev_we.isoformat())
+    cur_rows = await db.get_voc_analysis_rows(bounds.date_from, bounds.date_to)
+    prev_rows = await db.get_voc_analysis_rows(bounds.prev_from, bounds.prev_to)
 
     stats = compute_weekly_stats(cur_rows, prev_rows)
+    stats["in_progress"] = bounds.in_progress
     root_cause_samples = sample_root_causes(cur_rows)
 
     # Recurrence: deterministic, always computed (same rule as the rest of
     # `stats`) — a "fixed" issue recurring is exactly the kind of anomaly
     # this digest exists to surface.
     from app.services.recurrence import compute_recurrence_stats
-    recurrence_rows = await db.get_recurrence_rows(ws.isoformat(), we.isoformat())
+    recurrence_rows = await db.get_recurrence_rows(bounds.date_from, bounds.date_to)
     stats["recurrence"] = compute_recurrence_stats(recurrence_rows)
 
     settings = get_settings().voc
@@ -388,7 +391,7 @@ async def generate_weekly_digest(week_start: str, force: bool = False) -> Dict[s
     if settings.digest_enabled:
         narrative = await claude_headless.run_json(
             system_prompt=_build_digest_system_prompt(),
-            user_input=_build_digest_user_input(stats, root_cause_samples, week_start, we.isoformat()),
+            user_input=_build_digest_user_input(stats, root_cause_samples, bounds.date_from, bounds.date_to),
             schema=_DIGEST_SCHEMA,
             model=settings.digest_model,
             timeout=float(settings.digest_timeout_seconds),
@@ -400,7 +403,7 @@ async def generate_weekly_digest(week_start: str, force: bool = False) -> Dict[s
                 logger.warning("VOC digest narrative missing required keys %s — discarding", missing)
                 narrative = None
 
-    markdown = _render_markdown(week_start, we.isoformat(), stats, narrative)
+    markdown = _render_markdown(bounds.date_from, bounds.date_to, stats, narrative, period_type=period_type)
 
     return await db.upsert_voc_weekly_digest(
         week_start=week_start,
@@ -408,6 +411,7 @@ async def generate_weekly_digest(week_start: str, force: bool = False) -> Dict[s
         narrative=narrative,
         markdown=markdown,
         model=settings.digest_model if narrative else "",
+        period_type=period_type,
     )
 
 

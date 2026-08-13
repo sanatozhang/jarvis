@@ -12,6 +12,7 @@ to match `datetime.utcnow()`-based DB timestamps; do not use local time.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional, Tuple
 
@@ -58,6 +59,41 @@ def default_week_start(today: Optional[date] = None) -> str:
     prior Monday — the week that just finished."""
     monday, _ = last_week(today)
     return monday.isoformat()
+
+
+def month_start_of(d: date) -> date:
+    """The 1st of the calendar month containing `d`."""
+    return d.replace(day=1)
+
+
+def _shift_month(d: date, delta: int) -> date:
+    """Shift a month-start date (`d.day` must be 1) by `delta` whole months."""
+    m0 = d.month - 1 + delta
+    year = d.year + m0 // 12
+    month = m0 % 12 + 1
+    return date(year, month, 1)
+
+
+def current_month(today: Optional[date] = None) -> Tuple[date, date]:
+    """(this month's 1st, today) — the in-progress current month."""
+    today = today or today_utc()
+    return month_start_of(today), today
+
+
+def last_month(today: Optional[date] = None) -> Tuple[date, date]:
+    """(last month's 1st, last month's last day) — the most recently
+    completed full calendar month."""
+    today = today or today_utc()
+    this_start = month_start_of(today)
+    prev_start = _shift_month(this_start, -1)
+    return prev_start, this_start - timedelta(days=1)
+
+
+def default_month_start(today: Optional[date] = None) -> str:
+    """Most recent COMPLETE month's 1st (ISO date string) — the "last
+    month" anchor, mirroring `default_week_start`."""
+    start, _ = last_month(today)
+    return start.isoformat()
 
 
 def _parse_iso_date(s: str, field: str) -> date:
@@ -108,6 +144,75 @@ def resolve_window(
     n = days if days is not None else default_days
     d_from = today - timedelta(days=n - 1)
     return d_from.isoformat(), today.isoformat()
+
+
+@dataclass(frozen=True)
+class PeriodBounds:
+    """Resolved comparison window for a cached digest period (see
+    resolve_period). `in_progress` marks a period whose `date_to` was
+    clamped to `today` rather than the period's natural end."""
+    date_from: str
+    date_to: str
+    prev_from: str
+    prev_to: str
+    in_progress: bool
+
+
+def resolve_period(period_type: str, period_start: str, today: Optional[date] = None) -> PeriodBounds:
+    """Resolve a named cache period ("week" or "month", keyed by its canonical
+    start date — a Monday for week, the 1st for month) into its own
+    [date_from, date_to] plus a same-length [prev_from, prev_to] baseline
+    immediately preceding it.
+
+    For an in-progress period (today falls inside it), date_to clamps to
+    today and the baseline mirrors that same partial span in the prior
+    period — a current week 3 days in compares against the first 3 days of
+    last week, not the whole 7, and likewise for a partial current month.
+
+    Raises InvalidWindow for: an unsupported period_type, a week period_start
+    that isn't a Monday, a month period_start that isn't the 1st, or a
+    period_start in the future (nothing to resolve yet).
+    """
+    today = today or today_utc()
+    ps = _parse_iso_date(period_start, "period_start")
+    if ps > today:
+        raise InvalidWindow(f"period_start {period_start} is in the future")
+
+    if period_type == "week":
+        if ps.weekday() != 0:
+            raise InvalidWindow(f"period_start must be a Monday for period_type=week: {period_start!r}")
+        period_end = ps + timedelta(days=6)
+        prev_start = ps - timedelta(days=7)
+    elif period_type == "month":
+        if ps.day != 1:
+            raise InvalidWindow(f"period_start must be the 1st of a month for period_type=month: {period_start!r}")
+        period_end = _shift_month(ps, 1) - timedelta(days=1)
+        prev_start = _shift_month(ps, -1)
+    else:
+        raise InvalidWindow(f"unsupported period_type: {period_type!r}")
+
+    date_to = min(today, period_end)
+    in_progress = date_to < period_end
+    if in_progress:
+        # Mirror the same partial span in the prior period — comparing a
+        # week/month 3 days in against the prior period's FULL length would
+        # compare weekday traffic to a mix including weekends, or (for
+        # months) against a period of different total length entirely.
+        span_days = (date_to - ps).days
+        prev_to = prev_start + timedelta(days=span_days)
+    else:
+        # Completed period: the prior period's own natural end, i.e. the day
+        # before this one starts. NOT `prev_start + (date_to - ps).days` —
+        # that breaks for months of unequal length (e.g. a 31-day July
+        # baselined against `prev_start + 30d` lands on July 1st, not June's
+        # actual last day, June 30th).
+        prev_to = ps - timedelta(days=1)
+
+    return PeriodBounds(
+        date_from=ps.isoformat(), date_to=date_to.isoformat(),
+        prev_from=prev_start.isoformat(), prev_to=prev_to.isoformat(),
+        in_progress=in_progress,
+    )
 
 
 def to_datetime_bounds(date_from: str, date_to: str) -> Tuple[datetime, datetime]:

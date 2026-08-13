@@ -34,10 +34,6 @@ def digest_settings(monkeypatch):
 
 async def _patch_db(monkeypatch, cur_rows, prev_rows, existing=None, recurrence_rows=None):
     import app.db.database as db_mod
-    async def fake_get_rows(date_from, date_to):
-        # First call in generate_weekly_digest is the current week, second is previous.
-        return cur_rows if not fake_get_rows.called else prev_rows
-    fake_get_rows.called = False
     async def wrapper(date_from, date_to):
         result = cur_rows if not wrapper.calls else prev_rows
         wrapper.calls += 1
@@ -45,7 +41,7 @@ async def _patch_db(monkeypatch, cur_rows, prev_rows, existing=None, recurrence_
     wrapper.calls = 0
     monkeypatch.setattr(db_mod, "get_voc_analysis_rows", wrapper)
 
-    async def fake_get_existing(week_start):
+    async def fake_get_existing(week_start, period_type="week"):
         return existing
     monkeypatch.setattr(db_mod, "get_voc_weekly_digest", fake_get_existing)
 
@@ -56,7 +52,8 @@ async def _patch_db(monkeypatch, cur_rows, prev_rows, existing=None, recurrence_
     captured = {}
     async def fake_upsert(**kwargs):
         captured.update(kwargs)
-        return {"week_start": kwargs["week_start"], "stats": kwargs["stats"],
+        return {"week_start": kwargs["week_start"], "period_type": kwargs.get("period_type", "week"),
+                "stats": kwargs["stats"],
                 "narrative": kwargs["narrative"], "markdown": kwargs["markdown"],
                 "model": kwargs.get("model", ""), "total_tokens": 0, "total_cost_usd": 0.0,
                 "generated_at": "2026-08-10T10:00:00"}
@@ -160,3 +157,34 @@ async def test_digest_markdown_includes_recurrence_section_with_red_hits(monkeyp
     assert "修复复发" in result["markdown"]
     assert "n1" in result["markdown"]
     assert "p1" in result["markdown"]
+
+
+# ---------------------------------------------------------------------------
+# period_type="month" — generalized caching (see date_window.resolve_period)
+# ---------------------------------------------------------------------------
+
+async def test_generate_month_digest_uses_month_bounds_and_title(monkeypatch):
+    captured = await _patch_db(monkeypatch, [_seed_row(datetime(2026, 7, 10))], [])
+
+    async def fake_run_json(**kwargs):
+        return {"headline": "July recap", "key_findings": [], "product_opportunities": []}
+    monkeypatch.setattr(voc_digest.claude_headless, "run_json", fake_run_json)
+
+    result = await voc_digest.generate_weekly_digest("2026-07-01", force=False, period_type="month")
+    assert result["period_type"] == "month"
+    assert captured["period_type"] == "month"
+    assert "VOC 月度洞察 · 2026-07-01 ~ 2026-07-31" in result["markdown"]
+
+
+async def test_generate_month_digest_checks_cache_with_period_type(monkeypatch):
+    existing = {"week_start": "2026-07-01", "period_type": "month", "stats": {}, "narrative": None, "markdown": "cached"}
+    await _patch_db(monkeypatch, [], [], existing=existing)
+    result = await voc_digest.generate_weekly_digest("2026-07-01", force=False, period_type="month")
+    assert result == existing
+
+
+async def test_generate_week_digest_defaults_period_type_to_week(monkeypatch):
+    captured = await _patch_db(monkeypatch, [_seed_row(datetime(2026, 8, 10))], [])
+    result = await voc_digest.generate_weekly_digest("2026-08-03", force=False)
+    assert result["period_type"] == "week"
+    assert captured["period_type"] == "week"

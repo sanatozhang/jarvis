@@ -182,7 +182,7 @@ async def test_generate_weekly_digest_endpoint(client):
         resp = await client.post("/api/voc/weekly-digest/generate", params={"week_start": "2026-08-03", "force": True})
     assert resp.status_code == 200
     assert resp.json()["week_start"] == "2026-08-03"
-    mock_gen.assert_called_once_with("2026-08-03", force=True)
+    mock_gen.assert_called_once_with("2026-08-03", force=True, period_type="week")
 
 
 async def test_list_weekly_digests_endpoint(client):
@@ -232,6 +232,63 @@ async def test_get_weekly_digest_empty_week_start_uses_default(client):
         resp = await client.get("/api/voc/weekly-digest")
     assert resp.status_code == 200
     assert mock_get.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# period_type="month" — the two calendar-month presets replacing the old
+# rolling "last 1 month" analytics preset (see date_window.resolve_period)
+# ---------------------------------------------------------------------------
+
+async def test_get_weekly_digest_month_type_defaults_to_last_complete_month(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    with _patch("app.db.database.get_voc_weekly_digest", new_callable=AsyncMock, return_value=None) as mock_get:
+        resp = await client.get("/api/voc/weekly-digest", params={"period_type": "month"})
+    assert resp.status_code == 200
+    assert mock_get.call_count == 1
+    called_period_type = mock_get.call_args.kwargs.get("period_type")
+    assert called_period_type == "month"
+
+
+async def test_get_weekly_digest_month_type_rejects_non_first_of_month(client):
+    resp = await client.get("/api/voc/weekly-digest", params={"period_type": "month", "week_start": "2026-08-15"})
+    assert resp.status_code == 422
+
+
+async def test_get_weekly_digest_month_type_rejects_a_monday_that_isnt_the_1st(client):
+    # 2026-08-10 is a Monday but not the 1st — must still 422 under period_type=month.
+    resp = await client.get("/api/voc/weekly-digest", params={"period_type": "month", "week_start": "2026-08-10"})
+    assert resp.status_code == 422
+
+
+async def test_get_weekly_digest_month_type_accepts_first_of_month(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    with _patch("app.db.database.get_voc_weekly_digest", new_callable=AsyncMock, return_value=None):
+        resp = await client.get("/api/voc/weekly-digest", params={"period_type": "month", "week_start": "2026-08-01"})
+    assert resp.status_code == 200
+
+
+async def test_generate_weekly_digest_month_type_passes_through(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    fake_record = {"week_start": "2026-08-01", "period_type": "month", "stats": {}, "narrative": None, "markdown": "x"}
+    with _patch("app.services.voc_digest.generate_weekly_digest", new_callable=AsyncMock,
+                return_value=fake_record) as mock_gen:
+        resp = await client.post("/api/voc/weekly-digest/generate",
+                                  params={"week_start": "2026-08-01", "period_type": "month", "force": True})
+    assert resp.status_code == 200
+    mock_gen.assert_called_once_with("2026-08-01", force=True, period_type="month")
+
+
+async def test_invalid_period_type_returns_422(client):
+    resp = await client.get("/api/voc/weekly-digest", params={"period_type": "quarter"})
+    assert resp.status_code == 422
+
+
+async def test_list_weekly_digests_defaults_to_week_period_type(client):
+    from unittest.mock import AsyncMock, patch as _patch
+    with _patch("app.db.database.list_voc_weekly_digests", new_callable=AsyncMock, return_value=[]) as mock_list:
+        resp = await client.get("/api/voc/weekly-digests")
+    assert resp.status_code == 200
+    assert mock_list.call_args.kwargs.get("period_type") == "week"
 
 
 # ---------------------------------------------------------------------------

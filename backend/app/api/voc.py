@@ -170,31 +170,56 @@ def _require_monday(ws: str) -> None:
         raise HTTPException(status_code=422, detail="week_start must be a Monday (YYYY-MM-DD)")
 
 
+def _require_month_start(ws: str) -> None:
+    """Raise a 422 if `ws` isn't the 1st of a calendar month."""
+    try:
+        is_month_start = date.fromisoformat(ws).day == 1
+    except ValueError:
+        raise HTTPException(status_code=422, detail="week_start must be the 1st of a month (YYYY-MM-DD)")
+    if not is_month_start:
+        raise HTTPException(status_code=422, detail="week_start must be the 1st of a month (YYYY-MM-DD)")
+
+
+def _resolve_and_validate_period(week_start: str, period_type: str) -> str:
+    """Default (if omitted) and validate `week_start` against `period_type` —
+    shared by all three digest endpoints below."""
+    if period_type == "month":
+        ws = week_start or voc_digest.default_month_start()
+        _require_month_start(ws)
+    else:
+        ws = week_start or voc_digest.default_week_start()
+        _require_monday(ws)
+    return ws
+
+
 @router.get("/weekly-digest")
 async def get_weekly_digest(
     week_start: str = Query(
         "", pattern=r"^(\d{4}-\d{2}-\d{2})?$",
-        description="YYYY-MM-DD Monday; default = most recent complete week",
+        description="YYYY-MM-DD period start (Monday for week, 1st for month); default = most recently completed period",
     ),
+    period_type: str = Query("week", pattern="^(week|month)$"),
 ):
-    ws = week_start or voc_digest.default_week_start()
-    _require_monday(ws)
-    return await db.get_voc_weekly_digest(ws)
+    ws = _resolve_and_validate_period(week_start, period_type)
+    return await db.get_voc_weekly_digest(ws, period_type=period_type)
 
 
 @router.post("/weekly-digest/generate")
 async def generate_weekly_digest_endpoint(
     week_start: str = Query(
         "", pattern=r"^(\d{4}-\d{2}-\d{2})?$",
-        description="YYYY-MM-DD Monday; default = most recent complete week",
+        description="YYYY-MM-DD period start (Monday for week, 1st for month); default = most recently completed period",
     ),
+    period_type: str = Query("week", pattern="^(week|month)$"),
     force: bool = Query(False),
 ):
-    ws = week_start or voc_digest.default_week_start()
-    _require_monday(ws)
-    return await voc_digest.generate_weekly_digest(ws, force=force)
+    ws = _resolve_and_validate_period(week_start, period_type)
+    return await voc_digest.generate_weekly_digest(ws, force=force, period_type=period_type)
 
 
 @router.get("/weekly-digests")
-async def list_weekly_digests(limit: int = Query(12, ge=1, le=52)):
-    return {"digests": await db.list_voc_weekly_digests(limit=limit)}
+async def list_weekly_digests(
+    limit: int = Query(12, ge=1, le=52),
+    period_type: str = Query("week", pattern="^(week|month)$"),
+):
+    return {"digests": await db.list_voc_weekly_digests(limit=limit, period_type=period_type)}

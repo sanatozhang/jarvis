@@ -1164,10 +1164,12 @@ export interface VocWeeklyDigestStats {
   top_movers: VocMover[];
   needs_engineer_rate: number;
   devices: { device_type: string; count: number }[];
+  in_progress?: boolean;
 }
 
 export interface VocWeeklyDigest {
   week_start: string;
+  period_type: "week" | "month";
   stats: VocWeeklyDigestStats;
   narrative: VocDigestNarrative | null;
   markdown: string;
@@ -1177,17 +1179,19 @@ export interface VocWeeklyDigest {
   generated_at: string | null;
 }
 
-export const fetchVocWeeklyDigest = (weekStart: string = "") =>
-  request<VocWeeklyDigest | null>(`/voc/weekly-digest${weekStart ? `?week_start=${weekStart}` : ""}`);
+export const fetchVocWeeklyDigest = (weekStart: string = "", periodType: "week" | "month" = "week") =>
+  request<VocWeeklyDigest | null>(
+    `/voc/weekly-digest?period_type=${periodType}${weekStart ? `&week_start=${weekStart}` : ""}`,
+  );
 
-export const generateVocWeeklyDigest = (weekStart: string = "", force: boolean = false) =>
+export const generateVocWeeklyDigest = (weekStart: string = "", force: boolean = false, periodType: "week" | "month" = "week") =>
   request<VocWeeklyDigest>(
-    `/voc/weekly-digest/generate?${weekStart ? `week_start=${weekStart}&` : ""}force=${force}`,
+    `/voc/weekly-digest/generate?period_type=${periodType}${weekStart ? `&week_start=${weekStart}` : ""}&force=${force}`,
     { method: "POST", timeoutMs: 330_000 },  // backend LLM call can take up to voc.digest_timeout_seconds (default 300s)
   );
 
-export const fetchVocWeeklyDigests = (limit: number = 12) =>
-  request<{ digests: VocWeeklyDigest[] }>(`/voc/weekly-digests?limit=${limit}`);
+export const fetchVocWeeklyDigests = (limit: number = 12, periodType: "week" | "month" = "week") =>
+  request<{ digests: VocWeeklyDigest[] }>(`/voc/weekly-digests?limit=${limit}&period_type=${periodType}`);
 
 // ============================================================
 // Eval Pipeline

@@ -62,6 +62,6 @@
 - 图表用站点金调 `#B8922E` 为主色，辅色用同色系阶梯
 - 所有 API 调用走 `src/lib/api.ts` wrappers（`fetchAnalyticsDashboard` / `fetchRuleAccuracy` / `fetchProblemTypeStats` / `fetchClassificationStats` / `fetchVocClassificationStats` / `fetchVocTrend` / `fetchVocMovers` 等），组件不直接 `fetch`
 - 大时间窗口聚合走后端，前端不要在浏览器里 reduce 几万条原始记录
-- **时间窗口默认展示上一个完整自然周（周一~周日）**，档位顺序：本周（进行中）、上周、近 1/3/6 个月、近 1 年，外加自定义天数输入。周计算在 `frontend/src/lib/timeRange.ts`（纯函数，UTC 锚点，`mondayOf()`/`resolveRange()`），后端只做校验、不重复推导，避免前后端两套周计算漂移
-- 时间选择器状态走 URL query 深链：`?week=YYYY-MM-DD`（周一）或 `?days=N`，二者互斥；等于默认值（上周）时不写 query，刷新 / 分享自动保留窗口
-- VOC 周报卡片（weekly digest）只在主窗口选中「上周」或任意历史完整周时与之同步；选「本周（进行中）」或非周窗口（月/季/年/自定义天数）时固定展示最近一个已完成的自然周，卡片上会打「上周汇总」标记说明不同步
+- **时间窗口默认展示上一个完整自然周（周一~周日）**，档位顺序：本周（进行中）、上周、本月至今、上个月、近 3/6 个月、近 1 年，外加自定义天数输入。「本月至今/上个月」是自然月（月初~今天 / 完整上个月），特意替换掉早期的滚动「近 1 个月」——滚动窗口每天都在漂移，跟自然周/自然月不在一个口径上没法固定缓存。周/月计算在 `frontend/src/lib/timeRange.ts`（纯函数，UTC 锚点，`mondayOf()`/`monthStartOf()`/`resolveRange()`），后端只做校验、不重复推导（`date_window.py::resolve_period`），避免前后端两套计算漂移
+- 时间选择器状态走 URL query 深链：`?week=YYYY-MM-DD`（周一）/ `?month=YYYY-MM-01`（月初）/ `?days=N`，三者互斥；等于默认值（上周）时不写 query，刷新 / 分享自动保留窗口
+- **AI 总结（weekly/monthly digest）按「周」「月」两种自然档位各自独立生成 + 缓存**，选中同一个档位会直接展示上次生成的结果，不需要每次重新生成；档位没生成过时卡片提示「该时间段暂无总结」，需要手动点「生成总结」。近 3/6 个月、近 1 年、自定义天数这几个跨度模糊/易漂移的档位不支持总结（卡片提示「暂不支持」），因为总结的环比基线（上一个等长区间）只在固定的自然周期边界下才有稳定意义。后端缓存表 `voc_weekly_digests` 用 `(period_type, week_start)` 复合键（`period_type="week"|"month"`，见 `app/db/database.py::VocWeeklyDigest`），因为月初偶尔会落在某周的周一上，单纯用日期字符串做键会撞车；`/reports` 页的「周报历史」tab 固定只看 `period_type="week"`，不受月总结影响

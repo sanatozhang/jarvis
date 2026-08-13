@@ -165,15 +165,22 @@ class VocTagRecord(Base):
 
 
 class VocWeeklyDigest(Base):
-    """Cached weekly VOC insight digest (app.services.voc_digest). One row
-    per ISO week (week_start = that week's Monday, "YYYY-MM-DD"). Generation
-    involves an LLM call that can take tens of seconds, so this is a cache
-    to read from on every page load, not a view recomputed per-request —
-    regenerate via generate_weekly_digest(force=True), not by deleting rows."""
+    """Cached VOC insight digest (app.services.voc_digest). One row per
+    (period_type, week_start) — `period_type` is "week" (week_start = that
+    week's Monday) or "month" (week_start = that month's 1st, "YYYY-MM-DD"
+    either way — the column name predates the "month" period type but is
+    kept for compatibility with existing callers). The unique key is the
+    PAIR, not week_start alone: a month that starts on a Monday shares its
+    date string with that week, so a single-column key would collide.
+    Generation involves an LLM call that can take tens of seconds, so this
+    is a cache to read from on every page load, not a view recomputed
+    per-request — regenerate via generate_weekly_digest(force=True), not by
+    deleting rows."""
     __tablename__ = "voc_weekly_digests"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    week_start = Column(String(10), unique=True, index=True, nullable=False)
+    period_type = Column(String(8), default="week", nullable=False)
+    week_start = Column(String(10), index=True, nullable=False)
     stats_json = Column(Text, default="{}")        # compute_weekly_stats() output
     narrative_json = Column(Text, default="null")  # LLM output dict, or JSON null if generation failed/disabled
     markdown = Column(Text, default="")
@@ -181,6 +188,10 @@ class VocWeeklyDigest(Base):
     total_tokens = Column(Integer, default=0)
     total_cost_usd = Column(Float, default=0.0)
     generated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("period_type", "week_start", name="uq_voc_digest_period_start"),
+    )
 
 
 class EventRecord(Base):
@@ -594,6 +605,51 @@ async def init_db():
                 await conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype} DEFAULT {default}"))
             except Exception:
                 pass
+
+        # Migrate voc_weekly_digests: add period_type ("week"/"month" digest
+        # caching, see docs/modules/analytics.md) and widen the unique key
+        # from week_start alone to (period_type, week_start) — a month
+        # starting on a Monday shares its date string with that week, so the
+        # old single-column UNIQUE would reject one of the two rows. SQLite
+        # can't ALTER a column's constraint in place, so this rebuilds the
+        # table; guarded by a PRAGMA check so it only runs once ever.
+        cols = await conn.execute(text("PRAGMA table_info(voc_weekly_digests)"))
+        existing_digest_cols = {row[1] for row in cols.fetchall()}
+        if existing_digest_cols and "period_type" not in existing_digest_cols:
+            await conn.execute(text(
+                "ALTER TABLE voc_weekly_digests ADD COLUMN period_type VARCHAR(8) DEFAULT 'week'"
+            ))
+            await conn.execute(text(
+                "UPDATE voc_weekly_digests SET period_type='week' WHERE period_type IS NULL OR period_type=''"
+            ))
+            await conn.execute(text("""
+                CREATE TABLE voc_weekly_digests_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period_type VARCHAR(8) NOT NULL DEFAULT 'week',
+                    week_start VARCHAR(10) NOT NULL,
+                    stats_json TEXT DEFAULT '{}',
+                    narrative_json TEXT DEFAULT 'null',
+                    markdown TEXT DEFAULT '',
+                    model VARCHAR(128) DEFAULT '',
+                    total_tokens INTEGER DEFAULT 0,
+                    total_cost_usd REAL DEFAULT 0.0,
+                    generated_at DATETIME,
+                    UNIQUE(period_type, week_start)
+                )
+            """))
+            await conn.execute(text("""
+                INSERT INTO voc_weekly_digests_new
+                    (id, period_type, week_start, stats_json, narrative_json, markdown,
+                     model, total_tokens, total_cost_usd, generated_at)
+                SELECT id, period_type, week_start, stats_json, narrative_json, markdown,
+                       model, total_tokens, total_cost_usd, generated_at
+                FROM voc_weekly_digests
+            """))
+            await conn.execute(text("DROP TABLE voc_weekly_digests"))
+            await conn.execute(text("ALTER TABLE voc_weekly_digests_new RENAME TO voc_weekly_digests"))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_voc_digest_week_start ON voc_weekly_digests(week_start)"
+            ))
 
         # Add indexes for frequently queried columns (safe to re-run)
         for idx_sql in [
@@ -2890,6 +2946,7 @@ async def get_voc_analysis_rows(date_from: str, date_to: str) -> List[Dict[str, 
 def _voc_weekly_digest_to_dict(row: "VocWeeklyDigest") -> Dict[str, Any]:
     return {
         "week_start": row.week_start,
+        "period_type": row.period_type or "week",
         "stats": json.loads(row.stats_json or "{}"),
         "narrative": json.loads(row.narrative_json or "null"),
         "markdown": row.markdown or "",
@@ -2900,20 +2957,25 @@ def _voc_weekly_digest_to_dict(row: "VocWeeklyDigest") -> Dict[str, Any]:
     }
 
 
-async def get_voc_weekly_digest(week_start: str) -> Optional[Dict[str, Any]]:
+async def get_voc_weekly_digest(week_start: str, period_type: str = "week") -> Optional[Dict[str, Any]]:
     async with get_session() as session:
         from sqlalchemy import select
         row = (await session.execute(
-            select(VocWeeklyDigest).where(VocWeeklyDigest.week_start == week_start)
+            select(VocWeeklyDigest).where(
+                VocWeeklyDigest.week_start == week_start,
+                VocWeeklyDigest.period_type == period_type,
+            )
         )).scalar_one_or_none()
         return _voc_weekly_digest_to_dict(row) if row else None
 
 
-async def list_voc_weekly_digests(limit: int = 12) -> List[Dict[str, Any]]:
+async def list_voc_weekly_digests(limit: int = 12, period_type: str = "week") -> List[Dict[str, Any]]:
     async with get_session() as session:
         from sqlalchemy import select
         rows = (await session.execute(
-            select(VocWeeklyDigest).order_by(VocWeeklyDigest.week_start.desc()).limit(limit)
+            select(VocWeeklyDigest)
+            .where(VocWeeklyDigest.period_type == period_type)
+            .order_by(VocWeeklyDigest.week_start.desc()).limit(limit)
         )).scalars().all()
         return [_voc_weekly_digest_to_dict(r) for r in rows]
 
@@ -2921,14 +2983,18 @@ async def list_voc_weekly_digests(limit: int = 12) -> List[Dict[str, Any]]:
 async def upsert_voc_weekly_digest(
     week_start: str, stats: Dict[str, Any], narrative: Optional[Dict[str, Any]],
     markdown: str, model: str = "", total_tokens: int = 0, total_cost_usd: float = 0.0,
+    period_type: str = "week",
 ) -> Dict[str, Any]:
     async with get_session() as session:
         from sqlalchemy import select
         row = (await session.execute(
-            select(VocWeeklyDigest).where(VocWeeklyDigest.week_start == week_start)
+            select(VocWeeklyDigest).where(
+                VocWeeklyDigest.week_start == week_start,
+                VocWeeklyDigest.period_type == period_type,
+            )
         )).scalar_one_or_none()
         if row is None:
-            row = VocWeeklyDigest(week_start=week_start)
+            row = VocWeeklyDigest(week_start=week_start, period_type=period_type)
             session.add(row)
         row.stats_json = json.dumps(stats, ensure_ascii=False)
         row.narrative_json = json.dumps(narrative, ensure_ascii=False) if narrative is not None else "null"

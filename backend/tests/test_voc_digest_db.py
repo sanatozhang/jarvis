@@ -100,3 +100,63 @@ async def test_list_voc_weekly_digests_orders_newest_first(db_engine, db_session
         assert [d["week_start"] for d in digests] == ["2026-08-10", "2026-08-03", "2026-07-27"]
     finally:
         db_mod._engine, db_mod._session_factory = original_engine, original_factory
+
+
+# ---------------------------------------------------------------------------
+# period_type — week and month digests share the table; the unique key is
+# the (period_type, week_start) PAIR, not week_start alone, because a month
+# can start on the same date as some week's Monday (e.g. 2025-12-01).
+# ---------------------------------------------------------------------------
+
+async def test_month_and_week_digest_with_same_date_string_coexist(db_engine, db_session):
+    import app.db.database as db_mod
+    original_engine, original_factory = db_mod._engine, db_mod._session_factory
+    db_mod._engine, db_mod._session_factory = db_engine, db_session
+    try:
+        # 2025-12-01 is a Monday, so this date string is valid as both a
+        # week_start and a month_start.
+        await db_mod.upsert_voc_weekly_digest(
+            week_start="2025-12-01", stats={"total_cur": 1}, narrative=None, markdown="week",
+            period_type="week",
+        )
+        await db_mod.upsert_voc_weekly_digest(
+            week_start="2025-12-01", stats={"total_cur": 2}, narrative=None, markdown="month",
+            period_type="month",
+        )
+        week_row = await db_mod.get_voc_weekly_digest("2025-12-01", period_type="week")
+        month_row = await db_mod.get_voc_weekly_digest("2025-12-01", period_type="month")
+        assert week_row["markdown"] == "week"
+        assert month_row["markdown"] == "month"
+        assert week_row["stats"]["total_cur"] == 1
+        assert month_row["stats"]["total_cur"] == 2
+    finally:
+        db_mod._engine, db_mod._session_factory = original_engine, original_factory
+
+
+async def test_get_voc_weekly_digest_defaults_to_week_period_type(db_engine, db_session):
+    import app.db.database as db_mod
+    original_engine, original_factory = db_mod._engine, db_mod._session_factory
+    db_mod._engine, db_mod._session_factory = db_engine, db_session
+    try:
+        await db_mod.upsert_voc_weekly_digest(
+            week_start="2026-08-01", stats={}, narrative=None, markdown="", period_type="month",
+        )
+        # No matching week-type row for the same date string.
+        assert await db_mod.get_voc_weekly_digest("2026-08-01") is None
+    finally:
+        db_mod._engine, db_mod._session_factory = original_engine, original_factory
+
+
+async def test_list_voc_weekly_digests_filters_by_period_type(db_engine, db_session):
+    import app.db.database as db_mod
+    original_engine, original_factory = db_mod._engine, db_mod._session_factory
+    db_mod._engine, db_mod._session_factory = db_engine, db_session
+    try:
+        await db_mod.upsert_voc_weekly_digest(week_start="2026-08-03", stats={}, narrative=None, markdown="", period_type="week")
+        await db_mod.upsert_voc_weekly_digest(week_start="2026-08-01", stats={}, narrative=None, markdown="", period_type="month")
+        weeks = await db_mod.list_voc_weekly_digests(limit=10, period_type="week")
+        months = await db_mod.list_voc_weekly_digests(limit=10, period_type="month")
+        assert [d["week_start"] for d in weeks] == ["2026-08-03"]
+        assert [d["week_start"] for d in months] == ["2026-08-01"]
+    finally:
+        db_mod._engine, db_mod._session_factory = original_engine, original_factory

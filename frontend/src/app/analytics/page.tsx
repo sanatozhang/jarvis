@@ -12,7 +12,10 @@ import {
   type LocalIssueItem, type VocClassificationStats, type VocTrend, type VocMoversResponse, type VocWeeklyDigest,
   type FixEffectiveness,
 } from "@/lib/api";
-import { thisMonday, lastMonday, isMondayISO, resolveRange, alignedPrevWeek, type TimeRange } from "@/lib/timeRange";
+import {
+  thisMonday, lastMonday, isMondayISO, thisMonthStart, lastMonthStart, isMonthStartISO,
+  resolveRange, alignedPrevPeriod, type TimeRange,
+} from "@/lib/timeRange";
 
 const S = {
   surface: "var(--j-surface)", overlay: "var(--j-panel)", hover: "var(--j-hover)",
@@ -46,12 +49,14 @@ function StatCard({ label, value, sub, color, index = 0 }: { label: string; valu
   );
 }
 
-// 深链：?week=YYYY-MM-DD（自然周，须为周一）或 ?days=N；两者互斥，缺省 = 上周。
-// 坏值（非周一 / 非法数字）静默降级到默认值，绝不 throw —— 一个错的分享链接
-// 不该让页面挂掉。
+// 深链：?week=YYYY-MM-DD（自然周，须为周一）或 ?month=YYYY-MM-01（自然月）或
+// ?days=N；三者互斥，缺省 = 上周。坏值（非周一/非月初/非法数字）静默降级到
+// 默认值，绝不 throw —— 一个错的分享链接不该让页面挂掉。
 function parseRange(sp: URLSearchParams): TimeRange {
   const wk = sp.get("week");
   if (wk && isMondayISO(wk)) return { kind: "week", weekStart: wk };
+  const mo = sp.get("month");
+  if (mo && isMonthStartISO(mo)) return { kind: "month", monthStart: mo };
   const n = parseInt(sp.get("days") || "", 10);
   if (Number.isFinite(n) && n >= 1 && n <= 3650) return { kind: "days", days: n };
   return { kind: "week", weekStart: lastMonday() };
@@ -63,17 +68,24 @@ function AnalyticsPageInner() {
   const searchParams = useSearchParams();
 
   const range = useMemo(() => parseRange(searchParams), [searchParams]);
-  const resolved = useMemo(() => resolveRange(range), [range.kind, range.kind === "week" ? range.weekStart : range.days]);
+  const rangeKey = range.kind === "week" ? `week:${range.weekStart}`
+    : range.kind === "month" ? `month:${range.monthStart}`
+    : `days:${range.days}`;
+  const resolved = useMemo(() => resolveRange(range), [rangeKey]);
 
-  const updateQuery = useCallback((patch: { week?: string; days?: number }) => {
+  const updateQuery = useCallback((patch: { week?: string; month?: string; days?: number }) => {
     const next = new URLSearchParams(searchParams.toString());
     if (patch.week !== undefined) {
-      next.delete("days");
+      next.delete("days"); next.delete("month");
       if (patch.week === lastMonday()) next.delete("week");
       else next.set("week", patch.week);
     }
+    if (patch.month !== undefined) {
+      next.delete("days"); next.delete("week");
+      next.set("month", patch.month);
+    }
     if (patch.days !== undefined) {
-      next.delete("week");
+      next.delete("week"); next.delete("month");
       next.set("days", String(patch.days));
     }
     const qs = next.toString();
@@ -83,14 +95,19 @@ function AnalyticsPageInner() {
   const PRESETS = useMemo(() => [
     { key: "cur", range: { kind: "week", weekStart: thisMonday() } as TimeRange, label: t("本周（进行中）") },
     { key: "last", range: { kind: "week", weekStart: lastMonday() } as TimeRange, label: t("上周") },
-    { key: "m1", range: { kind: "days", days: 30 } as TimeRange, label: t("近 1 个月") },
+    { key: "monthCur", range: { kind: "month", monthStart: thisMonthStart() } as TimeRange, label: t("本月至今") },
+    { key: "monthLast", range: { kind: "month", monthStart: lastMonthStart() } as TimeRange, label: t("上个月") },
     { key: "m3", range: { kind: "days", days: 90 } as TimeRange, label: t("近 3 个月") },
     { key: "m6", range: { kind: "days", days: 180 } as TimeRange, label: t("近 6 个月") },
     { key: "y1", range: { kind: "days", days: 365 } as TimeRange, label: t("近 1 年") },
   ], [t]);
 
-  const isPresetActive = (p: TimeRange) =>
-    p.kind === range.kind && (p.kind === "week" ? p.weekStart === (range as { weekStart: string }).weekStart : p.days === (range as { days: number }).days);
+  const isPresetActive = (p: TimeRange) => {
+    if (p.kind !== range.kind) return false;
+    if (p.kind === "week") return p.weekStart === (range as { weekStart: string }).weekStart;
+    if (p.kind === "month") return p.monthStart === (range as { monthStart: string }).monthStart;
+    return p.days === (range as { days: number }).days;
+  };
 
   const [data, setData] = useState<AnalyticsDashboard | null>(null);
   const [customDays, setCustomDays] = useState("");
@@ -128,11 +145,11 @@ function AnalyticsPageInner() {
   const load = useCallback(async () => {
     setLoading(true);
     const w = { dateFrom: resolved.dateFrom, dateTo: resolved.dateTo };
-    // 选中「当周」时用对齐的上周同段（同星期跨度）做 movers 基线，而不是
-    // 默认推导的「紧邻前一段」——本周三看「本周一~周三」时，紧邻前段是
-    // 「上周五~周日」，工作日 vs 周末不可比。其它窗口（月/季/年/上周）用
-    // 后端默认推导即可。
-    const prev = range.kind === "week" ? alignedPrevWeek(resolved) ?? undefined : undefined;
+    // 「周」「月」两种自然档位都需要显式对齐基线（同跨度同起点），而不是
+    // 后端默认推导的「紧邻前一段」——本周三看「本周一~周三」时，紧邻前段是
+    // 「上周五~周日」，工作日 vs 周末不可比；月份长度不一，紧邻前段天数也
+    // 会跟当月错位。其它窗口（3/6/12 月、自定义天数）用后端默认推导即可。
+    const prev = (range.kind === "week" || range.kind === "month") ? alignedPrevPeriod(resolved) ?? undefined : undefined;
     try {
       const [dash, ra, pt, cls, voc, vocTrendRes, vocMoversRes, fixEff] = await Promise.all([
         fetchAnalyticsDashboard(w).catch(() => null),
@@ -157,23 +174,27 @@ function AnalyticsPageInner() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Weekly digest cards are pinned to a completed natural week: when the
-  // main window IS a completed week (last week or any historical week),
-  // sync the digest to it; for the in-progress current week (no digest
-  // exists yet) or non-week windows (month/quarter/custom), keep the
-  // backend default (most recently completed week) by passing "".
-  const digestWeek = range.kind === "week" && !resolved.inProgress ? resolved.weekStart! : "";
+  // AI 总结按「周」「月」两种自然档位各自独立生成 + 缓存，选中同一个档位
+  // 时直接展示上次生成的结果——3/6/12 月与自定义天数这类跨度模糊/易漂移的
+  // 档位不支持（digestKey = null），卡片显示「暂不支持」而不是悄悄套用别的
+  // 周期的数据。
+  const digestKey = range.kind === "week" ? { periodType: "week" as const, periodStart: range.weekStart }
+    : range.kind === "month" ? { periodType: "month" as const, periodStart: range.monthStart }
+    : null;
 
   useEffect(() => {
+    if (!digestKey) { setDigest(null); setDigestLoading(false); return; }
     setDigestLoading(true);
-    fetchVocWeeklyDigest(digestWeek).then(setDigest).catch(() => setDigest(null)).finally(() => setDigestLoading(false));
-  }, [digestWeek]);
+    fetchVocWeeklyDigest(digestKey.periodStart, digestKey.periodType)
+      .then(setDigest).catch(() => setDigest(null)).finally(() => setDigestLoading(false));
+  }, [digestKey?.periodType, digestKey?.periodStart]);
 
   const regenerateDigest = async () => {
+    if (!digestKey) return;
     setDigestRegenerating(true);
     setDigestError("");
     try {
-      const result = await generateVocWeeklyDigest(digestWeek, true);
+      const result = await generateVocWeeklyDigest(digestKey.periodStart, true, digestKey.periodType);
       setDigest(result);
     } catch {
       setDigestError(t("生成失败，请稍后重试"));
@@ -197,6 +218,7 @@ function AnalyticsPageInner() {
                 <button key={p.key} onClick={() => {
                   setCustomDays("");
                   if (p.range.kind === "week") updateQuery({ week: p.range.weekStart });
+                  else if (p.range.kind === "month") updateQuery({ month: p.range.monthStart });
                   else updateQuery({ days: p.range.days });
                 }}
                   className="rounded-md px-3 py-1.5 text-sm font-medium transition-all"
@@ -313,34 +335,38 @@ function AnalyticsPageInner() {
               <div className="flex items-center gap-2">
                 <span className="rounded-lg px-2 py-0.5 text-[11px] font-semibold"
                   style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.25)" }}>
-                  {t("上周焦点")}
+                  {digestKey?.periodType === "month" ? t("月度总结") : t("周度总结")}
                 </span>
-                {digest && <span className="text-xs" style={{ color: S.text3 }}>{digest.week_start}</span>}
-                {!digestWeek && (
-                  <span className="rounded-full px-2 py-0.5 text-[10px] font-medium" title={t("当前窗口未结束，周报固定展示最近一个完整周")}
+                {digestKey && <span className="text-xs" style={{ color: S.text3 }}>{resolved.dateFrom} ~ {resolved.dateTo}</span>}
+                {digestKey && resolved.inProgress && (
+                  <span className="rounded-full px-2 py-0.5 text-[10px] font-medium" title={t("当前周期尚未结束，统计截至今天")}
                     style={{ background: S.overlay, color: S.text3, border: `1px solid ${S.border}` }}>
-                    {t("上周汇总")}
+                    {t("进行中")}
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-2">
-                {digestError && (
-                  <span className="text-[11px]" style={{ color: "#DC2626" }}>{digestError}</span>
-                )}
-                <button
-                  onClick={regenerateDigest}
-                  disabled={digestRegenerating}
-                  className="rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all"
-                  style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)", opacity: digestRegenerating ? 0.5 : 1 }}>
-                  {digestRegenerating ? t("生成中...") : t("重新生成")}
-                </button>
-              </div>
+              {digestKey && (
+                <div className="flex items-center gap-2">
+                  {digestError && (
+                    <span className="text-[11px]" style={{ color: "#DC2626" }}>{digestError}</span>
+                  )}
+                  <button
+                    onClick={regenerateDigest}
+                    disabled={digestRegenerating}
+                    className="rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all"
+                    style={{ background: S.accentBg, color: S.accent, border: "1px solid rgba(14,124,134,0.3)", opacity: digestRegenerating ? 0.5 : 1 }}>
+                    {digestRegenerating ? t("生成中...") : digest ? t("重新生成") : t("生成总结")}
+                  </button>
+                </div>
+              )}
             </div>
 
-            {digestLoading ? (
+            {!digestKey ? (
+              <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("当前时间维度暂不支持 AI 总结（仅本周/上周/本月/上月支持）")}</p>
+            ) : digestLoading ? (
               <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("加载中")}...</p>
             ) : !digest ? (
-              <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("该周暂无周报，点击「重新生成」创建。")}</p>
+              <p className="py-6 text-center text-sm" style={{ color: S.text3 }}>{t("该时间段暂无总结，点击「生成总结」创建。")}</p>
             ) : (
               <div className="space-y-4">
                 {digest.narrative ? (

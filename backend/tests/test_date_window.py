@@ -149,3 +149,106 @@ def test_to_datetime_bounds_single_day_window_is_nonempty():
     assert start.isoformat() == "2026-08-10T00:00:00"
     assert end.isoformat() == "2026-08-10T23:59:59"
     assert start < end
+
+
+# ---------------------------------------------------------------------------
+# month_start_of / current_month / last_month / default_month_start
+# ---------------------------------------------------------------------------
+
+def test_month_start_of_midmonth():
+    assert dw.month_start_of(date(2026, 8, 12)) == date(2026, 8, 1)
+
+
+def test_current_month_right_edge_is_today():
+    start, end = dw.current_month(date(2026, 8, 12))
+    assert (start, end) == (date(2026, 8, 1), date(2026, 8, 12))
+
+
+def test_last_month_same_year():
+    start, end = dw.last_month(date(2026, 8, 12))
+    assert (start, end) == (date(2026, 7, 1), date(2026, 7, 31))
+
+
+def test_last_month_cross_year():
+    start, end = dw.last_month(date(2026, 1, 1))
+    assert (start, end) == (date(2025, 12, 1), date(2025, 12, 31))
+
+
+def test_last_month_shorter_february():
+    # 2026 is not a leap year -> February has 28 days.
+    start, end = dw.last_month(date(2026, 3, 1))
+    assert (start, end) == (date(2026, 2, 1), date(2026, 2, 28))
+
+
+def test_default_month_start_matches_last_month():
+    today = date(2026, 8, 12)
+    start, _ = dw.last_month(today)
+    assert dw.default_month_start(today) == start.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# resolve_period
+# ---------------------------------------------------------------------------
+
+def test_resolve_period_completed_week():
+    b = dw.resolve_period("week", "2026-08-03", today=date(2026, 8, 12))
+    assert (b.date_from, b.date_to) == ("2026-08-03", "2026-08-09")
+    assert (b.prev_from, b.prev_to) == ("2026-07-27", "2026-08-02")
+    assert b.in_progress is False
+
+
+def test_resolve_period_in_progress_week_mirrors_partial_span():
+    b = dw.resolve_period("week", "2026-08-10", today=date(2026, 8, 12))
+    assert (b.date_from, b.date_to) == ("2026-08-10", "2026-08-12")
+    assert (b.prev_from, b.prev_to) == ("2026-08-03", "2026-08-05")
+    assert b.in_progress is True
+
+
+def test_resolve_period_completed_month_uses_natural_prior_month_end():
+    # July (31 days) baselined against June (30 days) — must NOT compute
+    # prev_to as prev_start + 30 (which would land on July 1st).
+    b = dw.resolve_period("month", "2026-07-01", today=date(2026, 8, 12))
+    assert (b.date_from, b.date_to) == ("2026-07-01", "2026-07-31")
+    assert (b.prev_from, b.prev_to) == ("2026-06-01", "2026-06-30")
+    assert b.in_progress is False
+
+
+def test_resolve_period_in_progress_month_mirrors_partial_span():
+    b = dw.resolve_period("month", "2026-08-01", today=date(2026, 8, 12))
+    assert (b.date_from, b.date_to) == ("2026-08-01", "2026-08-12")
+    assert (b.prev_from, b.prev_to) == ("2026-07-01", "2026-07-12")
+    assert b.in_progress is True
+
+
+def test_resolve_period_month_cross_year():
+    b = dw.resolve_period("month", "2026-01-01", today=date(2026, 8, 12))
+    assert (b.date_from, b.date_to) == ("2026-01-01", "2026-01-31")
+    assert (b.prev_from, b.prev_to) == ("2025-12-01", "2025-12-31")
+
+
+def test_resolve_period_week_non_monday_raises():
+    with pytest.raises(dw.InvalidWindow):
+        dw.resolve_period("week", "2026-08-04", today=date(2026, 8, 12))
+
+
+def test_resolve_period_month_not_first_raises():
+    with pytest.raises(dw.InvalidWindow):
+        dw.resolve_period("month", "2026-08-15", today=date(2026, 8, 12))
+
+
+def test_resolve_period_unsupported_type_raises():
+    with pytest.raises(dw.InvalidWindow):
+        dw.resolve_period("quarter", "2026-08-01", today=date(2026, 8, 12))
+
+
+def test_resolve_period_future_start_raises():
+    with pytest.raises(dw.InvalidWindow):
+        dw.resolve_period("week", "2026-08-17", today=date(2026, 8, 12))
+
+
+def test_resolve_period_month_starting_on_monday_still_resolves_as_month():
+    # 2025-12-01 happens to be a Monday — the (period_type, week_start)
+    # composite key is what disambiguates this from the week period sharing
+    # the same date string, not resolve_period itself.
+    b = dw.resolve_period("month", "2025-12-01", today=date(2026, 8, 12))
+    assert (b.date_from, b.date_to) == ("2025-12-01", "2025-12-31")
