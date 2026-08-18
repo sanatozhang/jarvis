@@ -26,22 +26,23 @@
 | `GET`  | `/api/oncall/my-workload` | 按邮箱反查最近值周窗，聚合 apollo 升级工单 + 飞书工单（含链接 + 附件），供 skill 拉取 |
 | `PUT`  | `/api/oncall/tickets/{issue_id}/resolve` | 标记升级工单已解决 |
 
-### 飞书值班表同步（2026-07-28）
+### 飞书值班表同步（已下线，2026-08-18）
 
-团队在飞书维护权威的值班排班表「本周值班（feature 同事兼顾发版）」
-（`app_token=BmjmbSpxxabP2dsuxbtcUTYAn4g`，与工单表同一个 Base，`table_id`
-见 `FeishuSettings.oncall_table_id`）。`services/oncall_feishu_sync.py` 每周一
-08:00 (Asia/Shanghai) 拉取该表当周及未来周次的「值班人员（Feature）」+
-「值班人员（Fundamentals）」两个角色，去重合并邮箱后覆盖写入 Jarvis 的
-`oncall_week_assignments` 排班快照表（不动 `发版责任人` 字段——那是谁负责
-发版，不算 oncall 值班）。
+**状态：默认关闭。** 排班真相源已改为 Jarvis 平台自身（`/oncall` 页面「排班管理」
+Tab 编辑的 `oncall_groups` + `oncall_config.start_date`），不再从飞书值班表同步。
+
+**临时恢复**（如需）：设环境变量 `ENABLE_ONCALL_FEISHU_SYNC=true` 后重启 backend。
+代码、端点、测试均保留未删除，供需要时一行恢复。
+
+**历史说明（功能已停用）：** 曾每周一 08:00 (Asia/Shanghai) 从飞书「本周值班」表
+（`app_token=BmjmbSpxxabP2dsuxbtcUTYAn4g`）拉取「值班人员（Feature）」+「值班人员（Fundamentals）」
+两个角色，去重合并邮箱后覆盖写入 Jarvis 的 `oncall_week_assignments` 排班快照表。
+行为准则如下（若重启用则仍适用）：
 
 - 飞书某周两个角色都为空 → 跳过，不清空 Jarvis 已有排班。
 - 从未配置过 `start_date` → 整体跳过，不做任何写入。
-- 检测到差异直接覆盖（不经人工确认这一步）——整个定时循环 2026-07-28 评审通过后
-  **默认开启**；需要临时关闭时设 `ENABLE_ONCALL_FEISHU_SYNC=false`。
-- 管理员可调 `POST /api/oncall/sync-from-feishu?username=<admin>` 手动跑一次，
-  不必等到下周一，便于上线后立即验证。
+- 检测到差异直接覆盖（不经人工确认）。
+- 管理员可调 `POST /api/oncall/sync-from-feishu?username=<admin>` 手动跑一次。
 
 ### 排班数据模型
 
