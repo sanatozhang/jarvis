@@ -98,7 +98,7 @@ async def _scan_and_remind() -> int:
             logger.warning("Failed to notify admin about missing oncall config: %s", e)
         return 0
 
-    oncall_id_map = await _emails_to_open_id_map(oncall_emails) if oncall_emails else {}
+    oncall_id_map = await _emails_to_open_id_map(oncall_emails)
 
     base = _appllo_base()
     oncall_page_url = f"{base}/oncall" if base else ""

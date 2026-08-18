@@ -80,6 +80,13 @@ def _render_greeting(
     message instead of appearing as a plain-text `@name` fallback. That bug
     exists in `escalation_reminder.py`'s `<at>` construction; do not copy it.
     """
+    base_url = (base_url or "").rstrip("/")
+    if not base_url:
+        logger.warning(
+            "oncall_weekly_greeting: frontend_base_url resolved empty; omitting "
+            "值班看板/Oncall board line from this week's greeting"
+        )
+
     mention_parts: List[str] = []
     unresolved: List[str] = []
     for email in members:
@@ -250,6 +257,30 @@ async def send_weekly_greeting(
             break
         if attempt < max_attempts:
             await asyncio.sleep(retry_delay_s)
+
+    # Step 9b: total failure on a *real* send (never for a to_email verification
+    # ping — that's the admin's own manual check, and paging them about their
+    # own manual check failing would be redundant). Unlike
+    # `_notify_admin_if_real_run`, this isn't gated on `dry_run` — dry_run
+    # already returned at Step 8, so by this point we're always in a real,
+    # non-dry_run attempt; the only thing left to exclude is `to_email`.
+    if not ok and not to_email:
+        logger.error(
+            "oncall_weekly_greeting: failed to send weekly greeting to chat_id=%s after %d attempt(s)",
+            chat_id, attempts,
+        )
+        try:
+            await send_message(
+                email=get_settings().feedback_recipient,
+                text=(
+                    f"❌ 值班值周提醒发送失败：已重试 {attempts} 次仍失败，目标群 chat_id={chat_id}，"
+                    "本周群里没有人收到值班提醒，请检查飞书机器人/群配置。\n"
+                    f"Weekly oncall greeting failed to send after {attempts} attempt(s) to "
+                    f"chat_id={chat_id}; no one in the group was notified this week."
+                ),
+            )
+        except Exception as e:
+            logger.warning("oncall_weekly_greeting: failed to notify admin about send failure: %s", e)
 
     # Step 10: write the idempotency marker only on a successful *real* group
     # send. A to_email call is a verification ping to yourself, not the real

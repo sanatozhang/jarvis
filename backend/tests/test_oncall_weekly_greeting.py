@@ -161,6 +161,31 @@ def test_09_render_empty_base_url_omits_board_line_entirely():
     assert "Oncall board" not in text
 
 
+def test_09b_render_base_url_trailing_slash_normalized_to_single_slash():
+    """`base_url` with a trailing slash must not produce a double slash before
+    `oncall` — matches the `.rstrip("/")` normalization already used in
+    `app/api/oncall.py::get_my_workload`."""
+    members = ["alice@plaud.ai"]
+    id_map = {"alice@plaud.ai": "ou_alice"}
+    text, _ = oncall_weekly_greeting._render_greeting(
+        members, id_map, date(2026, 8, 17), date(2026, 8, 23), "http://host:3000/",
+    )
+
+    assert "http://host:3000/oncall" in text
+    assert "http://host:3000//oncall" not in text
+
+
+def test_09c_render_empty_base_url_logs_warning(caplog):
+    members = ["alice@plaud.ai"]
+    id_map = {"alice@plaud.ai": "ou_alice"}
+    with caplog.at_level("WARNING", logger="jarvis.oncall_weekly_greeting"):
+        oncall_weekly_greeting._render_greeting(
+            members, id_map, date(2026, 8, 17), date(2026, 8, 23), "",
+        )
+
+    assert any("frontend_base_url resolved empty" in rec.message for rec in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # 10-19: send_weekly_greeting
 # ---------------------------------------------------------------------------
@@ -260,8 +285,6 @@ async def test_12_no_start_date_notifies_admin_and_skips(client, monkeypatch):
 
 
 async def test_12b_dry_run_suppresses_admin_notification_no_start_date(client, monkeypatch):
-    from app.db import database as db
-
     _patch_settings(monkeypatch, chat_id="oc_group_chat", feedback_recipient="admin@plaud.ai")
     # no start_date configured
 
@@ -303,8 +326,6 @@ async def test_12b_dry_run_suppresses_admin_notification_no_members(client, monk
 
 
 async def test_13_second_call_same_week_is_a_noop(client, monkeypatch):
-    from app.db import database as db
-
     _patch_settings(monkeypatch, chat_id="oc_group_chat")
     await _seed_single_group(["leon@plaud.ai"])
 
@@ -328,8 +349,6 @@ async def test_13_second_call_same_week_is_a_noop(client, monkeypatch):
 
 
 async def test_14_force_bypasses_idempotency_guard(client, monkeypatch):
-    from app.db import database as db
-
     _patch_settings(monkeypatch, chat_id="oc_group_chat")
     await _seed_single_group(["leon@plaud.ai"])
 
@@ -383,10 +402,10 @@ async def test_15_dry_run_never_sends_or_writes_marker(client, monkeypatch):
     assert marker == ""
 
 
-async def test_16_send_failure_retries_up_to_max_attempts_then_gives_up(client, monkeypatch):
+async def test_16_send_failure_retries_up_to_max_attempts_then_gives_up(client, monkeypatch, caplog):
     from app.db import database as db
 
-    _patch_settings(monkeypatch, chat_id="oc_group_chat")
+    _patch_settings(monkeypatch, chat_id="oc_group_chat", feedback_recipient="admin@plaud.ai")
     await _seed_single_group(["leon@plaud.ai"])
 
     send_calls = []
@@ -405,11 +424,16 @@ async def test_16_send_failure_retries_up_to_max_attempts_then_gives_up(client, 
 
     monkeypatch.setattr(db, "log_event", fake_log_event)
 
-    result = await oncall_weekly_greeting.send_weekly_greeting(
-        today=date(2026, 8, 17), max_attempts=3, retry_delay_s=0,
-    )
+    with caplog.at_level("ERROR", logger="jarvis.oncall_weekly_greeting"):
+        result = await oncall_weekly_greeting.send_weekly_greeting(
+            today=date(2026, 8, 17), max_attempts=3, retry_delay_s=0,
+        )
 
-    assert len(send_calls) == 3
+    group_sends = [c for c in send_calls if c.get("chat_id") == "oc_group_chat"]
+    admin_calls = [c for c in send_calls if c.get("email") == "admin@plaud.ai"]
+    assert len(group_sends) == 3
+    assert len(admin_calls) == 1  # admin notified about the total failure, distinct from the 3 group attempts
+    assert len(send_calls) == 4
     assert result["sent"] is False
     assert result["reason"] == "send_failed"
 
@@ -418,6 +442,34 @@ async def test_16_send_failure_retries_up_to_max_attempts_then_gives_up(client, 
 
     assert len(log_calls) == 1
     assert log_calls[0][1]["detail"]["sent"] is False
+
+    assert any("failed to send weekly greeting" in rec.message for rec in caplog.records)
+
+
+async def test_16b_send_failure_to_email_never_notifies_admin(client, monkeypatch):
+    """A failed `to_email` verification ping is the admin's own manual check —
+    notifying them about their own manual check failing would be redundant, so
+    the total-failure admin notification must not fire on that path."""
+    _patch_settings(monkeypatch, chat_id="oc_group_chat", feedback_recipient="admin@plaud.ai")
+    await _seed_single_group(["leon@plaud.ai"])
+
+    send_calls = []
+
+    async def fake_send_message(**kwargs):
+        send_calls.append(kwargs)
+        return False
+
+    monkeypatch.setattr(oncall_weekly_greeting, "send_message", fake_send_message)
+    monkeypatch.setattr(oncall_weekly_greeting, "_emails_to_open_id_map", _fake_id_map_identity)
+
+    result = await oncall_weekly_greeting.send_weekly_greeting(
+        today=date(2026, 8, 17), to_email="someone@plaud.ai", max_attempts=3, retry_delay_s=0,
+    )
+
+    assert result["sent"] is False
+    admin_calls = [c for c in send_calls if c.get("email") == "admin@plaud.ai"]
+    assert admin_calls == []
+    assert len(send_calls) == 3  # only the 3 to_email attempts, no admin ping
 
 
 async def test_17_send_succeeds_on_second_attempt(client, monkeypatch):
