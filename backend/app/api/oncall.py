@@ -242,6 +242,27 @@ async def sync_from_feishu(
     return await sync_oncall_from_feishu(dry_run=dry_run)
 
 
+@router.post("/weekly-greeting")
+async def trigger_weekly_greeting(
+    username: str = Query(..., description="Admin username"),
+    dry_run: bool = Query(True, description="预览：渲染文案但不发消息、不写「本周已发」标记"),
+    to_email: str = Query("", description="只发到这个人的私聊做验证；不发群、不写标记"),
+    force: bool = Query(False, description="忽略「本周已发过」守卫"),
+):
+    """手动触发每周值周提醒（admin only）。
+
+    对应每周一 09:00 自动跑的同一逻辑(`services/oncall_weekly_greeting.py`)。
+    dry_run 默认 True，是这个端点自己的安全闸——省略这个参数绝不会真的发消息。
+    max_attempts 固定传 1：HTTP 请求不该因为一次发送失败被挂住 5-15 分钟重试。
+    """
+    user = await db.get_user(username)
+    if not user or user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can trigger weekly greeting")
+
+    from app.services.oncall_weekly_greeting import send_weekly_greeting
+    return await send_weekly_greeting(dry_run=dry_run, to_email=to_email, force=force, max_attempts=1)
+
+
 # ---------------------------------------------------------------------------
 # Escalated tickets (oncall workload view)
 # ---------------------------------------------------------------------------

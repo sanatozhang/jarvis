@@ -341,6 +341,49 @@ async def test_sync_from_feishu_defaults_to_dry_run(client, monkeypatch):
     assert calls == [True]
 
 
+async def test_weekly_greeting_requires_admin(client):
+    await seed_user(client, "regular")
+    resp = await client.post("/api/oncall/weekly-greeting", params={"username": "regular"})
+    assert resp.status_code == 403
+
+
+async def test_weekly_greeting_admin_defaults_to_dry_run(client, monkeypatch):
+    from app.services import oncall_weekly_greeting
+
+    calls = []
+
+    async def fake_send(*, today=None, dry_run=False, force=False, to_email="", max_attempts=3, retry_delay_s=300.0):
+        calls.append(dict(dry_run=dry_run, force=force, to_email=to_email, max_attempts=max_attempts))
+        return {"sent": False, "skipped": False}
+
+    monkeypatch.setattr(oncall_weekly_greeting, "send_weekly_greeting", fake_send)
+    await seed_admin(client, "sanato")
+    resp = await client.post("/api/oncall/weekly-greeting", params={"username": "sanato"})
+    assert resp.status_code == 200
+    assert calls == [{"dry_run": True, "force": False, "to_email": "", "max_attempts": 1}]
+
+
+async def test_weekly_greeting_admin_passes_through_params_and_forces_max_attempts_1(client, monkeypatch):
+    """max_attempts=1 是这条端点不该被跳过的一条断言——没有它，一次真实发送
+    失败会让这次 HTTP 请求在 retry_delay_s（默认 300s）里被挂住重试。"""
+    from app.services import oncall_weekly_greeting
+
+    calls = []
+
+    async def fake_send(*, today=None, dry_run=False, force=False, to_email="", max_attempts=3, retry_delay_s=300.0):
+        calls.append(dict(dry_run=dry_run, force=force, to_email=to_email, max_attempts=max_attempts))
+        return {"sent": True, "skipped": False}
+
+    monkeypatch.setattr(oncall_weekly_greeting, "send_weekly_greeting", fake_send)
+    await seed_admin(client, "sanato")
+    resp = await client.post(
+        "/api/oncall/weekly-greeting",
+        params={"username": "sanato", "dry_run": "false", "force": "true", "to_email": "x@plaud.ai"},
+    )
+    assert resp.status_code == 200
+    assert calls == [{"dry_run": False, "force": True, "to_email": "x@plaud.ai", "max_attempts": 1}]
+
+
 # ---------------------------------------------------------------------------
 # PUT /tickets/{issue_id}/resolve — mark-complete unification (4-entry-point fix).
 # Previously this endpoint only resolved the escalation; it never wrote

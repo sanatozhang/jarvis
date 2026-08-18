@@ -256,6 +256,20 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Oncall Feishu sync disabled (set ENABLE_ONCALL_FEISHU_SYNC=true to enable)")
 
+    # Weekly oncall greeting message to Feishu group (每周一 09:00 Asia/Shanghai)
+    # 永久默认 false，只在生产服务器 .env 里显式打开——不是"评审后改 true"的过渡态。
+    # .env 不进 git，这是对"野实例/笔记本 clone 出来的仓库自动带着开关"最有效的防线。
+    oncall_weekly_greeting_task = None
+    if os.environ.get("ENABLE_ONCALL_WEEKLY_GREETING", "false").lower() == "true":
+        from app.services.oncall_weekly_greeting import oncall_weekly_greeting_loop
+        oncall_weekly_greeting_task = asyncio.create_task(oncall_weekly_greeting_loop())
+        logger.info(
+            "Oncall weekly greeting loop started (ENABLE_ONCALL_WEEKLY_GREETING=true, chat_id=%s)",
+            get_settings().feishu.oncall_greeting_chat_id,
+        )
+    else:
+        logger.info("Oncall weekly greeting disabled (set ENABLE_ONCALL_WEEKLY_GREETING=true to enable)")
+
     yield
 
     if voc_sync_task is not None:
@@ -266,6 +280,8 @@ async def lifespan(app: FastAPI):
         reminder_task.cancel()
     if oncall_feishu_sync_task is not None:
         oncall_feishu_sync_task.cancel()
+    if oncall_weekly_greeting_task is not None:
+        oncall_weekly_greeting_task.cancel()
     if crashguard_warmup_task is not None:
         crashguard_warmup_task.cancel()
     crashguard_pipeline_task.cancel()
