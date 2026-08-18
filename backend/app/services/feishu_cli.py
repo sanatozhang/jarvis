@@ -902,6 +902,22 @@ async def create_chat_link(chat_id: str, validity_period: str = "permanently") -
         return ""
 
 
+async def get_chat_info(chat_id: str) -> Dict[str, Any]:
+    """只读查询群信息（GET /im/v1/chats/{chat_id}），失败返回 {}。
+
+    非致命：仅用于诊断/预览（"机器人是否还在这个群、群名是不是预期的那个"），
+    从不影响主流程——调用方拿到 {} 时应当照常继续，只是少了一次核对机会。
+    """
+    if not chat_id:
+        return {}
+    try:
+        result = await _feishu_api("GET", f"/im/v1/chats/{chat_id}")
+        return result.get("data", {})
+    except Exception as e:
+        logger.warning("Failed to get chat info for %s: %s", chat_id, e)
+        return {}
+
+
 async def add_members_to_chat(chat_id: str, emails: List[str]) -> List[str]:
     """把指定邮箱（解析成 open_id 后）加入已存在的飞书群。非致命，返回成功加入的邮箱。
 
