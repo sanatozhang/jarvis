@@ -112,6 +112,10 @@ class FeishuSettings(BaseSettings):
     view_id: str = "vewu36X0Gx"
     oncall_table_id: str = "tblICR3x8k7nwoNK"
     oncall_view_id: str = "vewpgzcUrK"
+    # APP Team 群（群邮箱 J9VGQzz8mmWYo@plaud.cn）——每周一 09:00 值周提醒的目标群。
+    # 跟 oncall_table_id 同一路数：固定飞书资源 ID 带默认值进 git，
+    # env FEISHU_ONCALL_GREETING_CHAT_ID 可覆盖（本地/预发想发到测试群时用，不必改代码）。
+    oncall_greeting_chat_id: str = "oc_517fdd3067d8dfa90f8d97d4ae6fe5c0"
     base_url: str = "https://nicebuild.feishu.cn/base/BmjmbSpxxabP2dsuxbtcUTYAn4g"
     # Separate IM app for group chat / messaging (can be same or different app)
     im_app_id: str = ""

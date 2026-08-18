@@ -15,6 +15,7 @@ def test_feishu_settings_oncall_table_defaults():
     s = FeishuSettings()
     assert s.oncall_table_id == "tblICR3x8k7nwoNK"
     assert s.oncall_view_id == "vewpgzcUrK"
+    assert s.oncall_greeting_chat_id == "oc_517fdd3067d8dfa90f8d97d4ae6fe5c0"
 
 
 def test_emails_from_person_field_extracts_dedupes_and_lowercases():
