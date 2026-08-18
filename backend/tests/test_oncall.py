@@ -468,3 +468,148 @@ async def test_resolve_feishu_ticket_feishu_failure_is_500(client):
             json={"username": "tester", "reason": "x"},
         )
     assert resp.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# get_current_oncall_info() — kill the groups[0] fallback branch.
+#
+# Old behavior: unset/unparseable start_date silently fell back to
+# groups[0]["members"] — a plausible-looking but WRONG on-call list, not a
+# signal that oncall is unconfigured. Fixed to return {"members": [],
+# "group_index": -1} instead so downstream call sites can tell "unknown"
+# apart from "group 0 is really on call".
+# ---------------------------------------------------------------------------
+
+async def test_get_current_oncall_info_no_start_date_returns_empty_not_group_zero(client):
+    """Regression: start_date unset + groups non-empty must NOT fall back to
+    groups[0] — it must signal 'unknown' via an empty members list."""
+    import app.db.database as db_mod
+
+    await db_mod.save_oncall_groups([["a@x.com", "b@x.com"], ["c@x.com"]])
+    # start_date deliberately left unset (no set_oncall_config call at all).
+
+    info = await db_mod.get_current_oncall_info()
+    assert info == {"members": [], "group_index": -1}
+
+
+async def test_get_current_oncall_info_invalid_start_date_returns_empty_not_group_zero(client):
+    """Regression: an unparseable start_date must hit the except branch and
+    return empty, not groups[0] — same defect, different trigger."""
+    import app.db.database as db_mod
+
+    await db_mod.save_oncall_groups([["a@x.com"], ["b@x.com"]])
+    await db_mod.set_oncall_config("start_date", "not-a-date")
+
+    info = await db_mod.get_current_oncall_info()
+    assert info == {"members": [], "group_index": -1}
+
+
+async def test_get_current_oncall_info_happy_path_unchanged(client):
+    """Guard rail: a valid start_date on a normal week must resolve exactly
+    as before this fix — the happy path is untouched by the groups[0] fix."""
+    import app.db.database as db_mod
+    from datetime import date, timedelta
+
+    today = date.today()
+    start = today - timedelta(weeks=9)  # pure historical gap: no snapshot rows exist
+    groups = [["a@x.com"], ["b@x.com"]]
+    await db_mod.save_oncall_groups(groups)
+    await db_mod.set_oncall_config("start_date", start.isoformat())
+
+    info = await db_mod.get_current_oncall_info()
+
+    week_num = (today - start).days // 7
+    expected_index = week_num % len(groups)
+    assert info["group_index"] == expected_index
+    assert info["members"] == groups[expected_index]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/oncall/feishu-tickets — semantic-flip fix.
+#
+# oncall_only=True + empty resolved oncall list used to fall through to
+# "unfiltered" (assignee_emails=[] is falsy inside list_issues_by_status),
+# silently returning EVERY ticket instead of none. Fixed via an explicit
+# oncall_configured flag that short-circuits before ever calling FeishuClient.
+# ---------------------------------------------------------------------------
+
+async def test_feishu_tickets_oncall_only_unconfigured_skips_feishu_call(client):
+    """Core regression assertion: when oncall_configured is False, the
+    endpoint must not call FeishuClient.list_issues_by_status at all — not
+    just happen to return an empty list for some other reason."""
+    with patch(
+        "app.services.feishu.FeishuClient.list_issues_by_status",
+        new_callable=AsyncMock,
+        side_effect=AssertionError("FeishuClient must not be called when oncall is unconfigured"),
+    ) as mock_call:
+        resp = await client.get("/api/oncall/feishu-tickets", params={"oncall_only": "true"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tickets"] == []
+    assert body["count"] == 0
+    assert body["oncall_configured"] is False
+    mock_call.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# escalation_reminder._scan_and_remind() — don't mark a no-op reminder as sent.
+#
+# When oncall resolves to [], nobody can be reminded this run (group <at>
+# block gated on a truthy id map; DM loop iterates zero oncall emails). The
+# old code still called mark_escalation_reminded for every candidate, so a
+# misconfiguration silently suppressed retries until the next day. Fixed to
+# log + notify the admin + return 0 before touching any candidate.
+# ---------------------------------------------------------------------------
+
+async def test_scan_and_remind_oncall_unconfigured_notifies_admin_and_skips_marking(client, db_session):
+    from datetime import datetime, timedelta
+    from app.services import escalation_reminder
+    from app.db.database import IssueRecord
+
+    await seed_issue(
+        db_session, "stale1", source="local",
+        escalated_at=datetime.utcnow() - timedelta(hours=30),
+        escalation_status="in_progress", escalation_chat_id="oc_chat_1",
+    )
+    # oncall config/groups left empty — db.get_current_oncall() resolves to [].
+
+    with patch("app.services.feishu_cli.send_message", new_callable=AsyncMock, return_value=True) as mock_send:
+        reminded = await escalation_reminder._scan_and_remind()
+
+    assert reminded == 0
+    # Exactly one send_message call total: the admin notification. If the
+    # group <at> or per-person DM path had fired, this would be > 1.
+    mock_send.assert_awaited_once()
+    _, kwargs = mock_send.call_args
+    assert kwargs.get("email") == "sanato.zhang@plaud.ai"
+    assert "email" in kwargs and "chat_id" not in kwargs
+
+    async with db_session() as s:
+        issue = await s.get(IssueRecord, "stale1")
+        assert issue.escalation_reminded_at is None
+
+
+# ---------------------------------------------------------------------------
+# create_escalation_group() — confirmation that this call site was already
+# safe (Task 1 doesn't change it): escalation_fixed_members fallback + the
+# triggering user keep the member list non-empty even when oncall is empty.
+# ---------------------------------------------------------------------------
+
+async def test_create_escalation_group_oncall_empty_still_notifies_fixed_members(client):
+    from app.services import feishu_cli
+
+    with patch.object(feishu_cli, "_feishu_api", new=AsyncMock(return_value={"data": {"chat_id": "oc_new_chat"}})), \
+         patch.object(feishu_cli, "_emails_to_open_ids", new=AsyncMock(return_value=["ou_1", "ou_2"])), \
+         patch.object(feishu_cli, "create_chat_link", new=AsyncMock(return_value="https://feishu.link/abc")), \
+         patch.object(feishu_cli, "send_message", new=AsyncMock(return_value=True)):
+        result = await feishu_cli.create_escalation_group(
+            user_email="reporter@plaud.ai",
+            issue_id="issue_x",
+            description="蓝牙连接问题",
+        )
+
+    assert result["chat_id"] == "oc_new_chat"
+    assert result["members"]  # non-empty despite oncall_emails == []
+    assert "reporter@plaud.ai" in result["members"]
+    assert "sanato.zhang@plaud.ai" in result["members"]  # default escalation_fixed_members entry

@@ -73,6 +73,31 @@ async def _scan_and_remind() -> int:
 
     # Resolve oncall once for all reminders today
     oncall_emails = await db.get_current_oncall()
+    if not oncall_emails:
+        # Oncall isn't configured (or resolved to an empty rotation) — nobody
+        # can be notified this run, for the group `<at>` block (gated on
+        # oncall_id_map being truthy) nor the per-person DM loop. Marking
+        # candidates as reminded here would suppress them until tomorrow even
+        # though the failure is pure misconfiguration, so bail out before
+        # touching mark_escalation_reminded and surface the failure instead.
+        logger.error(
+            "Oncall not configured — skipping escalation reminders for %d stale ticket(s)",
+            len(candidates),
+        )
+        try:
+            from app.config import get_settings
+            await send_message(
+                email=get_settings().feedback_recipient,
+                text=(
+                    "⚠️ 值班组未配置或排班解析失败，本次跳过 "
+                    f"{len(candidates)} 个转交工单的到期提醒。请检查 oncall 排班配置，"
+                    "修复后下次运行会自动重新提醒（本次未标记为已提醒）。"
+                ),
+            )
+        except Exception as e:
+            logger.warning("Failed to notify admin about missing oncall config: %s", e)
+        return 0
+
     oncall_id_map = await _emails_to_open_id_map(oncall_emails) if oncall_emails else {}
 
     base = _appllo_base()

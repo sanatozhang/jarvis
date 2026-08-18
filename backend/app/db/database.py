@@ -2193,7 +2193,7 @@ async def get_current_oncall_info() -> Dict[str, Any]:
         return {"members": [], "group_index": -1}
     start_date_str = await get_oncall_config("start_date", "")
     if not start_date_str:
-        return {"members": groups[0]["members"], "group_index": 0}
+        return {"members": [], "group_index": -1}
     try:
         start = date.fromisoformat(start_date_str)
         today = date.today()
@@ -2201,7 +2201,7 @@ async def get_current_oncall_info() -> Dict[str, Any]:
         info = await resolve_week_group(week_num, groups, start)
         return {"members": info["members"], "group_index": info["group_index"]}
     except Exception:
-        return {"members": groups[0]["members"], "group_index": 0}
+        return {"members": [], "group_index": -1}
 
 
 async def get_current_oncall() -> List[str]:

@@ -293,10 +293,28 @@ async def get_feishu_tickets(
     (default), only tickets whose 问题指派人 list CONTAINS a current oncall member
     (matched by email) are returned — the assignee list usually has 2 people, so
     matching is membership, not equality.
-    """
-    from app.services.feishu import FeishuClient
 
+    When `oncall_only=True` but oncall isn't configured (or resolves to an empty
+    rotation), `assignee_emails=[]` would be falsy inside
+    `FeishuClient.list_issues_by_status` — the filter is skipped entirely and
+    *every* ticket comes back, silently flipping "only show oncall's tickets"
+    into "show everything". `oncall_configured` makes that state explicit and we
+    short-circuit to an empty result instead of querying Feishu at all.
+    """
     emails = await db.get_current_oncall() if oncall_only else []
+    oncall_configured = (not oncall_only) or bool(emails)
+
+    if not oncall_configured:
+        return {
+            "tickets": [],
+            "count": 0,
+            "status": status,
+            "oncall_only": oncall_only,
+            "oncall_members": emails,
+            "oncall_configured": oncall_configured,
+        }
+
+    from app.services.feishu import FeishuClient
 
     client = FeishuClient()
     if status == "open":
@@ -316,6 +334,7 @@ async def get_feishu_tickets(
         "status": status,
         "oncall_only": oncall_only,
         "oncall_members": emails,
+        "oncall_configured": oncall_configured,
     }
 
 
