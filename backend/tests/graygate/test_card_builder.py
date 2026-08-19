@@ -62,6 +62,26 @@ def test_build_new_crash_md_includes_url_and_platform():
     assert "ANDROID" in md
     assert "https://x/issue/abc" in md
     assert "5" in md
+    # 可点击范围扩大到整个标题，不是只有一个箭头符号
+    assert "[java.net.SocketException →](https://x/issue/abc)" in md
+
+
+def test_build_top_crash_md_wraps_whole_title_in_link():
+    from app.graygate.services.top_issues import TopCrash
+    crash = TopCrash(platform="ios", events_count=100, title="SIGABRT",
+                      datadog_url="https://x/issue/def")
+    md = cb._build_top_crash_md([crash])
+    assert md is not None
+    assert "[SIGABRT →](https://x/issue/def)" in md
+
+
+def test_build_top_jank_md_includes_clickable_link():
+    from app.graygate.services.top_issues import TopJank
+    jank = TopJank(platform="android", label="Foo.bar", events_count=8,
+                   datadog_url="https://x/logs?query=abc")
+    md = cb._build_top_jank_md([jank])
+    assert md is not None
+    assert "[Foo.bar →](https://x/logs?query=abc)" in md
 
 
 @pytest.mark.asyncio

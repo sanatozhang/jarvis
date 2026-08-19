@@ -419,6 +419,11 @@ def _div(content: str) -> Dict[str, Any]:
     return {"tag": "div", "text": {"tag": "lark_md", "content": content}}
 
 
+def _link(text: str, url: str) -> str:
+    """把整段文字（不只是一个箭头符号）包成一个 markdown 链接，扩大可点击范围。"""
+    return f"[{text} →]({url})"
+
+
 def _build_new_crash_md(crashes: List[NewCrash]) -> Optional[str]:
     if not crashes:
         return None
@@ -426,7 +431,7 @@ def _build_new_crash_md(crashes: List[NewCrash]) -> Optional[str]:
     for c in crashes:
         lines.append(
             f"- {c.platform.upper()} · `{c.version}` · **{c.events_count}** events · "
-            f"{c.title}[→]({c.datadog_url})"
+            f"{_link(c.title, c.datadog_url)}"
         )
     return "\n".join(lines)
 
@@ -438,7 +443,7 @@ def _build_top_crash_md(crashes: List[TopCrash]) -> Optional[str]:
     for i, c in enumerate(crashes, 1):
         lines.append(
             f"{i}. {c.platform.upper()} · **{_fmt_n(c.events_count)}** events · "
-            f"{c.title}[→]({c.datadog_url})"
+            f"{_link(c.title, c.datadog_url)}"
         )
     return "\n".join(lines)
 
@@ -448,7 +453,10 @@ def _build_top_jank_md(janks: List[TopJank]) -> Optional[str]:
         return None
     lines = ["**🟠 Top 5 卡顿（按 events，不限是否新增）**", ""]
     for i, j in enumerate(janks, 1):
-        lines.append(f"{i}. {j.platform.upper()} · **{_fmt_n(j.events_count)}** events · `{j.label}`")
+        lines.append(
+            f"{i}. {j.platform.upper()} · **{_fmt_n(j.events_count)}** events · "
+            f"{_link(j.label, j.datadog_url)}"
+        )
     return "\n".join(lines)
 
 

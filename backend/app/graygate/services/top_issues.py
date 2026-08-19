@@ -15,6 +15,7 @@ issue search，纯只读，不碰 `crash_*` 表，同 new_crashes.py 的复用�
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Tuple
@@ -48,6 +49,7 @@ class TopJank:
     platform: str
     label: str            # 聚合位置标签（app_stack_frame / module+offset / module.symbol）
     events_count: int
+    datadog_url: str       # Logs Explorer 深链，定位到这个 (platform, label) 分组匹配的日志
 
 
 def _window_ms(target_date: date) -> Tuple[int, int]:
@@ -102,20 +104,39 @@ async def find_top_crashes(target_date: date) -> List[TopCrash]:
     return out[:_TOP_N]
 
 
-def _jank_label(attrs: dict) -> str:
-    """从 jank log event 的 attributes 里提取一个粗粒度可读位置标签。"""
+def _jank_group(attrs: dict) -> Tuple[str, str]:
+    """从 jank log event 的 attributes 里提取 (展示用位置标签, Datadog 查询片段)。
+
+    查询片段是为了给 Top5 卡顿板块生成可点击深链——同一个 label 的事件理应
+    命中同一个查询片段（两者从同一份 attrs 字段派生），点进去能直接看到这一
+    组卡顿对应的原始日志，而不只是一个标题文字。
+    """
     if attrs.get("has_app_frame"):
         frame = (attrs.get("app_stack_frame") or "").strip()
         if frame:
-            return frame
+            return frame, f'@app_stack_frame:"{frame}"'
         module = (attrs.get("app_stack_module") or "").strip()
         offset = (attrs.get("app_stack_module_offset") or "").strip()
         if module:
-            return f"{module}+{offset}" if offset else module
+            label = f"{module}+{offset}" if offset else module
+            frag = f'@app_stack_module:"{module}"'
+            if offset:
+                frag += f' @app_stack_module_offset:"{offset}"'
+            return label, frag
     top_module = (attrs.get("stack_top_module") or "").strip()
     top_symbol = (attrs.get("stack_top_symbol") or "").strip()
-    label = f"{top_module}.{top_symbol}".strip(".")
-    return label or "unknown"
+    label = f"{top_module}.{top_symbol}".strip(".") or "unknown"
+    frag_parts = []
+    if top_module:
+        frag_parts.append(f'@stack_top_module:"{top_module}"')
+    if top_symbol:
+        frag_parts.append(f'@stack_top_symbol:"{top_symbol}"')
+    return label, " ".join(frag_parts)
+
+
+def _logs_explorer_url(site: str, query: str, from_ms: int, to_ms: int) -> str:
+    encoded = urllib.parse.quote(query, safe="")
+    return f"https://app.{site}/logs?query={encoded}&from_ts={from_ms}&to_ts={to_ms}&live=false"
 
 
 async def find_top_jank(target_date: date) -> List[TopJank]:
@@ -127,27 +148,37 @@ async def find_top_jank(target_date: date) -> List[TopJank]:
     settings = get_graygate_settings()
     start_ms, end_ms = _window_ms(target_date)
     client = _client()
-    query = f"@category:performance jank_watchdog_block version:{settings.version_pattern}"
+    base_query = f"@category:performance jank_watchdog_block version:{settings.version_pattern}"
 
     counts: Dict[Tuple[str, str], int] = {}
+    fragments: Dict[Tuple[str, str], str] = {}  # 同一个 (platform, label) 的查询片段应一致，记一次即可
+    # os.name 在 Datadog Logs 里是大小写敏感的原始值（"iOS"/"Android"，不是全小写）——
+    # 2026-08-19 实测发现：深链拼 @os.name:ios（用内部小写化的 platform 变量）会导致
+    # 0 命中，@os.name:iOS 才真正匹配。所以分组/展示用小写 platform，但另存一份原始
+    # 大小写的 os_name 专门给深链查询用，两者不能混用。
+    raw_os_name_by_platform: Dict[str, str] = {}
     cursor = None
     pages = 0
     try:
         while True:
             page = await client.search_logs_page(
-                query=query, from_ms=start_ms, to_ms=end_ms, cursor=cursor, limit=100,
+                query=base_query, from_ms=start_ms, to_ms=end_ms, cursor=cursor, limit=100,
             )
             for event in page.get("data") or []:
                 attrs = ((event or {}).get("attributes") or {}).get("attributes") or {}
                 os_info = attrs.get("os") or {}
-                platform = (
-                    (os_info.get("name") or "").strip().lower()
+                raw_os_name = (
+                    (os_info.get("name") or "").strip()
                     if isinstance(os_info, dict) else ""
                 )
+                platform = raw_os_name.lower()
                 if not platform:
                     continue
-                key = (platform, _jank_label(attrs))
+                raw_os_name_by_platform.setdefault(platform, raw_os_name)
+                label, frag = _jank_group(attrs)
+                key = (platform, label)
                 counts[key] = counts.get(key, 0) + 1
+                fragments.setdefault(key, frag)
             cursor = page.get("next_cursor")
             pages += 1
             if not cursor:
@@ -166,4 +197,13 @@ async def find_top_jank(target_date: date) -> List[TopJank]:
         return []
 
     ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:_TOP_N]
-    return [TopJank(platform=k[0], label=k[1], events_count=v) for k, v in ranked]
+    out: List[TopJank] = []
+    for (platform, label), v in ranked:
+        frag = fragments.get((platform, label), "")
+        raw_os_name = raw_os_name_by_platform.get(platform, platform)
+        deep_query = f'{base_query} @os.name:{raw_os_name}' + (f" {frag}" if frag else "")
+        out.append(TopJank(
+            platform=platform, label=label, events_count=v,
+            datadog_url=_logs_explorer_url(settings.datadog_site, deep_query, start_ms, end_ms),
+        ))
+    return out

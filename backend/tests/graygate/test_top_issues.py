@@ -54,23 +54,31 @@ async def test_find_top_crashes_circuit_breaker_returns_empty():
     assert out == []
 
 
-def test_jank_label_prefers_app_stack_frame():
+def test_jank_group_prefers_app_stack_frame():
     attrs = {"has_app_frame": True, "app_stack_frame": "ai.plaud.android.payment.k.a"}
-    assert ti._jank_label(attrs) == "ai.plaud.android.payment.k.a"
+    label, frag = ti._jank_group(attrs)
+    assert label == "ai.plaud.android.payment.k.a"
+    assert frag == '@app_stack_frame:"ai.plaud.android.payment.k.a"'
 
 
-def test_jank_label_falls_back_to_module_offset():
+def test_jank_group_falls_back_to_module_offset():
     attrs = {"has_app_frame": True, "app_stack_module": "PlaudCore", "app_stack_module_offset": "0x1a2b"}
-    assert ti._jank_label(attrs) == "PlaudCore+0x1a2b"
+    label, frag = ti._jank_group(attrs)
+    assert label == "PlaudCore+0x1a2b"
+    assert frag == '@app_stack_module:"PlaudCore" @app_stack_module_offset:"0x1a2b"'
 
 
-def test_jank_label_falls_back_to_stack_top():
+def test_jank_group_falls_back_to_stack_top():
     attrs = {"has_app_frame": False, "stack_top_module": "libc.so", "stack_top_symbol": "memcpy"}
-    assert ti._jank_label(attrs) == "libc.so.memcpy"
+    label, frag = ti._jank_group(attrs)
+    assert label == "libc.so.memcpy"
+    assert frag == '@stack_top_module:"libc.so" @stack_top_symbol:"memcpy"'
 
 
-def test_jank_label_unknown_when_nothing_present():
-    assert ti._jank_label({}) == "unknown"
+def test_jank_group_unknown_when_nothing_present():
+    label, frag = ti._jank_group({})
+    assert label == "unknown"
+    assert frag == ""
 
 
 def _log_event(platform, frame):
@@ -99,6 +107,28 @@ async def test_find_top_jank_aggregates_by_platform_and_label():
     assert out[0].label == "A.foo"
     assert out[0].events_count == 2
     assert out[1].events_count == 1
+    # 深链：包含平台过滤 + 该分组的查询片段，能定位到具体这一组卡顿日志
+    assert "app_stack_frame" in out[0].datadog_url
+    assert "os.name%3Aios" in out[0].datadog_url or "os.name:ios" in out[0].datadog_url
+    assert "/logs?query=" in out[0].datadog_url
+
+
+@pytest.mark.asyncio
+async def test_find_top_jank_deep_link_preserves_original_os_name_case():
+    """真实 Datadog Logs 里 @os.name 是大小写敏感的原始值（"iOS"/"Android"，
+    不是全小写）——2026-08-19 实测发现深链拼小写 @os.name:ios 会导致 0 命中，
+    必须用原始大小写 @os.name:iOS 才能真正匹配。这里 mock 一个大小写混合的
+    os.name（"iOS"）断言深链里保留了原始大小写，不是内部分组用的小写 platform。
+    """
+    page = {"data": [_log_event("iOS", "A.foo")], "next_cursor": None}
+    with patch(
+        "app.graygate.services.top_issues.DatadogClient.search_logs_page",
+        new=AsyncMock(return_value=page),
+    ):
+        out = await ti.find_top_jank(date(2026, 8, 18))
+    assert out[0].platform == "ios"  # 展示/分组仍用小写，跟 TopCrash/NewCrash 一致
+    assert "os.name%3AiOS" in out[0].datadog_url  # 但深链查询用原始大小写 "iOS"
+    assert "os.name%3Aios" not in out[0].datadog_url
 
 
 @pytest.mark.asyncio
