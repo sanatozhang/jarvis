@@ -23,6 +23,10 @@
 
 8. 只有一个平台有 top_version → 另一个平台的"最新版"列显示"—（无数据）"，
    但"大盘"列仍然正常查询（不依赖 resolve_versions 是否枚举到具体 build）。
+9. 恶化判定对"最新版"/"大盘"两个口径独立判定（2026-08-19 review 裁决）：
+   构造一个只在"大盘"口径触发、"最新版"口径不触发的案例 → 恶化段只出现带
+   [大盘] 标签的行，没有对应的 [最新版] 行。此前只判 top 口径会完全漏掉这类
+   "回归先在大盘冒头"的早期信号。
 """
 from __future__ import annotations
 
@@ -247,6 +251,7 @@ async def test_worsen_detected_with_correct_direction_and_arrow(monkeypatch):
     assert "iOS" in result.markdown
     assert "▼" in result.markdown
     assert "-0.80pp" in result.markdown
+    assert "[最新版]" in result.markdown  # 触发口径是"最新版"(top)，行上要带口径标签消除歧义
 
 
 @pytest.mark.asyncio
@@ -260,6 +265,47 @@ async def test_direction_aware_improvement_not_flagged_as_worsen(monkeypatch):
     result = await rb.build_report(TARGET_DATE)
 
     assert "恶化" not in result.markdown
+
+
+@pytest.mark.asyncio
+async def test_worsen_only_in_market_scope_flags_market_but_not_top(monkeypatch):
+    """恶化判定要对"最新版"和"大盘"两个口径独立跑（2026-08-19 review 裁决）：
+    一个回归可能先在"大盘"（分散的老 build 聚合）里冒头，还没影响到"最新版"
+    主力包本身。这里构造"大盘" crash_free 跌破阈值、"最新版"完全不变的案例，
+    锁定恶化段只出现带 [大盘] 标签的行，且没有对应的 [最新版] 行——此前只判
+    top 口径时会完全漏掉这类信号，是本次 review 明确点名"完全没有测试覆盖"
+    的场景。
+    """
+    versions = {
+        "ios": _FakePlatformVersions(platform="ios", top_version="4.0.301-1013", top_version_events=500, total_events=1000),
+        "android": _FakePlatformVersions(platform="android", top_version="4.0.302-2020", top_version_events=600, total_events=1200),
+    }
+    crash_free = MetricSpec(key="crash_free", title="Crash-free sessions", cell_format="{v:.2f}%")
+    metrics_config = _metrics_config([crash_free])
+    dashboard_json = _dashboard_json({"Crash-free sessions": "increase_better"})
+
+    values = {
+        # "最新版"(top) 口径：昨日/前日完全不变 -> 不触发。
+        ("Crash-free sessions", "plaud_ios", "4.0.301-1013", "yesterday"): 99.5,
+        ("Crash-free sessions", "plaud_ios", "4.0.301-1013", "prev"): 99.5,
+        # "大盘"(market) 口径：跌 0.8pp，超过 0.5pp 阈值，increase_better 下跌是恶化 -> 触发。
+        ("Crash-free sessions", "plaud_ios", "4.0.3*", "yesterday"): 99.0,
+        ("Crash-free sessions", "plaud_ios", "4.0.3*", "prev"): 99.8,
+        # Android 两个口径都保持不变，避免噪音。
+        ("Crash-free sessions", "plaud_android", "4.0.302-2020", "yesterday"): 99.5,
+        ("Crash-free sessions", "plaud_android", "4.0.302-2020", "prev"): 99.5,
+        ("Crash-free sessions", "plaud_android", "4.0.3*", "yesterday"): 99.5,
+        ("Crash-free sessions", "plaud_android", "4.0.3*", "prev"): 99.5,
+    }
+    scalar_stub = _ScalarStub(values)
+    _patch_common(monkeypatch, versions, metrics_config, dashboard_json, scalar_stub)
+
+    result = await rb.build_report(TARGET_DATE)
+
+    assert "🔴 恶化（DoD 超阈值）" in result.markdown
+    assert "[大盘]" in result.markdown
+    assert "[最新版]" not in result.markdown
+    assert "-0.80pp" in result.markdown
 
 
 # ---------------------------------------------------------------------------

@@ -18,12 +18,14 @@ new_crashes 四个已完成模块的产出组装成一份 4.0.3 灰度日报（l
    `version_resolver.py` 一贯的"能不查就不查"节流风格）。brief 里"即使查询本身
    成功也不展示具体数值"是在解释语义（低样本的数字不可信），不是要求真的发出
    请求再丢弃结果。
-5. **恶化判定只看"最新版"（top）口径**，不看"大盘"口径。brief 给出的恶化行
-   格式没有口径标签（如 `- iOS Crash-free 99.0% ▼ -0.8pp (vs 前日)`），且
-   编排规则 2 明确恶化对比的叙事是"这个主力包比前一天怎么样"——大盘是全量
-   4.0.3* 聚合，两天覆盖的 build 集合不完全相同，拿来做 DoD 恶化判定意义不大
-   且容易跟"最新版"重复报警。如果这个假设不对，需要在这里加回大盘口径的判定，
-   而不是去改 version_resolver/dashboard_query。
+5. **恶化判定对"最新版"（top）和"大盘"（market）两个口径都独立判定**（2026-08-19
+   review 裁决，见 task-5-report.md 附录）：早期回归可能先在"大盘"（分散的老
+   build 聚合）里冒头，还没成为"最新版"主力包的流量占比，只判 top 会漏掉这类
+   信号。数据在取数矩阵阶段已经两个口径都取过，这里不增加 Datadog 调用，只是
+   多做一次阈值判断。同一 metric+platform 若两个口径都触发，两行都输出、不去
+   重合并；每行前缀 `[最新版]`/`[大盘]` 标签消除口径歧义（brief 给的行格式
+   `- iOS Crash-free 99.0% ▼ -0.8pp (vs 前日)` 没有口径标签，这是本文件在此
+   基础上做的必要扩展）。
 6. 双 widget 指标（jank / home_render）的"指标名"：metrics.yaml 只有
    `title_p75`/`title_p90`（各带"（p75）"/"（p90）"后缀），没有一个干净的合并
    展示名字段，这里维护一份 key → 展示名的白名单（`_METRIC_DISPLAY_NAME_OVERRIDES`）。
@@ -325,54 +327,63 @@ def _build_worsen_lines(
     cells: Dict[Tuple[str, str, str, str], _Cell],
     directionality_by_key: Dict[str, Optional[str]],
 ) -> List[str]:
+    """恶化判定对"最新版"和"大盘"两个口径都独立跑一遍（不只判 top）——一个
+    回归可能先在"大盘"（分散的老 build 聚合）里冒头，还没成为"最新版"主力包
+    的流量占比，只判 top 会漏掉这类早期信号。同一 metric+platform 若两个口径
+    都触发，两行都输出，不去重合并，让读者自己判断是否是同一问题的两种体现。
+    """
     lines: List[str] = []
     for spec in specs:
         for platform in _PLATFORMS:
-            today_cell = cells[(spec.key, platform, "top", "yesterday")]
-            prev_cell = cells[(spec.key, platform, "top", "prev")]
-            if today_cell.value is None or prev_cell.value is None:
-                continue
-
-            directionality = directionality_by_key.get(spec.key)
-
-            if isinstance(today_cell.value, tuple):
-                sub_pairs = [
-                    ("p75", today_cell.value[0], prev_cell.value[0]),
-                    ("p90", today_cell.value[1], prev_cell.value[1]),
-                ]
-            else:
-                sub_pairs = [(None, today_cell.value, prev_cell.value)]
-
-            triggered = []
-            for label, cur, base in sub_pairs:
-                delta = cur - base
-                if not _breach_threshold(spec, delta, base):
+            for scope in _SCOPES:
+                today_cell = cells[(spec.key, platform, scope, "yesterday")]
+                prev_cell = cells[(spec.key, platform, scope, "prev")]
+                if today_cell.value is None or prev_cell.value is None:
                     continue
-                if _is_worse(directionality, delta):
-                    triggered.append((label, cur, base, delta))
 
-            if not triggered:
-                continue
+                directionality = directionality_by_key.get(spec.key)
 
-            name = _metric_name(spec)
-            plat_label = _PLATFORM_LABEL[platform]
+                if isinstance(today_cell.value, tuple):
+                    sub_pairs = [
+                        ("p75", today_cell.value[0], prev_cell.value[0]),
+                        ("p90", today_cell.value[1], prev_cell.value[1]),
+                    ]
+                else:
+                    sub_pairs = [(None, today_cell.value, prev_cell.value)]
 
-            if len(sub_pairs) == 1:
-                _, cur, base, delta = triggered[0]
-                arrow = "▼" if delta < 0 else "▲"
-                value_str = spec.cell_format.format(v=cur)
-                delta_str = _format_delta(spec, delta, base)
-                lines.append(f"- {plat_label} {name} {value_str} {arrow} {delta_str} (vs 前日)")
-            else:
-                p75, p90 = today_cell.value
-                value_str = spec.cell_format.format(p75=p75, p90=p90)
-                sub_parts = []
-                for label, cur, base, delta in triggered:
+                triggered = []
+                for label, cur, base in sub_pairs:
+                    delta = cur - base
+                    if not _breach_threshold(spec, delta, base):
+                        continue
+                    if _is_worse(directionality, delta):
+                        triggered.append((label, cur, base, delta))
+
+                if not triggered:
+                    continue
+
+                name = _metric_name(spec)
+                plat_label = _PLATFORM_LABEL[platform]
+                scope_tag = f"[{_SCOPE_LABEL[scope]}]"
+
+                if len(sub_pairs) == 1:
+                    _, cur, base, delta = triggered[0]
                     arrow = "▼" if delta < 0 else "▲"
-                    sub_parts.append(f"{label} {arrow}{_format_delta(spec, delta, base)}")
-                lines.append(
-                    f"- {plat_label} {name} {value_str} {' '.join(sub_parts)} (vs 前日)"
-                )
+                    value_str = spec.cell_format.format(v=cur)
+                    delta_str = _format_delta(spec, delta, base)
+                    lines.append(
+                        f"- {plat_label} {scope_tag} {name} {value_str} {arrow} {delta_str} (vs 前日)"
+                    )
+                else:
+                    p75, p90 = today_cell.value
+                    value_str = spec.cell_format.format(p75=p75, p90=p90)
+                    sub_parts = []
+                    for label, cur, base, delta in triggered:
+                        arrow = "▼" if delta < 0 else "▲"
+                        sub_parts.append(f"{label} {arrow}{_format_delta(spec, delta, base)}")
+                    lines.append(
+                        f"- {plat_label} {scope_tag} {name} {value_str} {' '.join(sub_parts)} (vs 前日)"
+                    )
 
     return lines
 
