@@ -11,15 +11,22 @@ Android ANR 三个 widget 都是这个语法，不修这个 bug 这三项每天�
 
 不要改动 `app.coreguard.services.datadog_scalar` —— hourly_watch 告警正在用它，
 这里是独立的一份实现，改动互不影响。
+
+`load_metrics_config()` 是 `graygate/metrics.yaml` 的唯一消费入口——把 11 项
+指标的 cell_format / scale / not_applicable_platform 等字段解析成
+`MetricsConfig`/`MetricSpec`，供 Step5（report_builder）渲染报告用。
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+import yaml
 
 from app.graygate.config import get_graygate_settings
 
@@ -256,3 +263,77 @@ async def get_metric_scalar(
         return None
 
     return await query_scalar(payload)
+
+
+# ---------------------------------------------------------------------------
+# metrics.yaml loader
+# ---------------------------------------------------------------------------
+#
+# 11 项指标映射的白名单（cell_format / scale / not_applicable_platform 等），
+# 风格照 `coreguard/services/dashboard_loader.py` 的 MetricConfig/MetricsConfig
+# dataclass 做法，字段按 graygate/metrics.yaml 的实际 schema 命名（不是照搬
+# coreguard 那套 tier/threshold/direction 字段——那是告警阈值用的，graygate 这份
+# 是 Step5（report_builder）渲染 Markdown/飞书卡片要用的 cell_format 白名单）。
+
+
+@dataclass
+class MetricSpec:
+    key: str
+    # 单 widget 指标用 title；jank / home_render 这种双 widget 合一行的用
+    # title_p75 + title_p90（两者与 title 互斥，由 metrics.yaml 决定用哪一组）。
+    title: Optional[str] = None
+    title_p75: Optional[str] = None
+    title_p90: Optional[str] = None
+    cell_format: str = ""
+    scale: float = 1.0
+    # "ios" / "android" —— 该指标概念在这个平台上不适用（如 Android ANR 之于
+    # iOS），report_builder 渲染时应显示 "—（不适用）" 而不是查回来的 0.0000。
+    not_applicable_platform: Optional[str] = None
+
+
+@dataclass
+class MetricsConfig:
+    dashboard_id: str
+    template_variables: Dict[str, str] = field(default_factory=dict)
+    metrics: List[MetricSpec] = field(default_factory=list)
+
+    def by_key(self, key: str) -> Optional[MetricSpec]:
+        for m in self.metrics:
+            if m.key == key:
+                return m
+        return None
+
+
+def _metrics_yaml_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "metrics.yaml"
+
+
+def load_metrics_config() -> MetricsConfig:
+    """读取 `graygate/metrics.yaml`，解析 `defaults`（dashboard_id +
+    template_variables）与 `metrics` 列表，每个 metric 的字段原样透传成
+    `MetricSpec`（不丢字段）。
+
+    这是 metrics.yaml 唯一的消费入口——Step5（report_builder，尚未实现）用它
+    知道每个指标该用什么 `cell_format`、要不要标记"不适用"。
+    """
+    raw = yaml.safe_load(_metrics_yaml_path().read_text(encoding="utf-8")) or {}
+    defaults = raw.get("defaults") or {}
+
+    metrics = [
+        MetricSpec(
+            key=m["key"],
+            title=m.get("title"),
+            title_p75=m.get("title_p75"),
+            title_p90=m.get("title_p90"),
+            cell_format=m.get("cell_format", ""),
+            scale=float(m.get("scale", 1.0)),
+            not_applicable_platform=m.get("not_applicable_platform"),
+        )
+        for m in raw.get("metrics", [])
+    ]
+
+    return MetricsConfig(
+        dashboard_id=defaults.get("dashboard_id", ""),
+        template_variables=dict(defaults.get("template_variables") or {}),
+        metrics=metrics,
+    )

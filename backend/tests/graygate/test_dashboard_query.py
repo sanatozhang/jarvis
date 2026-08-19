@@ -251,6 +251,56 @@ async def test_get_metric_scalar_no_requests_returns_none():
 # get_dashboard_json
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# load_metrics_config (graygate/metrics.yaml loader)
+# ---------------------------------------------------------------------------
+
+def test_load_metrics_config_parses_all_11_metrics():
+    cfg = dq.load_metrics_config()
+    assert len(cfg.metrics) == 11
+    keys = [m.key for m in cfg.metrics]
+    assert keys == [
+        "crash_free", "android_anr", "hang_rate", "refresh_rate", "fps",
+        "jank", "cold_startup_p90", "memory_usage", "home_render",
+        "detail_render_p90", "summary_render_p90",
+    ]
+
+
+def test_load_metrics_config_not_applicable_platform_read_correctly():
+    cfg = dq.load_metrics_config()
+    assert cfg.by_key("android_anr").not_applicable_platform == "ios"
+    assert cfg.by_key("hang_rate").not_applicable_platform == "android"
+    # metrics without the field default to None (not e.g. missing/KeyError)
+    assert cfg.by_key("crash_free").not_applicable_platform is None
+
+
+def test_load_metrics_config_dual_widget_metrics_carry_p75_p90_titles():
+    cfg = dq.load_metrics_config()
+    jank = cfg.by_key("jank")
+    assert jank.title is None
+    assert jank.title_p75 == "APP单次使用的卡顿次数（p75）"
+    assert jank.title_p90 == "APP单次使用的卡顿次数（p90）"
+    assert jank.cell_format == "{p75:.1f}/{p90:.1f}"
+
+
+def test_load_metrics_config_single_widget_metric_fields():
+    cfg = dq.load_metrics_config()
+    memory = cfg.by_key("memory_usage")
+    assert memory.title == "Memory Usage"
+    assert memory.scale == pytest.approx(9.5367431640625e-7)
+    assert memory.cell_format == "{v:.2f}MiB"
+
+
+def test_load_metrics_config_defaults_dashboard_id_and_template_variables():
+    cfg = dq.load_metrics_config()
+    assert cfg.dashboard_id == "mbn-8h9-m2p"
+    assert cfg.template_variables == {
+        "env": "production",
+        "os_version": "*",
+        "usr.id": "*",
+    }
+
+
 @pytest.mark.asyncio
 async def test_get_dashboard_json_caches_per_dashboard_id(monkeypatch):
     calls = {"count": 0}
