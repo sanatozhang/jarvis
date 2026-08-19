@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -78,18 +79,14 @@ async def test_build_report_card_unavailable_when_both_platforms_empty(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_build_report_card_newest_equals_top_skips_redundant_fetch(monkeypatch):
-    """newest_version == top_version 时不应该为"最新版本"再发起一次查询——
-    通过统计 get_metric_scalar 调用次数验证（只应含 market + top 两轮，不含 newest 轮）。
-    """
-    fetch_calls = []
-
+async def _run_build_report_card_with(monkeypatch, focus_version_return):
+    """公共 harness：mock 掉 resolve_versions/dashboard/metrics/新增崩溃/Top5，
+    只留 focus_version 这一个变量，供覆盖逻辑相关测试复用。"""
     async def fake_resolve_versions(from_ms, to_ms):
         pv = PlatformVersions(
-            platform="ios", versions=[("4.0.301-1043", 1000)],
+            platform="ios", versions=[("4.0.301-1043", 1000), ("4.0.302-2000", 5)],
             top_version="4.0.301-1043", top_version_events=1000,
-            newest_version="4.0.301-1043", newest_version_events=1000,
-            total_events=1000,
+            total_events=1005,
         )
         empty = PlatformVersions(platform="android")
         return {"ios": pv, "android": empty}
@@ -105,37 +102,46 @@ async def test_build_report_card_newest_equals_top_skips_redundant_fetch(monkeyp
         return _FakeMetricsConfig()
 
     async def fake_get_metric_scalar(dashboard_json, title, template_vars, from_ms, to_ms):
-        fetch_calls.append(template_vars["version"])
         return 60.0
 
-    async def fake_find_new_crashes(target_date):
-        return []
-
-    async def fake_find_top_crashes(target_date):
-        return []
-
-    async def fake_find_top_jank(target_date):
+    async def _fake_empty_list(*args, **kwargs):
         return []
 
     monkeypatch.setattr(cb, "resolve_versions", fake_resolve_versions)
     monkeypatch.setattr(cb, "get_dashboard_json", fake_get_dashboard_json)
     monkeypatch.setattr(cb, "load_metrics_config", fake_load_metrics_config)
     monkeypatch.setattr(cb, "get_metric_scalar", fake_get_metric_scalar)
-    monkeypatch.setattr(cb, "find_new_crashes", fake_find_new_crashes)
-    monkeypatch.setattr(cb, "find_top_crashes", fake_find_top_crashes)
-    monkeypatch.setattr(cb, "find_top_jank", fake_find_top_jank)
+    monkeypatch.setattr(cb, "find_new_crashes", _fake_empty_list)
+    monkeypatch.setattr(cb, "find_top_crashes", _fake_empty_list)
+    monkeypatch.setattr(cb, "find_top_jank", _fake_empty_list)
+    monkeypatch.setattr(cb, "get_focus_version", AsyncMock(return_value=focus_version_return))
 
-    result = await cb.build_report_card(date(2026, 8, 18))
-    assert result.available is True
-    # ios: market(4.0.3*-pattern) 今日+基线 2 次 + top(4.0.301-1043) 今日+基线 2 次 ——
-    # 不应该再出现第三轮"最新版本"对同一个 build 的查询（应为 2 次，不是 3+ 次）。
-    top_build_calls = [v for v in fetch_calls if v == "4.0.301-1043"]
-    assert len(top_build_calls) == 2, (
-        f"expected exactly 2 calls (today+baseline) for the shared build, "
-        f"got {len(top_build_calls)}: {fetch_calls}"
-    )
+    return await cb.build_report_card(date(2026, 8, 18))
 
-    # 找到 column_set 元素（恶化摘要不存在时，它是紧跟 header banner 的第二个 element）
+
+def _ios_column_text(result):
     column_set = next(e for e in result.card["body"]["elements"] if e.get("tag") == "column_set")
-    ios_col = column_set["columns"][0]["elements"][0]["text"]["content"]
-    assert "与主要版本一致" in ios_col
+    return column_set["columns"][0]["elements"][0]["text"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_build_report_card_uses_focus_version_override_when_set(monkeypatch):
+    """人工指定的 focus version 存在时，"主要版本"层应该跟踪它，而不是
+    session 数自动判定的 top_version；session 数从 pv.versions 里查（这里是
+    4.0.302-2000 = 5，不是 top_version 的 1000），并标注"（人工指定）"。"""
+    result = await _run_build_report_card_with(monkeypatch, "4.0.302-2000")
+    assert result.available is True
+    ios_col = _ios_column_text(result)
+    assert "__主要版本__ `4.0.302-2000`（5 sessions）（人工指定）" in ios_col
+    assert "4.0.301-1043" not in ios_col  # 不应该还在用自动判定的 top_version
+
+
+@pytest.mark.asyncio
+async def test_build_report_card_falls_back_to_top_version_without_override(monkeypatch):
+    """未设置 focus version（返回 None）时，"主要版本"层回落到 session 数
+    自动判定的 top_version，不带"人工指定"标注。"""
+    result = await _run_build_report_card_with(monkeypatch, None)
+    assert result.available is True
+    ios_col = _ios_column_text(result)
+    assert "__主要版本__ `4.0.301-1043`（1,000 sessions）" in ios_col
+    assert "人工指定" not in ios_col

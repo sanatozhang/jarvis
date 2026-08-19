@@ -12,6 +12,13 @@
 
 单平台查询失败不抛异常、不影响另一个平台——对齐 `dashboard_query.py::query_scalar`
 的容错策略。
+
+⚠️ 字段名叫 `*_events`，但查询已加 `@type:session` 过滤，实际是**会话（session）数**，
+不是全部类型 RUM 事件数——2026-08-19 用户发现卡片上显示的"177,496 events"大得
+不合理才核实出来：最初这里没加 `@type:` 过滤，count 统计的是 view/action/resource/
+error 混在一起的全部事件，同一个 build 真实 session 数其实只有 1629，量级差 100 倍。
+字段名保留 `_events` 是历史命名，没有跟着改（避免牵动 report_builder.py/card_builder.py
+里已有的引用），但语义上请当作"会话数"读。
 """
 from __future__ import annotations
 
@@ -35,22 +42,14 @@ _PLATFORM_SERVICE = {
 @dataclass
 class PlatformVersions:
     platform: str
-    versions: List[Tuple[str, int]] = field(default_factory=list)  # 按 events 降序
-    top_version: Optional[str] = None       # events 最大的 build（"主要版本"——当前流量主力）
+    versions: List[Tuple[str, int]] = field(default_factory=list)  # 按 events(session) 降序
+    top_version: Optional[str] = None       # session 数最大的 build（自动判定的"主力包"）
     top_version_events: int = 0
-    newest_version: Optional[str] = None    # build 号最大的 build（"🆕最新版本"——刚发布，未必已放量）
-    newest_version_events: int = 0
     total_events: int = 0
 
-
-def _build_number(version: str) -> int:
-    """从 `4.0.301-1038` 这类字符串取 `-` 后的 build 号，解析失败按最小值兜底
-    （排最后，不会被误判成"最新"）。"""
-    tail = version.rsplit("-", 1)[-1]
-    try:
-        return int(tail)
-    except ValueError:
-        return -1
+    # 2026-08-19：build 号最大的"🆕最新版本"自动层被用户下线——刚发布的包流量太薄，
+    # 自动判定意义不大，改成人工指定主要版本（见 services/focus_version.py），
+    # 这里不再计算/暴露 newest_version。
 
 
 def _empty(platform: str) -> PlatformVersions:
@@ -59,8 +58,6 @@ def _empty(platform: str) -> PlatformVersions:
         versions=[],
         top_version=None,
         top_version_events=0,
-        newest_version=None,
-        newest_version_events=0,
         total_events=0,
     )
 
@@ -87,7 +84,13 @@ async def _resolve_one_platform(
         "filter": {
             "from": from_ms,
             "to": to_ms,
-            "query": f"env:production @service:{service} version:{s.version_pattern}",
+            # @type:session —— 2026-08-19 修正：原先不带 @type 过滤，count 统计的是
+            # 全部类型 RUM 事件（view/action/resource/error 混在一起），量级会比真实
+            # session 数大 100 倍以上（实测某 build 事件量 17.7 万 vs 实际 session 数
+            # 只有 1629）。用户发现卡片上显示的"events"数字大得不合理，两者一核对
+            # 才确认是口径错了。加 @type:session 后取到的才是真正的会话数，
+            # min_sessions 样本地板也才名副其实（之前拿 17 万比 50 这个阈值形同虚设）。
+            "query": f"@type:session env:production @service:{service} version:{s.version_pattern}",
         },
         "group_by": [{"facet": "version", "limit": 30}],
     }
@@ -120,19 +123,14 @@ async def _resolve_one_platform(
     total_events = sum(events for _, events in versions)
     if versions:
         top_version, top_version_events = versions[0]
-        newest_version, _ = max(versions, key=lambda vc: _build_number(vc[0]))
-        newest_version_events = dict(versions)[newest_version]
     else:
         top_version, top_version_events = None, 0
-        newest_version, newest_version_events = None, 0
 
     return PlatformVersions(
         platform=platform,
         versions=versions,
         top_version=top_version,
         top_version_events=top_version_events,
-        newest_version=newest_version,
-        newest_version_events=newest_version_events,
         total_events=total_events,
     )
 

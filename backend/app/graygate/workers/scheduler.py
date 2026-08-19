@@ -43,8 +43,8 @@ from zoneinfo import ZoneInfo
 
 from app.db.database import get_session
 from app.graygate.config import get_graygate_settings
-from app.graygate.services.report_builder import build_report
-from app.services.feishu_cli import send_message
+from app.graygate.services.card_builder import build_report_card
+from app.services.feishu_cli import send_interactive_card
 
 logger = logging.getLogger("graygate.scheduler")
 
@@ -93,7 +93,7 @@ async def _run_daily_report_once(target_date: date) -> None:
 
     try:
         settings = get_graygate_settings()
-        report = await build_report(target_date)
+        report = await build_report_card(target_date)
         summary["available"] = report.available
 
         if not report.available:
@@ -107,9 +107,9 @@ async def _run_daily_report_once(target_date: date) -> None:
         else:
             sent = False
             try:
-                sent = await send_message(chat_id=settings.feishu_chat_id, text=report.markdown)
+                sent = await send_interactive_card(chat_id=settings.feishu_chat_id, card=report.card)
             except Exception as e:
-                logger.warning("graygate_daily_report: send_message raised: %s", e)
+                logger.warning("graygate_daily_report: send_interactive_card raised: %s", e)
             summary["sent"] = sent
             if not sent:
                 status = "degraded"

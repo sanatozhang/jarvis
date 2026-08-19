@@ -42,9 +42,9 @@ def _settings(feishu_enabled: bool = True, feishu_chat_id: str = "oc_graygate") 
     return SimpleNamespace(feishu_enabled=feishu_enabled, feishu_chat_id=feishu_chat_id)
 
 
-def _report(available: bool = True, markdown: str = "# report"):
-    from app.graygate.services.report_builder import GraygateReport
-    return GraygateReport(available=available, markdown=markdown)
+def _report(available: bool = True, card: dict | None = None):
+    from app.graygate.services.card_builder import GraygateReportCard
+    return GraygateReportCard(available=available, card=card if card is not None else {"schema": "2.0"})
 
 
 @pytest.mark.asyncio
@@ -66,15 +66,15 @@ async def test_unknown_user_forbidden(api_client):
 @pytest.mark.asyncio
 async def test_dry_run_default_returns_markdown_without_sending(api_client):
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report", new=AsyncMock(return_value=_report(markdown="# hello"))) as mock_build, \
-         patch("app.services.feishu_cli.send_message", new=AsyncMock()) as mock_send:
+         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report(card={"schema": "2.0", "x": "hello"}))) as mock_build, \
+         patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock()) as mock_send:
         resp = await api_client.post("/api/graygate/trigger", params={"username": "sanato"})
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["dry_run"] is True
     assert body["available"] is True
-    assert body["markdown"] == "# hello"
+    assert body["card"] == {"schema": "2.0", "x": "hello"}
     assert body["sent"] is False
     mock_build.assert_awaited_once()
     mock_send.assert_not_awaited()
@@ -83,9 +83,9 @@ async def test_dry_run_default_returns_markdown_without_sending(api_client):
 @pytest.mark.asyncio
 async def test_dry_run_false_and_feishu_enabled_sends(api_client):
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report", new=AsyncMock(return_value=_report(markdown="# hi"))), \
+         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report(card={"schema": "2.0", "x": "hi"}))), \
          patch.object(graygate_api, "get_graygate_settings", return_value=_settings(feishu_enabled=True)), \
-         patch("app.services.feishu_cli.send_message", new=AsyncMock(return_value=True)) as mock_send:
+         patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock(return_value=True)) as mock_send:
         resp = await api_client.post(
             "/api/graygate/trigger", params={"username": "sanato", "dry_run": "false"},
         )
@@ -93,16 +93,16 @@ async def test_dry_run_false_and_feishu_enabled_sends(api_client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["sent"] is True
-    mock_send.assert_awaited_once_with(chat_id="oc_graygate", text="# hi")
+    mock_send.assert_awaited_once_with(chat_id="oc_graygate", card={"schema": "2.0", "x": "hi"})
 
 
 @pytest.mark.asyncio
 async def test_dry_run_false_but_feishu_enabled_false_does_not_send(api_client):
     """feishu_enabled 是总闸——dry_run=false 也不能绕过它，返回体说明原因。"""
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report", new=AsyncMock(return_value=_report(markdown="# hi"))), \
+         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report(card={"schema": "2.0", "x": "hi"}))), \
          patch.object(graygate_api, "get_graygate_settings", return_value=_settings(feishu_enabled=False)), \
-         patch("app.services.feishu_cli.send_message", new=AsyncMock()) as mock_send:
+         patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock()) as mock_send:
         resp = await api_client.post(
             "/api/graygate/trigger", params={"username": "sanato", "dry_run": "false"},
         )
@@ -126,7 +126,7 @@ async def test_target_date_not_passed_defaults_to_bjt_yesterday(api_client, monk
     monkeypatch.setattr(graygate_api, "datetime", _FakeDatetime)
 
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report", new=AsyncMock(return_value=_report())) as mock_build:
+         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build:
         resp = await api_client.post("/api/graygate/trigger", params={"username": "sanato"})
 
     assert resp.status_code == 200
@@ -137,7 +137,7 @@ async def test_target_date_not_passed_defaults_to_bjt_yesterday(api_client, monk
 @pytest.mark.asyncio
 async def test_explicit_target_date_is_used(api_client):
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report", new=AsyncMock(return_value=_report())) as mock_build:
+         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build:
         resp = await api_client.post(
             "/api/graygate/trigger", params={"username": "sanato", "target_date": "2026-01-01"},
         )
@@ -160,9 +160,9 @@ async def test_invalid_target_date_returns_400(api_client):
 @pytest.mark.asyncio
 async def test_dry_run_false_but_report_unavailable_does_not_send(api_client):
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report", new=AsyncMock(return_value=_report(available=False, markdown=""))), \
+         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report(available=False))), \
          patch.object(graygate_api, "get_graygate_settings", return_value=_settings(feishu_enabled=True)), \
-         patch("app.services.feishu_cli.send_message", new=AsyncMock()) as mock_send:
+         patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock()) as mock_send:
         resp = await api_client.post(
             "/api/graygate/trigger", params={"username": "sanato", "dry_run": "false"},
         )
@@ -172,3 +172,53 @@ async def test_dry_run_false_but_report_unavailable_does_not_send(api_client):
     assert body["sent"] is False
     assert body["reason"] == "available=False"
     mock_send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_persists_and_returns_both_platforms(api_client):
+    with patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set, \
+         patch.object(graygate_api, "get_all_focus_versions", new=AsyncMock(
+             return_value={"ios": "4.0.302-1050", "android": None}
+         )):
+        resp = await api_client.post(
+            "/api/graygate/focus-version", json={"platform": "ios", "version": "4.0.302-1050"},
+        )
+
+    assert resp.status_code == 200
+    mock_set.assert_awaited_once_with("ios", "4.0.302-1050")
+    assert resp.json() == {"ios": "4.0.302-1050", "android": None}
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_empty_string_clears_override(api_client):
+    with patch.object(graygate_api, "clear_focus_version", new=AsyncMock()) as mock_clear, \
+         patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set, \
+         patch.object(graygate_api, "get_all_focus_versions", new=AsyncMock(
+             return_value={"ios": None, "android": None}
+         )):
+        resp = await api_client.post(
+            "/api/graygate/focus-version", json={"platform": "ios", "version": ""},
+        )
+
+    assert resp.status_code == 200
+    mock_clear.assert_awaited_once_with("ios")
+    mock_set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_invalid_platform_returns_400(api_client):
+    resp = await api_client.post(
+        "/api/graygate/focus-version", json={"platform": "windows", "version": "1.0"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_get_focus_version_returns_current_state(api_client):
+    with patch.object(graygate_api, "get_all_focus_versions", new=AsyncMock(
+        return_value={"ios": None, "android": "4.0.302-2010"}
+    )):
+        resp = await api_client.get("/api/graygate/focus-version")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ios": None, "android": "4.0.302-2010"}

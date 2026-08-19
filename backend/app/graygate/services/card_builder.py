@@ -5,11 +5,11 @@
 照抄 `app/crashguard/services/feishu_card.py` 里已验证过的视觉语言：iOS/Android
 双列布局、每列内"大盘 → 主要版本 → 🆕最新版本"三层、🟩/🟥 状态色点。
 
-三层版本口径定义（比 report_builder.py 的两层 top/market 多一层）：
-  大盘（4.0.3*）   —— version_pattern 通配符全量聚合
-  主要版本         —— events 最大的 build（当前流量主力，即 report_builder 的 "top"）
-  🆕 最新版本      —— build 号最大的 build（刚发布，未必已放量；与主要版本相同的 build
-                      时不重复取数，只在渲染层标注"与主要版本一致"，省一次 Datadog 查询）
+两层版本口径（2026-08-19：原有的第三层"🆕最新版本"自动判定被用户下线）：
+  大盘（{version_pattern}）—— version_pattern 通配符全量聚合
+  主要版本                 —— 优先用人工指定的 focus version（发新版本时运营
+                              通过 API/前端手动设置，见 services/focus_version.py），
+                              未设置时回落到 session 数最大的 build（自动判定）
 
 按用户要求，新增崩溃/Top 卡顿固定排在全部版本数据之后（不是像第一版那样穿插在中间）。
 
@@ -34,6 +34,7 @@ from app.graygate.services.dashboard_query import (
 from app.graygate.services.version_resolver import PlatformVersions, resolve_versions
 from app.graygate.services.new_crashes import NewCrash, find_new_crashes
 from app.graygate.services.top_issues import TopCrash, TopJank, find_top_crashes, find_top_jank
+from app.graygate.services.focus_version import get_focus_version
 
 _BJT = ZoneInfo("Asia/Shanghai")
 _PLATFORMS = ("ios", "android")
@@ -199,8 +200,27 @@ def _fmt_n(n: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 恶化摘要段（vs 上一个工作日）—— 只列真正超阈值的指标，不在每行加 delta
+# 恶化摘要段（连续两个工作日同向恶化才算）—— 只看核心指标，不在每行加 delta
 # ---------------------------------------------------------------------------
+#
+# 2026-08-19 用户反馈：第一版单日对比把 P90/比率类指标的日常波动也标红了
+# （现场核实：iOS 4.0.301-1038 当天流量其实是涨的——900→1629 sessions，
+# 不是"样本崩了导致失真"，但 P90/Hang Rate/ANR 这类统计量本来就比均值类
+# 指标更容易被少数极端样本带偏，尤其灰度早期）。用户裁决两条：
+#   1. 只有"核心指标"参与恶化判定——崩溃(crash_free/android_anr/hang_rate)、
+#      卡顿(jank)、内存(memory_usage)、Refresh Rate、冷启动(cold_startup_p90)。
+#      页面渲染耗时类(fps/home_render/detail_render_p90/summary_render_p90)
+#      不参与——仍然正常显示数值，只是不会被拿来判定"恶化"。
+#   2. 连续两个工作日同向恶化才算，不再是单日对比就标红（照抄 coreguard
+#      现有的 N=2 连续 breach 防抖设计思路）。
+
+_CORE_WORSEN_KEYS = {
+    "crash_free", "android_anr", "hang_rate",   # 崩溃
+    "jank",                                      # 卡顿
+    "memory_usage",                              # 内存
+    "refresh_rate",                              # Refresh Rate
+    "cold_startup_p90",                          # 冷启动
+}
 
 
 def _widget_directionality(
@@ -249,36 +269,48 @@ def _format_delta(spec: MetricSpec, delta: float, baseline: float) -> str:
     return f"{delta / baseline * 100:+.1f}%"
 
 
+def _breach(spec: MetricSpec, directionality: Optional[str], cur: float, base: float) -> bool:
+    delta = cur - base
+    return _breach_threshold(spec, delta, base) and _is_worse(directionality, delta)
+
+
 @dataclass
 class _WorsenCandidate:
     platform: str
     tier_label: str
     spec: MetricSpec
-    today: _Cell
-    baseline: _Cell
+    today: _Cell   # 今日
+    d1: _Cell      # 上一个工作日（第一次对比的基线）
+    d2: _Cell      # 上上一个工作日（第二次对比的基线，用于"连续两天"判定）
 
 
 def _build_worsen_lines(
     candidates: List[_WorsenCandidate],
     directionality_by_key: Dict[str, Optional[str]],
 ) -> List[str]:
+    """连续两个工作日同向恶化才标记：今日 vs 上一工作日 要恶化，且上一工作日
+    vs 上上工作日 也要恶化（同一子值维度），单日波动不会触发。"""
     lines: List[str] = []
     for c in candidates:
-        if c.today.value is None or c.baseline.value is None:
+        if c.today.value is None or c.d1.value is None or c.d2.value is None:
             continue
         directionality = directionality_by_key.get(c.spec.key)
-        # 双 widget（jank/home_render）：p75、p90 任一子值触发即整行标记
         if isinstance(c.today.value, tuple):
-            pairs = zip(c.today.value, c.baseline.value)
+            sub_indices: List[Optional[int]] = list(range(len(c.today.value)))
         else:
-            pairs = [(c.today.value, c.baseline.value)]
+            sub_indices = [None]
+
         worst_delta = None
         worst_baseline = None
-        for cur, base in pairs:
-            delta = cur - base
-            if _breach_threshold(c.spec, delta, base) and _is_worse(directionality, delta):
+        for idx in sub_indices:
+            if idx is None:
+                cur, d1v, d2v = c.today.value, c.d1.value, c.d2.value
+            else:
+                cur, d1v, d2v = c.today.value[idx], c.d1.value[idx], c.d2.value[idx]
+            if _breach(c.spec, directionality, cur, d1v) and _breach(c.spec, directionality, d1v, d2v):
+                delta = cur - d1v
                 if worst_delta is None or abs(delta) > abs(worst_delta):
-                    worst_delta, worst_baseline = delta, base
+                    worst_delta, worst_baseline = delta, d1v
         if worst_delta is None:
             continue
         arrow = "▲" if worst_delta > 0 else "▼"
@@ -288,12 +320,12 @@ def _build_worsen_lines(
             cur_str = c.spec.cell_format.format(v=c.today.value)
         lines.append(
             f"- {_PLATFORM_LABEL[c.platform]} [{c.tier_label}] {_metric_name(c.spec)} "
-            f"{cur_str} {arrow} {_format_delta(c.spec, worst_delta, worst_baseline)}"
+            f"{cur_str} {arrow} {_format_delta(c.spec, worst_delta, worst_baseline)}（连续2个工作日）"
         )
     return lines
 
 
-async def _fetch_tier_both_days(
+async def _fetch_tier_history(
     dashboard_json: dict,
     metrics: List[MetricSpec],
     platform: str,
@@ -302,19 +334,26 @@ async def _fetch_tier_both_days(
     min_sessions: int,
     template_vars_base: Dict[str, str],
     today_ms: Tuple[int, int],
-    baseline_ms: Tuple[int, int],
-) -> Tuple[Dict[str, _Cell], Dict[str, _Cell]]:
-    """gate 判定一次，今日窗口和基线窗口（上一个工作日）各查一次，用同一个
-    version_value——"同一个包比较两天"，不是"两天各自的主力包比较"（对齐
-    report_builder.py 已验证过的设计：DoD 对比要 apples-to-apples）。"""
+    core_metrics: List[MetricSpec],
+    d1_ms: Tuple[int, int],
+    d2_ms: Tuple[int, int],
+) -> Tuple[Dict[str, _Cell], Dict[str, _Cell], Dict[str, _Cell]]:
+    """今日查全部指标（用于展示）；D1（上一个工作日）/D2（上上个工作日）只查
+    核心指标（用于恶化的连续两天判定，非核心指标不需要历史数据）。三次查询
+    用同一个 version_value——"同一个包比较三天"，不是各自重新挑主力包
+    （对齐 report_builder.py 已验证过的设计：DoD 对比要 apples-to-apples）。"""
     gates = _gate_tier(metrics, platform, version_value, sample_proxy, min_sessions)
     today_cells = await _resolve_tier_for_window(
         dashboard_json, metrics, platform, gates, template_vars_base, *today_ms,
     )
-    baseline_cells = await _resolve_tier_for_window(
-        dashboard_json, metrics, platform, gates, template_vars_base, *baseline_ms,
+    core_gates = _gate_tier(core_metrics, platform, version_value, sample_proxy, min_sessions)
+    d1_cells = await _resolve_tier_for_window(
+        dashboard_json, core_metrics, platform, core_gates, template_vars_base, *d1_ms,
     )
-    return today_cells, baseline_cells
+    d2_cells = await _resolve_tier_for_window(
+        dashboard_json, core_metrics, platform, core_gates, template_vars_base, *d2_ms,
+    )
+    return today_cells, d1_cells, d2_cells
 
 
 async def _build_platform_column(
@@ -326,62 +365,52 @@ async def _build_platform_column(
     min_sessions: int,
     template_vars_base: Dict[str, str],
     today_ms: Tuple[int, int],
-    baseline_ms: Tuple[int, int],
+    d1_ms: Tuple[int, int],
+    d2_ms: Tuple[int, int],
     worsen_candidates: List[_WorsenCandidate],
 ) -> str:
+    core_metrics = [m for m in metrics if m.key in _CORE_WORSEN_KEYS]
     lines: List[str] = [f"**{_PLATFORM_LABEL[platform]}**", ""]
 
+    def _collect(tier_label: str, today: Dict[str, _Cell], d1: Dict[str, _Cell], d2: Dict[str, _Cell]) -> None:
+        for spec in core_metrics:
+            worsen_candidates.append(_WorsenCandidate(
+                platform, tier_label, spec, today[spec.key], d1[spec.key], d2[spec.key],
+            ))
+
     # 大盘
-    market_today, market_baseline = await _fetch_tier_both_days(
+    market_today, market_d1, market_d2 = await _fetch_tier_history(
         dashboard_json, metrics, platform, version_pattern, pv.total_events,
-        min_sessions, template_vars_base, today_ms, baseline_ms,
+        min_sessions, template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
     )
     lines += _tier_md(f"__大盘（{version_pattern}）__", metrics, market_today)
     lines.append("")
-    for spec in metrics:
-        worsen_candidates.append(_WorsenCandidate(
-            platform, "大盘", spec, market_today[spec.key], market_baseline[spec.key],
-        ))
+    _collect("大盘", market_today, market_d1, market_d2)
 
-    # 主要版本（events 最大的 build）
-    if pv.top_version:
-        top_today, top_baseline = await _fetch_tier_both_days(
-            dashboard_json, metrics, platform, pv.top_version, pv.top_version_events,
-            min_sessions, template_vars_base, today_ms, baseline_ms,
+    # 主要版本：优先用人工指定的 focus version（发新版本时运营手动设置，见
+    # services/focus_version.py）；未设置时回落到 session 数自动判定的 top_version。
+    override_version = await get_focus_version(platform)
+    if override_version:
+        primary_version = override_version
+        primary_sessions = dict(pv.versions).get(override_version, 0)
+        primary_suffix = "（人工指定）"
+    else:
+        primary_version = pv.top_version
+        primary_sessions = pv.top_version_events
+        primary_suffix = ""
+
+    if primary_version:
+        primary_today, primary_d1, primary_d2 = await _fetch_tier_history(
+            dashboard_json, metrics, platform, primary_version, primary_sessions,
+            min_sessions, template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
         )
         lines += _tier_md(
-            f"__主要版本__ `{pv.top_version}`（{_fmt_n(pv.top_version_events)} events）",
-            metrics, top_today,
+            f"__主要版本__ `{primary_version}`（{_fmt_n(primary_sessions)} sessions）{primary_suffix}",
+            metrics, primary_today,
         )
-        for spec in metrics:
-            worsen_candidates.append(_WorsenCandidate(
-                platform, "主要版本", spec, top_today[spec.key], top_baseline[spec.key],
-            ))
+        _collect("主要版本", primary_today, primary_d1, primary_d2)
     else:
         lines += _tier_md("__主要版本__", metrics, None, _NO_DATA)
-    lines.append("")
-
-    # 🆕 最新版本（build 号最大；与主要版本相同则复用数据，不重复查询）
-    if pv.newest_version and pv.newest_version == pv.top_version:
-        lines += _tier_md(
-            f"__🆕 最新版本__ `{pv.newest_version}`（与主要版本一致，数据同上）",
-            metrics, None,
-        )
-    elif pv.newest_version:
-        newest_today, newest_baseline = await _fetch_tier_both_days(
-            dashboard_json, metrics, platform, pv.newest_version, pv.newest_version_events,
-            min_sessions, template_vars_base, today_ms, baseline_ms,
-        )
-        lines += _tier_md(
-            f"__🆕 最新版本__ `{pv.newest_version}`（{_fmt_n(pv.newest_version_events)} events）",
-            metrics, newest_today,
-        )
-        for spec in metrics:
-            worsen_candidates.append(_WorsenCandidate(
-                platform, "最新版本", spec, newest_today[spec.key], newest_baseline[spec.key],
-            ))
-    else:
-        lines += _tier_md("__🆕 最新版本__", metrics, None, _NO_DATA)
 
     return "\n".join(lines)
 
@@ -426,14 +455,17 @@ def _build_top_jank_md(janks: List[TopJank]) -> Optional[str]:
 async def build_report_card(target_date: date) -> GraygateReportCard:
     """组装 4.0.3 灰度日报 interactive card。target_date 是 BJT 日历日（代表"昨日"）。
 
-    结构（自上而下）：header → 🔴 恶化摘要（vs 上一个工作日，有才出）→
-    iOS/Android 双列版本数据（大盘/主要版本/🆕最新版本）→ 🆕 新增崩溃堆栈（有才出）
-    → 🔥 Top5 崩溃 + 🟠 Top5 卡顿（有才出，不看是否新增，按 events 量）。
+    结构（自上而下）：header → 🔴 恶化摘要（核心指标连续两个工作日同向恶化才出，
+    有才出）→ iOS/Android 双列版本数据（大盘/主要版本/🆕最新版本）→
+    🆕 新增崩溃堆栈（有才出）→ 🔥 Top5 崩溃 + 🟠 Top5 卡顿（有才出，不看是否
+    新增，按 events 量）。
     """
     settings = get_graygate_settings()
     today_ms = _window_ms(target_date)
-    baseline_day = _prev_workday(target_date)
-    baseline_ms = _window_ms(baseline_day)
+    d1_day = _prev_workday(target_date)       # 上一个工作日
+    d2_day = _prev_workday(d1_day)             # 上上个工作日（连续两天判定用）
+    d1_ms = _window_ms(d1_day)
+    d2_ms = _window_ms(d2_day)
 
     versions = await resolve_versions(*today_ms)
     ios_v, android_v = versions["ios"], versions["android"]
@@ -454,7 +486,7 @@ async def build_report_card(target_date: date) -> GraygateReportCard:
         col_md = await _build_platform_column(
             dashboard_json, metrics_config.metrics, platform, pv,
             settings.version_pattern, settings.min_sessions,
-            metrics_config.template_variables, today_ms, baseline_ms,
+            metrics_config.template_variables, today_ms, d1_ms, d2_ms,
             worsen_candidates,
         )
         columns_md.append(col_md)
@@ -472,14 +504,16 @@ async def build_report_card(target_date: date) -> GraygateReportCard:
     elements: List[Dict[str, Any]] = [
         _div(
             f"📊 窗口 {target_date.strftime('%m-%d')} 00:00~24:00 BJT · "
-            f"基线 {baseline_day.strftime('%m-%d')}（上一个工作日）· "
+            f"基线 {d1_day.strftime('%m-%d')}（上一个工作日）· "
             f"大盘版本模式 `{settings.version_pattern}`"
         ),
     ]
 
     if worsen_lines:
         elements.append({"tag": "hr"})
-        elements.append(_div("**🔴 恶化（vs 上一个工作日）**\n\n" + "\n".join(worsen_lines)))
+        elements.append(_div(
+            "**🔴 恶化（核心指标，连续 2 个工作日同向恶化）**\n\n" + "\n".join(worsen_lines)
+        ))
 
     elements.append({"tag": "hr"})
     elements.append({
