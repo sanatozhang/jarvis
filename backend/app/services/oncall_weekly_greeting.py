@@ -102,9 +102,9 @@ def _render_greeting(
         f"📅 本周值班提醒 / Weekly Oncall Reminder（{week_start:%Y-%m-%d} ~ {week_end:%Y-%m-%d}）",
         "",
         " ".join(mention_parts),
-        "本周由你们值周，请关注本群的转交工单，及时跟进并在 Appllo 标记完成。",
-        "You're on oncall duty this week — please follow up on escalated tickets in",
-        "this group and mark them complete in Appllo.",
+        "本周由你们值周，请关注本周工单群的转交工单，及时跟进并在 Appllo 标记完成。",
+        "You're on oncall duty this week — please follow up on escalated tickets",
+        "in this week's ticket group and mark them complete in Appllo.",
     ]
 
     if unresolved:
