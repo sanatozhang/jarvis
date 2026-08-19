@@ -185,6 +185,64 @@ async def get_engineer_label_accuracy(window: tuple = Depends(window_params(30))
     }
 
 
+@router.get("/escalation-completion")
+async def get_escalation_completion_rate(window: tuple = Depends(window_params(30))):
+    """工单完工率：升级转工程师的工单里，有多少最终标记为 resolved。
+
+    分母 = escalated_at 落在窗口内、未软删的工单里 escalation_status 非空的那些
+    （即真正升级过的工单）；分子 = 其中 escalation_status == "resolved"。
+    没升级过的工单不计入——这个指标衡量"升级出去的工单收得回来多少"，
+    不是全量工单完成度（那个看 /dashboard 的 success_rate）。
+    """
+    from sqlalchemy import func, select, and_, case
+
+    date_from, date_to = window
+    start, end = to_datetime_bounds(date_from, date_to)
+
+    async with db.get_session() as session:
+        base_filter = and_(
+            db.IssueRecord.escalated_at >= start,
+            db.IssueRecord.escalated_at <= end,
+            db.IssueRecord.deleted == False,  # noqa: E712
+            db.IssueRecord.escalation_status != "",
+        )
+        total_stmt = select(func.count()).select_from(db.IssueRecord).where(base_filter)
+        total = (await session.execute(total_stmt)).scalar() or 0
+
+        resolved_stmt = select(func.count()).select_from(db.IssueRecord).where(
+            base_filter, db.IssueRecord.escalation_status == "resolved",
+        )
+        resolved = (await session.execute(resolved_stmt)).scalar() or 0
+
+        daily_stmt = select(
+            func.date(db.IssueRecord.escalated_at).label("day"),
+            func.count(),
+            func.sum(case((db.IssueRecord.escalation_status == "resolved", 1), else_=0)),
+        ).where(base_filter).group_by("day").order_by("day")
+        daily_rows = (await session.execute(daily_stmt)).all()
+
+    daily = [
+        {
+            "date": str(day),
+            "total": day_total,
+            "resolved": day_resolved or 0,
+            "rate_pct": round((day_resolved or 0) / day_total * 100, 1) if day_total else 0.0,
+        }
+        for day, day_total, day_resolved in daily_rows
+    ]
+
+    rate = round(resolved / total * 100, 1) if total else 0.0
+    return {
+        "window_days": (end.date() - start.date()).days + 1,
+        "date_from": date_from,
+        "date_to": date_to,
+        "total_escalated": total,
+        "resolved": resolved,
+        "completion_rate_pct": rate,
+        "daily": daily,
+    }
+
+
 @router.get("/fallback-extraction")
 async def get_fallback_extraction_rate(window: tuple = Depends(window_params(7))):
     """L4.2 监控指标：AI 没写 result.json 走 Markdown 兜底的占比。

@@ -8,9 +8,10 @@ import {
   fetchAnalyticsDashboard, fetchRuleAccuracy, fetchProblemTypeStats, fetchClassificationStats,
   backfillClassifications, fetchIssueDetail, formatLocalTime, fetchVocClassificationStats,
   fetchVocTrend, fetchVocMovers, fetchVocWeeklyDigest, generateVocWeeklyDigest, fetchFixEffectiveness,
+  fetchEscalationCompletion,
   type AnalyticsDashboard, type FailReasonItem, type RuleAccuracyStat, type ProblemTypeStats, type ClassificationStats,
   type LocalIssueItem, type VocClassificationStats, type VocTrend, type VocMoversResponse, type VocWeeklyDigest,
-  type FixEffectiveness,
+  type FixEffectiveness, type EscalationCompletion,
 } from "@/lib/api";
 import {
   thisMonday, lastMonday, isMondayISO, thisMonthStart, lastMonthStart, isMonthStartISO,
@@ -119,6 +120,7 @@ function AnalyticsPageInner() {
   const [vocTrend, setVocTrend] = useState<VocTrend | null>(null);
   const [vocMovers, setVocMovers] = useState<VocMoversResponse | null>(null);
   const [fixEffectiveness, setFixEffectiveness] = useState<FixEffectiveness | null>(null);
+  const [escalationCompletion, setEscalationCompletion] = useState<EscalationCompletion | null>(null);
   const [digest, setDigest] = useState<VocWeeklyDigest | null>(null);
   const [digestLoading, setDigestLoading] = useState(false);
   const [digestRegenerating, setDigestRegenerating] = useState(false);
@@ -151,7 +153,7 @@ function AnalyticsPageInner() {
     // 会跟当月错位。其它窗口（3/6/12 月、自定义天数）用后端默认推导即可。
     const prev = (range.kind === "week" || range.kind === "month") ? alignedPrevPeriod(resolved) ?? undefined : undefined;
     try {
-      const [dash, ra, pt, cls, voc, vocTrendRes, vocMoversRes, fixEff] = await Promise.all([
+      const [dash, ra, pt, cls, voc, vocTrendRes, vocMoversRes, fixEff, escCompletion] = await Promise.all([
         fetchAnalyticsDashboard(w).catch(() => null),
         fetchRuleAccuracy(w).catch(() => []),
         fetchProblemTypeStats(w).catch(() => null),
@@ -160,6 +162,7 @@ function AnalyticsPageInner() {
         fetchVocTrend(w, "group").catch(() => null),
         fetchVocMovers(w, "label", 3, prev).catch(() => null),
         fetchFixEffectiveness(w).catch(() => null),
+        fetchEscalationCompletion(w).catch(() => null),
       ]);
       setData(dash);
       setRuleAccuracy(ra);
@@ -169,6 +172,7 @@ function AnalyticsPageInner() {
       setVocTrend(vocTrendRes);
       setVocMovers(vocMoversRes);
       setFixEffectiveness(fixEff);
+      setEscalationCompletion(escCompletion);
     } catch {} finally { setLoading(false); }
   }, [resolved.dateFrom, resolved.dateTo, range.kind]);
 
@@ -516,6 +520,47 @@ function AnalyticsPageInner() {
                       </a>
                     ))}
                   </div>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* 工单完工率 — 分母只看升级过的工单（escalation_status 非空），
+              没升级过的工单不计入这个口径，见 backend /escalation-completion 文档字符串 */}
+          {escalationCompletion && escalationCompletion.total_escalated > 0 && (
+            <section className="rounded-xl p-5 j-rise" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold" style={{ color: S.text1 }}>{t("工单完工率")}</h2>
+                <span className="text-[11px] font-mono" style={{ color: S.text3 }}>
+                  {t("已升级")} {escalationCompletion.total_escalated} {t("单")}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <StatCard
+                  label={t("完工率")}
+                  value={escalationCompletion.completion_rate_pct}
+                  sub="%"
+                  color={escalationCompletion.completion_rate_pct >= 80 ? "#16A34A" : "#CA8A04"}
+                />
+                <StatCard
+                  label={t("已完工")}
+                  value={escalationCompletion.resolved}
+                  sub={`/ ${escalationCompletion.total_escalated}`}
+                />
+              </div>
+              {escalationCompletion.daily.length > 0 && (
+                <div className="space-y-1">
+                  {escalationCompletion.daily.map((d) => (
+                    <div key={d.date} className="flex items-center gap-2 text-xs">
+                      <span className="w-20 font-mono flex-shrink-0" style={{ color: S.text3 }}>{d.date}</span>
+                      <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: S.overlay }}>
+                        <div className="h-full rounded-full" style={{ width: `${d.rate_pct}%`, background: S.accent }} />
+                      </div>
+                      <span className="w-24 font-mono flex-shrink-0 text-right" style={{ color: S.text2 }}>
+                        {d.resolved}/{d.total} · {d.rate_pct}%
+                      </span>
+                    </div>
+                  ))}
                 </div>
               )}
             </section>

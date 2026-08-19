@@ -950,6 +950,26 @@ export interface FixEffectiveness {
 export const fetchFixEffectiveness = (w: TimeWindow) =>
   request<FixEffectiveness>(`/analytics/fix-effectiveness?${windowQS(w)}`);
 
+export interface EscalationCompletionDailyRow {
+  date: string;
+  total: number;
+  resolved: number;
+  rate_pct: number;
+}
+
+export interface EscalationCompletion {
+  window_days: number;
+  date_from: string;
+  date_to: string;
+  total_escalated: number;
+  resolved: number;
+  completion_rate_pct: number;
+  daily: EscalationCompletionDailyRow[];
+}
+
+export const fetchEscalationCompletion = (w: TimeWindow) =>
+  request<EscalationCompletion>(`/analytics/escalation-completion?${windowQS(w)}`);
+
 export interface RuleAccuracyStat {
   rule_type: string;
   total: number;

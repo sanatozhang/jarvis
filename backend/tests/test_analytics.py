@@ -34,6 +34,7 @@ WINDOWED_PATHS = [
     "/api/analytics/classification-stats",
     "/api/analytics/engineer-label-accuracy",
     "/api/analytics/fallback-extraction",
+    "/api/analytics/escalation-completion",
 ]
 
 
@@ -140,6 +141,59 @@ async def test_fix_effectiveness_denominators_and_rates(client, db_session):
     rule_type_row = next(r for r in body["by_rule_type"] if r["rule_type"] == "bluetooth")
     assert rule_type_row["resolved"] == 2
     assert rule_type_row["recurred"] == 1
+
+
+async def test_escalation_completion_empty_db_returns_zeroes_not_error(client):
+    resp = await client.get("/api/analytics/escalation-completion", params={"date_from": "2026-08-01", "date_to": "2026-08-07"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_escalated"] == 0
+    assert body["resolved"] == 0
+    assert body["completion_rate_pct"] == 0.0
+    assert body["daily"] == []
+
+
+async def test_escalation_completion_numerator_denominator(client, db_session):
+    from datetime import datetime
+    from app.db.database import IssueRecord
+
+    in_window = datetime(2026, 8, 5, 10, 0, 0)
+    async with db_session() as s:
+        # Escalated + resolved -> counts toward both denominator and numerator.
+        s.add(IssueRecord(id="e1", description="x", escalated_at=in_window, escalation_status="resolved"))
+        # Escalated, still in progress -> denominator only.
+        s.add(IssueRecord(id="e2", description="y", escalated_at=in_window, escalation_status="in_progress"))
+        # Never escalated -> must not count at all, even though status='done'.
+        s.add(IssueRecord(id="e3", description="z", status="done", escalated_at=None, escalation_status=""))
+        # Escalated + resolved but soft-deleted -> excluded.
+        s.add(IssueRecord(id="e4", description="w", escalated_at=in_window, escalation_status="resolved", deleted=True))
+        # Escalated + resolved but outside the window -> excluded.
+        s.add(IssueRecord(id="e5", description="v", escalated_at=datetime(2026, 9, 1), escalation_status="resolved"))
+        await s.commit()
+
+    resp = await client.get("/api/analytics/escalation-completion", params={"date_from": "2026-08-01", "date_to": "2026-08-07"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_escalated"] == 2       # e1, e2
+    assert body["resolved"] == 1              # e1
+    assert body["completion_rate_pct"] == 50.0
+    assert body["daily"] == [{"date": "2026-08-05", "total": 2, "resolved": 1, "rate_pct": 50.0}]
+
+
+async def test_escalation_completion_includes_end_of_day_record(client, db_session):
+    from datetime import datetime
+    from app.db.database import IssueRecord
+
+    async with db_session() as s:
+        s.add(IssueRecord(
+            id="e-eod", description="x",
+            escalated_at=datetime(2026, 8, 7, 23, 0, 0), escalation_status="resolved",
+        ))
+        await s.commit()
+
+    resp = await client.get("/api/analytics/escalation-completion", params={"date_from": "2026-08-01", "date_to": "2026-08-07"})
+    assert resp.status_code == 200
+    assert resp.json()["total_escalated"] == 1
 
 
 async def test_fallback_extraction_includes_end_of_day_record(client, db_session):
