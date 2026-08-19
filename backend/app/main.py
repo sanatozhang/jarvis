@@ -236,6 +236,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("coreguard scheduler start failed (non-fatal): %s", e)
 
+    # Graygate 4.0.3 灰度期临时监控（每天 09:00 Asia/Shanghai 发日报；独立子模块，无 import 耦合）
+    graygate_scheduler_task = None
+    try:
+        from app.graygate.config import get_graygate_settings
+        _gg = get_graygate_settings()
+        if _gg.enabled and _gg.scheduler_enabled:
+            from app.graygate.workers.scheduler import scheduler_loop as _graygate_loop
+            graygate_scheduler_task = asyncio.create_task(_graygate_loop())
+            logger.info("graygate scheduler started (report_hour_bjt=%d)", _gg.report_hour_bjt)
+        else:
+            logger.info("graygate scheduler disabled (enabled=%s scheduler_enabled=%s)",
+                        _gg.enabled, _gg.scheduler_enabled)
+    except Exception as e:
+        logger.warning("graygate scheduler start failed (non-fatal): %s", e)
+
     # Daily escalation reminder (09:00 Asia/Shanghai) — gated by ENABLE_ONCALL_NOTIFY
     import os
     reminder_task = None
@@ -374,6 +389,10 @@ app.include_router(_crash_api.router)
 # Coreguard API（独立子模块，prefix /api/coreguard，demo 阶段）
 from app.coreguard.api import coreguard as _coreguard_api  # noqa: E402
 app.include_router(_coreguard_api.router)
+
+# Graygate API（独立子模块，prefix /api/graygate，4.0.3 灰度期临时功能）
+from app.graygate.api.graygate import router as _graygate_api_router  # noqa: E402
+app.include_router(_graygate_api_router)
 
 
 # Coreguard scheduler 已挂到 lifespan 函数内（main.py:182+）。

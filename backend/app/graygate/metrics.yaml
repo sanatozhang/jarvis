@@ -1,0 +1,83 @@
+# graygate/metrics.yaml — 11 项 Native 看板 (mbn-8h9-m2p) 指标映射
+# 移植自 ~/.claude/skills/weekly-report-core-metrics-sync/native-mapping.yaml，
+# 补 Android ANR / Refresh Rate（该文件没有，2026-08-19 现场核对 widget 标题新增）。
+#
+# version 不写死在这里 —— 由调用方（version_resolver 产出的每平台主力 build，
+# 或 config.version_pattern 的大盘通配符）作为 template_variables 在查询时动态传入。
+#
+# widget 类型（RUM search.query 或 metrics tag-list）由 dashboard JSON 自身携带，
+# dashboard_query.py 的 strip_template_vars 会自动识别处理，metrics.yaml 不需要区分。
+
+defaults:
+  dashboard_id: mbn-8h9-m2p
+  template_variables:
+    env: production
+    os_version: "*"
+    usr.id: "*"
+
+metrics:
+  - key: crash_free
+    title: "Crash-free sessions"
+    cell_format: "{v:.2f}%"
+    target: { op: ">=", value: 99.97 }   # 照抄 native-mapping.yaml 同一指标的 SOTA 目标
+
+  - key: android_anr
+    title: "Android ANR"
+    cell_format: "{v:.2f}%"
+    not_applicable_platform: ios     # iOS 查询会返回 0.0000（非缺数据），但 ANR 概念不适用 iOS —— 报告显示 "—（不适用）"
+    target: { op: "<=", value: 0.47 }   # Google Play 合规线（coreguard/metrics.yaml 注释里的口径来源）
+
+  - key: hang_rate
+    title: "Hang Rate (iOS only)"
+    scale: 0.000001   # raw → ms/hr（照抄 native-mapping.yaml 同一 widget 的换算系数；本次实施时漏抄，2026-08-19
+                       # 真实数据验证时发现原始值离谱地大——577,521,825.606——才补上，target ≤80ms/hr）
+    cell_format: "{v:.3f}ms/hr"
+    not_applicable_platform: android # Android 无 app hang 指标，对应概念是上面的 android_anr
+    target: { op: "<=", value: 80 }
+
+  - key: refresh_rate
+    title: "Refresh Rate"
+    cell_format: "{v:.2f}"
+    target: { op: ">=", value: 59 }   # 无官方 SOTA 来源，按 60Hz 屏幕近满帧粗定，供参考用色点
+
+  - key: fps
+    title: "APP单次运行平均FPS"
+    cell_format: "{v:.2f}"
+    target: { op: ">=", value: 60 }
+
+  - key: jank
+    # 双 widget 合一行；formula 各自独立查询，渲染时拼成一个 cell
+    title_p75: "APP单次使用的卡顿次数（p75）"
+    title_p90: "APP单次使用的卡顿次数（p90）"
+    cell_format: "{p75:.1f}/{p90:.1f}"
+    target_p75: { op: "<=", value: 20 }
+    target_p90: { op: "<=", value: 40 }
+
+  - key: cold_startup_p90
+    title: "Cold Startup p90"
+    scale: 0.001    # raw ms → s（照抄 native-mapping.yaml；final review 指出本次实施漏抄，2026-08-19 补上）
+    cell_format: "{v:.2f}s"
+    target: { op: "<=", value: 1.5 }
+
+  - key: memory_usage
+    title: "Memory Usage"
+    scale: 9.5367431640625e-7   # raw → MiB（实测 iOS 129,931,081 raw → 123.9 MiB，Android 350,468,947 raw → 334.2 MiB，量级核对通过）
+    cell_format: "{v:.2f}MiB"
+    target: { op: "<=", value: 400 }
+
+  - key: home_render
+    title_p75: "首页文件列表加载P75时长"
+    title_p90: "首页文件列表加载P90时长"
+    cell_format: "{p75:.2f}ms / {p90:.2f}ms"
+    target_p75: { op: "<=", value: 200 }
+    target_p90: { op: "<=", value: 200 }
+
+  - key: detail_render_p90
+    title: "详情页首屏加载耗时P90"
+    cell_format: "{v:.2f}ms"
+    target: { op: "<=", value: 50 }
+
+  - key: summary_render_p90
+    title: "详情页 WebView 首屏渲染时长 P90"
+    cell_format: "{v:.2f}ms"
+    target: { op: "<=", value: 500 }
