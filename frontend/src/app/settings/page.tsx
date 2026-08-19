@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, getGraygateFocusVersions, setGraygateFocusVersion, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult, type GraygateFocusVersions } from "@/lib/api";
 import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
@@ -485,6 +485,110 @@ function RepoRoutingSection() {
             </div>
           )}
         </div>
+      </div>
+    </section>
+  );
+}
+
+
+function GraygateFocusVersionSection() {
+  const t = useT();
+  const [current, setCurrent] = useState<GraygateFocusVersions>({ ios: null, android: null });
+  const [iosDraft, setIosDraft] = useState("");
+  const [androidDraft, setAndroidDraft] = useState("");
+  const [saving, setSaving] = useState<"ios" | "android" | null>(null);
+  const [savedPlatform, setSavedPlatform] = useState<"ios" | "android" | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    getGraygateFocusVersions()
+      .then((data) => {
+        setCurrent(data);
+        setIosDraft(data.ios || "");
+        setAndroidDraft(data.android || "");
+      })
+      .catch(console.error);
+  }, []);
+
+  const onSave = async (platform: "ios" | "android") => {
+    setSaving(platform);
+    setError("");
+    try {
+      const version = platform === "ios" ? iosDraft.trim() : androidDraft.trim();
+      const data = await setGraygateFocusVersion(platform, version);
+      setCurrent(data);
+      setSavedPlatform(platform);
+      setTimeout(() => setSavedPlatform(null), 2000);
+    } catch (e: any) {
+      setError(t("保存失败") + ": " + (e.message || ""));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const onClear = async (platform: "ios" | "android") => {
+    if (platform === "ios") setIosDraft(""); else setAndroidDraft("");
+    setSaving(platform);
+    setError("");
+    try {
+      const data = await setGraygateFocusVersion(platform, "");
+      setCurrent(data);
+    } catch (e: any) {
+      setError(t("保存失败") + ": " + (e.message || ""));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const row = (platform: "ios" | "android", label: string, draft: string, setDraft: (v: string) => void) => (
+    <div>
+      <label className="block text-sm mb-1" style={{ color: S.text1 }}>{label}</label>
+      <p className="text-[11px] mb-1.5" style={{ color: S.text3 }}>
+        {current[platform]
+          ? `${t("当前人工指定")}: ${current[platform]}`
+          : t("未设置，跟踪 session 数最多的 build（自动判定）")}
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          placeholder="4.0.302-1050"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          className="rounded px-3 py-1.5 text-sm w-48" style={inputStyle}
+        />
+        <button
+          onClick={() => onSave(platform)} disabled={saving === platform}
+          className="rounded px-3 py-1.5 text-sm font-medium"
+          style={{ background: saving === platform ? S.text3 : S.accent, color: "white", border: "none", cursor: saving === platform ? "not-allowed" : "pointer" }}
+        >
+          {saving === platform ? t("保存中...") : t("设为主要版本")}
+        </button>
+        {current[platform] && (
+          <button
+            onClick={() => onClear(platform)} disabled={saving === platform}
+            className="rounded px-3 py-1.5 text-sm"
+            style={{ background: "transparent", color: S.text2, border: `1px solid ${S.border}`, cursor: "pointer" }}
+          >
+            {t("清空（回落自动判定）")}
+          </button>
+        )}
+        {savedPlatform === platform && <span className="text-xs" style={{ color: S.accent }}>✓ {t("已保存")}</span>}
+      </div>
+    </div>
+  );
+
+  return (
+    <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+      <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+        {t("4.0.3 灰度 · 主要版本")}
+      </h2>
+      <p className="text-[11px] mb-4" style={{ color: S.text3 }}>
+        {t("发布新版本时在这里指定 iOS/Android 各自的精确 build 号，每日灰度报告的「主要版本」会立刻切换到这个版本，不用等它自然爬到 session 数第一。")}
+      </p>
+      <div className="flex flex-col gap-4 max-w-md">
+        {row("ios", "iOS", iosDraft, setIosDraft)}
+        {row("android", "Android", androidDraft, setAndroidDraft)}
+        {error && <span className="text-xs" style={{ color: "#EF4444" }}>{error}</span>}
       </div>
     </section>
   );
@@ -1079,6 +1183,9 @@ export default function SettingsPage() {
 
         {/* CRASHGUARD PREFERENCES (per-browser) */}
         <CrashguardPrefsSection />
+
+        {/* GRAYGATE 4.0.3 灰度 主要版本人工指定 */}
+        <GraygateFocusVersionSection />
 
         {/* USER MANAGEMENT (Admin only) */}
         {isAdmin && (

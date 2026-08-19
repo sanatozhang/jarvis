@@ -2409,3 +2409,21 @@ export async function submitSiteFeedback(payload: SiteFeedbackPayload): Promise<
   if (!resp.ok) throw new Error(`feedback failed: ${resp.status}`);
   return resp.json();
 }
+
+// ============================================================
+// Graygate（4.0.3 灰度期临时监控）—— 人工指定"主要版本"
+// ============================================================
+
+export interface GraygateFocusVersions {
+  ios: string | null;
+  android: string | null;
+}
+
+export const getGraygateFocusVersions = () =>
+  request<GraygateFocusVersions>("/graygate/focus-version");
+
+export const setGraygateFocusVersion = (platform: "ios" | "android", version: string) =>
+  request<GraygateFocusVersions>(
+    "/graygate/focus-version",
+    { method: "POST", body: JSON.stringify({ platform, version }) },
+  );
