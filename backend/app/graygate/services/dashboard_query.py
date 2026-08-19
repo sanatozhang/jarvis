@@ -289,6 +289,12 @@ class MetricSpec:
     # "ios" / "android" —— 该指标概念在这个平台上不适用（如 Android ANR 之于
     # iOS），report_builder 渲染时应显示 "—（不适用）" 而不是查回来的 0.0000。
     not_applicable_platform: Optional[str] = None
+    # SOTA 目标阈值，用于卡片颜色点判定（🟩达标/🟨接近/🟥未达标）；{op: ">="/"<=" , value: float}
+    # 单 widget 指标用 target；双 widget（jank/home_render）用 target_p75/target_p90。
+    # 无 target 的指标（如未设定的场景）不参与颜色判定，只显示数值。
+    target: Optional[Dict[str, Any]] = None
+    target_p75: Optional[Dict[str, Any]] = None
+    target_p90: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -328,6 +334,9 @@ def load_metrics_config() -> MetricsConfig:
             cell_format=m.get("cell_format", ""),
             scale=float(m.get("scale", 1.0)),
             not_applicable_platform=m.get("not_applicable_platform"),
+            target=m.get("target"),
+            target_p75=m.get("target_p75"),
+            target_p90=m.get("target_p90"),
         )
         for m in raw.get("metrics", [])
     ]

@@ -36,9 +36,21 @@ _PLATFORM_SERVICE = {
 class PlatformVersions:
     platform: str
     versions: List[Tuple[str, int]] = field(default_factory=list)  # 按 events 降序
-    top_version: Optional[str] = None
+    top_version: Optional[str] = None       # events 最大的 build（"主要版本"——当前流量主力）
     top_version_events: int = 0
+    newest_version: Optional[str] = None    # build 号最大的 build（"🆕最新版本"——刚发布，未必已放量）
+    newest_version_events: int = 0
     total_events: int = 0
+
+
+def _build_number(version: str) -> int:
+    """从 `4.0.301-1038` 这类字符串取 `-` 后的 build 号，解析失败按最小值兜底
+    （排最后，不会被误判成"最新"）。"""
+    tail = version.rsplit("-", 1)[-1]
+    try:
+        return int(tail)
+    except ValueError:
+        return -1
 
 
 def _empty(platform: str) -> PlatformVersions:
@@ -47,6 +59,8 @@ def _empty(platform: str) -> PlatformVersions:
         versions=[],
         top_version=None,
         top_version_events=0,
+        newest_version=None,
+        newest_version_events=0,
         total_events=0,
     )
 
@@ -106,14 +120,19 @@ async def _resolve_one_platform(
     total_events = sum(events for _, events in versions)
     if versions:
         top_version, top_version_events = versions[0]
+        newest_version, _ = max(versions, key=lambda vc: _build_number(vc[0]))
+        newest_version_events = dict(versions)[newest_version]
     else:
         top_version, top_version_events = None, 0
+        newest_version, newest_version_events = None, 0
 
     return PlatformVersions(
         platform=platform,
         versions=versions,
         top_version=top_version,
         top_version_events=top_version_events,
+        newest_version=newest_version,
+        newest_version_events=newest_version_events,
         total_events=total_events,
     )
 
