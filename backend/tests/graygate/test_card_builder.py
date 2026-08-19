@@ -111,17 +111,31 @@ async def test_build_report_card_newest_equals_top_skips_redundant_fetch(monkeyp
     async def fake_find_new_crashes(target_date):
         return []
 
+    async def fake_find_top_crashes(target_date):
+        return []
+
+    async def fake_find_top_jank(target_date):
+        return []
+
     monkeypatch.setattr(cb, "resolve_versions", fake_resolve_versions)
     monkeypatch.setattr(cb, "get_dashboard_json", fake_get_dashboard_json)
     monkeypatch.setattr(cb, "load_metrics_config", fake_load_metrics_config)
     monkeypatch.setattr(cb, "get_metric_scalar", fake_get_metric_scalar)
     monkeypatch.setattr(cb, "find_new_crashes", fake_find_new_crashes)
+    monkeypatch.setattr(cb, "find_top_crashes", fake_find_top_crashes)
+    monkeypatch.setattr(cb, "find_top_jank", fake_find_top_jank)
 
     result = await cb.build_report_card(date(2026, 8, 18))
     assert result.available is True
-    # ios: market(4.0.3*-pattern via settings) + top(4.0.301-1043) — 不应再出现第三次 4.0.301-1043 查询
+    # ios: market(4.0.3*-pattern) 今日+基线 2 次 + top(4.0.301-1043) 今日+基线 2 次 ——
+    # 不应该再出现第三轮"最新版本"对同一个 build 的查询（应为 2 次，不是 3+ 次）。
     top_build_calls = [v for v in fetch_calls if v == "4.0.301-1043"]
-    assert len(top_build_calls) == 1, f"expected exactly 1 call for the shared build, got {len(top_build_calls)}: {fetch_calls}"
+    assert len(top_build_calls) == 2, (
+        f"expected exactly 2 calls (today+baseline) for the shared build, "
+        f"got {len(top_build_calls)}: {fetch_calls}"
+    )
 
-    ios_col = result.card["body"]["elements"][2]["columns"][0]["elements"][0]["text"]["content"]
+    # 找到 column_set 元素（恶化摘要不存在时，它是紧跟 header banner 的第二个 element）
+    column_set = next(e for e in result.card["body"]["elements"] if e.get("tag") == "column_set")
+    ios_col = column_set["columns"][0]["elements"][0]["text"]["content"]
     assert "与主要版本一致" in ios_col
