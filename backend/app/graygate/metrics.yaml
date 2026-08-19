@@ -27,7 +27,9 @@ metrics:
 
   - key: hang_rate
     title: "Hang Rate (iOS only)"
-    cell_format: "{v:.3f}"
+    scale: 0.000001   # raw → ms/hr（照抄 native-mapping.yaml 同一 widget 的换算系数；本次实施时漏抄，2026-08-19
+                       # 真实数据验证时发现原始值离谱地大——577,521,825.606——才补上，target ≤80ms/hr）
+    cell_format: "{v:.3f}ms/hr"
     not_applicable_platform: android # Android 无 app hang 指标，对应概念是上面的 android_anr
 
   - key: refresh_rate
