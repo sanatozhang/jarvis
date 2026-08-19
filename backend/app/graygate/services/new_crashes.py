@@ -32,6 +32,15 @@ logger = logging.getLogger("graygate.new_crashes")
 _BJT = ZoneInfo("Asia/Shanghai")
 _MAX_RESULTS = 10
 
+# "崩溃"口径——不加这个过滤，Datadog Error Tracking issue search（默认 track=rum）
+# 会把所有被分组的 error 都吐出来，包括非致命的捕获异常（网络请求失败、业务层
+# NSError 等），跟"崩溃"完全是两回事。2026-08-19 真实数据核实：iOS 昨日事件量
+# 最大的"崩溃"其实是一条 11,285 events 的 "Error Domain=test Code=42"，套上这个
+# 过滤后完全消失——它根本不是崩溃。照抄 crashguard 自己的口径
+# （datadog_client.py::_USER_FATAL_FILTER，Plaud 内部 sessions/告警对齐的定义）：
+# 崩溃类含 native crash + ANR + App Hang。
+_CRASH_FAMILY_FILTER = '@type:error (@error.is_crash:true OR @error.category:ANR OR @error.category:"App Hang")'
+
 
 @dataclass
 class NewCrash:
@@ -72,7 +81,7 @@ async def find_new_crashes(target_date: date) -> List[NewCrash]:
     try:
         issues_raw = await client.list_issues_for_window(
             start_ms, end_ms,
-            query=f"version:{settings.version_pattern}",
+            query=f"{_CRASH_FAMILY_FILTER} version:{settings.version_pattern}",
         )
     except CircuitBreakerOpen as e:
         logger.warning("new_crashes: datadog circuit breaker open: %s", e)

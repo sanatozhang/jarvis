@@ -59,8 +59,10 @@ def fake_settings(monkeypatch):
     monkeypatch.setattr(nc, "get_graygate_settings", lambda: fake)
 
 
-def _mock_list_issues(monkeypatch, raw_issues=None, side_effect=None):
+def _mock_list_issues(monkeypatch, raw_issues=None, side_effect=None, captured_queries=None):
     async def fake_list_issues_for_window(self, start_ms, end_ms, query="*", **kwargs):
+        if captured_queries is not None:
+            captured_queries.append(query)
         if side_effect is not None:
             raise side_effect
         return raw_issues or []
@@ -68,6 +70,21 @@ def _mock_list_issues(monkeypatch, raw_issues=None, side_effect=None):
     monkeypatch.setattr(
         nc.DatadogClient, "list_issues_for_window", fake_list_issues_for_window
     )
+
+
+@pytest.mark.asyncio
+async def test_query_includes_crash_family_filter(monkeypatch):
+    """2026-08-19 真实数据核实：不加 @error.is_crash:true 过滤会把非致命的捕获
+    异常（网络请求失败等）也当成"崩溃"——实测最大一条 11,285 events 的
+    "Error Domain=test Code=42" 套上这个过滤后完全消失，证明它根本不是崩溃。
+    这里锁定查询里必须带上 crash-family 过滤，不能只有 version 通配符。
+    """
+    captured: list = []
+    _mock_list_issues(monkeypatch, raw_issues=[], captured_queries=captured)
+    await nc.find_new_crashes(TARGET_DATE)
+    assert len(captured) == 1
+    assert "@error.is_crash:true" in captured[0]
+    assert "version:4.0.3*" in captured[0]
 
 
 # ---------------------------------------------------------------------------

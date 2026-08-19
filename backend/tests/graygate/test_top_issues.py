@@ -31,6 +31,21 @@ def _raw_issue(platform, events, title, issue_id="abc", version="4.0.301-1038"):
 
 
 @pytest.mark.asyncio
+async def test_find_top_crashes_query_includes_crash_family_filter():
+    """2026-08-19 真实数据核实：不加 @error.is_crash:true 过滤会把非致命的捕获
+    异常（网络请求失败等）也当成"崩溃"——实测最大一条 11,285 events 的
+    "Error Domain=test Code=42" 套上这个过滤后完全消失，证明它根本不是崩溃。
+    锁定查询里必须带上 crash-family 过滤，不能只有 version 通配符。
+    """
+    mock = AsyncMock(return_value=[])
+    with patch("app.graygate.services.top_issues.DatadogClient.list_issues_for_window", new=mock):
+        await ti.find_top_crashes(date(2026, 8, 18))
+    _, kwargs = mock.call_args
+    assert "@error.is_crash:true" in kwargs["query"]
+    assert "version:4.0.3*" in kwargs["query"]
+
+
+@pytest.mark.asyncio
 async def test_find_top_crashes_sorted_desc_and_capped_at_5():
     raw = [_raw_issue("IOS", n, f"issue-{n}") for n in [5, 999, 42, 100, 7, 300]]
     with patch(

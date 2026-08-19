@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 from app.crashguard.services.datadog_client import CircuitBreakerOpen, DatadogClient, normalize_issue
 from app.crashguard.services.version_util import service_filter_for_generation
 from app.graygate.config import get_graygate_settings
+from app.graygate.services.new_crashes import _CRASH_FAMILY_FILTER
 
 logger = logging.getLogger("graygate.top_issues")
 
@@ -78,7 +79,7 @@ async def find_top_crashes(target_date: date) -> List[TopCrash]:
     client = _client()
     try:
         issues_raw = await client.list_issues_for_window(
-            start_ms, end_ms, query=f"version:{settings.version_pattern}",
+            start_ms, end_ms, query=f"{_CRASH_FAMILY_FILTER} version:{settings.version_pattern}",
         )
     except CircuitBreakerOpen as e:
         logger.warning("top_issues: crash query circuit breaker open: %s", e)
