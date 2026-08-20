@@ -380,6 +380,11 @@ class Settings(BaseSettings):
     # --- Env-based settings ---
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "sqlite+aiosqlite:///./data/appllo.db"
+    # SQLite 健康监控（2026-08-20，virtiofs+WAL 数据库损坏事故之后加）：
+    # I/O 错误频率异常 / 定期 integrity_check / journal_mode 漂移，见
+    # app/services/db_health_monitor.py。纯只读检查，默认开。
+    db_health_monitor_enabled: bool = True
+    db_health_alert_email: str = "sanato.zhang@plaud.ai"
     code_repo_path: str = ""              # Legacy: single repo (treated as app)
     code_repo_app: str = ""               # APP (Flutter) source code path
     code_repo_web: str = ""               # Web frontend source code path

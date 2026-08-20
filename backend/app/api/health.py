@@ -30,14 +30,17 @@ async def health_check():
     settings = get_settings()
     checks: Dict[str, dict] = {}
 
-    # Database
+    # Database — 之前这里的 `"SELECT 1" if False else None` 是个 bug：永远传 None
+    # 给 execute()，真出错也被下面的 except 悄悄吞成 "status": "ok"，2026-08-20
+    # 那次数据库真损坏期间这个检查全程显示 ok，完全没用。改成真的探一次活库。
     try:
+        from sqlalchemy import text as _sql_text
         from app.db.database import get_session
         async with get_session() as session:
-            await session.execute("SELECT 1" if False else None)  # type: ignore
+            await session.execute(_sql_text("SELECT 1"))
         checks["database"] = {"status": "ok"}
     except Exception as e:
-        checks["database"] = {"status": "ok", "note": "sqlite (file-based)"}
+        checks["database"] = {"status": "error", "error": str(e)}
 
     # Redis
     try:
@@ -49,9 +52,13 @@ async def health_check():
     except Exception as e:
         checks["redis"] = {"status": "unavailable", "error": str(e), "note": "Fallback to in-process tasks"}
 
-    # Agents
+    # Agents —— 这是个嵌套字典（claude_code/codex 各有自己的 status），本身没有
+    # 顶层 status 字段。之前直接 checks["agents"] = agents 会让下面 all_ok 的
+    # `.get("status")` 永远拿 None，判成 degraded——跟 agent 实际是否可用无关，
+    # 纯粹是聚合逻辑的 bug（2026-08-20 发现）。这里补一个聚合出来的顶层 status。
     agents = await _detect_agents()
-    checks["agents"] = agents
+    agents_ok = all(a.get("status") in ("ok", "unavailable") for a in agents.values())
+    checks["agents"] = {"status": "ok" if agents_ok else "degraded", **agents}
 
     # Rules
     from app.services.rule_engine import RuleEngine
@@ -60,6 +67,29 @@ async def health_check():
         "status": "ok",
         "count": len(engine.list_rules()),
         "rules": [r.meta.id for r in engine.list_rules()],
+    }
+
+    # SQLite 健康监控快照（2026-08-20，纯读缓存，不触发新检查——见
+    # app/services/db_health_monitor.py 顶部注释）。还没跑过第一轮检查时
+    # ok=None，不计入 all_ok 判定（避免刚启动就被判成 degraded）。
+    from app.services.db_health_state import get_snapshot
+    snap = get_snapshot()
+    db_health_status = "ok"
+    if snap.integrity.ok is False or snap.journal_mode.ok is False:
+        db_health_status = "error"
+    checks["db_health"] = {
+        "status": db_health_status,
+        "integrity_check": {
+            "ok": snap.integrity.ok,
+            "checked_at": snap.integrity.checked_at,
+            "detail": snap.integrity.detail,
+        },
+        "journal_mode": {
+            "ok": snap.journal_mode.ok,
+            "checked_at": snap.journal_mode.checked_at,
+            "detail": snap.journal_mode.detail,
+        },
+        "recent_io_errors_10min": snap.recent_io_errors_10min,
     }
 
     all_ok = all(

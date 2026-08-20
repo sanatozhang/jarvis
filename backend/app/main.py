@@ -197,6 +197,13 @@ async def lifespan(app: FastAPI):
     # Start periodic zombie task cleanup
     zombie_task = asyncio.create_task(_zombie_cleanup_loop())
 
+    # SQLite 健康监控（I/O 错误频率 / 定期 integrity_check / journal_mode 漂移哨兵）
+    # 2026-08-20 virtiofs+WAL 数据库损坏事故后加，见 db_health_monitor.py 顶部注释。
+    db_health_task = None
+    if getattr(settings, "db_health_monitor_enabled", True):
+        from app.services.db_health_monitor import db_health_monitor_loop
+        db_health_task = asyncio.create_task(db_health_monitor_loop())
+
     # Start daily code repo updater (pulls main branch between 2-6 AM)
     from app.services.repo_updater import repo_update_loop
     repo_update_task = asyncio.create_task(repo_update_loop())
@@ -304,6 +311,8 @@ async def lifespan(app: FastAPI):
     release_poller_task.cancel()
     repo_update_task.cancel()
     zombie_task.cancel()
+    if db_health_task is not None:
+        db_health_task.cancel()
     await close_db()
     logger.info("Appllo stopped.")
 

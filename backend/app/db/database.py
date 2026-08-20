@@ -420,10 +420,16 @@ class ReleaseBuild(Base):
 # ---------------------------------------------------------------------------
 _engine = None
 _session_factory = None
+_sqlite_file_path: str | None = None  # 供 db_health_monitor 做在线快照，非 sqlite 后端保持 None
+
+
+def get_sqlite_file_path() -> str | None:
+    """当前 sqlite 数据库文件的绝对路径；非 sqlite 后端（如切了 Postgres）返回 None。"""
+    return _sqlite_file_path
 
 
 async def init_db():
-    global _engine, _session_factory
+    global _engine, _session_factory, _sqlite_file_path
     settings = get_settings()
 
     db_url = settings.database_url
@@ -437,7 +443,9 @@ async def init_db():
             if not Path(db_path).is_absolute():
                 abs_path = str(Path(settings.storage.data_dir) / Path(db_path).name)
                 db_url = f"sqlite+aiosqlite:///{abs_path}"
-            Path(abs_path if not Path(db_path).is_absolute() else db_path).parent.mkdir(parents=True, exist_ok=True)
+            resolved_path = abs_path if not Path(db_path).is_absolute() else db_path
+            Path(resolved_path).parent.mkdir(parents=True, exist_ok=True)
+            _sqlite_file_path = resolved_path
 
     # SQLite needs WAL mode + busy_timeout to handle concurrent async writes.
     # 池策略：用 NullPool —— SQLite 单写者，连接复用反而加剧锁争用 + GC 泄漏。
@@ -514,7 +522,11 @@ async def init_db():
             finally:
                 cursor.close()
 
-        # 把 "disk I/O error" 翻译成 disconnect，让 SQLAlchemy 不要复用坏 handle
+        # 把 "disk I/O error" 翻译成 disconnect，让 SQLAlchemy 不要复用坏 handle。
+        # 这里是所有查询级 SQLite 错误的必经之路（不止连接时的 PRAGMA），2026-08-20
+        # 数据库健康监控（db_health_monitor.py）的 I/O 错误频率统计就挂在这个钩子上
+        # ——之前考虑过挂在 _execute_pragma_with_retry 上，但那只捕获连接建立时的
+        # PRAGMA 失败，today 事故里 46 次报错大部分来自业务查询本身，会漏计。
         @event.listens_for(_engine.sync_engine, "handle_error")
         def _treat_sqlite_io_as_disconnect(ctx):
             orig = ctx.original_exception
@@ -523,6 +535,8 @@ async def init_db():
             msg = str(orig).lower()
             if "disk i/o error" in msg or ("database is locked" in msg and "io" in msg):
                 ctx.is_disconnect = True
+                from app.services.db_health_state import record_io_error
+                record_io_error()
 
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
