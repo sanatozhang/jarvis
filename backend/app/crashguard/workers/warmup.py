@@ -29,6 +29,7 @@ _PIPELINE_TICK_SEC = 60
 _pipeline_last_fired: str = ""
 _pr_reviewer_last_fired: str = ""
 _pr_pending_review_last_fired: str = ""
+_conflict_resync_last_fired: str = ""
 
 
 async def _resolve_latest_release(settings) -> tuple[str, List[str]]:
@@ -666,6 +667,7 @@ async def pipeline_scheduler_loop() -> None:
 
     logger.info("crashguard pipeline_scheduler_loop started")
     global _pipeline_last_fired, _pr_reviewer_last_fired, _pr_pending_review_last_fired
+    global _conflict_resync_last_fired
     while True:
         try:
             s = get_crashguard_settings()
@@ -718,6 +720,25 @@ async def pipeline_scheduler_loop() -> None:
                                 hb.set_summary(res)
                         except Exception:
                             logger.exception("pr_pending_review_alert failed")
+
+                # 自动 PR 落后 base / 冲突自愈（默认关闭，见 config.conflict_resync_enabled）
+                cr_cron = getattr(s, "conflict_resync_cron", "") or ""
+                if getattr(s, "conflict_resync_enabled", False) and cr_cron:
+                    now4 = datetime.now()
+                    cr_tag = now4.strftime("%Y-%m-%d %H:%M")
+                    if (_conflict_resync_last_fired != cr_tag
+                            and _cron_matches(cr_cron, now4)):
+                        _conflict_resync_last_fired = cr_tag
+                        try:
+                            from app.crashguard.services.pr_conflict_resync import (
+                                run_conflict_resync_sweep,
+                            )
+                            from app.crashguard.services.job_heartbeat import record_heartbeat
+                            async with record_heartbeat("conflict_resync") as hb:
+                                res = await run_conflict_resync_sweep()
+                                hb.set_summary(res)
+                        except Exception:
+                            logger.exception("conflict_resync sweep failed")
         except asyncio.CancelledError:
             raise
         except Exception:

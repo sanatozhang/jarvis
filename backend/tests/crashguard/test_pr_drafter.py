@@ -7,7 +7,7 @@ import pytest
 def test_safe_branch_name_format():
     from app.crashguard.services.pr_drafter import _safe_branch_name
     b = _safe_branch_name("a79f3eb2-067e-11f1-9770-da7ad0900002", "android")
-    assert b.startswith("crashguard/android/")
+    assert b.startswith("fix/crashguard/android/")
     # 包含时间戳
     parts = b.split("-")
     assert len(parts[-1]) >= 12  # YYYYMMDDHHMM
@@ -18,7 +18,7 @@ def test_safe_branch_name_strips_special_chars():
     b = _safe_branch_name("!!!@@@", "ios")
     assert "!!!" not in b
     assert "@@@" not in b
-    assert b.startswith("crashguard/ios/noid-")
+    assert b.startswith("fix/crashguard/ios/noid-")
 
 
 def test_run_git_blocks_git_merge_subcommand():
@@ -305,7 +305,7 @@ def test_pre_enter_heal_resets_stale_crashguard_branch(tmp_path):
 
     _git_init_repo(tmp_path)
     # 模拟上次残骸：切到 crashguard 分支 + 写脏文件 + 留 prompt.md
-    _sp.run(["git", "checkout", "-q", "-b", "crashguard/flutter/stale-zombie"], cwd=str(tmp_path), check=True)
+    _sp.run(["git", "checkout", "-q", "-b", "fix/crashguard/flutter/stale-zombie"], cwd=str(tmp_path), check=True)
     (tmp_path / "README").write_text("zombie change\n", encoding="utf-8")
     (tmp_path / "prompt.md").write_text("agent leftover\n", encoding="utf-8")
     (tmp_path / ".crashguard").mkdir()
@@ -314,7 +314,7 @@ def test_pre_enter_heal_resets_stale_crashguard_branch(tmp_path):
     # 跑进入前自愈逻辑（提取的内联实现）—— 模拟 draft_pr_for_analysis 入口
     def _heal(repo_path: str, branch: str):
         from app.crashguard.services.pr_drafter import _run_git
-        if branch.startswith("crashguard/"):
+        if branch.startswith("fix/crashguard/"):
             _run_git(["git", "checkout", "--", "."], repo_path, timeout=15)
             _run_git(["git", "clean", "-fd", "--", ".crashguard"], repo_path, timeout=10)
             _run_git(["git", "clean", "-fd", "--", "prompt.md"], repo_path, timeout=10)
@@ -322,7 +322,7 @@ def test_pre_enter_heal_resets_stale_crashguard_branch(tmp_path):
             _run_git(["git", "checkout", "main"], repo_path, timeout=30)
             _run_git(["git", "branch", "-D", branch], repo_path, timeout=10)
 
-    _heal(str(tmp_path), "crashguard/flutter/stale-zombie")
+    _heal(str(tmp_path), "fix/crashguard/flutter/stale-zombie")
 
     # 验证：回到 main + worktree 干净 + 脏分支没了 + prompt.md 没了
     cur = _sp.run(["git", "branch", "--show-current"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
@@ -331,7 +331,7 @@ def test_pre_enter_heal_resets_stale_crashguard_branch(tmp_path):
     assert dirty is False
     assert not (tmp_path / "prompt.md").exists()
     branches = _sp.run(["git", "branch"], cwd=str(tmp_path), capture_output=True, text=True).stdout
-    assert "crashguard/flutter/stale-zombie" not in branches
+    assert "fix/crashguard/flutter/stale-zombie" not in branches
 
 
 # ─────────────────── multi-repo flutter routing (commit a0ac9f0+) ───────────────────

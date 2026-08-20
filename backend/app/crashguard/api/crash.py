@@ -2372,6 +2372,54 @@ async def get_report_detail(
     }
 
 
+@router.get("/pull-requests/stats")
+async def pull_request_stats(
+    days: int = Query(90, ge=1, le=365),
+) -> Dict[str, Any]:
+    """PR 合入率统计：全量累计 + 近 N 天窗口。
+
+    merge_rate = merged / (merged + closed)，分母只算「已决出结果」的 PR
+    （open/draft 还没决出结果，不计入分母，否则一堆 pending PR 会把率往下拉，
+    看起来像"没人管"而不是"还没到时间"）。
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import select, func
+    from app.db.database import get_session
+    from app.crashguard.models import CrashPullRequest
+
+    def _summarize(counts: Dict[str, int]) -> Dict[str, Any]:
+        merged = counts.get("merged", 0)
+        closed = counts.get("closed", 0)
+        open_or_draft = counts.get("open", 0) + counts.get("draft", 0)
+        decided = merged + closed
+        return {
+            "created": sum(counts.values()),
+            "merged": merged,
+            "closed": closed,
+            "open_or_draft": open_or_draft,
+            "merge_rate": round(merged / decided, 4) if decided else None,
+        }
+
+    since = datetime.utcnow() - timedelta(days=days)
+    async with get_session() as session:
+        all_time_rows = (await session.execute(
+            select(CrashPullRequest.pr_status, func.count())
+            .group_by(CrashPullRequest.pr_status)
+        )).all()
+        window_rows = (await session.execute(
+            select(CrashPullRequest.pr_status, func.count())
+            .where(CrashPullRequest.created_at >= since)
+            .group_by(CrashPullRequest.pr_status)
+        )).all()
+
+    all_time_counts = {status: n for status, n in all_time_rows}
+    window_counts = {status: n for status, n in window_rows}
+    return {
+        "all_time": _summarize(all_time_counts),
+        "window": {"days": days, **_summarize(window_counts)},
+    }
+
+
 @router.get("/pull-requests")
 async def list_pull_requests(
     days: int = Query(30, ge=1, le=180),

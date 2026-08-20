@@ -1975,6 +1975,22 @@ export const syncAllCrashPrs = () =>
     { method: "POST" },
   );
 
+export interface CrashPrStatsBucket {
+  created: number;
+  merged: number;
+  closed: number;
+  open_or_draft: number;
+  merge_rate: number | null;
+}
+
+export interface CrashPrStats {
+  all_time: CrashPrStatsBucket;
+  window: CrashPrStatsBucket & { days: number };
+}
+
+export const fetchCrashPrStats = (days = 90) =>
+  request<CrashPrStats>(`/crash/pull-requests/stats?days=${days}`);
+
 export const fetchCrashPullRequests = (opts?: {
   days?: number;
   status?: "draft" | "open" | "merged" | "closed";

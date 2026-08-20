@@ -572,7 +572,9 @@ def _stack_matches_platform(platform: str, fix_text: str) -> bool:
 def _safe_branch_name(issue_id: str, platform: str) -> str:
     short = re.sub(r"[^a-zA-Z0-9]", "", issue_id)[:8] or "noid"
     ts = datetime.utcnow().strftime("%Y%m%d%H%M")
-    return f"crashguard/{platform.lower()}/{short}-{ts}"
+    # "fix/" 前缀满足下游仓库（如 plaud-native-android）CI 的 Branch Name Check
+    # 正则 ^(feature|refactor|fix|chore|hotfix|docs|release|backport)/ ——2026-08-20
+    return f"fix/crashguard/{platform.lower()}/{short}-{ts}"
 
 
 def _github_slug(repo_path: str) -> str:
@@ -610,7 +612,7 @@ def _github_open_crashguard_pr(
     if not slug:
         return None
     short = re.sub(r"[^a-zA-Z0-9]", "", issue_id)[:8] or "noid"
-    pat = re.compile(rf"^crashguard/[^/]+/{re.escape(short)}-")
+    pat = re.compile(rf"^fix/crashguard/[^/]+/{re.escape(short)}-")
     # 剥 GH_TOKEN/GITHUB_TOKEN 走 OAuth（和本文件 _run_git 同款）——这里之前漏剥，过期
     # PAT 被 org 拒绝时这个"权威去重"查询直接失败返回 None（fail-open），2026-07-13
     # 实测撞过一次：两条几乎同时的开 PR 请求都查不到对方，各自开了一条重复 PR。
@@ -1987,7 +1989,7 @@ async def draft_pr_for_analysis(
       # finally cleanup 来不及跑，留下 crashguard/* 临时分支 + 脏 prompt.md ===
       # 检测：当前在 crashguard/* 分支 OR 有 prompt.md 残留 → 自动清理回 main
       try:
-          if initial_branch.startswith("crashguard/"):
+          if initial_branch.startswith("fix/crashguard/"):
               logger.warning(
                   "pre-enter heal: repo %s left on stale branch %s (previous process killed); auto-reset",
                   repo_path, initial_branch,

@@ -1051,7 +1051,7 @@ async def create_escalation_group(
         msg_lines.append(
             "\n📋 Issue Owners:\n"
             "• Backend issues → jacky.yang@plaud.ai\n"
-            "• Speech recognition inaccuracy → ruixin@plaud.ai\n"
+            "• Speech recognition inaccuracy → hannah@plaud.ai / steven.wang@plaud.ai\n"
             "• Summary / Ask related → luke@plaud.ai\n"
             "• Payment & membership → walker.li@plaud.ai\n"
             "• Summary inconsistent with transcript/recording → pillar@plaud.ai"

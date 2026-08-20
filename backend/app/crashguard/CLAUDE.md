@@ -106,7 +106,7 @@
 - **「用户量最大版本」口径**（`version_util.py::derive_top_user_version_from_crashes` + `datadog_client.py::top_user_version_by_platform`）：24h Datadog RUM `cardinality(@session.id)` group by (`@os.name`, `@application.version`)，**session 维度代理 user 维度**（Plaud RUM SDK 未调 setUser，`@usr.id` 几乎全空；24h 内同一 user 通常 1-3 session，相关性极高）。失败回落 `crash_issues.top_app_version × total_events` 加权聚合（**不用 `total_users_affected`，那个字段全 0，是已知 data hole，见 `models.py:71` 注释**）。前端 source 字段标 `datadog_rum` / `crash_issues_fallback` / `unknown`
 - **每 issue 的 RUM 分布缓存**：`crash_issues.top_os` / `top_device` / `top_app_version` 由 `services/distribution_prewarmer.py` 在 analyzer 运行时刷新，格式 `"3.16.0-634 (60%), 3.15.1-631 (30%)"`
 - **AI 分析去重**：自动入口（warmup/cron/batch）`analysis_dedup_hours` 内复用既有 success 分析；UI 重新分析按钮强制重跑
-- **PR 安全栏**：始终 `--draft`，title 前缀 `[crashguard][DRAFT]`，分支 `crashguard/auto-fix/<issue_id>-<date>`，同 fingerprint `pr_dedup_days` 内不再开 PR
+- **PR 安全栏**：始终 `--draft`，title 前缀 `[crashguard][DRAFT]`，分支 `fix/crashguard/<platform>/<short-issue-id>-<timestamp>`（`fix/` 前缀是 2026-08-20 为满足下游仓库如 plaud-native-android 的 Branch Name Check 加的，实现见 `services/pr_drafter.py::_safe_branch_name`），同 fingerprint `pr_dedup_days` 内不再开 PR
 - **早晚报防重发**：`crash_daily_reports` 上 `UNIQUE(report_date, report_type)`；scheduler 自身用 `_last_fired` 做分钟级幂等
 
 ## 开发
@@ -120,7 +120,7 @@ python -m scripts.check_crash_decoupling # DB 外键自检
 
 ## 定时任务全图（运营对照）
 
-7 个 cron + 1 个启动一次性任务，全部走 `crash_job_heartbeats` 表心跳记录，前端 `/crashguard/jobs` 可视化。
+10 个 cron + 1 个启动一次性任务，全部走 `crash_job_heartbeats` 表心跳记录；其中 `pr_reviewer_daily` / `pr_pending_review` / `conflict_resync` 三个走 `workers/warmup.py::pipeline_scheduler_loop()` 的 60s tick（而非 `workers/scheduler.py`），暂未接入前端 `/crashguard/jobs` 面板的 `_JOB_META`（预先存在的展示口径缺口，只是没在监控页可见，心跳本身照样写）。
 
 | # | 任务（job_name） | Cron 默认 | 触发条件 | 关键阈值 | kill switch |
 |---|------|----------|---------|----------|-------------|
@@ -131,6 +131,9 @@ python -m scripts.check_crash_decoupling # DB 外键自检
 | 5 | `pipeline` 数据 pipeline | `0 */4 * * *` | 全量拉 Datadog → snapshot + issue upsert + auto-analyze + auto-PR | `datadog_window_hours=24`/`pr_dedup_days=30`/`feasibility_pr_threshold=0.7` | `enabled` |
 | 6 | `morning_daily` 日报 | `0 8 * * *` | 昨日 24h 总览，SHoW-24h 基线；顶部一句话 headline | `daily_surge_threshold=+10%`/`daily_drop_threshold=-10%`/`daily_attention_min_events=100` | `feishu_enabled` + `morning_enabled` |
 | 7 | `evening_daily` 速报 | `0 17 * * *` | （**默认下线**）日内 10h 增量，SHoW-Nh 基线 | 同上 + `evening_window_hours=10`，DB fallback baseline 强制清空 | `feishu_enabled` + `evening_enabled` |
+| 8 | `pr_reviewer_daily` reviewer 点名提醒 (2026-05-21) | `0 9 * * *` | blame 命中的候选 reviewer 未 review 的 PR | `pr_reviewer_top_n=2` / `pr_reviewer_min_lines_pct=0.20` / `pr_reviewer_blocked_authors` 黑名单 | `pr_reviewer_enabled` |
+| 9 | `pr_pending_review` 积压日报 (2026-05-21) | `0 10 * * 1-5` | 昨日 merged/closed/新建 + 当前 pending 积压清单 | 无阈值，固定发给 `feishu_alert_email`/`pr_reviewer_fallback_email` | `pr_pending_review_enabled` |
+| 10 | `conflict_resync` PR 落后 base / 冲突自愈 (2026-08-20) | `0 3 * * *` | 非终态 PR 逐个查 `mergeStateStatus`：`BEHIND` 调 GitHub `update-branch` API 服务端合并；`DIRTY`/合并失败一律只通知不动代码 | 无本地 git 操作、不 force-push（`_run_git` 硬禁 rebase/merge，这里也不绕开） | `conflict_resync_enabled`（**默认 False**，新功能上线前需人工验证一轮） |
 | ✱ | `warmup` 启动一次性 | 无（启动后延后 N 秒） | 重启后补一遍 pipeline + auto-analyze | `warmup_on_startup=true` | `enabled` |
 
 ### 可观测性闭环（治本，不靠人盯）

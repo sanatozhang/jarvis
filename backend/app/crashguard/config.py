@@ -280,6 +280,15 @@ class CrashguardSettings(BaseSettings):
     # 工作日 10:00 给 sanato 发等 review 的 PR 列表（避免 PR 长期积压）
     pr_pending_review_cron: str = "0 10 * * 1-5"
     pr_pending_review_enabled: bool = True
+    # === 自动 PR 冲突自动 rebase (2026-08-20) ===
+    # 总开关：默认 False——这是新功能，涉及对真实仓库分支 force-with-lease push，
+    # 首次上线前应先在测试服务器人工验证一轮再打开，不跟其它 kill switch 一样默认开。
+    conflict_resync_enabled: bool = False
+    # 只在 GitHub mergeStateStatus=="BEHIND"（落后 base 但能干净 rebase）时才动手；
+    # =="DIRTY"（真冲突）直接跳过 git 操作，只发飞书通知负责人手动处理——不让机器猜着解冲突。
+    conflict_resync_cron: str = "0 3 * * *"  # 默认每天 03:00（北京时间低峰期）跑一次，避免频繁 force-push 打扰正在 review 的人
+    # rebase 失败 / DIRTY 冲突后飞书通知目标：找不到 reviewer_emails 时的兜底
+    conflict_resync_fallback_email: str = "sanato.zhang@plaud.ai"
     # 启动后延迟一次性跑 pipeline + auto-analyze（避免重启等到 07:00 才开始）
     warmup_on_startup: bool = True
     # 周期 pipeline cron（与早晚报解耦）；默认每 4 小时整点

@@ -467,14 +467,22 @@ async def init_db():
         import time as _time
         from sqlalchemy import event
 
-        # virtiofs (macOS Docker mount) 偶发 page-cache 错位 → SQLite 在新
-        # connection 上执行 `PRAGMA journal_mode=WAL` 抛 "disk I/O error"。
-        # DB 已经持久化在 WAL 模式（init_db 末尾验证过），所以这条 PRAGMA
-        # 本质上是空操作 + 校验；transient I/O glitch 用退避重试即可。
-        # 若 3 次仍失败，原样抛出 — 让下面的 handle_error 翻译成 disconnect，
-        # 连接池丢弃坏 handle，下次 checkout 拿新 connection。
-        # 上下文：2026-05-25 release_poller 30s tick 引爆，导致 ~14 min disk
-        # I/O 错误风暴；本重试逻辑让单条 connection 对 virtiofs glitch 免疫。
+        # virtiofs (macOS Docker mount) 偶发 page-cache 错位 → SQLite 抛
+        # "disk I/O error"，2026-05-25 release_poller 30s tick 引爆过一次
+        # ~14 min 错误风暴；当时的修复是给每条 PRAGMA 加退避重试 + 把持续失败
+        # 翻译成 disconnect 换新连接（见下），但那只解决"读不到锁"的临时抖动。
+        #
+        # 2026-08-20 102 服务器同一根因（virtiofs + WAL 的共享内存/文件锁支持
+        # 不完整）第一次真正把库文件写坏（"database disk image is malformed"，
+        # 不是临时报错，是物理损坏），从 02:00 备份恢复后重启 5 分钟内又立刻
+        # 复现——证明"重试熬过抖动"这层防御不够，WAL 本身在 virtiofs 上不安全。
+        # 治本：SQLite 官方文档明确写了 WAL 依赖底层文件系统正确支持共享内存
+        # mmap，网络/虚拟化文件系统不保证这点；改用传统 rollback-journal
+        # （DELETE）模式彻底不用 -wal/-shm 共享内存文件，避开这个坑。
+        # 代价：并发写吞吐比 WAL 差，但 SQLite 走的是 NullPool 单连接
+        # + busy_timeout=30s，本来就是单写者模型，可接受。
+        # 保留下面的退避重试作为兜底（DELETE 模式下 virtiofs 偶发 I/O 抖动
+        # 依然可能发生，只是不会再触发 WAL 共享内存那条损坏路径）。
         _IO_RETRY_BACKOFFS = (0.05, 0.10, 0.20)
 
         def _execute_pragma_with_retry(cursor, sql: str) -> None:
@@ -498,12 +506,11 @@ async def init_db():
         def _sqlite_pragmas_on_connect(dbapi_conn, conn_record):
             cursor = dbapi_conn.cursor()
             try:
-                _execute_pragma_with_retry(cursor, "PRAGMA journal_mode=WAL")
+                _execute_pragma_with_retry(cursor, "PRAGMA journal_mode=DELETE")
                 _execute_pragma_with_retry(cursor, "PRAGMA busy_timeout=30000")
-                # WAL 下用 NORMAL 同步级别（事务安全 + 大幅降低 fsync 阻塞）
-                _execute_pragma_with_retry(cursor, "PRAGMA synchronous=NORMAL")
-                # 每 1000 帧自动 checkpoint，避免 WAL 文件无限增长导致 reader 卡读
-                _execute_pragma_with_retry(cursor, "PRAGMA wal_autocheckpoint=1000")
+                # DELETE（rollback journal）模式下 synchronous 必须是 FULL 才能保证
+                # 断电/崩溃不损坏——NORMAL 只在 WAL 模式下安全，那正是我们要避开的模式。
+                _execute_pragma_with_retry(cursor, "PRAGMA synchronous=FULL")
             finally:
                 cursor.close()
 
@@ -519,10 +526,12 @@ async def init_db():
 
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
-    # 触发一次 connect 以应用 PRAGMA（顺便初始化 schema）
+    # 触发一次 connect 以应用 PRAGMA（顺便初始化 schema）；这一步如果库还处在
+    # 旧的 WAL 模式，SQLite 会自动把 -wal 内容 checkpoint 进主文件再切换，
+    # 不需要手工迁移。
     if "sqlite" in db_url:
         async with _engine.begin() as conn:
-            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA journal_mode=DELETE"))
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

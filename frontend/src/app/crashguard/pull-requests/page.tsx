@@ -7,9 +7,11 @@ import {
   refreshCrashPr,
   syncAllCrashPrs,
   fetchAutoPrQueue,
+  fetchCrashPrStats,
   backfillAutoPr,
   type CrashPullRequestItem,
   type AutoPrQueueResponse,
+  type CrashPrStats,
 } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
@@ -37,14 +39,14 @@ const STATUS_COLOR: Record<string, { fg: string; bg: string }> = {
   closed: { fg: D.text3, bg: "rgba(0,0,0,0.05)" },
 };
 
-function StatCard({ label, value, fg, bg, index = 0 }: { label: string; value: number; fg: string; bg: string; index?: number }) {
+function StatCard({ label, value, fg, bg, index = 0, suffix = "" }: { label: string; value: number; fg: string; bg: string; index?: number; suffix?: string }) {
   return (
     <div
       className="j-card j-rise"
       style={{ background: bg, border: `1px solid ${fg}33`, borderRadius: 6, padding: "10px 12px", ["--d" as string]: `${index * 0.06}s` }}
     >
       <div style={{ fontSize: 11, color: fg, fontWeight: 600 }}>{label}</div>
-      <div style={{ fontSize: 22, color: fg, fontWeight: 700, marginTop: 2 }}>{value}</div>
+      <div style={{ fontSize: 22, color: fg, fontWeight: 700, marginTop: 2 }}>{value}{suffix}</div>
     </div>
   );
 }
@@ -63,6 +65,7 @@ export default function CrashPullRequestsPage() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [queue, setQueue] = useState<AutoPrQueueResponse | null>(null);
+  const [prStats, setPrStats] = useState<CrashPrStats | null>(null);
   // 每秒自增的 tick，强制 re-render 让"分析中"的 elapsed 实时跳动
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [backfilling, setBackfilling] = useState(false);
@@ -122,6 +125,19 @@ export default function CrashPullRequestsPage() {
     return () => {
       cancelled = true;
       clearInterval(id);
+    };
+  }, [reloadKey]);
+
+  // 合入率统计（全量 + 近90天），跟 PR 列表一样在同步动作后刷新
+  useEffect(() => {
+    let cancelled = false;
+    fetchCrashPrStats(90)
+      .then((r) => {
+        if (!cancelled) setPrStats(r);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
     };
   }, [reloadKey]);
 
@@ -208,6 +224,41 @@ export default function CrashPullRequestsPage() {
             </Link>
           </div>
         </div>
+
+        {/* 合入率统计面板 */}
+        {prStats && (
+          <div
+            style={{
+              background: D.surface,
+              border: `1px solid ${D.border}`,
+              borderRadius: 8,
+              padding: "14px 16px",
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+              📊 {t("PR 合入率")}{" "}
+              <span style={{ color: D.text3, fontWeight: 400 }}>
+                · {t("全量累计")}
+                {prStats.all_time.merge_rate !== null &&
+                  ` · ${t("近")}${prStats.window.days}${t("天合入率")} ${(prStats.window.merge_rate !== null ? (prStats.window.merge_rate * 100).toFixed(0) : "–")}%`}
+              </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+              <StatCard index={0} label={t("累计创建")} value={prStats.all_time.created} fg={D.text2} bg="rgba(0,0,0,0.04)" />
+              <StatCard index={1} label={t("已合入")} value={prStats.all_time.merged} fg={D.ok} bg={D.okBg} />
+              <StatCard index={2} label={t("已关闭")} value={prStats.all_time.closed} fg={D.text3} bg="rgba(0,0,0,0.05)" />
+              <StatCard
+                index={3}
+                label={t("合入率")}
+                value={prStats.all_time.merge_rate !== null ? Math.round(prStats.all_time.merge_rate * 100) : 0}
+                suffix={prStats.all_time.merge_rate !== null ? "%" : "–"}
+                fg={D.accent}
+                bg="rgba(184,146,46,0.10)"
+              />
+            </div>
+          </div>
+        )}
 
         {/* 自动 PR 队列状态面板 */}
         {queue && (

@@ -24,7 +24,7 @@ def _fake_run_factory(prs, returncode=0, stderr=""):
 def test_github_dedup_hit_matches_issue_branch(monkeypatch):
     monkeypatch.setattr(D, "_github_slug", lambda p: "Plaud-AI/plaud-flutter-common")
     monkeypatch.setattr(subprocess, "run", _fake_run_factory([
-        {"headRefName": "crashguard/flutter/29f69d04-202605251013",
+        {"headRefName": "fix/crashguard/flutter/29f69d04-202605251013",
          "url": "https://github.com/Plaud-AI/plaud-flutter-common/pull/1207"},
     ]))
     hit = D._github_open_crashguard_pr("/tmp/repo", "29f69d04-49a2-11f1-8751-da7ad0900002")
