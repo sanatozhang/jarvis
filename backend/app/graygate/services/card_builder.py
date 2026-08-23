@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,6 +39,8 @@ from app.graygate.services.focus_version import get_focus_version
 
 _BJT = ZoneInfo("Asia/Shanghai")
 _PLATFORMS = ("ios", "android")
+logger = logging.getLogger("jarvis.graygate.card_builder")
+
 _PLATFORM_LABEL = {"ios": "🍎 iOS", "android": "🤖 Android"}
 
 _NOT_APPLICABLE = "—（不适用）"
@@ -121,16 +124,26 @@ async def _resolve_cell(
     if sentinel:
         return _Cell(value=None, sentinel=sentinel)
     template_vars = {**template_vars_base, "service": f"plaud_{platform}", "version": version_value}
-    if spec.title:
-        v = await get_metric_scalar(dashboard_json, spec.title, template_vars, from_ms, to_ms)
-        if v is None:
+    # get_metric_scalar 在 widget 标题找不到/歧义时 raise ValueError（不是返回
+    # None）——这是这个模块真正在生产环境跑的取数函数（scheduler.py 调的是
+    # build_report_card，不是 report_builder.build_report 那份没人调用的旧实现）。
+    # 2026-08-23 事故就是这里没 catch，一个 widget 标题漂移直接崩穿整份报告，
+    # 连续两天飞书群什么都没收到。降级成跟"查询失败"同一档 sentinel，不再让
+    # 一个指标的问题拖垮其它几十个指标。
+    try:
+        if spec.title:
+            v = await get_metric_scalar(dashboard_json, spec.title, template_vars, from_ms, to_ms)
+            if v is None:
+                return _Cell(value=None, sentinel=_QUERY_FAILED)
+            return _Cell(value=v * spec.scale, sentinel=None)
+        p75 = await get_metric_scalar(dashboard_json, spec.title_p75, template_vars, from_ms, to_ms)
+        p90 = await get_metric_scalar(dashboard_json, spec.title_p90, template_vars, from_ms, to_ms)
+        if p75 is None or p90 is None:
             return _Cell(value=None, sentinel=_QUERY_FAILED)
-        return _Cell(value=v * spec.scale, sentinel=None)
-    p75 = await get_metric_scalar(dashboard_json, spec.title_p75, template_vars, from_ms, to_ms)
-    p90 = await get_metric_scalar(dashboard_json, spec.title_p90, template_vars, from_ms, to_ms)
-    if p75 is None or p90 is None:
+        return _Cell(value=(p75 * spec.scale, p90 * spec.scale), sentinel=None)
+    except ValueError as e:
+        logger.warning("graygate metric %r widget lookup failed, degrading to %r: %s", spec.key, _QUERY_FAILED, e)
         return _Cell(value=None, sentinel=_QUERY_FAILED)
-    return _Cell(value=(p75 * spec.scale, p90 * spec.scale), sentinel=None)
 
 
 @dataclass
@@ -184,12 +197,28 @@ async def _resolve_tier_for_window(
     return out
 
 
-def _tier_md(title_md: str, metrics: List[MetricSpec], cells: Optional[Dict[str, _Cell]], note: str = "") -> List[str]:
+def _tier_md(
+    title_md: str,
+    metrics: List[MetricSpec],
+    cells: Optional[Dict[str, _Cell]],
+    note: str = "",
+    active_users: Optional[int] = None,
+) -> List[str]:
+    # active_users：session 数代理（version_resolver 里本来就为了选主力版本/样本
+    # 地板算过的数字，这里加一行明确展示出来，不是新起一次 Datadog 查询——2026-08-23
+    # 看板上没有现成的 DAU/活跃用户 widget，distinct 用户数需要额外一次
+    # cardinality(@usr.id) 调用且需要先确认字段填充率，先用现有 session 数顶上）。
+    active_line = f"· 活跃用户数（session 代理）：{_fmt_n(active_users)}" if active_users is not None else ""
     if cells is None:
-        return [title_md, note] if note else [title_md]
+        lines = [title_md, note] if note else [title_md]
+        if active_line:
+            lines.append(active_line)
+        return lines
     lines = [title_md]
     if note:
         lines.append(note)
+    if active_line:
+        lines.append(active_line)
     for spec in metrics:
         lines.append(f"· {_metric_name(spec)}：{_fmt_cell_value(spec, cells[spec.key])}")
     return lines
@@ -383,7 +412,10 @@ async def _build_platform_column(
         dashboard_json, metrics, platform, version_pattern, pv.total_events,
         min_sessions, template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
     )
-    lines += _tier_md(f"__大盘（{version_pattern}）__", metrics, market_today)
+    lines += _tier_md(
+        f"__大盘（{version_pattern}）__", metrics, market_today,
+        active_users=pv.total_events,
+    )
     lines.append("")
     _collect("大盘", market_today, market_d1, market_d2)
 
