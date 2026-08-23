@@ -111,7 +111,16 @@ def _make_system_failure_result(issue_id: str, task_id: str, deep: bool = False)
 
 
 async def test_system_failure_triggers_auto_deep_analysis_once(client, db_session):
-    """非深度分析跑撞 system_failure → 应该自动重跑一次深度分析（同 confidence=low 那条分支对称）。"""
+    """非深度分析跑撞 system_failure → 应该自动重跑一次深度分析（同 confidence=low 那条分支对称）。
+
+    2026-08-23 事故：这个测试故意构造一个失败结果，会真的流经
+    `app/api/tasks.py` 里未 mock 的 `notify_analysis_failure` 调用——之前
+    `conftest.py` 的 get_settings patch 没覆盖 `app.services.feishu_cli`
+    （已修，见 conftest.py 2026-08-23 注释），导致这个测试每次跑都用真实
+    生产飞书凭证发了一条真消息给 ANALYSIS_FAILURE_ALERT_EMAILS 兜底收件人。
+    这里显式 mock 掉 `notify_analysis_failure` 作为双重保险，不依赖 conftest
+    那层全局防护单独兜底。
+    """
     await seed_issue(db_session, "issue_sysfail")
 
     with patch(
@@ -122,7 +131,9 @@ async def test_system_failure_triggers_auto_deep_analysis_once(client, db_sessio
         ),
     ), patch(
         "app.api.tasks._maybe_trigger_auto_deep_analysis", new_callable=AsyncMock,
-    ) as mock_auto_deep:
+    ) as mock_auto_deep, patch(
+        "app.services.feishu_cli.notify_analysis_failure", new_callable=AsyncMock,
+    ) as mock_notify:
         resp = await client.post(
             "/api/tasks",
             json={"issue_id": "issue_sysfail", "deep_analysis": False, "username": "testuser"},
@@ -130,10 +141,14 @@ async def test_system_failure_triggers_auto_deep_analysis_once(client, db_sessio
         assert resp.status_code == 200
         mock_auto_deep.assert_awaited_once()
         assert mock_auto_deep.await_args.kwargs["issue_id"] == "issue_sysfail"
+        mock_notify.assert_awaited_once()  # 确认走过了失败通知这条路径，但没真发
 
 
 async def test_system_failure_does_not_retrigger_during_deep_analysis(client, db_session):
-    """深度分析本身又撞 system_failure → 不再自动重跑，避免无限重试。"""
+    """深度分析本身又撞 system_failure → 不再自动重跑，避免无限重试。
+
+    同上：显式 mock `notify_analysis_failure`，不依赖全局防护单独兜底。
+    """
     await seed_issue(db_session, "issue_sysfail_deep")
 
     with patch(
@@ -144,13 +159,16 @@ async def test_system_failure_does_not_retrigger_during_deep_analysis(client, db
         ),
     ), patch(
         "app.api.tasks._maybe_trigger_auto_deep_analysis", new_callable=AsyncMock,
-    ) as mock_auto_deep:
+    ) as mock_auto_deep, patch(
+        "app.services.feishu_cli.notify_analysis_failure", new_callable=AsyncMock,
+    ) as mock_notify:
         resp = await client.post(
             "/api/tasks",
             json={"issue_id": "issue_sysfail_deep", "deep_analysis": True, "username": "testuser"},
         )
         assert resp.status_code == 200
         mock_auto_deep.assert_not_awaited()
+        mock_notify.assert_awaited_once()
 
 
 # ── Fix 3: 历史闸门——上一条 analysis 已经是深度分析产物就不再升级 ──────────────

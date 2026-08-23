@@ -52,7 +52,18 @@ async def client(db_engine, db_session):
         settings = _make_test_settings()
         mock_settings.return_value = settings
 
-        # 同步 patch 各 api 模块里的 get_settings local 名（防早绑定测试污染）
+        # 同步 patch 各模块里的 get_settings local 名（防早绑定测试污染）。
+        #
+        # 2026-08-23 事故：这份列表原来只有 app.api.* + app.main，漏了
+        # app.services.feishu_cli——它自己 `from app.config import get_settings`
+        # 早绑定，这个 patch 碰不到它，导致它内部拿到的还是本机 .env 里**真实的
+        # 生产飞书凭证**。`tests/test_deep_analysis.py` 里一个故意构造失败结果
+        # 的测试（test_system_failure_triggers_auto_deep_analysis_once）没有
+        # mock 掉 `notify_analysis_failure`，于是每次跑这个测试都会用真实凭证
+        # 给 ANALYSIS_FAILURE_ALERT_EMAILS 兜底收件人（sanato.zhang@plaud.ai）
+        # 发一条真实飞书消息。同一类"早绑定 get_settings + 有真实外部副作用"的
+        # 模块不止这一个——linear.py/zendesk.py 同样能在测试里真的建 Linear
+        # issue / 真的回 Zendesk 工单，一并补进来。
         api_modules_with_local_get_settings = (
             "app.api.linear_webhook",
             "app.api.feedback",
@@ -67,6 +78,15 @@ async def client(db_engine, db_session):
             "app.api.auth",
             "app.api.site_feedback",
             "app.main",
+            "app.services.feishu_cli",
+            "app.services.linear",
+            "app.services.zendesk",
+            "app.services.oncall_weekly_greeting",
+            "app.services.oncall_feishu_sync",
+            "app.services.voc_digest",
+            "app.services.voc_client",
+            "app.services.voc_classifier",
+            "app.services.agent_orchestrator",
         )
         local_patches = []
         import sys
