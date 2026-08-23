@@ -211,6 +211,70 @@ async def test_no_anomalies_omits_worsen_and_new_crash_sections(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 2b. One metric's widget-title lookup failing must not crash the whole report
+#     (2026-08-23 事故：Datadog 看板 owner 改了一个 widget 标题，get_metric_scalar
+#     raise ValueError 没被 catch，build_report 直接炸穿，连续两天飞书群空空如也)
+# ---------------------------------------------------------------------------
+
+
+class _RaisingScalarStub:
+    """跟 _ScalarStub 一样记调用，但对指定 widget_title 直接 raise ValueError
+    ——模拟看板标题漂移、metrics.yaml 精确匹配不到、前缀也救不回来的最坏情况。
+    """
+
+    def __init__(self, values, raise_for_title: str):
+        self.values = values
+        self.raise_for_title = raise_for_title
+        self.calls = []
+
+    async def __call__(self, dashboard_json, widget_title, template_vars, from_ms, to_ms):
+        day = "yesterday" if from_ms == Y_FROM else "prev"
+        service = template_vars.get("service")
+        version = template_vars.get("version")
+        self.calls.append((widget_title, service, version, day))
+        if widget_title == self.raise_for_title:
+            raise ValueError(f"widget title not found on dashboard: {widget_title!r}")
+        return self.values.get((widget_title, service, version, day))
+
+
+@pytest.mark.asyncio
+async def test_one_metric_widget_lookup_failure_degrades_gracefully_not_crash(monkeypatch):
+    versions = {
+        "ios": _FakePlatformVersions(platform="ios", top_version="4.0.301-1013", top_version_events=500, total_events=1000),
+        "android": _FakePlatformVersions(platform="android", top_version="4.0.302-2020", top_version_events=600, total_events=1200),
+    }
+    crash_free = MetricSpec(key="crash_free", title="Crash-free sessions", cell_format="{v:.2f}%")
+    hang_rate = MetricSpec(
+        key="hang_rate", title="Hang Rate (iOS only)", cell_format="{v:.3f}ms/hr",
+        not_applicable_platform="android",
+    )
+    metrics_config = _metrics_config([crash_free, hang_rate])
+    dashboard_json = _dashboard_json({
+        "Crash-free sessions": "increase_better",
+        "Hang Rate (iOS only)": "decrease_better",
+    })
+
+    values = {}
+    for service, version in (("plaud_ios", "4.0.301-1013"), ("plaud_android", "4.0.302-2020")):
+        for day in ("yesterday", "prev"):
+            values[("Crash-free sessions", service, version, day)] = 99.5
+    for service in ("plaud_ios", "plaud_android"):
+        for day in ("yesterday", "prev"):
+            values[("Crash-free sessions", service, "4.0.3*", day)] = 99.5
+
+    scalar_stub = _RaisingScalarStub(values, raise_for_title="Hang Rate (iOS only)")
+    _patch_common(monkeypatch, versions, metrics_config, dashboard_json, scalar_stub)
+
+    result = await rb.build_report(TARGET_DATE)
+
+    # 整份报告没有被这一个坏 widget 拖垮——crash_free 照常出数据。
+    assert result.available is True
+    assert "99.50%" in result.markdown or "99.5" in result.markdown
+    # hang_rate 这一格降级成"取数失败"占位，而不是让异常往上传播。
+    assert "取数失败" in result.markdown
+
+
+# ---------------------------------------------------------------------------
 # 3 & 4. Direction-aware worsen detection
 # ---------------------------------------------------------------------------
 

@@ -202,6 +202,57 @@ async def test_get_metric_scalar_ambiguous_title_raises_value_error():
 
 
 @pytest.mark.asyncio
+async def test_get_metric_scalar_falls_back_to_prefix_match_when_title_drifted(monkeypatch):
+    """2026-08-23 事故复现：Datadog 看板 owner 给 widget 标题追加了说明性后缀
+    （"Hang Rate (iOS only) — 已排除 Background 挂起误报（...）"），metrics.yaml
+    里配的还是没带后缀的旧标题——精确匹配失败，但前缀匹配应该能找到，不该 raise。
+    """
+    dashboard_json = {"widgets": [
+        _metrics_widget("Hang Rate (iOS only) — 已排除 Background 挂起误报（RUM 事件口径，留存 ~30 天）"),
+    ]}
+    fake_client_cls = _make_fake_async_client(_FakeResponse(
+        status_code=200,
+        json_data={"data": {"attributes": {"columns": [{"values": [42.0]}]}}},
+    ))
+    monkeypatch.setattr(dq.httpx, "AsyncClient", fake_client_cls)
+
+    result = await dq.get_metric_scalar(dashboard_json, "Hang Rate (iOS only)", _TV, 0, 1000)
+    assert result == pytest.approx(42.0)
+
+
+@pytest.mark.asyncio
+async def test_get_metric_scalar_prefix_fallback_still_raises_when_no_match():
+    """连前缀都对不上的情况，不该硬猜——照原样 raise "not found"。"""
+    dashboard_json = {"widgets": [_rum_widget("Something Else Entirely")]}
+    with pytest.raises(ValueError, match="not found"):
+        await dq.get_metric_scalar(dashboard_json, "Hang Rate (iOS only)", _TV, 0, 1000)
+
+
+@pytest.mark.asyncio
+async def test_get_metric_scalar_prefix_fallback_raises_when_ambiguous():
+    """两个 widget 都以同一个前缀开头——不该瞎猜选哪个，照原样 raise ambiguous。"""
+    dashboard_json = {"widgets": [
+        _rum_widget("Hang Rate (iOS only) — variant A"),
+        _rum_widget("Hang Rate (iOS only) — variant B"),
+    ]}
+    with pytest.raises(ValueError, match="ambiguous"):
+        await dq.get_metric_scalar(dashboard_json, "Hang Rate (iOS only)", _TV, 0, 1000)
+
+
+@pytest.mark.asyncio
+async def test_get_metric_scalar_exact_match_preferred_over_prefix():
+    """精确匹配存在时优先用精确匹配，不该被同前缀的其它 widget 干扰成歧义。"""
+    dashboard_json = {"widgets": [
+        _metrics_widget("Hang Rate (iOS only)"),
+        _rum_widget("Hang Rate (iOS only) — a different widget"),
+    ]}
+    result = await dq.get_metric_scalar(dashboard_json, "Hang Rate (iOS only)", _TV, 0, 1000)
+    # 走的是精确匹配那个 metrics widget（没打 http mock 时会因为没配置凭据返回 None，
+    # 这里只验证没有 raise——raise 才是本测试要防的回归）。
+    assert result is None or isinstance(result, float)
+
+
+@pytest.mark.asyncio
 async def test_get_metric_scalar_http_400_returns_none_not_raises(monkeypatch):
     dashboard_json = {"widgets": [_metrics_widget("Refresh Rate")]}
     fake_client_cls = _make_fake_async_client(

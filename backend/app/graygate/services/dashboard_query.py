@@ -241,13 +241,37 @@ async def get_metric_scalar(
 
     函数名/参数顺序是 Step3（版本枚举后取数）/Step4/Step5 共同的取数入口，不要
     更改——后续任务的 dispatch brief 假定这个签名存在。
+
+    标题匹配：先精确匹配；精确匹配不到时回退成"前缀匹配"——2026-08-23 事故：
+    看板 owner 在 Datadog 上给 "Hang Rate (iOS only)" 追加了一段说明性后缀
+    （"— 已排除 Background 挂起误报（...）"），metrics.yaml 里配的还是旧的
+    精确标题，导致连续两天日报直接崩溃、飞书群什么都没收到。看板标题是
+    Datadog owner 手动维护的，会被随时追加描述文字，前缀匹配能吸收这类编辑，
+    metrics.yaml 只需要配"核心那一段"不用死记随时可能变的后缀。
     """
     widgets = dashboard_json.get("widgets", [])
     title_index = build_title_index(widgets)
 
-    if widget_title not in title_index:
-        raise ValueError(f"widget title not found on dashboard: {widget_title!r}")
-    idx = title_index[widget_title]
+    idx = title_index.get(widget_title)
+    if idx is None and widget_title not in title_index:
+        # 精确匹配不到 —— 试前缀匹配（只在恰好一个候选时才采用，避免瞎猜）。
+        prefix_matches = [
+            i for i, w in enumerate(widgets)
+            if ((w.get("definition") or {}).get("title") or "").startswith(widget_title)
+        ]
+        if len(prefix_matches) == 1:
+            idx = prefix_matches[0]
+            logger.warning(
+                "widget title %r matched by prefix only (dashboard title has drifted; "
+                "consider updating metrics.yaml to the full current title)",
+                widget_title,
+            )
+        elif len(prefix_matches) > 1:
+            raise ValueError(
+                f"widget title is ambiguous by prefix match (appears on {len(prefix_matches)} widgets): {widget_title!r}"
+            )
+        else:
+            raise ValueError(f"widget title not found on dashboard: {widget_title!r}")
     if idx is None:
         raise ValueError(
             f"widget title is ambiguous (appears on 2+ widgets): {widget_title!r}"

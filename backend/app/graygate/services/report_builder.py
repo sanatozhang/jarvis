@@ -41,6 +41,7 @@ new_crashes 四个已完成模块的产出组装成一份 4.0.3 灰度日报（l
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple, Union
@@ -58,6 +59,7 @@ from app.graygate.services.new_crashes import find_new_crashes
 from app.graygate.services.version_resolver import resolve_versions
 
 _BJT = ZoneInfo("Asia/Shanghai")
+logger = logging.getLogger("jarvis.graygate.report_builder")
 
 _PLATFORMS = ("ios", "android")
 _SCOPES = ("top", "market")  # "最新版" / "大盘"
@@ -237,17 +239,26 @@ async def _resolve_cell(
         "version": version_value,
     }
 
-    if spec.title:
-        v = await get_metric_scalar(dashboard_json, spec.title, template_vars, from_ms, to_ms)
-        if v is None:
-            return _Cell(value=None, sentinel=_QUERY_FAILED)
-        return _Cell(value=v * spec.scale, sentinel=None)
+    # get_metric_scalar 找不到/歧义 widget 标题会 raise ValueError（不是返回
+    # None）——2026-08-23 事故：Datadog 看板 owner 手动改了一个 widget 标题，
+    # 这个异常没被 catch，直接炸穿 build_report()，连续两天飞书群什么都没收到。
+    # 这里把它当成跟"查询失败/无数据"同一档的降级信号：这一格显示"取数失败"，
+    # 不该因为一个指标的看板标题漂移，拖垮整份报告的其它几十个指标。
+    try:
+        if spec.title:
+            v = await get_metric_scalar(dashboard_json, spec.title, template_vars, from_ms, to_ms)
+            if v is None:
+                return _Cell(value=None, sentinel=_QUERY_FAILED)
+            return _Cell(value=v * spec.scale, sentinel=None)
 
-    p75 = await get_metric_scalar(dashboard_json, spec.title_p75, template_vars, from_ms, to_ms)
-    p90 = await get_metric_scalar(dashboard_json, spec.title_p90, template_vars, from_ms, to_ms)
-    if p75 is None or p90 is None:
+        p75 = await get_metric_scalar(dashboard_json, spec.title_p75, template_vars, from_ms, to_ms)
+        p90 = await get_metric_scalar(dashboard_json, spec.title_p90, template_vars, from_ms, to_ms)
+        if p75 is None or p90 is None:
+            return _Cell(value=None, sentinel=_QUERY_FAILED)
+        return _Cell(value=(p75 * spec.scale, p90 * spec.scale), sentinel=None)
+    except ValueError as e:
+        logger.warning("graygate metric %r widget lookup failed, degrading to %r: %s", spec.key, _QUERY_FAILED, e)
         return _Cell(value=None, sentinel=_QUERY_FAILED)
-    return _Cell(value=(p75 * spec.scale, p90 * spec.scale), sentinel=None)
 
 
 # ---------------------------------------------------------------------------
