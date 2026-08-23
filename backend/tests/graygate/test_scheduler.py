@@ -253,3 +253,94 @@ async def test_off_hour_does_not_fire():
         await sched._tick_once()
 
     mock_build.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _check_staleness —— 跟 crashguard job_health_alerter 的 stale 判定对齐（简化版）
+#
+# 覆盖真实 DB（不是全 mock）：直接往 coreguard_job_heartbeats 表插行，验证
+# "多久没成功过"的判定逻辑本身是对的，不是只测调用链。
+# ---------------------------------------------------------------------------
+
+
+async def _setup_real_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'graygate_staleness.db'}")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    from app.db.database import init_db
+    from app.coreguard import models  # noqa: F401
+    await init_db()
+
+
+async def _seed_heartbeat(fired_at, status="success"):
+    from app.db.database import get_session
+    from app.coreguard.models import CoreguardJobHeartbeat
+    async with get_session() as session:
+        session.add(CoreguardJobHeartbeat(
+            job_name=sched._JOB_NAME, fired_at=fired_at, status=status,
+            duration_ms=100, summary="{}", error="",
+        ))
+        await session.commit()
+
+
+@pytest.fixture(autouse=True)
+def _reset_staleness_state():
+    sched._last_staleness_alert_at = None
+    yield
+    sched._last_staleness_alert_at = None
+
+
+@pytest.mark.asyncio
+async def test_staleness_alert_fires_when_last_success_too_old(tmp_path, monkeypatch):
+    await _setup_real_db(tmp_path, monkeypatch)
+    from datetime import datetime as dt, timedelta as td
+    await _seed_heartbeat(dt.utcnow() - td(hours=30))  # 超过 26h 阈值
+
+    with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
+         patch.object(sched, "send_message", new=AsyncMock(return_value=True)) as mock_alert:
+        await sched._check_staleness()
+
+    mock_alert.assert_awaited_once()
+    assert "小时没成功运行" in mock_alert.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_staleness_alert_does_not_fire_when_recent_success_exists(tmp_path, monkeypatch):
+    await _setup_real_db(tmp_path, monkeypatch)
+    from datetime import datetime as dt, timedelta as td
+    await _seed_heartbeat(dt.utcnow() - td(hours=5))  # 5h 前刚成功过，远低于阈值
+
+    with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
+         patch.object(sched, "send_message", new=AsyncMock()) as mock_alert:
+        await sched._check_staleness()
+
+    mock_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_staleness_alert_ignores_failed_rows_only_counts_success(tmp_path, monkeypatch):
+    """只有 failed 记录、没有任何 success（比如刚上线还没跑成功过一次）——
+    不该告警，"从来没成功过"跟"曾经成功、现在停摆"是两件不同的事。"""
+    await _setup_real_db(tmp_path, monkeypatch)
+    from datetime import datetime as dt, timedelta as td
+    await _seed_heartbeat(dt.utcnow() - td(hours=40), status="failed")
+
+    with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
+         patch.object(sched, "send_message", new=AsyncMock()) as mock_alert:
+        await sched._check_staleness()
+
+    mock_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_staleness_alert_respects_cooldown(tmp_path, monkeypatch):
+    await _setup_real_db(tmp_path, monkeypatch)
+    from datetime import datetime as dt, timedelta as td
+    await _seed_heartbeat(dt.utcnow() - td(hours=30))
+
+    with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
+         patch.object(sched, "send_message", new=AsyncMock(return_value=True)) as mock_alert:
+        await sched._check_staleness()
+        await sched._check_staleness()  # 冷却期内，不该再发一次
+
+    assert mock_alert.await_count == 1

@@ -124,6 +124,33 @@ def test_strip_template_vars_keyed_fragment_substitutes_value_only():
     assert "os.name:os.name:" not in out
 
 
+def test_strip_template_vars_rum_search_keyed_fragment_no_double_prefix():
+    """2026-08-23 事故复现：RUM search.query 花括号外也有"片段已带 key"的写法
+    （`service:$service.value env:$env.value`），跟花括号内的 tag-list 是同一类
+    模式，但之前只修了花括号内那个分支——花括号外的 repl_bare 会在已有的
+    `service:`/`env:` 后面再叠一层 _BARE_TEMPLATE_PREFIX，产出
+    `service:@service:plaud_ios` 这种双重前缀，Datadog 直接 400 "Invalid query
+    input"（Hang Rate widget 的两条 RUM query 都是这个语法）。
+    """
+    query = 'service:$service.value env:$env.value $version @type:error @error.category:"App Hang" -@view.name:Background'
+    tv = {"env": "production", "service": "plaud_ios", "version": "4.0.3*"}
+    out = dq.strip_template_vars(query, tv)
+    assert out == 'service:plaud_ios env:production version:4.0.3* @type:error @error.category:"App Hang" -@view.name:Background'
+    assert "@service:" not in out  # 不该再叠 _BARE_TEMPLATE_PREFIX 那层前缀
+    assert "env:env:" not in out
+    assert "service:@service" not in out
+
+
+def test_strip_template_vars_rum_search_keyed_fragment_drops_when_wildcard():
+    """keyed 片段解析成通配符/未指定时，整段"key:$var"一起丢弃（跟 tag-list
+    分支同一口径），不留下孤零零的 "service:" 悬空前缀。"""
+    query = "service:$service.value env:$env.value @type:session"
+    tv = {"env": "*", "service": "plaud_ios"}
+    out = dq.strip_template_vars(query, tv)
+    assert "env:" not in out
+    assert "service:plaud_ios" in out
+
+
 # ---------------------------------------------------------------------------
 # build_title_index
 # ---------------------------------------------------------------------------

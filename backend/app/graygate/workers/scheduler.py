@@ -35,6 +35,13 @@
 见 `_send_failure_alert`）——之前只写心跳表，没人主动查就等于没人知道，8/21~8/22
 连续两天报告构建崩溃、飞书群什么都没收到都是这样被"发现"的。告警发送本身失败
 不能反过来把这次 job 也标记失败，全程包 try/except，只 log 不上抛。
+
+`_send_failure_alert` 只覆盖"job 跑了但结果不好"——它结构性地覆盖不到"job 压根
+没跑"（scheduler_loop 本身挂了/被杀，或 enabled/scheduler_enabled 被静默改成
+False）。跟 crashguard `job_health_alerter` 的 stale 判定对齐一下（见
+`_check_staleness`），但不是照搬那一整套（consecutive-failure 计数、自动重跑、
+多任务聚合卡片）——那是给 10 个不同频率 cron 设计的，套在这一个每天一次的
+job 上是过度设计。只取最有价值的那一层："上次成功距现在多久"，超过阈值才告警。
 """
 from __future__ import annotations
 
@@ -58,6 +65,13 @@ _BJT = ZoneInfo("Asia/Shanghai")
 _JOB_NAME = "graygate_daily_report"
 
 _last_fired_date: Optional[date] = None  # 进程级幂等，粒度是"天"（不是"分钟"）
+
+# 每天一次的 job，超过这个阈值还没成功过 → 大概率不是取数失败（那种情况
+# _send_failure_alert 已经覆盖），是调度本身停了。26h 留 2h 缓冲，避免跟正常的
+# "今天还没到 9 点"状态打架。
+_STALENESS_THRESHOLD_HOURS = 26
+_STALENESS_ALERT_COOLDOWN_HOURS = 6
+_last_staleness_alert_at: Optional[datetime] = None
 
 
 def _now_bjt() -> datetime:
@@ -185,6 +199,57 @@ async def _tick_once() -> None:
     await _run_daily_report_once(target_date)
 
 
+async def _check_staleness() -> None:
+    """跟 crashguard job_health_alerter 的 stale 判定"对齐一下"（简化版，见模块
+    docstring）：查最近一次 status=success 的心跳，超过 `_STALENESS_THRESHOLD_HOURS`
+    还没出现就告警。冷却期内不重复告警；查询/发送本身出错只 log，不影响调用方。
+    """
+    global _last_staleness_alert_at
+    now = datetime.utcnow()
+    if _last_staleness_alert_at is not None and (
+        now - _last_staleness_alert_at < timedelta(hours=_STALENESS_ALERT_COOLDOWN_HOURS)
+    ):
+        return
+
+    try:
+        from sqlalchemy import select
+        from app.coreguard.models import CoreguardJobHeartbeat
+        async with get_session() as session:
+            row = (await session.execute(
+                select(CoreguardJobHeartbeat)
+                .where(
+                    CoreguardJobHeartbeat.job_name == _JOB_NAME,
+                    CoreguardJobHeartbeat.status == "success",
+                )
+                .order_by(CoreguardJobHeartbeat.fired_at.desc())
+                .limit(1)
+            )).scalars().first()
+    except Exception:
+        logger.exception("graygate staleness check: heartbeat query failed")
+        return
+
+    if row is None:
+        return  # 从来没成功过（比如刚上线）——不是"停摆"，不告警
+    age_hours = (now - row.fired_at).total_seconds() / 3600
+    if age_hours < _STALENESS_THRESHOLD_HOURS:
+        return
+
+    _last_staleness_alert_at = now
+    settings = get_graygate_settings()
+    target = getattr(settings, "alert_email", "") or "sanato.zhang@plaud.ai"
+    text = (
+        f"🔴 4.0 灰度日报已经 {age_hours:.0f} 小时没成功运行过了"
+        f"（上次成功：{row.fired_at.isoformat()} UTC）。\n"
+        "这跟取数失败是两种不同的问题（那种情况已经有单独告警）——大概率是"
+        "调度本身停了，检查 scheduler_loop 是否还活着、enabled/scheduler_enabled "
+        "开关有没有被静默改掉。"
+    )
+    try:
+        await send_message(email=target, text=text)
+    except Exception:
+        logger.exception("graygate staleness alert: failed to send itself")
+
+
 async def scheduler_loop() -> None:
     """周期 60s tick。供 `app/main.py` lifespan 里 `asyncio.create_task()` 调用。"""
     logger.info("graygate scheduler starting (interval=%ds)", _TICK_INTERVAL_SEC)
@@ -193,6 +258,7 @@ async def scheduler_loop() -> None:
     while True:
         try:
             await _tick_once()
+            await _check_staleness()
         except Exception as e:
             logger.exception("graygate scheduler tick error: %s", e)
         await asyncio.sleep(_TICK_INTERVAL_SEC)

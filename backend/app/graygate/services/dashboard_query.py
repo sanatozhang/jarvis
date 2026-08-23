@@ -33,6 +33,15 @@ from app.graygate.config import get_graygate_settings
 logger = logging.getLogger("graygate.dashboard_query")
 
 _VAR_RE = re.compile(r"\$\w+(?:\.\w+)?")
+# RUM search.query 字符串（花括号外）里，同样存在"片段已带 key"的写法，如
+# `service:$service.value env:$env.value`——跟 tag-list 语法里 `os.name:$os_name.value`
+# 是同一类模式，process_tags 已经处理了 tag-list 里的这种情况，但花括号外的
+# 裸变量替换（repl_bare）之前没有对应处理，会在 key 后面再叠一层
+# _BARE_TEMPLATE_PREFIX 的前缀，产出 `service:@service:plaud_ios` 这种双重前缀，
+# Datadog 判定为 "Invalid query input"（2026-08-23 实测 Hang Rate widget 复现）。
+# 这里先吃掉"key:$var"整段，只替换值，不重复补前缀；剩下真正裸的 $var（比如
+# 单独出现的 `$version`）才交给下面的 repl_bare 走 _BARE_TEMPLATE_PREFIX 兜底。
+_KEYED_VAR_RE = re.compile(r"([\w.]+):(\$\w+(?:\.\w+)?)")
 
 # Bare RUM-search-style template vars ($var, not {tag:$var.value}) each map to
 # a specific Datadog facet prefix — not always `@<name>`. 实测确认（见 brief）：
@@ -100,8 +109,22 @@ def strip_template_vars(query: str, tv: Dict[str, str]) -> str:
 
     query = re.sub(r"\{([^{}]*)\}", repl_tags, query)
 
-    # Then any remaining bare $var tokens (RUM-style). Each dashboard template
-    # variable has its own Datadog facet prefix — it is NOT always `@<name>`.
+    # RUM search string 里 "key:$var" 已经带了显式 key（如
+    # `service:$service.value`）——只替换值，不要再叠一层 _BARE_TEMPLATE_PREFIX
+    # 前缀（否则产出 `service:@service:plaud_ios` 这种双重前缀，Datadog 400）。
+    def repl_keyed(m: re.Match) -> str:
+        key = m.group(1)
+        raw = m.group(2)[1:]
+        var_name = raw[:-6] if raw.endswith(".value") else raw
+        r = resolved(var_name)
+        if r is None:
+            return ""  # 整段 "key:$var" 一起丢弃，跟 tag-list 分支同一口径
+        return f"{key}:{r}"
+
+    query = _KEYED_VAR_RE.sub(repl_keyed, query)
+
+    # Then any remaining bare $var tokens (RUM-style，前面没有显式 key)。每个
+    # 模板变量有自己的 Datadog facet 前缀——不总是 `@<name>`。
     def repl_bare(m: re.Match) -> str:
         raw = m.group(0)[1:]
         var_name = raw[:-6] if raw.endswith(".value") else raw
