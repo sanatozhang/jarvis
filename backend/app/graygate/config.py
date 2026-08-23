@@ -24,6 +24,10 @@ class GraygateSettings(BaseSettings):
     feishu_chat_id: str = ""
     report_hour_bjt: int = 9
     min_sessions: int = 50            # 样本地板，低于此不出该单元格
+    # 2026-08-23：报告构建/发送失败时私聊告警的收件人（跟 crashguard 那几个
+    # fallback_email 是同一个模式）——之前失败只是悄悄写进心跳表，没人会主动
+    # 去查，导致连续两天没发都没人发现。
+    alert_email: str = "sanato.zhang@plaud.ai"
 
     # Datadog（未显式配置时回落 CRASHGUARD_DATADOG_*，见 get_graygate_settings）
     datadog_api_key: str = ""

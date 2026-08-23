@@ -33,6 +33,7 @@ def _settings(
     feishu_enabled: bool = True,
     report_hour_bjt: int = 9,
     feishu_chat_id: str = "oc_graygate",
+    alert_email: str = "test-alert@plaud.ai",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         enabled=enabled,
@@ -40,6 +41,7 @@ def _settings(
         feishu_enabled=feishu_enabled,
         report_hour_bjt=report_hour_bjt,
         feishu_chat_id=feishu_chat_id,
+        alert_email=alert_email,
     )
 
 
@@ -179,33 +181,67 @@ async def test_report_unavailable_skips_send_but_still_writes_heartbeat():
 
 @pytest.mark.asyncio
 async def test_send_failure_marks_degraded():
-    """取数成功但 send_message 返回 False → status=degraded（不是 failed）。"""
+    """取数成功但 send_message 返回 False → status=degraded（不是 failed），并私聊告警。"""
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())), \
          patch.object(sched, "send_interactive_card", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb:
+         patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb, \
+         patch.object(sched, "send_message", new=AsyncMock(return_value=True)) as mock_alert:
         await sched._tick_once()
 
     status, duration_ms, summary, error = mock_hb.await_args.args
     assert status == "degraded"
     assert summary["sent"] is False
+    mock_alert.assert_awaited_once()
+    assert mock_alert.await_args.kwargs["email"] == "test-alert@plaud.ai"
 
 
 @pytest.mark.asyncio
 async def test_build_report_exception_marks_failed():
-    """build_report 本身抛异常 → status=failed，error 字段记录异常。"""
+    """build_report 本身抛异常 → status=failed，error 字段记录异常，并私聊告警。"""
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "build_report_card", new=AsyncMock(side_effect=RuntimeError("datadog boom"))), \
          patch.object(sched, "send_interactive_card", new=AsyncMock()) as mock_send, \
-         patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb:
+         patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb, \
+         patch.object(sched, "send_message", new=AsyncMock(return_value=True)) as mock_alert:
         await sched._tick_once()
 
     mock_send.assert_not_awaited()
     status, duration_ms, summary, error = mock_hb.await_args.args
     assert status == "failed"
     assert "datadog boom" in error
+    mock_alert.assert_awaited_once()
+    assert "datadog boom" in mock_alert.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_success_does_not_trigger_failure_alert():
+    """正常发送成功时不该多此一举发告警——只有 degraded/failed 才告警。"""
+    with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
+         patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
+         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())), \
+         patch.object(sched, "send_interactive_card", new=AsyncMock(return_value=True)), \
+         patch.object(sched, "_write_heartbeat", new=AsyncMock()), \
+         patch.object(sched, "send_message", new=AsyncMock()) as mock_alert:
+        await sched._tick_once()
+
+    mock_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failure_alert_send_error_does_not_propagate():
+    """告警本身发送失败（比如飞书 API 也在抽风）绝不能把这次 job 结果搞崩。"""
+    with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
+         patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
+         patch.object(sched, "build_report_card", new=AsyncMock(side_effect=RuntimeError("boom"))), \
+         patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb, \
+         patch.object(sched, "send_message", new=AsyncMock(side_effect=RuntimeError("feishu also down"))):
+        await sched._tick_once()  # 不应该抛出任何异常
+
+    status, duration_ms, summary, error = mock_hb.await_args.args
+    assert status == "failed"
 
 
 @pytest.mark.asyncio

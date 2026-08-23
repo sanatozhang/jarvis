@@ -30,6 +30,11 @@
 - `degraded`——`build_report` 取数成功，但飞书发送失败（`send_message` 返回 False
   或抛异常）。
 - `failed`——`build_report` 本身抛异常。
+
+`degraded`/`failed` 现在都会额外私聊告警 `settings.alert_email`（2026-08-23 加，
+见 `_send_failure_alert`）——之前只写心跳表，没人主动查就等于没人知道，8/21~8/22
+连续两天报告构建崩溃、飞书群什么都没收到都是这样被"发现"的。告警发送本身失败
+不能反过来把这次 job 也标记失败，全程包 try/except，只 log 不上抛。
 """
 from __future__ import annotations
 
@@ -44,7 +49,7 @@ from zoneinfo import ZoneInfo
 from app.db.database import get_session
 from app.graygate.config import get_graygate_settings
 from app.graygate.services.card_builder import build_report_card
-from app.services.feishu_cli import send_interactive_card
+from app.services.feishu_cli import send_interactive_card, send_message
 
 logger = logging.getLogger("graygate.scheduler")
 
@@ -82,6 +87,29 @@ async def _write_heartbeat(status: str, duration_ms: int, summary: dict, error: 
             await session.commit()
     except Exception as e:
         logger.warning("graygate heartbeat write failed: %s", e)
+
+
+async def _send_failure_alert(status: str, target_date: date, error: Optional[str], summary: dict) -> None:
+    """`degraded`/`failed` 时私聊告警——绝不能因为告警本身发不出去就影响 job 结果。"""
+    settings = get_graygate_settings()
+    target = getattr(settings, "alert_email", "") or "sanato.zhang@plaud.ai"
+    if status == "failed":
+        text = (
+            f"🔴 4.0 灰度日报构建失败（{target_date.isoformat()}），今天不会发到群里。\n"
+            f"error: {error}\n"
+            "需要人工看一下日志排查（心跳表 coreguard_job_heartbeats，"
+            "job_name=graygate_daily_report）。"
+        )
+    else:
+        text = (
+            f"🟡 4.0 灰度日报数据算出来了但发送失败（{target_date.isoformat()}），群里没收到。\n"
+            f"summary: {summary}\n"
+            "可能是飞书 API 抖动，也可能是 chat_id 配置有问题，需要人工确认。"
+        )
+    try:
+        await send_message(email=target, text=text)
+    except Exception:
+        logger.exception("graygate_daily_report: failed to send failure alert itself")
 
 
 async def _run_daily_report_once(target_date: date) -> None:
@@ -124,6 +152,8 @@ async def _run_daily_report_once(target_date: date) -> None:
         "graygate_daily_report done: status=%s duration_ms=%d summary=%s",
         status, duration_ms, summary,
     )
+    if status in ("failed", "degraded"):
+        await _send_failure_alert(status, target_date, error, summary)
 
 
 async def _tick_once() -> None:
