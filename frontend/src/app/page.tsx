@@ -162,6 +162,9 @@ function IndeterminateCheckbox({ checked, indeterminate, onChange }: {
 const btnPrimary = "rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors";
 const btnGhost = "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors";
 
+// 转飞书工单功能暂时下线（飞书工单渠道即将停用），改这个常量即可恢复
+const FEISHU_TRANSFER_ENABLED = false;
+
 // ── Types ─────────────────────────────────────────────────────
 type Tab = "pending" | "in_progress" | "done" | "inaccurate" | "import";
 const PAGE_SIZE = 20;
@@ -1523,8 +1526,8 @@ export default function HomePage() {
                     </button>
                   </div>
                 )}
-                {/* Transfer to Feishu — with intercept dialog */}
-                {(detailData.localItem?.local_status === "done" || detailData.localItem?.local_status === "failed") && (
+                {/* Transfer to Feishu — with intercept dialog. 暂时下线该功能，不删代码，改这个常量即可恢复。 */}
+                {FEISHU_TRANSFER_ENABLED && (detailData.localItem?.local_status === "done" || detailData.localItem?.local_status === "failed") && (
                   showFeishuTransferDialog ? (
                     <div className="rounded-lg p-4 space-y-3" style={{ background: "rgba(96,165,250,0.06)", border: "1px solid rgba(96,165,250,0.2)" }}>
                       <div className="flex items-start gap-2">

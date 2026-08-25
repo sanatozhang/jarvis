@@ -87,7 +87,7 @@ Agent 必须写 `output/result.json` 包含：
 
 ### 工单升级（escalation）
 
-工单转交工程师时通过 `services/feishu_cli.py::create_followup_group()` 建飞书群 + 添加 oncall 成员 + 推送通知。**群消息模版统一使用英文**（避免中英混排），DM 兜底通知同样英化。模版函数：`create_followup_group()` + `notify_oncall()`。
+工单转交工程师时通过 `services/feishu_cli.py::create_escalation_group()` 建飞书群 + 添加 oncall 成员 + 推送通知。**群消息模版统一使用英文**（避免中英混排），DM 兜底通知同样英化。模版函数：`create_escalation_group()` + `notify_oncall()`。
 
 ## 前端
 

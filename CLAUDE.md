@@ -20,7 +20,7 @@ Datadog  (Crashguard 子模块直连 Datadog Error Tracking + RUM)
 
 | 模块 | 涉及代码 | 详细文档 |
 |------|---------|---------|
-| **工单分析** | 后端 `app/api/{issues,tasks,feedback,linear_webhook,rules,reports}.py` + `app/workers/analysis_worker.py` + `app/agents/*` + `app/services/{feishu_cli,feishu,decrypt,rule_engine,agent_orchestrator,zendesk,linear,extractor,...}.py` + `backend/rules/*.md`<br>前端 `/`, `/tracking`, `/feedback`, `/rules`, `/reports` | `docs/modules/ticket-analysis.md` |
+| **工单分析** | 后端 `app/api/{issues,tasks,feedback,linear_webhook,rules,reports}.py` + `app/workers/analysis_worker.py` + `app/agents/*` + `app/services/{feishu_cli,feishu,decrypt,rule_engine,agent_orchestrator,zendesk,linear,extractor,...}.py` + `backend/rules/*.md`<br>前端 `/`, `/tracking`, `/feedback`, `/rules`, `/reports` | `docs/modules/ticket-analysis.md`（速查）+ `docs/modules/ticket-analysis-internals.md`（设计动机/踩坑历史，含 L1/L1.5/L2/L3 分层详解）+ `docs/modules/web-desktop-ticket-analysis.md`（web/desktop 平台工单现状与 Datadog 取证指南） |
 | **Oncall 管理** | 后端 `app/api/oncall.py` + `app/api/users.py` + `app/services/{escalation_reminder,notify,oncall_weekly_greeting,oncall_feishu_sync}.py`<br>前端 `/oncall` | `docs/modules/oncall.md` |
 | **数据统计** | 后端 `app/api/analytics.py` + `app/services/{rule_accuracy,golden_samples}.py`<br>前端 `/analytics` | `docs/modules/analytics.md` |
 | **Crashguard 崩溃监控** | 后端独立子模块 `backend/app/crashguard/`<br>前端 `frontend/src/app/crashguard/` | 后端：`backend/app/crashguard/CLAUDE.md`<br>前端：`frontend/src/app/crashguard/CLAUDE.md` |

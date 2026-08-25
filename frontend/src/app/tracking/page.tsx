@@ -12,6 +12,9 @@ import { AnalysisResultView } from "@/components/AnalysisResultView";
 import { trackEvent } from "@/lib/track";
 import { fetchTracking, markInaccurate, markComplete, escalateIssue, promoteToGoldenSample, formatLocalTime, createTask, subscribeTaskProgress, fetchIssueAnalyses, fetchIssueDetail, fetchTaskResult, type LocalIssueItem, type PaginatedResponse, type TrackingFilters, type AnalysisResult, type TaskProgress } from "@/lib/api";
 
+// 转飞书工单功能暂时下线（飞书工单渠道即将停用），改这个常量即可恢复
+const FEISHU_TRANSFER_ENABLED = false;
+
 // 每条同时带 key（稳定英文标识，新工单 issues.category 存的就是它）+ 长中文 label
 // （老工单 issues.category 存的就是它）+ 短 label——catShort 双向 fallback 兼容。
 const CATEGORIES_DATA = [
@@ -950,8 +953,8 @@ export default function TrackingPage() {
                     </button>
                   </div>
                 )}
-                {/* Transfer to Feishu — with intercept dialog */}
-                {(detailItem.local_status === "done" || detailItem.local_status === "failed") && (
+                {/* Transfer to Feishu — with intercept dialog. 暂时下线该功能，不删代码，改这个常量即可恢复。 */}
+                {FEISHU_TRANSFER_ENABLED && (detailItem.local_status === "done" || detailItem.local_status === "failed") && (
                   showFeishuTransferDialog ? (
                     <div className="rounded-lg p-4 space-y-3" style={{ background: "rgba(96,165,250,0.06)", border: "1px solid rgba(96,165,250,0.2)" }}>
                       <div className="flex items-start gap-2">
