@@ -31,6 +31,17 @@ AGENT_REGISTRY: Dict[str, type[BaseAgent]] = {
     "codex": CodexAgent,
 }
 
+def _resolve_allowed_tools(provider, deep_analysis: bool) -> List[str]:
+    """deep_analysis 模式追加 provider.deep_analysis_extra_tools（默认空，仅按需在
+    config.yaml 里配置只读工具）。非 deep 模式的白名单保持不变。"""
+    tools = list(provider.allowed_tools or [])
+    if deep_analysis:
+        for extra in provider.deep_analysis_extra_tools or []:
+            if extra not in tools:
+                tools.append(extra)
+    return tools
+
+
 # problem_type values that indicate token quota exhaustion
 _QUOTA_EXHAUSTED_TYPES = {
     # 英文（当前 problem_type 用的）
@@ -133,7 +144,7 @@ class AgentOrchestrator:
             betas=provider.betas,
             timeout=provider.timeout or agent_cfg.timeout,
             max_turns=40 if deep_analysis else agent_cfg.max_turns,
-            allowed_tools=provider.allowed_tools,
+            allowed_tools=_resolve_allowed_tools(provider, deep_analysis),
             approval_mode=provider.approval_mode,
             base_url=provider.base_url,
             per_turn_timeout=provider.per_turn_timeout,
@@ -172,7 +183,7 @@ class AgentOrchestrator:
             betas=provider.betas,
             timeout=provider.timeout or agent_cfg.timeout,
             max_turns=40 if deep_analysis else agent_cfg.max_turns,
-            allowed_tools=provider.allowed_tools,
+            allowed_tools=_resolve_allowed_tools(provider, deep_analysis),
             approval_mode=provider.approval_mode,
             base_url=provider.base_url,
             per_turn_timeout=provider.per_turn_timeout,

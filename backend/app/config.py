@@ -202,6 +202,12 @@ class AgentProviderConfig(BaseSettings):
     timeout: int = 600
     max_turns: int = 25
     allowed_tools: List[str] = Field(default_factory=list)
+    # 仅 deep_analysis=True 时追加到 allowed_tools 之后——deep 模式给了更多轮次/日志预算，
+    # 但工具白名单如果不同步放宽，agent 反复尝试受限命令直到轮次耗尽，最后诚实报低置信度而非
+    # 编造结论（见 docs/modules/multi-platform-onboarding.md §10）。这里只放安全的只读文本/结构化
+    # 数据查询工具，不放通用脚本解释器（python3 等）——那等同于任意代码执行，跟当前在评审中的
+    # 源码安全审计（SEC-286）方向冲突，需要另外评估。
+    deep_analysis_extra_tools: List[str] = Field(default_factory=list)
     approval_mode: str = "auto-edit"
     # ── claude_api specific (ignored by CLI providers) ──
     base_url: str = ""             # Vertex proxy URL, e.g. http://34.216.169.232:30001/vertex

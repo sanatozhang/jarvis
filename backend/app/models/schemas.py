@@ -183,6 +183,7 @@ class AnalysisResult(BaseModel):
 # ---------------------------------------------------------------------------
 class RuleTrigger(BaseModel):
     keywords: List[str] = Field(default_factory=list)
+    platforms: List[str] = Field(default_factory=list)   # e.g. ["mcp"] — matches issue.platform regardless of description text
     priority: int = 5
 
 

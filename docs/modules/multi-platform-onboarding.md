@@ -2,7 +2,7 @@
 
 > **面向读者**：AI（Claude Code / 其他 agent）+ 要接入 Apollo 的各端工程师。
 >
-> **本文定位**：讲**怎么把新端接进自动分析流程**。业务背景、数据结论与规划优先级见《[Apollo 平台化升级方案](../Apollo_商业化方案.md)》。
+> **本文定位**：讲**怎么把新端接进自动分析流程**。业务背景、数据结论与规划优先级见《[Apollo 平台化升级方案](../Apollo全平台支持.md)》。
 >
 > **与既有文档的分工**：
 > - [`ticket-analysis.md`](./ticket-analysis.md) —— 现有分析模块的速查（入口、API、字段契约）
@@ -299,7 +299,7 @@ web 与 backend 的关键依赖。
 | 挂载模式 | **读写**（无 `:ro`） | `docker-compose.yml:47-56` |
 | workspace 内暴露 | `workspace/code` symlink 指向业务仓 | `rule_engine.py:320-323` |
 | agent 授权 | `--add-dir <业务仓绝对路径>` | `agent_orchestrator.py:284-287` |
-| agent 工具 | 白名单含 **`Write`**，以及 `Shell(sed:*)`（`sed -i` 也是写原语） | `config.yaml:45-57` |
+| agent 工具 | 白名单含 **`Write`**，以及 `Bash(sed:*)`（`sed -i` 也是写原语）——2026-08-25 修正：这里一直写的是 `Shell(sed:*)`，claude CLI 认的工具名是 `Bash`（`claude --help` 官方示例 `Bash(git *) Edit`），旧语法大概率从未生效，改成 `Bash(...)` 后才是真的授权；实际约束力仍取决于目标机器 `~/.claude/settings.json` 有没有更宽松的 `permissions.allow`/`defaultMode` 覆盖，上线前要在目标环境里做一次真实验证，不能只看这份 yaml | `config.yaml:50-60` |
 | 容器身份 | **root**（Dockerfile 无 `USER`；`:72` 还 `git config --system --add safe.directory '*'` 关掉 git 所有权防御） | `backend/Dockerfile:70-75` |
 | SSH 私钥 | 宿主 `~/.ssh` 挂进容器（`:ro`，但容器内 root 可读全部私钥） | `docker-compose.yml:58` |
 | GitHub 身份 | `gh` OAuth 持久化在 named volume，代码刻意剥掉 `GH_TOKEN`/`GITHUB_TOKEN` 强制走 OAuth → **推送身份是真人的 GitHub 账号** | `docker-compose.yml:40`；`pr_drafter.py:620,686` |

@@ -573,8 +573,8 @@ async def run_analysis_pipeline(
 
     engine = _get_rule_engine()
     routing_text = normalize_description_for_matching(issue.description)
-    rules = engine.match_rules(routing_text)
-    rule_type = engine.classify(routing_text)
+    rules = engine.match_rules(routing_text, platform=platform)
+    rule_type = engine.classify(routing_text, platform=platform)
 
     logger.info("Matched rules: %s (primary: %s), has_logs: %s", [r.meta.id for r in rules], rule_type, has_logs)
 

@@ -228,6 +228,9 @@ def process_log_file_for_platform(
     - app (or empty/unknown): full Plaud .plaud ChaCha20 decryption
     - web: placeholder — currently passes through as plain log
     - desktop: placeholder — currently passes through as plain log
+    - mcp: placeholder — currently passes through as plain log (MCP tickets rarely
+      attach files, but if they do, they are not .plaud-encrypted and must not be
+      routed into the app decryption path — see docs/modules/multi-platform-onboarding.md §5.2)
     """
     plat = (platform or "").lower().strip()
 
@@ -235,6 +238,8 @@ def process_log_file_for_platform(
         return _process_log_web(file_path, work_dir)
     elif plat == "desktop":
         return _process_log_desktop(file_path, work_dir)
+    elif plat == "mcp":
+        return _process_log_mcp(file_path, work_dir)
     else:
         # Default: app (original Plaud .plaud decryption)
         return process_log_file(file_path, work_dir)
@@ -286,6 +291,31 @@ def _process_log_desktop(
         return [file_path], False, None
 
     return [], True, f"Desktop 日志文件无法处理: {file_path.name}"
+
+
+def _process_log_mcp(
+    file_path: Path,
+    work_dir: Path,
+) -> Tuple[List[Path], bool, Optional[str]]:
+    """MCP platform log processing — placeholder.
+
+    MCP tickets are developer-integration questions about the plaud-devkits API and
+    almost never carry a log attachment. If one is attached, it is not .plaud-encrypted
+    (no on-device SDK produces .plaud for MCP integrations), so it must not fall through
+    to the app decryption branch — that would silently mark the file logs_corrupted.
+    """
+    logger.info("=== process_log_mcp: %s ===", file_path.name)
+    name = file_path.name.lower()
+
+    # Handle ZIP
+    if name.endswith(".zip") or is_zip_file(file_path):
+        return _process_zip(file_path, work_dir)
+
+    # Plain log / unknown — pass through
+    if file_path.exists() and file_path.stat().st_size > 0:
+        return [file_path], False, None
+
+    return [], True, f"MCP 日志文件无法处理: {file_path.name}"
 
 
 def process_log_file(

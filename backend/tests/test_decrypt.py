@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from app.services.decrypt import decrypt_plaud_bytes, decrypt_plaud_file, process_log_file
+from app.services.decrypt import (
+    decrypt_plaud_bytes,
+    decrypt_plaud_file,
+    process_log_file,
+    process_log_file_for_platform,
+)
 
 
 def _make_plaud_file(tmp_path: Path, zip_members: dict[str, bytes], name: str = "log_1.plaud") -> Path:
@@ -90,3 +95,19 @@ def test_process_log_file_propagates_all_logs_for_dot_plaud(tmp_path: Path):
     assert incorrect is False
     assert reason is None
     assert {p.name for p in log_paths} == {"plaud.log", "plaud_backup.log"}
+
+
+def test_process_log_file_for_platform_mcp_does_not_fall_through_to_plaud_decrypt(tmp_path: Path):
+    """mcp 工单若真上传文件，不是 .plaud 加密——不能落到 app 分支被当成加密数据处理
+    （之前没有 mcp 分支时会 fall through 到 process_log_file，几乎必然 logs_corrupted=True）。
+    """
+    plain_log = tmp_path / "debug.log"
+    plain_log.write_text("2026-08-25 10:00:00 some plain mcp integration log\n")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    log_paths, incorrect, reason = process_log_file_for_platform(plain_log, work_dir, platform="mcp")
+
+    assert incorrect is False
+    assert reason is None
+    assert log_paths == [plain_log]

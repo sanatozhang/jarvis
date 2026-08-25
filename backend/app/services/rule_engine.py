@@ -71,6 +71,7 @@ class RuleEngine:
         triggers_raw = meta_dict.pop("triggers", {})
         triggers = RuleTrigger(
             keywords=triggers_raw.get("keywords", []),
+            platforms=triggers_raw.get("platforms", []),
             priority=triggers_raw.get("priority", 5),
         )
 
@@ -143,6 +144,7 @@ class RuleEngine:
         for r in db_rules:
             triggers = RuleTrigger(
                 keywords=r.get("triggers", {}).get("keywords", []),
+                platforms=r.get("triggers", {}).get("platforms", []),
                 priority=r.get("triggers", {}).get("priority", 5),
             )
             pre_extract = [PreExtractPattern(**p) for p in r.get("pre_extract", [])]
@@ -182,8 +184,9 @@ class RuleEngine:
 
         return kw in desc
 
-    def _ranked_matches(self, description: str) -> List[tuple[int, int, int, str]]:
+    def _ranked_matches(self, description: str, platform: str = "") -> List[tuple[int, int, int, str]]:
         text = normalize_description_for_matching(description)
+        plat = (platform or "").strip().lower()
         matches: List[tuple[int, int, int, str]] = []
 
         for rule_id, rule in self._rules.items():
@@ -194,6 +197,12 @@ class RuleEngine:
                 kw for kw in rule.meta.triggers.keywords
                 if self._keyword_matches(text, kw)
             ]
+            # Platform is a first-class signal, not just text in the description: a
+            # ticket where the user picked "MCP" should hit rules/mcp.md even if the
+            # free-text body never mentions "mcp" (e.g. leading [MCP] tags are stripped
+            # before matching — see normalize_description_for_matching / issue_text.py).
+            if plat and plat in (p.strip().lower() for p in rule.meta.triggers.platforms):
+                hit_keywords = hit_keywords + [f"platform:{plat}"]
             if not hit_keywords:
                 continue
 
@@ -207,14 +216,14 @@ class RuleEngine:
         matches.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
         return matches
 
-    def classify(self, description: str) -> str:
-        matches = self._ranked_matches(description)
+    def classify(self, description: str, platform: str = "") -> str:
+        matches = self._ranked_matches(description, platform)
         if not matches:
             return "general"
 
         return matches[0][3]
 
-    def match_rules(self, description: str, max_rules: int = 3) -> List[Rule]:
+    def match_rules(self, description: str, platform: str = "", max_rules: int = 3) -> List[Rule]:
         """Return up to max_rules matching rules (sorted by priority) plus their dependencies.
 
         Instead of only picking the single best match, we accumulate all keyword-matching
@@ -222,7 +231,7 @@ class RuleEngine:
         (e.g. "录音丢失" + "蓝牙断连" would previously only trigger recording-missing).
         """
         matched = [
-            item for item in self._ranked_matches(description)
+            item for item in self._ranked_matches(description, platform)
             if item[3] != "general"
         ]
         top_ids = [rule_id for _, _, _, rule_id in matched[:max_rules]]

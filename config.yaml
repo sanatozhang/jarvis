@@ -42,22 +42,35 @@ agent:
       model: "claude-sonnet-5[1m]"      # Sonnet 5 with 1M context window
       effort: "high"                    # low / medium / high / max — 思考深度
       fallback_model: "claude-sonnet-5"    # 主模型过载时自动降级（200K context）
+      # 2026-08-25 修正：工具名应为 "Bash"，不是 "Shell"（`claude --help` 官方示例是
+      # `Bash(git *) Edit`）。之前这里全写的 Shell(cmd:*)，claude CLI 不认这个工具名，
+      # 这条白名单大概率从未按预期生效——实际约束力取决于运行环境自身的 permission
+      # 设置（这台机器的 ~/.claude/settings.json 有没有 defaultMode/allow 覆盖），
+      # 不是这份 config.yaml 单方面能保证的，改完务必在目标环境里做一次真实验证
+      # （构造一个明确不在名单里的命令，确认它真的被拒绝），不要只看这里改没改对。
       allowed_tools:
         - "Read"
         - "Write"
         - "Grep"
         - "Glob"
-        - "Shell(grep:*)"
-        - "Shell(wc:*)"
-        - "Shell(head:*)"
-        - "Shell(tail:*)"
-        - "Shell(sort:*)"
-        - "Shell(awk:*)"
-        - "Shell(date:*)"
-        - "Shell(sed:*)"
-        - "Shell(cat:*)"
-        - "Shell(zcat:*)"
-        - "Shell(gunzip:*)"
+        - "Bash(grep:*)"
+        - "Bash(wc:*)"
+        - "Bash(head:*)"
+        - "Bash(tail:*)"
+        - "Bash(sort:*)"
+        - "Bash(awk:*)"
+        - "Bash(date:*)"
+        - "Bash(sed:*)"
+        - "Bash(cat:*)"
+        - "Bash(zcat:*)"
+        - "Bash(gunzip:*)"
+      # 只在 is_deep_analysis=True 时追加（见 agent_orchestrator.py::_resolve_allowed_tools）。
+      # deep 模式给了 40 轮/30 条日志的预算，但纯文本工具（grep/awk/sed）处理不了结构化 JSON
+      # 字段，文档 multi-platform-onboarding.md §10 引用的 confidence_reason 原文提到反复
+      # 尝试被拒绝的命令直到轮次耗尽——这里只加 jq（只读 JSON 查询，不是通用代码执行），
+      # 不放 python3/perl 等脚本解释器（那是任意代码执行，需要等 SEC-286 源码安全评审结论）。
+      deep_analysis_extra_tools:
+        - "Bash(jq:*)"
 
     codex:
       enabled: true

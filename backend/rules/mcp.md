@@ -1,11 +1,13 @@
 ---
 id: mcp
 name: MCP 平台工单排查
-version: 1
+version: 2
 author: sanato
-updated: "2026-07-22"
+updated: "2026-08-25"
 enabled: true
 triggers:
+  platforms:
+    - mcp
   keywords:
     - mcp
     - "[mcp]"
