@@ -265,13 +265,17 @@ class FeishuCLI:
 
             logger.info("Fetching records from Feishu via CLI (cache miss)...")
             try:
+                # lark-cli 1.0.89+ 的 `api` 命令拒绝路径里带查询字符串（"path must not
+                # contain a query string or fragment"）——view_id 走 --params，
+                # page_size 走原生的 --page-size，不能再拼进 url 里。
                 url = (
                     f"/open-apis/bitable/v1/apps/{self._app_token}"
                     f"/tables/{self._table_id}/records"
-                    f"?view_id={self._view_id}&page_size={page_size}"
                 )
                 result = await _run_cli(
                     "api", "GET", url,
+                    "--params", json.dumps({"view_id": self._view_id}),
+                    "--page-size", str(page_size),
                     "--page-all",
                     timeout=300,
                 )
@@ -960,7 +964,10 @@ async def create_escalation_group(
 
     now = datetime.now().strftime("%Y%m%d")
     category = problem_type or "Unknown"
-    group_name = f"Apollo-Ticket-{category}-{now}"
+    # 群名前缀：优先 zendesk 号，没有就用提交者邮箱前缀——方便在一堆同类工单的群列表里区分
+    id_prefix = (zendesk_id or "").strip() or (user_email.split("@")[0] if user_email else "")
+    base_name = f"Apollo-Ticket-{category}-{now}"
+    group_name = f"{id_prefix}-{base_name}" if id_prefix else base_name
 
     # Collect members: oncall + fixed members + triggering user
     oncall_emails = await db_mod.get_current_oncall()

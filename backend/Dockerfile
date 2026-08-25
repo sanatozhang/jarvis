@@ -85,7 +85,11 @@ RUN npm install -g @openai/codex 2>/dev/null || echo "Codex install skipped (opt
 RUN npm install -g @anthropic-ai/claude-code@2.1.207 2>/dev/null || echo "Claude install skipped (optional)"
 
 # Install Feishu CLI (for Bitable read/write)
-RUN npm install -g @larksuite/cli 2>/dev/null || echo "Feishu CLI install skipped (optional)"
+# 锁版本：2026-08-25 不锁版本时一次常规重建就拉到了 1.0.89，其 `api` 命令新增了
+# "path must not contain a query string or fragment" 校验，直接炸了 feishu_cli.py
+# 里手拼 query string 的调用（见 list_records()）。lark-cli 版本升级要主动走一遍，
+# 不能靠 docker build 静默带上。
+RUN npm install -g @larksuite/cli@1.0.89 2>/dev/null || echo "Feishu CLI install skipped (optional)"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

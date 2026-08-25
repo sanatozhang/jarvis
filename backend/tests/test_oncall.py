@@ -656,3 +656,65 @@ async def test_create_escalation_group_oncall_empty_still_notifies_fixed_members
     assert result["members"]  # non-empty despite oncall_emails == []
     assert "reporter@plaud.ai" in result["members"]
     assert "sanato.zhang@plaud.ai" in result["members"]  # default escalation_fixed_members entry
+
+
+def _created_group_name(feishu_api_mock: AsyncMock) -> str:
+    for call in feishu_api_mock.call_args_list:
+        _, kwargs = call
+        if kwargs.get("body", {}).get("chat_type") == "group":
+            return kwargs["body"]["name"]
+    raise AssertionError("no /im/v1/chats create call found")
+
+
+async def test_create_escalation_group_name_prefixed_with_zendesk_id_when_present(client):
+    from app.services import feishu_cli
+
+    api_mock = AsyncMock(return_value={"data": {"chat_id": "oc_new_chat"}})
+    with patch.object(feishu_cli, "_feishu_api", new=api_mock), \
+         patch.object(feishu_cli, "_emails_to_open_ids", new=AsyncMock(return_value=["ou_1"])), \
+         patch.object(feishu_cli, "create_chat_link", new=AsyncMock(return_value="https://feishu.link/abc")), \
+         patch.object(feishu_cli, "send_message", new=AsyncMock(return_value=True)):
+        await feishu_cli.create_escalation_group(
+            user_email="reporter@plaud.ai",
+            issue_id="issue_x",
+            description="蓝牙连接问题",
+            zendesk_id="88888",
+        )
+
+    assert _created_group_name(api_mock).startswith("88888-Apollo-Ticket-")
+
+
+async def test_create_escalation_group_name_falls_back_to_submitter_when_no_zendesk_id(client):
+    from app.services import feishu_cli
+
+    api_mock = AsyncMock(return_value={"data": {"chat_id": "oc_new_chat"}})
+    with patch.object(feishu_cli, "_feishu_api", new=api_mock), \
+         patch.object(feishu_cli, "_emails_to_open_ids", new=AsyncMock(return_value=["ou_1"])), \
+         patch.object(feishu_cli, "create_chat_link", new=AsyncMock(return_value="https://feishu.link/abc")), \
+         patch.object(feishu_cli, "send_message", new=AsyncMock(return_value=True)):
+        await feishu_cli.create_escalation_group(
+            user_email="reporter@plaud.ai",
+            issue_id="issue_x",
+            description="蓝牙连接问题",
+            zendesk_id="",
+        )
+
+    assert _created_group_name(api_mock).startswith("reporter-Apollo-Ticket-")
+
+
+async def test_create_escalation_group_name_unprefixed_when_neither_available(client):
+    from app.services import feishu_cli
+
+    api_mock = AsyncMock(return_value={"data": {"chat_id": "oc_new_chat"}})
+    with patch.object(feishu_cli, "_feishu_api", new=api_mock), \
+         patch.object(feishu_cli, "_emails_to_open_ids", new=AsyncMock(return_value=["ou_1"])), \
+         patch.object(feishu_cli, "create_chat_link", new=AsyncMock(return_value="https://feishu.link/abc")), \
+         patch.object(feishu_cli, "send_message", new=AsyncMock(return_value=True)):
+        await feishu_cli.create_escalation_group(
+            user_email="",
+            issue_id="issue_x",
+            description="蓝牙连接问题",
+            zendesk_id="",
+        )
+
+    assert _created_group_name(api_mock).startswith("Apollo-Ticket-")
