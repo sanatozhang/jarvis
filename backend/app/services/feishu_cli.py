@@ -960,7 +960,7 @@ async def create_escalation_group(
 
     now = datetime.now().strftime("%Y%m%d")
     category = problem_type or "Unknown"
-    group_name = f"Appllo-Ticket-{category}-{now}"
+    group_name = f"Apollo-Ticket-{category}-{now}"
 
     # Collect members: oncall + fixed members + triggering user
     oncall_emails = await db_mod.get_current_oncall()

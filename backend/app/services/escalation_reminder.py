@@ -131,7 +131,7 @@ async def _scan_and_remind() -> int:
                     lines.append(f"分类: {problem_type}")
                 if ticket_link:
                     lines.append(f"详情: {ticket_link}")
-                lines.append(f"\n{at_tags} 请关注并尽快推进，处理完成后在 Appllo 标记完成。")
+                lines.append(f"\n{at_tags} 请关注并尽快推进，处理完成后在 Apollo 标记完成。")
                 try:
                     await send_message(chat_id=r.escalation_chat_id, text="\n".join(lines))
                     logger.info("Group reminder sent for %s (chat %s, %dh old)", issue_id, r.escalation_chat_id, age_hours)
@@ -145,7 +145,7 @@ async def _scan_and_remind() -> int:
                 f"已转交 {age_hours} 小时未关闭。",
             ]
             if oncall_page_url:
-                dm_lines.append(f"在 Appllo 查看待办列表: {oncall_page_url}")
+                dm_lines.append(f"在 Apollo 查看待办列表: {oncall_page_url}")
             if ticket_link:
                 dm_lines.append(f"工单详情: {ticket_link}")
             dm_text = "\n".join(dm_lines)

@@ -298,7 +298,7 @@ L1 结果不只是"给 agent 看的摘要"，还被 L1.5 窗口化当作**正确
 
 `create_escalation_group()`（`backend/app/services/feishu_cli.py`）：
 
-1. 群名 `Appllo-Ticket-{分类}-{日期}`。
+1. 群名 `Apollo-Ticket-{分类}-{日期}`。
 2. 拉人名单 = 本周 oncall 轮值组 + 固定成员配置 + 触发升级的那个人。
 3. 建飞书群，邮箱转 open_id 批量拉群；生成永久有效邀请链接兜底（默认邀请链接 7 天失效，升级群需要长期可点）。
 4. 群里发结构化消息：工单链接/描述/分类/Zendesk 号 + @ 本周 oncall + 一段"问题分类 → owner"路由表。
