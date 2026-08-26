@@ -1,58 +1,23 @@
 "use client";
 
-import { useContext, useEffect, useState } from "react";
+import { useContext } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useT, useLang, LangToggleContext } from "@/lib/i18n";
-import { fetchCrashEnabled } from "@/lib/api";
 import { useCurrentUser } from "@/components/AuthProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 const NAV_ITEMS = [
   {
-    href: "/",
-    label: "工单分析",
-    icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
-  },
-  {
-    href: "/tracking",
-    label: "工单跟踪",
-    icon: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z",
-  },
-  {
-    href: "/feedback",
-    label: "提交反馈",
-    icon: "M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z",
-  },
-  {
-    href: "/tools",
-    label: "工具箱",
-    icon: "M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z",
-  },
-  {
-    href: "/oncall",
-    label: "值班管理",
-    icon: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
-  },
-  {
-    href: "/analytics",
-    label: "数据看板",
-    icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
-  },
-  // { href: "/wishes", label: "许愿池", icon: "..." },  // Hidden — removed per user request
-  // { href: "/samples", label: "金样本", icon: "..." },  // Hidden — feature paused
-  // { href: "/eval", label: "评测中心", icon: "..." },    // Hidden — feature paused
-  {
-    href: "/reports",
-    label: "值班报告",
-    icon: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
-  },
-  {
     href: "/crashguard",
     label: "崩溃看板",
     icon: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z",
   },
-  // { href: "/release", label: "发布管理", icon: "M12 19l9 2-9-18-9 18 9-2zm0 0v-8" },  // Hidden 2026-05-25 per user request — feature paused
+  {
+    href: "/release",
+    label: "发布管理",
+    icon: "M12 19l9 2-9-18-9 18 9-2zm0 0v-8",
+  },
   {
     href: "/settings",
     label: "系统设置",
@@ -66,18 +31,6 @@ export default function Sidebar() {
   const toggleLang = useContext(LangToggleContext);
   const pathname = usePathname();
   const me = useCurrentUser();
-
-  // Crashguard feature flag — hide entry when CRASHGUARD_ENABLED=false
-  const [crashguardEnabled, setCrashguardEnabled] = useState<boolean | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    fetchCrashEnabled().then((ok) => {
-      if (!cancelled) setCrashguardEnabled(ok);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -102,7 +55,7 @@ export default function Sidebar() {
           <div className="leading-none">
             <div className="flex items-center gap-1.5">
               <span className="font-display text-[15px] font-bold tracking-tight" style={{ color: "var(--j-ink)" }}>
-                Apollo
+                jarvis
               </span>
               <span
                 className="rounded-[4px] font-mono text-[9px] font-medium px-1 py-0.5 tracking-wider"
@@ -112,7 +65,7 @@ export default function Sidebar() {
               </span>
             </div>
             <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.18em]" style={{ color: "var(--j-faint)" }}>
-              Get answer here
+              Crash automation
             </div>
           </div>
         </div>
@@ -127,11 +80,7 @@ export default function Sidebar() {
         <div className="px-3 pb-2 font-mono text-[9px] uppercase tracking-[0.18em]" style={{ color: "var(--j-faint)" }}>
           // Console
         </div>
-        {NAV_ITEMS.filter((item) => {
-          // crashguardEnabled === false 时隐藏；null（加载中）和 true 都显示，避免闪烁
-          if (item.href === "/crashguard" && crashguardEnabled === false) return false;
-          return true;
-        }).map((item) => {
+        {NAV_ITEMS.map((item) => {
           const active = isActive(item.href);
           return (
             <Link

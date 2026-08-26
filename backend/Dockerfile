@@ -15,7 +15,6 @@ RUN if [ "$RUN_TESTS" = "1" ]; then \
 COPY requirements.txt .
 RUN if [ "$RUN_TESTS" = "1" ]; then pip install --no-cache-dir -r requirements.txt; fi
 COPY app/ ./app/
-COPY rules/ ./rules/
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY pytest.ini .
@@ -96,11 +95,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend code (no tests in production)
 COPY app/ ./app/
-COPY rules/ ./rules/
 # scripts/ is imported at startup (check_crash_decoupling)
 COPY scripts/ ./scripts/
-# seeds/ is read at startup (voc_taxonomy.sync_seed_to_db bootstraps voc_tags from here)
-COPY seeds/ ./seeds/
 
 # Create data dirs
 RUN mkdir -p /app/data /app/workspaces
