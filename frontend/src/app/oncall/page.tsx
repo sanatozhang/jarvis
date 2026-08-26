@@ -80,7 +80,11 @@ export default function OncallPage() {
 
   // Stats
   const [weekStats, setWeekStats] = useState<OncallWeekStat[]>([]);
-  const [tab, setTab] = useState<"tickets" | "stats">("tickets");
+  const [tab, setTab] = useState<"tickets" | "stats" | "query">("tickets");
+
+  // Ticket lookup tab — independent of oncall group/week, apollo-only (escalated_by / zendesk_id substring, case-insensitive)
+  const [queryName, setQueryName] = useState("");
+  const [queryZendesk, setQueryZendesk] = useState("");
 
   // 2026-07-24：周→组的权威映射(后端排班快照优先，查不到才现算)，替代前端本地
   // 重新实现一遍取模逻辑——避免"新增/删除值班组"时前端和后端各算一套导致不一致。
@@ -215,6 +219,19 @@ export default function OncallPage() {
   });
   const inProgressTickets = filteredTickets.filter((tk) => tk.escalation_status !== "resolved");
   const resolvedTickets = filteredTickets.filter((tk) => tk.escalation_status === "resolved");
+
+  // Ticket lookup: apollo-only, ignores group/week — substring + case-insensitive on
+  // escalated_by (submitter) and zendesk_id. Both blank → no results (avoid dumping full history).
+  const nameQuery = queryName.trim().toLowerCase();
+  const zendeskQuery = queryZendesk.trim().toLowerCase();
+  const hasQuery = nameQuery !== "" || zendeskQuery !== "";
+  const queryResults = hasQuery
+    ? allTickets.filter((tk) => {
+        if (nameQuery && !(tk.escalated_by || "").toLowerCase().includes(nameQuery)) return false;
+        if (zendeskQuery && !(tk.zendesk_id || "").toLowerCase().includes(zendeskQuery)) return false;
+        return true;
+      }).sort((a, b) => (a.escalated_at < b.escalated_at ? 1 : -1))
+    : [];
 
   // Feishu tickets for the selected group + week, split into open / done.
   // Membership match on assignee email; week match on creation date (oncall is week-based).
@@ -573,13 +590,13 @@ export default function OncallPage() {
             </div>
             {/* Tab switcher */}
             <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${S.border}` }}>
-              {(["tickets", "stats"] as const).map((k) => (
+              {(["tickets", "stats", "query"] as const).map((k) => (
                 <button key={k} onClick={() => setTab(k)}
                   className="px-3 py-1 text-xs font-medium transition-colors"
                   style={tab === k
                     ? { background: S.text1, color: "#fff" }
                     : { background: "transparent", color: S.text2 }}>
-                  {k === "tickets" ? t("工单") : t("周报")}
+                  {k === "tickets" ? t("工单") : k === "stats" ? t("周报") : t("工单查询")}
                 </button>
               ))}
             </div>
@@ -843,6 +860,53 @@ export default function OncallPage() {
               </>
             )}
           </main>
+        </div>
+      )}
+
+      {/* ================= TICKET LOOKUP TAB ================= */}
+      {tab === "query" && (
+        <div className="mx-auto max-w-3xl px-6 py-6">
+          <div className="rounded-xl p-5 mb-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex-1 min-w-[180px]">
+                <label className="block text-[11px] font-medium mb-1" style={{ color: S.text3 }}>{t("提交人")}</label>
+                <input value={queryName} onChange={(e) => setQueryName(e.target.value)}
+                  placeholder="sanato / zhang"
+                  className="w-full rounded-lg px-3 py-2 text-sm font-sans outline-none" style={inputStyle} />
+              </div>
+              <div className="flex-1 min-w-[180px]">
+                <label className="block text-[11px] font-medium mb-1" style={{ color: S.text3 }}>{t("Zendesk 号")}</label>
+                <input value={queryZendesk} onChange={(e) => setQueryZendesk(e.target.value)}
+                  placeholder="123456"
+                  className="w-full rounded-lg px-3 py-2 text-sm font-sans outline-none" style={inputStyle} />
+              </div>
+              {hasQuery && (
+                <button onClick={() => { setQueryName(""); setQueryZendesk(""); }}
+                  className="rounded-lg px-3 py-2 text-xs font-medium"
+                  style={{ border: `1px solid ${S.border}`, color: S.text2 }}>
+                  {t("清空")}
+                </button>
+              )}
+            </div>
+            <p className="mt-2 text-[10px]" style={{ color: S.text3 }}>{t("支持局部匹配，大小写不敏感")}</p>
+          </div>
+
+          {!hasQuery ? (
+            <div className="rounded-xl py-12 text-center" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <p className="text-sm" style={{ color: S.text3 }}>{t("请输入提交人或 Zendesk 号进行查询")}</p>
+            </div>
+          ) : ticketsLoading ? (
+            <p className="py-8 text-center text-xs" style={{ color: S.text3 }}>{t("加载中...")}</p>
+          ) : queryResults.length === 0 ? (
+            <div className="rounded-xl py-12 text-center" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+              <p className="text-sm" style={{ color: S.text3 }}>{t("未找到匹配的工单")}</p>
+            </div>
+          ) : (
+            <>
+              <p className="mb-3 text-xs" style={{ color: S.text3 }}>{queryResults.length} {t("个匹配结果")}</p>
+              <div className="space-y-3">{queryResults.map(renderEscalatedCard)}</div>
+            </>
+          )}
         </div>
       )}
 
