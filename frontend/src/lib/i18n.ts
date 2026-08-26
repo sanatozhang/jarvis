@@ -1035,6 +1035,7 @@ const EN: Record<string, string> = {
   "支持 Web 工单": "Enable Web tickets",
   "支持 Desktop 工单": "Enable Desktop tickets",
   "支持 MCP 工单": "Enable MCP tickets",
+  "支持 Backend 工单": "Enable Backend tickets",
   "关闭后提交页无法选择该平台（默认关闭，为 4.0 native 做准备）": "When off, this platform can't be selected on the submit page (off by default; prep for 4.0 native)",
   "解析预览": "Resolution Preview",
   "版本号": "Version",

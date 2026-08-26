@@ -11,6 +11,7 @@ type Ctx = {
   supportWeb: boolean;
   supportDesktop: boolean;
   supportMcp: boolean;
+  supportBackend: boolean;
   // 非 SSO 部署下的首次注册（用户名 + @plaud.ai 邮箱）。成功后立即把 state 切到
   // authed，这样 Sidebar/FeedbackWidget 等 useCurrentUser() 消费方无需刷新页面
   // 就能拿到新用户名（此前 page.tsx 自己维护 username state，注册后不通知这里，
@@ -24,6 +25,7 @@ const AuthContext = createContext<Ctx>({
   supportWeb: false,
   supportDesktop: false,
   supportMcp: false,
+  supportBackend: false,
   registerLegacyUser: async () => {},
 });
 
@@ -33,6 +35,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [supportWeb, setSupportWeb] = useState(false);
   const [supportDesktop, setSupportDesktop] = useState(false);
   const [supportMcp, setSupportMcp] = useState(false);
+  const [supportBackend, setSupportBackend] = useState(false);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -73,6 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSupportWeb(config.support_web);
       setSupportDesktop(config.support_desktop);
       setSupportMcp(config.support_mcp);
+      setSupportBackend(config.support_backend);
     });
     return () => { cancelled = true; };
   }, [pathname]);
@@ -91,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ state, ssoActive, supportWeb, supportDesktop, supportMcp, registerLegacyUser }}>
+    <AuthContext.Provider value={{ state, ssoActive, supportWeb, supportDesktop, supportMcp, supportBackend, registerLegacyUser }}>
       {children}
     </AuthContext.Provider>
   );

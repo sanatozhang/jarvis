@@ -27,18 +27,20 @@ async def test_config_exposes_support_flags(client):
     """GET /api/auth/config surfaces support_web/support_desktop (public, for submit-page gating)."""
     from app.config import get_settings
     s = get_settings()
-    orig = (s.support_web, s.support_desktop)
+    orig = (s.support_web, s.support_desktop, s.support_backend)
     try:
         s.support_web = True
         s.support_desktop = False
+        s.support_backend = True
         r = await client.get("/api/auth/config")
         assert r.status_code == 200
         body = r.json()
         assert body["support_web"] is True
         assert body["support_desktop"] is False
+        assert body["support_backend"] is True
         assert "sso_enabled" in body
     finally:
-        s.support_web, s.support_desktop = orig
+        s.support_web, s.support_desktop, s.support_backend = orig
 
 
 @pytest.mark.asyncio

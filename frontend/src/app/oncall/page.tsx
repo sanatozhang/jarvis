@@ -36,6 +36,27 @@ function SourceBadge({ source, t }: { source?: string; t: (k: string) => string 
   );
 }
 
+// 平台标（apollo-only；升级工单卡片值班同学最痛的盲区——不看这个标不知道该找哪个端的人）。
+// 值展示态大小写不统一（"APP"/"Web"/"mcp" 等历史遗留），这里统一转大写展示，不改后端存储。
+const PLATFORM_META: Record<string, { bg: string; fg: string; bd: string }> = {
+  APP: { bg: "rgba(107,114,128,0.1)", fg: "#4B5563", bd: "rgba(107,114,128,0.22)" },
+  WEB: { bg: "rgba(14,165,233,0.1)", fg: "#0284C7", bd: "rgba(14,165,233,0.22)" },
+  DESKTOP: { bg: "rgba(168,85,247,0.1)", fg: "#9333EA", bd: "rgba(168,85,247,0.22)" },
+  MCP: { bg: "rgba(234,88,12,0.1)", fg: "#C2410C", bd: "rgba(234,88,12,0.22)" },
+  BACKEND: { bg: "rgba(220,38,38,0.1)", fg: "#DC2626", bd: "rgba(220,38,38,0.22)" },
+};
+function PlatformBadge({ platform }: { platform?: string }) {
+  if (!platform) return null;
+  const key = platform.toUpperCase();
+  const m = PLATFORM_META[key] || PLATFORM_META.APP;
+  return (
+    <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+      style={{ background: m.bg, color: m.fg, border: `1px solid ${m.bd}` }}>
+      {key}
+    </span>
+  );
+}
+
 function formatTime(iso: string) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -354,6 +375,7 @@ export default function OncallPage() {
         style={{ background: S.overlay, border: `1px solid ${S.border}`, opacity: isResolved ? 0.6 : 1 }}>
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
+            <PlatformBadge platform={tk.platform} />
             <SourceBadge source={tk.source} t={t} />
             {tk.problem_type && (
               <span className="rounded-full px-2 py-0.5 text-[10px] font-medium"

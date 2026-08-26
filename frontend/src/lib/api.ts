@@ -676,6 +676,7 @@ export const updateOncallSchedule = (groups: string[][], startDate: string, user
 export interface EscalatedTicket {
   record_id: string;
   description: string;
+  platform: string;
   problem_type: string;
   problem_type_en: string;
   root_cause: string;
@@ -2397,6 +2398,7 @@ export interface RepoRoutingConfig {
   support_web: boolean;
   support_desktop: boolean;
   support_mcp: boolean;
+  support_backend: boolean;
 }
 
 export interface RepoRoutingPreviewResult {
@@ -2413,7 +2415,7 @@ export interface RepoRoutingPreviewResult {
 export const getRepoRouting = () =>
   request<RepoRoutingConfig>("/settings/repo-routing");
 
-export const updateRepoRouting = (body: { routing: Record<string, { bands: RepoBand[] }>; service_filter?: string; support_web?: boolean; support_desktop?: boolean; support_mcp?: boolean }) =>
+export const updateRepoRouting = (body: { routing: Record<string, { bands: RepoBand[] }>; service_filter?: string; support_web?: boolean; support_desktop?: boolean; support_mcp?: boolean; support_backend?: boolean }) =>
   request<{ ok: boolean }>("/settings/repo-routing", {
     method: "PUT",
     body: JSON.stringify(body),

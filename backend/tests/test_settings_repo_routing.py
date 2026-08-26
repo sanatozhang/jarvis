@@ -45,6 +45,7 @@ class TestApplyRepoRouting:
         self._orig_service_filter = self._cg_settings.datadog_service_filter
         self._orig_support_web = self._settings.support_web
         self._orig_support_desktop = self._settings.support_desktop
+        self._orig_support_backend = self._settings.support_backend
 
     def teardown_method(self):
         from app.config import get_settings
@@ -55,6 +56,7 @@ class TestApplyRepoRouting:
         self._cg_settings.datadog_service_filter = self._orig_service_filter
         self._settings.support_web = self._orig_support_web
         self._settings.support_desktop = self._orig_support_desktop
+        self._settings.support_backend = self._orig_support_backend
 
         # Clear caches so no mutations leak
         get_settings.cache_clear()
@@ -114,6 +116,18 @@ class TestApplyRepoRouting:
         _apply_repo_routing({"routing": {}, "support_web": False})
         assert get_settings().support_web is False
         assert get_settings().support_desktop is True
+
+    def test_apply_sets_support_backend_flag(self):
+        """support_backend follows the same partial-update semantics as web/desktop/mcp."""
+        from app.api.settings import _apply_repo_routing
+        from app.config import get_settings
+
+        _apply_repo_routing({"routing": {}, "support_backend": True})
+        assert get_settings().support_backend is True
+
+        # Absent key → flag stays unchanged.
+        _apply_repo_routing({"routing": {}})
+        assert get_settings().support_backend is True
 
     def test_apply_service_filter_only_does_not_touch_routing(self):
         """When 'routing' key is absent, existing repo_routing is unchanged."""

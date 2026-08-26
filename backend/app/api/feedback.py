@@ -17,6 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile, HTTPExce
 
 from app.config import get_settings
 from app.db import database as db
+from app.platforms import PLATFORMS, display_platform
 from app.services.zendesk import extract_ticket_id, fetch_ticket_with_comments
 from app.services.summarize import summarize_ticket_conversation
 
@@ -51,6 +52,13 @@ async def submit_feedback(
     try:
         settings = get_settings()
         record_id = f"fb_{uuid.uuid4().hex[:10]}"
+
+        # 平台白名单校验——这是用户直连的系统边界，脏值在这里拒绝比让它流进
+        # issues.platform 后再被下游 normalize_platform() 静默兜底成 "app" 更早发现问题。
+        # 校验通过后转成固定展示态大小写，避免同一平台因客户端大小写不同产生多个分组。
+        if platform and platform.strip().lower() not in PLATFORMS:
+            raise HTTPException(status_code=400, detail=f"Unknown platform: {platform}")
+        platform = display_platform(platform)
 
         # Normalize zendesk
         zendesk_url = ""
@@ -198,6 +206,8 @@ async def submit_feedback(
             "files_uploaded": len(saved_files),
             "message": "反馈已提交，AI 分析已启动",
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Feedback submission failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

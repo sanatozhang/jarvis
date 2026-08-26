@@ -203,6 +203,7 @@ function RepoRoutingSection() {
   const [supportWeb, setSupportWeb] = useState(false);
   const [supportDesktop, setSupportDesktop] = useState(false);
   const [supportMcp, setSupportMcp] = useState(false);
+  const [supportBackend, setSupportBackend] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -220,6 +221,7 @@ function RepoRoutingSection() {
       setSupportWeb(!!data.support_web);
       setSupportDesktop(!!data.support_desktop);
       setSupportMcp(!!data.support_mcp);
+      setSupportBackend(!!data.support_backend);
     }).catch(console.error);
   }, []);
 
@@ -244,7 +246,7 @@ function RepoRoutingSection() {
     setSaving(true);
     setSaveError("");
     try {
-      await updateRepoRouting({ routing, service_filter: serviceFilter, support_web: supportWeb, support_desktop: supportDesktop, support_mcp: supportMcp });
+      await updateRepoRouting({ routing, service_filter: serviceFilter, support_web: supportWeb, support_desktop: supportDesktop, support_mcp: supportMcp, support_backend: supportBackend });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e: any) {
@@ -349,6 +351,16 @@ function RepoRoutingSection() {
                 style={{ accentColor: S.accent }}
               />
               {t("支持 MCP 工单")}
+            </label>
+            <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: S.text1 }}>
+              <input
+                type="checkbox"
+                checked={supportBackend}
+                onChange={(e) => setSupportBackend(e.target.checked)}
+                className="h-4 w-4 rounded"
+                style={{ accentColor: S.accent }}
+              />
+              {t("支持 Backend 工单")}
             </label>
           </div>
           <p className="mt-1.5 text-[11px]" style={{ color: S.text3 }}>

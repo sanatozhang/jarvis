@@ -223,7 +223,8 @@ async def run_eval(run_id: int):
                 problem_date = guess_problem_date(routing_text, issue.occurred_at)
 
                 engine = RuleEngine()
-                rules = engine.match_rules(routing_text)
+                eval_platform = (issue.platform or "").strip().lower()
+                rules = engine.match_rules(routing_text, platform=eval_platform)
                 extraction = extract_for_rules(rules, log_paths, problem_date=problem_date) if has_logs else {}
                 version = (getattr(issue, "app_version", "") or "").strip()
                 _md = getattr(issue, "log_metadata_json", "") or ""

@@ -1271,6 +1271,9 @@ async def get_escalated_issues(status: str | None = None, since_date=None) -> Li
             items.append({
                 "record_id": issue.id,
                 "description": issue.description or "",
+                # 平台标（与 _issue_to_dict 一致，原样透传存储态，不在这里做大小写归一——
+                # 归一口径统一问题见 platforms.py::normalize_platform() 的调用方）
+                "platform": issue.platform or "",
                 "problem_type": analysis.problem_type if analysis else "",
                 "problem_type_en": getattr(analysis, "problem_type_en", "") or "" if analysis else "",
                 "root_cause": analysis.root_cause if analysis else "",

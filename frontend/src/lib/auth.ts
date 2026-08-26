@@ -17,10 +17,11 @@ export type AuthConfig = {
   support_web: boolean;
   support_desktop: boolean;
   support_mcp: boolean;
+  support_backend: boolean;
 };
 
 export async function fetchAuthConfig(): Promise<AuthConfig> {
-  const fallback: AuthConfig = { sso_enabled: false, support_web: false, support_desktop: false, support_mcp: false };
+  const fallback: AuthConfig = { sso_enabled: false, support_web: false, support_desktop: false, support_mcp: false, support_backend: false };
   try {
     const res = await fetch("/api/auth/config", { cache: "no-store" });
     if (!res.ok) return fallback;

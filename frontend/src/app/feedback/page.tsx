@@ -45,7 +45,7 @@ export default function FeedbackPage() {
   });
   const t = useT();
   const currentLang = useLang();
-  const { supportWeb, supportDesktop, supportMcp } = useAuth();
+  const { supportWeb, supportDesktop, supportMcp, supportBackend } = useAuth();
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -206,6 +206,7 @@ export default function FeedbackPage() {
                 <option value="Web" disabled={!supportWeb}>Web</option>
                 <option value="Desktop" disabled={!supportDesktop}>Desktop</option>
                 <option value="MCP" disabled={!supportMcp}>MCP</option>
+                <option value="Backend" disabled={!supportBackend}>Backend</option>
               </select>
             </div>
             <div>

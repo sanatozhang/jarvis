@@ -430,6 +430,7 @@ export default function TrackingPage() {
                   <option value="APP">APP</option>
                   <option value="Web">Web</option>
                   <option value="Desktop">Desktop</option>
+                  <option value="MCP">MCP</option>
                 </select>
               </div>
               <div className="w-24">
