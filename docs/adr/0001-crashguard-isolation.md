@@ -1,8 +1,15 @@
 # ADR-0001 / Crashguard 模块隔离
 
-**状态:** Accepted
+**状态:** Superseded by physical repo separation (2026-08-26)
 **日期:** 2026-04-27
 **决策者:** sanato
+
+> **2026-08-26 更新**：工单处理代码已整体迁出到独立仓库 `Plaud-AI/Apollo`，本决策
+> 记录的「同仓库内用 import-linter + DB 自检做进程内强隔离」方案已被物理仓库分离
+> 取代——`backend/.importlinter` 已删除，下方描述的 forbidden_modules 白名单机制不再
+> 存在。DB 前缀隔离（`crash_*` 无外键指向工单表）与「PR 必须 draft」两条决策依然有效，
+> 且现在靠仓库边界而非 lint 合约保证。保留本文档是为了记录隔离动机的历史决策过程，
+> 后续对 crashguard 隔离机制的说明见 `backend/app/crashguard/CLAUDE.md`。
 
 ## 背景
 

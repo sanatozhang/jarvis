@@ -1,23 +1,28 @@
 # Crashguard 后端模块
 
-崩溃自动化分析 + 自动开 draft PR 子模块。**独立模块，未来可能拆分为独立服务**。
+崩溃自动化分析 + 自动开 draft PR 子模块。
 
 前端文档见 `frontend/src/app/crashguard/CLAUDE.md`。
 
 ---
 
-## ⚠️ 隔离合约（硬约束）
+## 隔离历史（2026-08 更新：物理仓库分离已取代进程内 lint 合约）
 
-### 禁止项
+本模块原本和工单处理代码同仓库，靠 `backend/.importlinter` 的 `forbidden_modules`
+白名单在进程内强制隔离（详见 `docs/adr/0001-crashguard-isolation.md` 记录的原始决策）。
+2026-08 工单处理代码整体迁出到独立仓库 Apollo 后，原合约里禁止 import 的
+`app.models`/`app.workers.analysis_worker`/`app.services.rule_engine`/
+`app.api.{issues,tasks,feedback}` 已随迁移物理消失——**隔离现在靠仓库边界保证，
+不再需要 `.importlinter`（已删除）**。
 
-1. ❌ `from app.models import ...`（仅允许 `app.db.database.get_session`）
-2. ❌ `from app.workers.analysis_worker import ...`
-3. ❌ `from app.services.rule_engine import ...`
-4. ❌ `from app.api.{issues,tasks,feedback} import ...`
-5. ❌ SQL join 到非 `crash_*` 表（`issues` / `tasks` / `feedbacks` 等）
-6. ❌ 把 crashguard 字段塞进 jarvis 全局配置（独立的 `crashguard:` 段）
+仍然有效的约束（本仓库内部仍需遵守）：
 
-### 允许的对外耦合点（仅这 6 个）
+- ❌ SQL join 到非 `crash_*` 表（`pt_*` 是 platform_tickets 的遗留兼容表，见 `backend/CLAUDE.md` 数据库一节）
+- ❌ 把 crashguard 字段塞进全局配置的非 `crashguard:` 段
+
+### 依赖的共享基础设施
+
+crashguard 目前仍依赖这些未瘦身的共享模块（完整版本，非 crashguard 专属精简版——已知后续优化项）：
 
 | 函数 | 用途 |
 |------|------|
@@ -28,18 +33,9 @@
 | `app.services.repo_router.resolve` | 按 (platform, version) 解析源码/PR/符号化目标仓（Flutter→native 版本切换，2026-06-26）|
 | `app.services.mt_runner.acquire_workspace_lock_async` / `release_workspace_lock_async` | 跨进程仓库文件锁（`$wrapper/.jarvis.lock`），让 `pr_drafter` 的 git 操作与 `app.services.repo_updater` 的夜间同步任务协调，避免同一仓库并发 git 操作打架（2026-07-10）|
 
-### 防腐机制（违反硬阻断）
+### DB 隔离自检（仍然生效）
 
-- `backend/.importlinter` — `forbidden_modules` 白名单，CI / pre-commit 跑 `lint-imports`
-- `backend/scripts/check_crash_decoupling.py` — 启动时跑，检查 crash_* 表外键纯净度
-- ADR：`docs/adr/0001-crashguard-isolation.md`
-
-### 新增耦合点流程
-
-1. 改 `docs/adr/0001-crashguard-isolation.md` 记录决策
-2. 加白名单到 `backend/.importlinter`
-3. PR 描述里说明耦合点 + 必要性
-4. CI lint 通过
+`backend/scripts/check_crash_decoupling.py` 启动时跑，检查 `crash_*`/`pt_*` 两个前缀域外键纯净度，违反则拒绝启动。
 
 ---
 
@@ -114,7 +110,6 @@
 ```bash
 cd backend
 pytest tests/crashguard/ -v              # 单测
-lint-imports                             # 隔离合约 lint
 python -m scripts.check_crash_decoupling # DB 外键自检
 ```
 

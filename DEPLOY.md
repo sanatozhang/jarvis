@@ -383,33 +383,25 @@ curl http://localhost:8000/api/health
 #     "database": { "status": "ok" },
 #     "redis": { "status": "ok" },       ← 没有 Redis 则 unavailable
 #     "agents": { "claude_code": { "available": true } },
-#     "rules": { "status": "ok", "count": 7 }
+#     "rules": { "status": "ok", "count": 0 }   ← 工单规则已随物理拆分移除，count 为 0 是正常的
 #   }
 # }
 ```
 
-### 6.2 验证工单获取
+### 6.2 验证 crashguard 模块
 
 ```bash
-curl http://localhost:8000/api/issues | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print(f'工单总数: {d[\"stats\"][\"total\"]}')
-print(f'高优先级: {d[\"stats\"][\"high_priority\"]}')
-"
+curl http://localhost:8000/api/crash/health
+# 预期: {"module": "crashguard", "enabled": true, "datadog_configured": true, ...}
 ```
 
-### 6.3 验证规则加载
+### 6.3 验证 coreguard
 
 ```bash
-curl http://localhost:8000/api/rules | python3 -c "
-import sys, json
-rules = json.load(sys.stdin)
-print(f'规则数: {len(rules)}')
-for r in rules:
-    print(f'  {r[\"meta\"][\"id\"]}: {r[\"meta\"][\"name\"]}')
-"
+curl http://localhost:8000/api/coreguard/health
 ```
+
+graygate 没有独立 `/health` 端点，看后端启动日志里的 `graygate scheduler started` 即可确认模块已加载。
 
 ### 6.4 访问前端
 

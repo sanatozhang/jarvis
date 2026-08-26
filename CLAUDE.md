@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file orients Claude Code to the Jarvis project. **Read the per-module CLAUDE.md for details when editing a specific module.**
+This file orients Claude Code to the jarvis project. **Read the per-模块 CLAUDE.md for details when editing a specific module.**
 
 ## 项目概览
 
-Jarvis 是 Plaud 内部的工单 + 崩溃自动化平台。
+jarvis 是 Plaud 内部的崩溃自动化平台：crashguard（崩溃自动分析→开 PR）+ coreguard（核心指标监控）+ graygate（灰度期监控）。工单处理是独立的姊妹项目 **Apollo**（`github.com/Plaud-AI/Apollo`），2026-08 已完成物理仓库拆分，jarvis 与 Apollo 互不依赖、互不支持，各自独立部署。
 
 ```
 Frontend (Next.js 15 + React 19 + Tailwind CSS 4)
@@ -13,17 +13,17 @@ Backend  (FastAPI + SQLAlchemy + SQLite)
   ↕ subprocess
 Agents   (Claude Code CLI / Codex CLI — external binaries)
   +
-Datadog  (Crashguard 子模块直连 Datadog Error Tracking + RUM)
+Datadog  (crashguard/coreguard 直连 Datadog Error Tracking + RUM)
 ```
 
 ## 模块地图（编辑前先读对应文档）
 
 | 模块 | 涉及代码 | 详细文档 |
 |------|---------|---------|
-| **工单分析** | 后端 `app/api/{issues,tasks,feedback,linear_webhook,rules,reports}.py` + `app/workers/analysis_worker.py` + `app/agents/*` + `app/services/{feishu_cli,feishu,decrypt,rule_engine,agent_orchestrator,zendesk,linear,extractor,...}.py` + `backend/rules/*.md`<br>前端 `/`, `/tracking`, `/feedback`, `/rules`, `/reports` | `docs/modules/ticket-analysis.md`（速查）+ `docs/modules/ticket-analysis-internals.md`（设计动机/踩坑历史，含 L1/L1.5/L2/L3 分层详解）+ `docs/modules/web-desktop-ticket-analysis.md`（web/desktop 平台工单现状与 Datadog 取证指南） |
-| **Oncall 管理** | 后端 `app/api/oncall.py` + `app/api/users.py` + `app/services/{escalation_reminder,notify,oncall_weekly_greeting,oncall_feishu_sync}.py`<br>前端 `/oncall` | `docs/modules/oncall.md` |
-| **数据统计** | 后端 `app/api/analytics.py` + `app/services/{rule_accuracy,golden_samples}.py`<br>前端 `/analytics` | `docs/modules/analytics.md` |
-| **Crashguard 崩溃监控** | 后端独立子模块 `backend/app/crashguard/`<br>前端 `frontend/src/app/crashguard/` | 后端：`backend/app/crashguard/CLAUDE.md`<br>前端：`frontend/src/app/crashguard/CLAUDE.md` |
+| **Crashguard 崩溃监控** | 后端 `backend/app/crashguard/`<br>前端 `frontend/src/app/crashguard/` | 后端：`backend/app/crashguard/CLAUDE.md`<br>前端：`frontend/src/app/crashguard/CLAUDE.md` |
+| **Coreguard 核心指标** | 后端 `backend/app/coreguard/` | `docs/modules/coreguard-thresholds.md` |
+| **Graygate 灰度监控** | 后端 `backend/app/graygate/` | 无独立文档，代码即文档（模块小，见 `backend/app/graygate/CLAUDE.md` 若存在） |
+| **Release 自动化** | 后端 `app/api/release.py` + `app/workers/release_poller.py` | `docs/superpowers/specs/2026-05-20-release-automation-design.md` |
 
 通用基础设施文档：
 
@@ -44,9 +44,6 @@ cd frontend && npm install && npm run dev
 # Full stack (Docker)
 docker compose up -d
 docker compose logs -f backend
-
-# Rule hot-reload (no restart)
-curl -X POST http://localhost:8000/api/rules/reload
 
 # Crashguard tests + 隔离 lint
 cd backend && pytest tests/crashguard/ -v
