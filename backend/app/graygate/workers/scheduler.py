@@ -42,6 +42,18 @@ False）。跟 crashguard `job_health_alerter` 的 stale 判定对齐一下（�
 `_check_staleness`），但不是照搬那一整套（consecutive-failure 计数、自动重跑、
 多任务聚合卡片）——那是给 10 个不同频率 cron 设计的，套在这一个每天一次的
 job 上是过度设计。只取最有价值的那一层："上次成功距现在多久"，超过阈值才告警。
+
+2026-09-02 事故补丁——原来"是否到了发送时刻"用的是 `now_bjt.hour ==
+report_hour_bjt`（精确命中这一个小时才触发）。这个判断隐含了一个假设：进程在
+`report_hour_bjt` 这一整个小时里必须一直活着。宿主机整机重启把这个假设打破
+了：重启期间进程不在，`report_hour_bjt` 那个小时被完整错过，重启后时间已经
+过了那个整点，精确匹配再也不会为真，当天报告被永久跳过（直到第二天）。
+现在改成 `now_bjt.hour < report_hour_bjt` 才跳过（即"到点或过点都算数"），
+配合 `_already_handled_today` 查心跳表兜底："今天这个 target_date 到底跑没
+跑过"看的是持久态（DB），不是进程内存态的 `_last_fired_date`——内存态在
+重启后必然清零，只靠它没法区分"今天真的没发过"和"发过了，只是刚重启"，
+后者如果误判成前者，会在每次重启（含日常 redeploy）都重新触发一次导致重复
+发送。
 """
 from __future__ import annotations
 
@@ -170,8 +182,43 @@ async def _run_daily_report_once(target_date: date) -> None:
         await _send_failure_alert(status, target_date, error, summary)
 
 
+async def _already_handled_today(target_date: date) -> bool:
+    """查心跑表（持久态）：`target_date` 这天是否已经跑过一次（不管结果是
+    success/degraded/failed——本模块的设计是每天只跑一次，不做同日重试，见
+    `_run_daily_report_once` 的三态说明）。
+
+    用于抵御进程重启造成的内存态 `_last_fired_date` 丢失：重启后如果只看内存
+    态，会把"今天已经发过，只是刚重启"误判成"今天还没发过"，从而在
+    `report_hour_bjt` 之后的任意一次重启（含日常 redeploy）都重新触发一次，
+    造成重复发送。查询本身出错（比如表还没建）时按"没跑过"处理——宁可依赖
+    `_last_fired_date` 兜底走一次真实触发，也不能因为查询异常永久跳过。
+    """
+    try:
+        from sqlalchemy import select
+        from app.coreguard.models import CoreguardJobHeartbeat
+        async with get_session() as session:
+            row = (await session.execute(
+                select(CoreguardJobHeartbeat)
+                .where(CoreguardJobHeartbeat.job_name == _JOB_NAME)
+                .order_by(CoreguardJobHeartbeat.fired_at.desc())
+                .limit(1)
+            )).scalars().first()
+    except Exception:
+        logger.exception("graygate: heartbeat lookup for idempotency check failed")
+        return False
+
+    if row is None:
+        return False
+    try:
+        summary = json.loads(row.summary or "{}")
+    except Exception:
+        return False
+    return summary.get("target_date") == target_date.isoformat()
+
+
 async def _tick_once() -> None:
-    """一次 tick：三层 kill switch → 是否命中发送小时 → 进程级幂等（按天）→ 触发。
+    """一次 tick：三层 kill switch → 是否已到发送小时 → 幂等（进程内存 + 心跳表
+    双重兜底，按天）→ 触发。
 
     直接 `await _run_daily_report_once(...)`（不像 coreguard 那样
     `asyncio.create_task` 丢到后台）：graygate 一天只跑一次，跑一次几秒钟的
@@ -185,13 +232,20 @@ async def _tick_once() -> None:
         return
 
     now_bjt = _now_bjt()
-    if now_bjt.hour != settings.report_hour_bjt:
-        return
+    if now_bjt.hour < settings.report_hour_bjt:
+        return  # 还没到点
     if _last_fired_date == now_bjt.date():
-        return  # 今天已经发过（幂等粒度是"天"）
+        return  # 本进程内今天已经发过（幂等粒度是"天"）
+
+    target_date = now_bjt.date() - timedelta(days=1)
+
+    if await _already_handled_today(target_date):
+        # 心跳表显示今天这个 target_date 已经跑过一次——大概率是进程重启
+        # 清空了内存态 `_last_fired_date`，只补记内存态，不重复触发。
+        _last_fired_date = now_bjt.date()
+        return
 
     _last_fired_date = now_bjt.date()
-    target_date = now_bjt.date() - timedelta(days=1)
     logger.info(
         "graygate_daily_report fired at %s (target_date=%s)",
         now_bjt.isoformat(), target_date,
