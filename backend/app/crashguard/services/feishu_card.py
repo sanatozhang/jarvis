@@ -1099,3 +1099,99 @@ def build_job_health_alert_card(
         },
         "elements": elements,
     }
+
+
+def build_symbol_health_alert_card(
+    missing_coverage: List[Dict[str, Any]],
+    bad_quality: List[Dict[str, Any]],
+    stale_upload: Optional[Dict[str, Any]],
+    frontend_base_url: str = "http://localhost:3000",
+) -> Dict[str, Any]:
+    """符号表健康度告警卡片（2026-09-14，符号断供 19 天事故后新增）。
+
+    missing_coverage: [{platform, version, events}, ...] —— 高流量版本符号包确实缺失
+    bad_quality: [{platform, version, raw_count, total, raw_rate}, ...] —— 符号化成功率过低
+    stale_upload: {last_upload_at, age_days, stale_days} 或 None —— 全平台无新符号入库兜底
+    """
+    total_items = len(missing_coverage) + len(bad_quality) + (1 if stale_upload else 0)
+    title_text = f"🧩 Crashguard 符号表健康度异常 · {total_items} 项需关注"
+    elements: List[Dict[str, Any]] = []
+
+    if stale_upload:
+        age = stale_upload.get("age_days")
+        stale_days = stale_upload.get("stale_days")
+        last_at = stale_upload.get("last_upload_at")
+        if age is None:
+            content = f"🔴 **从未有过符号包入库记录**（阈值 {stale_days} 天）——上传通道可能从一开始就没打通。"
+        else:
+            content = (
+                f"🔴 **全平台已 {age} 天无任何新符号包入库**（阈值 {stale_days} 天）\n"
+                f"  上次入库：{last_at}"
+            )
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content}})
+        elements.append({"tag": "hr"})
+
+    if missing_coverage:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"📉 **符号覆盖率缺失**（今日高流量版本查不到对应符号包，共 {len(missing_coverage)} 项）",
+            },
+        })
+        for it in missing_coverage[:10]:
+            pe = _platform_emoji(it.get("platform", ""))
+            elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"{pe} **{it.get('version')}** · 今日 events {it.get('events', 0)}\n"
+                        f"  crashguard 符号库查不到该版本对应符号包"
+                    ),
+                },
+            })
+        elements.append({"tag": "hr"})
+
+    if bad_quality:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"🔍 **符号化成功率过低**（符号包在但未生效，共 {len(bad_quality)} 项）",
+            },
+        })
+        for it in bad_quality[:10]:
+            pe = _platform_emoji(it.get("platform", ""))
+            elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"{pe} **{it.get('version')}** · 未符号化占比 {it.get('raw_rate', 0) * 100:.0f}%"
+                        f"（{it.get('raw_count', 0)}/{it.get('total', 0)}）\n"
+                        f"  常见原因：版本对不上 / GH_TOKEN 权限失效 / 符号包本身损坏"
+                    ),
+                },
+            })
+        elements.append({"tag": "hr"})
+
+    btn_url = f"{frontend_base_url.rstrip('/')}/crashguard"
+    elements.append({
+        "tag": "action",
+        "actions": [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📊 在 Web 端查看"},
+            "type": "primary",
+            "url": btn_url,
+        }],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "red",
+            "title": {"tag": "plain_text", "content": title_text},
+        },
+        "elements": elements,
+    }

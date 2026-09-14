@@ -37,6 +37,7 @@ KNOWN_JOBS = (
     "evening_daily",
     "warmup",
     "top_crash_auto_pr",
+    "symbol_health",
 )
 
 

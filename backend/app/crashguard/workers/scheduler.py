@@ -37,6 +37,7 @@ _top_crash_auto_pr_last_fired: str = ""  # Top crash 自动 PR 进程级幂等
 _backfill_last_fired: str = ""      # 周度 baseline 回填 tick 进程级幂等
 _deep_analyze_auto_last_fired: str = ""  # Phase 1 深度诊断自动 tick 进程级幂等
 _jank_backfill_last_fired: str = ""  # 卡顿回填 tick 进程级幂等
+_symbol_health_last_fired: str = ""  # 符号表健康度监控 tick 进程级幂等
 
 
 async def _run_analyze_tick(max_per_tick: int) -> dict:
@@ -444,6 +445,27 @@ async def _tick_once() -> None:
                     )
             except Exception:
                 logger.exception("crashguard job_health_alert tick failed")
+
+    # 符号表健康度监控（每日一次：覆盖率缺失 + 符号化成功率过低 + 全平台无新符号入库兜底）
+    global _symbol_health_last_fired
+    if getattr(s, "symbol_health_enabled", True):
+        sh_cron = getattr(s, "symbol_health_cron", "") or ""
+        if sh_cron and _symbol_health_last_fired != tag and _cron_matches(sh_cron, now):
+            _symbol_health_last_fired = tag
+            try:
+                async with record_heartbeat("symbol_health") as hb:
+                    from app.crashguard.services.symbol_coverage_monitor import run_symbol_health_check
+                    res = await run_symbol_health_check()
+                    hb.set_summary(res)
+                    hb.set_status_from_result(res)
+                    logger.info(
+                        "crashguard symbol_health tick fired: alerted=%s missing=%s quality=%s",
+                        res.get("alerted"),
+                        len(res.get("missing_coverage", [])) if res.get("alerted") else res.get("checked_coverage"),
+                        len(res.get("bad_quality", [])) if res.get("alerted") else res.get("checked_quality_buckets"),
+                    )
+            except Exception:
+                logger.exception("crashguard symbol_health tick failed")
 
 
 async def report_scheduler_loop() -> None:

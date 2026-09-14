@@ -115,7 +115,7 @@ python -m scripts.check_crash_decoupling # DB 外键自检
 
 ## 定时任务全图（运营对照）
 
-10 个 cron + 1 个启动一次性任务，全部走 `crash_job_heartbeats` 表心跳记录；其中 `pr_reviewer_daily` / `pr_pending_review` / `conflict_resync` 三个走 `workers/warmup.py::pipeline_scheduler_loop()` 的 60s tick（而非 `workers/scheduler.py`），暂未接入前端 `/crashguard/jobs` 面板的 `_JOB_META`（预先存在的展示口径缺口，只是没在监控页可见，心跳本身照样写）。
+11 个 cron + 1 个启动一次性任务，全部走 `crash_job_heartbeats` 表心跳记录；其中 `pr_reviewer_daily` / `pr_pending_review` / `conflict_resync` 三个走 `workers/warmup.py::pipeline_scheduler_loop()` 的 60s tick（而非 `workers/scheduler.py`），暂未接入前端 `/crashguard/jobs` 面板的 `_JOB_META`（预先存在的展示口径缺口，只是没在监控页可见，心跳本身照样写）。
 
 | # | 任务（job_name） | Cron 默认 | 触发条件 | 关键阈值 | kill switch |
 |---|------|----------|---------|----------|-------------|
@@ -129,6 +129,7 @@ python -m scripts.check_crash_decoupling # DB 外键自检
 | 8 | `pr_reviewer_daily` reviewer 点名提醒 (2026-05-21) | `0 9 * * *` | blame 命中的候选 reviewer 未 review 的 PR | `pr_reviewer_top_n=2` / `pr_reviewer_min_lines_pct=0.20` / `pr_reviewer_blocked_authors` 黑名单 | `pr_reviewer_enabled` |
 | 9 | `pr_pending_review` 积压日报 (2026-05-21) | `0 10 * * 1-5` | 昨日 merged/closed/新建 + 当前 pending 积压清单 | 无阈值，固定发给 `feishu_alert_email`/`pr_reviewer_fallback_email` | `pr_pending_review_enabled` |
 | 10 | `conflict_resync` PR 落后 base / 冲突自愈 (2026-08-20) | `0 3 * * *` | 非终态 PR 逐个查 `mergeStateStatus`：`BEHIND` 调 GitHub `update-branch` API 服务端合并；`DIRTY`/合并失败一律只通知不动代码 | 无本地 git 操作、不 force-push（`_run_git` 硬禁 rebase/merge，这里也不绕开） | `conflict_resync_enabled`（**默认 False**，新功能上线前需人工验证一轮） |
+| 11 | `symbol_health` 符号表健康度监控 (2026-09-14) | `0 9 * * *` | 今日高流量版本查 crashguard 自己的符号表存储是否有对应包 + 今日 fixable issue 符号化成功率 + 全平台无新符号入库兜底 | `symbol_coverage_top_n_versions=3` / `symbol_coverage_min_events=100` / `symbol_coverage_stale_upload_days=5` / `symbolication_quality_raw_rate_threshold=0.5` | `symbol_health_enabled` |
 | ✱ | `warmup` 启动一次性 | 无（启动后延后 N 秒） | 重启后补一遍 pipeline + auto-analyze | `warmup_on_startup=true` | `enabled` |
 
 ### 可观测性闭环（治本，不靠人盯）
@@ -141,7 +142,8 @@ python -m scripts.check_crash_decoupling # DB 外键自检
 | 历史 API | `GET /api/crash/jobs/{job_name}/heartbeats?limit=50` | 同上 |
 | 前端页面 | `/crashguard/jobs` 表格，每 30s 自动刷新；超期/连续失败红色高亮 | `frontend/src/app/crashguard/jobs/page.tsx` |
 | 健康度判定 | `stale`（last_success_at 超过 2× 预期间隔）/ `failing`（连续 ≥3 次失败）/ `degraded`（近 50 次中 ≥10 次失败）/ `ok` | `api/crash.py::jobs_status` |
-| 失败告警（待落） | 任一任务 `health` ∈ (`failing`, `stale`) → 飞书告警（下一 sprint） | TBD |
+| 失败告警 | 任一任务 `health` ∈ (`failing`, `stale`) → 自愈重跑 3 次仍失败才聚合发飞书（周末降频，见 `job_health_alert_*` 配置） | `services/job_health_alerter.py` |
+| 结果级监控（治本，不只监控"任务跑没跑"） | `job_health_alerter` 只能证明任务执行过，证明不了产出正确——19 天符号断供就是自报成功但实际没写入任何数据。`symbol_health` 直接查符号表存储本身 + 符号化成功率，不依赖任何任务自报状态 | `services/symbol_coverage_monitor.py` |
 
 ### 多实例去重 + kill switch
 

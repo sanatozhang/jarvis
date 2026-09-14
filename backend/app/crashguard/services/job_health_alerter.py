@@ -260,6 +260,8 @@ async def run_job_health_check() -> Dict[str, Any]:
         # top_crash_auto_pr_enabled（本身还是 True）就会永远判 stale 并反复告警。
         {"name": "top_crash_auto_pr", "cron_field": "top_crash_auto_pr_cron",
          "enabled_field": ("top_crash_auto_pr_enabled", "pr_enabled")},
+        {"name": "symbol_health", "cron_field": "symbol_health_cron",
+         "enabled_field": "symbol_health_enabled"},
     ]
 
     now_utc = datetime.utcnow()

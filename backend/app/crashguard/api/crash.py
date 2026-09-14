@@ -2719,6 +2719,10 @@ _JOB_META: List[Dict[str, str]] = [
      # 同时受自己的开关和全局 pr_enabled 把关（见 job_health_alerter.py 同名注释）——
      # 只看 top_crash_auto_pr_enabled 会导致 pr_enabled=false 暂停期间面板仍显示 "enabled"。
      "enabled_field": ("top_crash_auto_pr_enabled", "pr_enabled")},
+    {"name": "symbol_health", "cron_field": "symbol_health_cron",
+     "label": "符号表健康度监控",
+     "desc": "每日查符号覆盖率缺失 + 符号化成功率 + 全平台无新符号入库兜底",
+     "enabled_field": "symbol_health_enabled"},
 ]
 
 
