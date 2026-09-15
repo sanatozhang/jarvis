@@ -119,13 +119,15 @@ async def set_focus_version_endpoint(body: FocusVersionPatch, request: Request) 
 
     2026-09-15：每次变更都写审计（谁/何时/旧值→新值，落 DB 不随重启消失）+
     飞书通知到 4.0灰度数据跟进群（见 focus_version.py::_record_and_notify）。
-    操作人取 `request.state.user`（SSO 登录态）；SSO 未开启/未登录时为空字符串，
-    审计里会显示"未知"。
+    操作人取 `request.state.user`（SSO 登录态）拿邮箱；没有登录态（如脚本/CI
+    直接调 API，没带 SSO cookie）一律记为 "aeolus"（约定的系统调用方标识），
+    不留空——2026-09-15 实测发现有一次不带登录态的直接调用，changed_by 全空，
+    审计"谁改的"这一半直接失效。
     """
     if body.platform not in ("ios", "android"):
         raise HTTPException(status_code=400, detail="platform must be 'ios' or 'android'")
     user = getattr(request.state, "user", None) or {}
-    changed_by = user.get("email") or user.get("username") or ""
+    changed_by = user.get("email") or user.get("username") or "aeolus"
     if body.version:
         await set_focus_version(body.platform, body.version, changed_by=changed_by)
     else:

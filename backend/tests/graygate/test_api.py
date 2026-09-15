@@ -185,7 +185,7 @@ async def test_set_focus_version_persists_and_returns_both_platforms(api_client)
         )
 
     assert resp.status_code == 200
-    mock_set.assert_awaited_once_with("ios", "4.0.302-1050", changed_by="")
+    mock_set.assert_awaited_once_with("ios", "4.0.302-1050", changed_by="aeolus")
     assert resp.json() == {"ios": "4.0.302-1050", "android": None}
 
 
@@ -201,8 +201,35 @@ async def test_set_focus_version_empty_string_clears_override(api_client):
         )
 
     assert resp.status_code == 200
-    mock_clear.assert_awaited_once_with("ios", changed_by="")
+    mock_clear.assert_awaited_once_with("ios", changed_by="aeolus")
     mock_set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_uses_logged_in_user_email_when_present():
+    """有 SSO 登录态（request.state.user）时用邮箱；没有时（如脚本直接调 API）
+    记为 "aeolus"，不留空——2026-09-15 用户要求：审计"谁改的"不能是空字符串。"""
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _fake_auth(request, call_next):
+        request.state.user = {"email": "sanato.zhang@plaud.ai", "username": "sanato"}
+        return await call_next(request)
+
+    app.include_router(graygate_api.router)
+    transport = ASGITransport(app=app)
+
+    with patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set, \
+         patch.object(graygate_api, "get_all_focus_versions", new=AsyncMock(
+             return_value={"ios": "4.0.302-1050", "android": None}
+         )):
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/graygate/focus-version", json={"platform": "ios", "version": "4.0.302-1050"},
+            )
+
+    assert resp.status_code == 200
+    mock_set.assert_awaited_once_with("ios", "4.0.302-1050", changed_by="sanato.zhang@plaud.ai")
 
 
 @pytest.mark.asyncio
