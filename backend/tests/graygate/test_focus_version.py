@@ -164,7 +164,9 @@ async def test_notify_version_change_skips_when_chat_id_unset(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notify_version_change_sends_via_main_app_bot(monkeypatch):
+async def test_notify_version_change_sends_via_im_bot(monkeypatch):
+    """2026-09-15 实测：先前打算用的"主" app 不在目标群里（230002），改用
+    jarvis 自己的 IM 专属 app——跟灰度日报本身走同一个已验证在群里的发送者身份。"""
     from unittest.mock import MagicMock
 
     s = MagicMock()
@@ -174,7 +176,7 @@ async def test_notify_version_change_sends_via_main_app_bot(monkeypatch):
 
     send_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "app.services.feishu_cli.send_interactive_card_as_main_app", send_mock,
+        "app.services.feishu_cli.send_interactive_card", send_mock,
     )
 
     sent = await fv._notify_version_change("ios", "4.0.302-1100", "4.0.302-1143", "sanato.zhang@plaud.ai")

@@ -18,8 +18,11 @@
 之前只是覆盖 KV 值，没有任何操作留痕，docker 容器日志还会随重启清空。现在
 每次变更都：
 1. 写一行 `GraygateFocusVersionAudit`（DB 表，不随进程/容器重启消失）；
-2. 用"主" app（历史上 Apollo 的机器人身份，见 feishu_cli.py 顶部说明）推一条
-   飞书通知到 graygate 配置的 `feishu_chat_id`（即"4.0灰度数据跟进群"）。
+2. 用 jarvis 自己的 IM 专属 app（`send_interactive_card`，跟灰度日报本身走
+   同一个发送者身份）推一条飞书通知到 graygate 配置的 `feishu_chat_id`
+   （即"4.0灰度数据跟进群"）。原本想用另一个"主" app 身份区分开，102 实测
+   报 `230002 Bot/User can NOT be out of the chat`——那个 app 根本不在这个
+   群里，改回用户确认"一直在群里"的这个 IM app。
 值没变化（例如重复点两次清空）不记录也不通知，避免噪声。
 """
 from __future__ import annotations
@@ -41,10 +44,17 @@ def _key(platform: str) -> str:
 async def _notify_version_change(
     platform: str, old_value: str, new_value: str, changed_by: str,
 ) -> bool:
-    """飞书通知版本变更，用"主" app 身份发送。发送失败不影响主流程（audit 仍会记录
-    notify_sent=False，事后可查）。"""
+    """飞书通知版本变更。
+
+    2026-09-15 实测：一开始想用"主" app（历史上以为是 Apollo 的机器人身份）发送，
+    结果 102 上实测报 `230002 Bot/User can NOT be out of the chat`——那个 app 根本
+    不在"4.0灰度数据跟进群"里。群里真正在用、灰度日报本身也在用的是 jarvis 自己的
+    IM 专属 app（`send_interactive_card`），改用这个，跟日报走同一个发送者身份。
+
+    发送失败不影响主流程（audit 仍会记录 notify_sent=False，事后可查）。
+    """
     from app.graygate.config import get_graygate_settings
-    from app.services.feishu_cli import send_interactive_card_as_main_app
+    from app.services.feishu_cli import send_interactive_card
 
     s = get_graygate_settings()
     if not s.feishu_enabled or not s.feishu_chat_id:
@@ -66,7 +76,7 @@ async def _notify_version_change(
         ],
     }
     try:
-        return await send_interactive_card_as_main_app(chat_id=s.feishu_chat_id, card=card)
+        return await send_interactive_card(chat_id=s.feishu_chat_id, card=card)
     except Exception:
         logger.exception("focus_version change notify failed (non-fatal)")
         return False
