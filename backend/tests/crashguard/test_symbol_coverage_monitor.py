@@ -1,12 +1,15 @@
 """symbol_coverage_monitor 单测。
 
 抓手：19 天符号断供期间上传脚本自报成功，没有任何一方验证"符号到底在不在"——
-本模块直接查 crashguard 自己的符号表存储，这里验证三条检查逻辑各自的边界条件。
+本模块直接查 crashguard 自己的符号表存储；2026-09-15 起发现缺口不再只是提醒人
+手动处理，而是先主动拉取（已上传 → GitHub release 兜底），拉取仍失败才告警。
+这里验证：覆盖率检查的 missing/resolved 分流、拉取成功后的重符号化触发、
+成功率检查、以及 run_symbol_health_check 的端到端节流。
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -81,7 +84,8 @@ async def _add_issue_and_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_check_symbol_coverage_flags_missing_package(patched_session, monkeypatch):
+async def test_check_symbol_coverage_partitions_missing_and_resolved(patched_session, monkeypatch):
+    """拉取成功的版本进 resolved（不告警），拉取失败的进 missing（告警用）。"""
     from app.crashguard.services.symbol_coverage_monitor import check_symbol_coverage
     from app.db.database import get_session
 
@@ -89,42 +93,27 @@ async def test_check_symbol_coverage_flags_missing_package(patched_session, monk
     await _add_issue_and_snapshot(
         patched_session, issue_id="i1", platform="android", version="4.0.302-1143", events=500,
     )
-    monkeypatch.setattr(
-        "app.crashguard.services.github_symbols._uploaded_package_dir",
-        lambda platform, symbol_type, version: None,
-    )
-
-    async with get_session() as session:
-        missing = await check_symbol_coverage(session, date.today(), s)
-
-    assert len(missing) == 1
-    assert missing[0]["platform"] == "android"
-    assert missing[0]["version"] == "4.0.302-1143"
-
-
-@pytest.mark.asyncio
-async def test_check_symbol_coverage_not_flagged_when_package_present(patched_session, monkeypatch):
-    from app.crashguard.services.symbol_coverage_monitor import check_symbol_coverage
-    from app.db.database import get_session
-
-    s = _make_settings(monkeypatch)
     await _add_issue_and_snapshot(
-        patched_session, issue_id="i1", platform="ios", version="4.0.302-1143", events=500,
+        patched_session, issue_id="i2", platform="ios", version="4.0.302-1144", events=500,
     )
+
+    async def _fake_fetch(platform, version):
+        return platform == "ios"  # ios 拉取成功，android 拉取失败
+
     monkeypatch.setattr(
-        "app.crashguard.services.github_symbols._uploaded_package_dir",
-        lambda platform, symbol_type, version: "/data/symbols/ios/dsym/4.0.302-1143",
+        "app.crashguard.services.symbol_coverage_monitor._try_fetch_symbol", _fake_fetch,
     )
 
     async with get_session() as session:
-        missing = await check_symbol_coverage(session, date.today(), s)
+        missing, resolved = await check_symbol_coverage(session, date.today(), s)
 
-    assert missing == []
+    assert [it["platform"] for it in missing] == ["android"]
+    assert [it["platform"] for it in resolved] == ["ios"]
 
 
 @pytest.mark.asyncio
 async def test_check_symbol_coverage_skips_low_traffic_version(patched_session, monkeypatch):
-    """events 低于 min_events 的版本不检查——长尾版本没有符号表是正常的，不该告警。"""
+    """events 低于 min_events 的版本完全不进入候选集，_try_fetch_symbol 都不会被调用。"""
     from app.crashguard.services.symbol_coverage_monitor import check_symbol_coverage
     from app.db.database import get_session
 
@@ -132,15 +121,22 @@ async def test_check_symbol_coverage_skips_low_traffic_version(patched_session, 
     await _add_issue_and_snapshot(
         patched_session, issue_id="i1", platform="android", version="4.0.302-1143", events=5,
     )
+
+    fetch_calls = []
+
+    async def _fake_fetch(platform, version):
+        fetch_calls.append((platform, version))
+        return False
+
     monkeypatch.setattr(
-        "app.crashguard.services.github_symbols._uploaded_package_dir",
-        lambda platform, symbol_type, version: None,
+        "app.crashguard.services.symbol_coverage_monitor._try_fetch_symbol", _fake_fetch,
     )
 
     async with get_session() as session:
-        missing = await check_symbol_coverage(session, date.today(), s)
+        missing, resolved = await check_symbol_coverage(session, date.today(), s)
 
-    assert missing == []
+    assert missing == [] and resolved == []
+    assert fetch_calls == []
 
 
 @pytest.mark.asyncio
@@ -248,6 +244,43 @@ async def test_check_symbolication_quality_skips_small_sample(patched_session, m
 
 
 @pytest.mark.asyncio
+async def test_resymbolicate_bucket_only_touches_raw_issues_in_matching_version(
+    patched_session, monkeypatch,
+):
+    """只重跑同 (platform, version) 桶里仍是 raw 的 issue，已符号化的和其它版本的不碰。"""
+    from app.crashguard.services.symbol_coverage_monitor import _resymbolicate_bucket
+    from app.db.database import get_session
+
+    await _add_issue_and_snapshot(
+        patched_session, issue_id="raw_in_bucket", platform="android",
+        version="4.0.302-1143", events=10, stack="0x1234 abs raw address",
+    )
+    await _add_issue_and_snapshot(
+        patched_session, issue_id="already_good", platform="android",
+        version="4.0.302-1143", events=10, stack="MainActivity.kt:42",
+    )
+    await _add_issue_and_snapshot(
+        patched_session, issue_id="other_version", platform="android",
+        version="4.0.302-1118", events=10, stack="0x5678 abs raw address",
+    )
+
+    called_with = []
+
+    async def _fake_try_symbolicate(issue_id, platform):
+        called_with.append(issue_id)
+
+    monkeypatch.setattr(
+        "app.crashguard.workers.pipeline._try_symbolicate_issue", _fake_try_symbolicate,
+    )
+
+    async with get_session() as session:
+        count = await _resymbolicate_bucket(session, date.today(), "android", "4.0.302-1143")
+
+    assert count == 1
+    assert called_with == ["raw_in_bucket"]
+
+
+@pytest.mark.asyncio
 async def test_run_symbol_health_check_no_issues_when_healthy(patched_session, monkeypatch):
     from app.crashguard.models import CrashSymbolPackage
     from app.crashguard.services.symbol_coverage_monitor import run_symbol_health_check
@@ -268,8 +301,47 @@ async def test_run_symbol_health_check_no_issues_when_healthy(patched_session, m
 
 
 @pytest.mark.asyncio
+async def test_run_symbol_health_check_resolved_version_gets_resymbolicated_and_not_alerted(
+    patched_session, monkeypatch,
+):
+    """拉取成功（resolved）不告警，且会触发今日该版本的重符号化。"""
+    from app.crashguard.models import CrashSymbolPackage
+    from app.crashguard.services.symbol_coverage_monitor import run_symbol_health_check
+    from app.db.database import get_session
+
+    _make_settings(monkeypatch)
+    await _add_issue_and_snapshot(
+        patched_session, issue_id="i1", platform="android", version="4.0.302-1143",
+        events=500, stack="0x1234 abs raw address",
+    )
+    # 避免 stale_upload 兜底检查也一起告警，干扰本测试要验证的 resolved 路径
+    async with get_session() as session:
+        session.add(CrashSymbolPackage(
+            id="pkg1", platform="android", app_version="4.0.302-1143",
+            symbol_type="proguard_mapping", file_path="/x", file_name="x.txt",
+            created_at=datetime.utcnow(),
+        ))
+        await session.commit()
+    monkeypatch.setattr(
+        "app.crashguard.services.symbol_coverage_monitor._try_fetch_symbol",
+        AsyncMock(return_value=True),
+    )
+    fake_resymbolicate = AsyncMock()
+    monkeypatch.setattr(
+        "app.crashguard.workers.pipeline._try_symbolicate_issue", fake_resymbolicate,
+    )
+
+    res = await run_symbol_health_check()
+
+    assert res["alerted"] is False
+    assert res["resymbolized"] == 1
+    assert [it["platform"] for it in res["auto_resolved"]] == ["android"]
+    fake_resymbolicate.assert_awaited_once_with("i1", "android")
+
+
+@pytest.mark.asyncio
 async def test_run_symbol_health_check_cooldown_dedup(patched_session, monkeypatch):
-    """同 (platform, version) 缺失在 cooldown 窗口内不重复告警。"""
+    """同 (platform, version) 拉取仍失败在 cooldown 窗口内不重复告警。"""
     from app.crashguard.services.symbol_coverage_monitor import run_symbol_health_check
 
     _make_settings(monkeypatch, symbol_coverage_alert_cooldown_hours=24)
@@ -277,8 +349,8 @@ async def test_run_symbol_health_check_cooldown_dedup(patched_session, monkeypat
         patched_session, issue_id="i1", platform="android", version="4.0.302-1143", events=500,
     )
     monkeypatch.setattr(
-        "app.crashguard.services.github_symbols._uploaded_package_dir",
-        lambda platform, symbol_type, version: None,
+        "app.crashguard.services.symbol_coverage_monitor._try_fetch_symbol",
+        AsyncMock(return_value=False),
     )
 
     first = await run_symbol_health_check()

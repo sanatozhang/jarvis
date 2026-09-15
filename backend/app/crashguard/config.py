@@ -405,20 +405,24 @@ class CrashguardSettings(BaseSettings):
     # 问题仍能拦截。默认 6 = pr_sync 30min 间隔下连续 3h 才告警。
     job_health_alert_degraded_threshold: int = 6
 
-    # === 符号表健康度监控（2026-09-14，符号断供 19 天事故后新增）===
+    # === 符号表健康度监控（2026-09-14 新增；2026-09-15 改主动拉取）===
     # 底层逻辑：19 天断供之所以没人发现，是因为上传脚本自报成功（curl 无 -f 静默吞 4xx/5xx），
     # 没有任何一方去验证"符号到底在不在"——job_health_alert 只能证明"任务跑了"，证明不了
-    # "任务跑出了正确结果"。本监控直接查 crashguard 自己的符号表存储（与真实符号化路径
-    # 同款 `_uploaded_package_dir` 精确匹配逻辑），不依赖任何任务的自报状态。
+    # "任务跑出了正确结果"。
+    # 2026-09-15 用户反馈：发现缺口不该只是提醒人手动处理，应该跟当初手工补 1143 符号表
+    # 时做的事一样，主动去拉取——查已上传 → 查不到再走 GitHub release 下载，只有两边都
+    # 找不到（真的需要人上传）才告警。见 symbol_coverage_monitor.py::_try_fetch_symbol。
     symbol_health_enabled: bool = True
     symbol_health_cron: str = "0 9 * * *"   # 每日一次，量级变化慢，不需要 job_health 的 5min 粒度
-    # 覆盖率检查：每平台按今日 events 取 Top N 版本，过阈值的才检查符号包是否存在
+    # 覆盖率检查：每平台按今日 events 取 Top N 版本，过阈值的才主动拉取符号包
     symbol_coverage_top_n_versions: int = 3
     symbol_coverage_min_events: int = 100   # 版本今日 events 低于此数不检查（长尾版本没有符号表是正常的）
-    symbol_coverage_alert_cooldown_hours: int = 24   # 同 (platform, version) 缺失告警节流
-    # 兜底：全平台超过 N 天无任何新符号包入库 → 独立告警（直接对应本次事故模式）
+    symbol_coverage_alert_cooldown_hours: int = 24   # 同 (platform, version) 拉取仍失败的告警节流
+    # 兜底：全平台超过 N 天无任何新符号包入库 → 独立告警（这条无法靠拉取解决——问题在
+    # 上传通道本身，不是某个具体版本缺包，直接对应本次事故模式）
     symbol_coverage_stale_upload_days: int = 5
     # 符号化成功率检查：今日 fixable issue 里"仍是 raw/未符号化"占比超阈值才告警
+    # （在覆盖率检查的主动拉取 + 重符号化跑完之后才计算，避免报出已经被自动修复的旧数据）
     symbolication_quality_min_issues: int = 5       # 样本量下限，太小的桶不告警（噪声大）
     symbolication_quality_raw_rate_threshold: float = 0.5   # 超过 50% 未符号化才告警
 

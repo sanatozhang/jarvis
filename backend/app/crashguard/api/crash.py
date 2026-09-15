@@ -2721,7 +2721,7 @@ _JOB_META: List[Dict[str, str]] = [
      "enabled_field": ("top_crash_auto_pr_enabled", "pr_enabled")},
     {"name": "symbol_health", "cron_field": "symbol_health_cron",
      "label": "符号表健康度监控",
-     "desc": "每日查符号覆盖率缺失 + 符号化成功率 + 全平台无新符号入库兜底",
+     "desc": "每日查覆盖率缺口并主动拉取（已上传→GitHub 兜底）+ 符号化成功率 + 全平台无新符号入库兜底，拉取仍失败才告警",
      "enabled_field": "symbol_health_enabled"},
 ]
 

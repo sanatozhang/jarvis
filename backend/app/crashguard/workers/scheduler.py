@@ -446,26 +446,31 @@ async def _tick_once() -> None:
             except Exception:
                 logger.exception("crashguard job_health_alert tick failed")
 
-    # 符号表健康度监控（每日一次：覆盖率缺失 + 符号化成功率过低 + 全平台无新符号入库兜底）
+    # 符号表健康度监控（每日一次：覆盖率缺失时主动拉取 GitHub release + 符号化成功率
+    # + 全平台无新符号入库兜底）。主动拉取可能耗时数十秒到数分钟（冷下载 dSYM），
+    # 走 _enqueue_job 后台串行 worker，不占用 60s 主 tick loop（同 pipeline/jank_backfill）。
     global _symbol_health_last_fired
     if getattr(s, "symbol_health_enabled", True):
         sh_cron = getattr(s, "symbol_health_cron", "") or ""
         if sh_cron and _symbol_health_last_fired != tag and _cron_matches(sh_cron, now):
             _symbol_health_last_fired = tag
-            try:
+
+            async def _symbol_health_job():
                 async with record_heartbeat("symbol_health") as hb:
                     from app.crashguard.services.symbol_coverage_monitor import run_symbol_health_check
                     res = await run_symbol_health_check()
                     hb.set_summary(res)
                     hb.set_status_from_result(res)
                     logger.info(
-                        "crashguard symbol_health tick fired: alerted=%s missing=%s quality=%s",
+                        "crashguard symbol_health tick fired: alerted=%s missing=%s resolved=%s "
+                        "resymbolized=%s quality=%s",
                         res.get("alerted"),
                         len(res.get("missing_coverage", [])) if res.get("alerted") else res.get("checked_coverage"),
+                        len(res.get("auto_resolved", [])),
+                        res.get("resymbolized"),
                         len(res.get("bad_quality", [])) if res.get("alerted") else res.get("checked_quality_buckets"),
                     )
-            except Exception:
-                logger.exception("crashguard symbol_health tick failed")
+            _enqueue_job("symbol_health", _symbol_health_job)
 
 
 async def report_scheduler_loop() -> None:

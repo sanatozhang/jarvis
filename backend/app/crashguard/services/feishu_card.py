@@ -1136,7 +1136,10 @@ def build_symbol_health_alert_card(
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"📉 **符号覆盖率缺失**（今日高流量版本查不到对应符号包，共 {len(missing_coverage)} 项）",
+                "content": (
+                    f"📉 **符号覆盖率缺失**（已自动尝试拉取——查已上传 + GitHub release 下载兜底"
+                    f"——仍找不到，共 {len(missing_coverage)} 项，需要人工上传）"
+                ),
             },
         })
         for it in missing_coverage[:10]:
@@ -1147,7 +1150,7 @@ def build_symbol_health_alert_card(
                     "tag": "lark_md",
                     "content": (
                         f"{pe} **{it.get('version')}** · 今日 events {it.get('events', 0)}\n"
-                        f"  crashguard 符号库查不到该版本对应符号包"
+                        f"  已上传符号库 + GitHub release 均查不到该版本对应符号包"
                     ),
                 },
             })
