@@ -1167,4 +1167,21 @@ const EN: Record<string, string> = {
   "已自动同步最新数据": "Auto-synced latest data",
   "自动拉取失败：": "Auto-fetch failed: ",
   "Phase 2 已触发": "Phase 2 triggered",
+
+  // Graygate report resend + focus-version audit (2026-09-15)
+  "[4.0.3 灰度] 每日指标 · 重新发布": "[4.0.3 Grayscale] Daily Metrics · Republish",
+  "按日期重新生成并发送灰度日报到「4.0灰度数据跟进群」——已经发过的日期也能重发，不受去重限制。":
+    "Regenerate and resend the grayscale daily report for a given date to the tracking group — already-sent dates can be resent too, no dedup restriction.",
+  "重新发布到群": "Republish to group",
+  "已发送": "Sent",
+  "数据可用": "Data available",
+  "目标日期": "Target date",
+  "主要版本 · 最近变更记录": "Primary Version · Recent Changes",
+  "确认重新发布这一天的灰度日报到群里？": "Confirm republishing this day's grayscale report to the group?",
+  "今天已经发过了——如需重新发布，点下面「强制重新发布」":
+    "Already sent today — click \"Force Republish\" below to resend",
+  "确认强制重新发布这份报告？今天已经发过一次了。":
+    "Confirm force-republishing this report? It was already sent once today.",
+  "已重新发布到飞书群": "Republished to Feishu group",
+  "强制重新发布": "Force Republish",
 };

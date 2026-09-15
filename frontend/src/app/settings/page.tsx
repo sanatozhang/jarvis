@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, getGraygateFocusVersions, setGraygateFocusVersion, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult, type GraygateFocusVersions } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, getGraygateFocusVersions, setGraygateFocusVersion, getGraygateFocusVersionHistory, triggerGraygateReport, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult, type GraygateFocusVersions, type GraygateFocusVersionAuditItem, type GraygateTriggerResult } from "@/lib/api";
 import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
@@ -607,6 +607,105 @@ function GraygateFocusVersionSection() {
 }
 
 
+function GraygateReportSection() {
+  const t = useT();
+  const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
+  const [targetDate, setTargetDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [preview, setPreview] = useState<GraygateTriggerResult | null>(null);
+  const [busy, setBusy] = useState<"preview" | "send" | null>(null);
+  const [error, setError] = useState("");
+  const [sentOk, setSentOk] = useState(false);
+  const [history, setHistory] = useState<GraygateFocusVersionAuditItem[]>([]);
+
+  useEffect(() => {
+    getGraygateFocusVersionHistory(undefined, 10).then((d) => setHistory(d.items)).catch(console.error);
+  }, []);
+
+  const onPreview = async () => {
+    setBusy("preview"); setError(""); setSentOk(false);
+    try {
+      const res = await triggerGraygateReport(username, { dryRun: true, targetDate });
+      setPreview(res);
+    } catch (e: any) {
+      setError(t("预览失败") + ": " + (e.message || ""));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onResend = async () => {
+    if (!confirm(t("确认重新发布这一天的灰度日报到群里？"))) return;
+    setBusy("send"); setError(""); setSentOk(false);
+    try {
+      const res = await triggerGraygateReport(username, { dryRun: false, targetDate });
+      setPreview(res);
+      setSentOk(res.sent);
+      if (!res.sent) setError(t("发送失败") + ": " + (res.reason || ""));
+    } catch (e: any) {
+      setError(t("发送失败") + ": " + (e.message || ""));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+      <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+        {t("[4.0.3 灰度] 每日指标 · 重新发布")}
+      </h2>
+      <p className="text-[11px] mb-4" style={{ color: S.text3 }}>
+        {t("按日期重新生成并发送灰度日报到「4.0灰度数据跟进群」——已经发过的日期也能重发，不受去重限制。")}
+      </p>
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          type="date"
+          value={targetDate}
+          onChange={(e) => setTargetDate(e.target.value)}
+          className="rounded px-3 py-1.5 text-sm" style={inputStyle}
+        />
+        <button
+          onClick={onPreview} disabled={busy !== null}
+          className="rounded px-3 py-1.5 text-sm font-medium"
+          style={{ background: "transparent", color: S.text2, border: `1px solid ${S.border}`, cursor: busy ? "not-allowed" : "pointer" }}
+        >
+          {busy === "preview" ? t("预览中...") : t("预览")}
+        </button>
+        <button
+          onClick={onResend} disabled={busy !== null}
+          className="rounded px-3 py-1.5 text-sm font-medium"
+          style={{ background: busy ? S.text3 : S.accent, color: "white", border: "none", cursor: busy ? "not-allowed" : "pointer" }}
+        >
+          {busy === "send" ? t("发送中...") : t("重新发布到群")}
+        </button>
+        {sentOk && <span className="text-xs" style={{ color: S.accent }}>✓ {t("已发送")}</span>}
+      </div>
+      {error && <p className="text-xs mb-2" style={{ color: "#EF4444" }}>{error}</p>}
+      {preview && !error && (
+        <p className="text-[11px] mb-3" style={{ color: S.text3 }}>
+          {t("数据可用")}: {preview.available ? "✓" : "✗"} · {t("目标日期")}: {preview.target_date}
+        </p>
+      )}
+
+      {history.length > 0 && (
+        <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${S.border}` }}>
+          <h3 className="text-[11px] font-semibold mb-2" style={{ color: S.text3 }}>
+            {t("主要版本 · 最近变更记录")}
+          </h3>
+          <div className="flex flex-col gap-1">
+            {history.map((h, i) => (
+              <div key={i} className="text-[11px]" style={{ color: S.text2 }}>
+                {h.changed_at?.slice(0, 16).replace("T", " ")} · {h.platform.toUpperCase()} ·{" "}
+                {h.old_value || t("未设置")} → {h.new_value || t("清空")} · {h.changed_by || t("未知")}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
 function UserList() {
   const t = useT();
   const [users, setUsers] = useState<UserListItem[]>([]);
@@ -1198,6 +1297,9 @@ export default function SettingsPage() {
 
         {/* GRAYGATE 4.0.3 灰度 主要版本人工指定 */}
         <GraygateFocusVersionSection />
+
+        {/* GRAYGATE 4.0.3 灰度 每日指标 · 重新发布 + 主要版本变更记录 */}
+        <GraygateReportSection />
 
         {/* USER MANAGEMENT (Admin only) */}
         {isAdmin && (

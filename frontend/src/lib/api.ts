@@ -1707,7 +1707,7 @@ export interface DailyReportRunResult {
 
 export const runCrashDailyReport = (
   report_type: "morning" | "evening",
-  opts?: { top_n?: number; dry_run?: boolean; chat_id?: string }
+  opts?: { top_n?: number; dry_run?: boolean; chat_id?: string; force_resend?: boolean }
 ) =>
   request<DailyReportRunResult>(`/crash/reports/run-now`, {
     method: "POST",
@@ -1716,6 +1716,9 @@ export const runCrashDailyReport = (
       top_n: opts?.top_n ?? 10,
       dry_run: opts?.dry_run ?? true,
       chat_id: opts?.chat_id,
+      // 2026-09-15："重新发布"入口——当天已经发过时默认会被去重锁拦下，
+      // force_resend=true 显式绕过锁，跟"换个投递地址测试"(chat_id) 是两件事。
+      force_resend: opts?.force_resend ?? false,
     }),
     timeoutMs: 120_000,  // report generation can take 30-60s; default 15s would abort it
   });
@@ -2464,4 +2467,43 @@ export const setGraygateFocusVersion = (platform: "ios" | "android", version: st
   request<GraygateFocusVersions>(
     "/graygate/focus-version",
     { method: "POST", body: JSON.stringify({ platform, version }) },
+  );
+
+export interface GraygateFocusVersionAuditItem {
+  platform: string;
+  old_value: string;
+  new_value: string;
+  changed_by: string;
+  changed_at: string | null;
+  notify_sent: boolean;
+}
+
+export const getGraygateFocusVersionHistory = (platform?: "ios" | "android", limit = 50) =>
+  request<{ items: GraygateFocusVersionAuditItem[] }>(
+    `/graygate/focus-version/history?${new URLSearchParams({
+      ...(platform ? { platform } : {}),
+      limit: String(limit),
+    })}`,
+  );
+
+export interface GraygateTriggerResult {
+  target_date: string;
+  available: boolean;
+  card?: any;
+  dry_run: boolean;
+  sent: boolean;
+  reason: string;
+}
+
+export const triggerGraygateReport = (
+  username: string,
+  opts?: { dryRun?: boolean; targetDate?: string }
+) =>
+  request<GraygateTriggerResult>(
+    `/graygate/trigger?${new URLSearchParams({
+      username,
+      dry_run: String(opts?.dryRun ?? true),
+      ...(opts?.targetDate ? { target_date: opts.targetDate } : {}),
+    })}`,
+    { method: "POST", timeoutMs: 120_000 },
   );

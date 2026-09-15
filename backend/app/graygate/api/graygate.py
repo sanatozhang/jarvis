@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.db import database as db
@@ -28,6 +28,7 @@ from app.graygate.services.card_builder import build_report_card
 from app.graygate.services.focus_version import (
     clear_focus_version,
     get_all_focus_versions,
+    get_focus_version_audit_history,
     set_focus_version,
 )
 
@@ -110,16 +111,34 @@ async def get_focus_version_endpoint() -> dict:
 
 
 @router.post("/focus-version")
-async def set_focus_version_endpoint(body: FocusVersionPatch) -> dict:
+async def set_focus_version_endpoint(body: FocusVersionPatch, request: Request) -> dict:
     """设置/清空某平台人工指定的"主要版本"——发布新版本时用这个接口告诉系统
     "现在关注这个 build"，不用等它自然爬到 session 数第一。
 
     传空字符串 `version` 清空指定，回落到 session 数自动判定的 top_version。
+
+    2026-09-15：每次变更都写审计（谁/何时/旧值→新值，落 DB 不随重启消失）+
+    飞书通知到 4.0灰度数据跟进群（见 focus_version.py::_record_and_notify）。
+    操作人取 `request.state.user`（SSO 登录态）；SSO 未开启/未登录时为空字符串，
+    审计里会显示"未知"。
     """
     if body.platform not in ("ios", "android"):
         raise HTTPException(status_code=400, detail="platform must be 'ios' or 'android'")
+    user = getattr(request.state, "user", None) or {}
+    changed_by = user.get("email") or user.get("username") or ""
     if body.version:
-        await set_focus_version(body.platform, body.version)
+        await set_focus_version(body.platform, body.version, changed_by=changed_by)
     else:
-        await clear_focus_version(body.platform)
+        await clear_focus_version(body.platform, changed_by=changed_by)
     return await get_all_focus_versions()
+
+
+@router.get("/focus-version/history")
+async def get_focus_version_history_endpoint(
+    platform: Optional[str] = Query(None, description="ios / android，不传返回全部"),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict:
+    """查询"主要版本"变更审计（谁/何时/旧值→新值），只读，不受任何 kill switch 约束。"""
+    if platform and platform not in ("ios", "android"):
+        raise HTTPException(status_code=400, detail="platform must be 'ios' or 'android'")
+    return {"items": await get_focus_version_audit_history(platform or "", limit)}

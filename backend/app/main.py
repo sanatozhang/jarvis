@@ -59,6 +59,8 @@ async def lifespan(app: FastAPI):
     from app.crashguard import models as _crashguard_models  # noqa: F401
     # Import coreguard models too (independent module, same Base)
     from app.coreguard import models as _coreguard_models  # noqa: F401
+    # Import graygate models too (independent module, same Base)
+    from app.graygate import models as _graygate_models  # noqa: F401
     # Import platform_tickets models too (same Base; module kept only because
     # db/database.py's UNION queries reference PlatformTicket — not used by
     # crashguard/coreguard/graygate themselves)

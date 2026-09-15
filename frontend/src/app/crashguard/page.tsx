@@ -150,6 +150,7 @@ function CrashguardPageInner() {
     preview: string;
     reportType: "morning" | "evening";
     error?: string;
+    alreadySent?: boolean;
   } | null>(null);
   // 分页 + 后端过滤（全部经 URL query 同步，支持深链）
   const [aggregates, setAggregates] = useState<CrashTopAggregates | null>(null);
@@ -657,12 +658,40 @@ function CrashguardPageInner() {
               ? t("飞书已禁用：config.yaml 设 feishu_enabled=true")
               : reason === "send_failed_or_no_chat"
                 ? t("发送失败：检查 .env 的 FEISHU_APP_ID / FEISHU_APP_SECRET")
-                : reason;
-        setReportModal({ ...reportModal, error: hint });
+                : reason === "already_sent_by_other_instance"
+                  ? t("今天已经发过了——如需重新发布，点下面「强制重新发布」")
+                  : reason;
+        setReportModal({
+          ...reportModal, error: hint,
+          alreadySent: reason === "already_sent_by_other_instance",
+        });
         setToast({ msg: `${t("发送失败")}: ${hint}`, type: "error" });
       }
     } catch (e: any) {
       const msg = e.message || "send failed";
+      setReportModal({ ...reportModal, error: msg });
+      setToast({ msg, type: "error" });
+    } finally {
+      setReportBusy(false);
+    }
+  };
+
+  const onForceResendReport = async () => {
+    if (!reportModal) return;
+    if (!confirm(t("确认强制重新发布这份报告？今天已经发过一次了。"))) return;
+    setReportBusy(true);
+    try {
+      const res = await runCrashDailyReport(reportModal.reportType, { top_n: 5, dry_run: false, force_resend: true });
+      if (res.sent) {
+        setToast({ msg: t("已重新发布到飞书群"), type: "success" });
+        setReportModal(null);
+      } else {
+        const reason = res.skipped_reason || "unknown";
+        setReportModal({ ...reportModal, error: reason, alreadySent: false });
+        setToast({ msg: `${t("发送失败")}: ${reason}`, type: "error" });
+      }
+    } catch (e: any) {
+      const msg = e.message || "resend failed";
       setReportModal({ ...reportModal, error: msg });
       setToast({ msg, type: "error" });
     } finally {
@@ -1787,6 +1816,21 @@ function CrashguardPageInner() {
               >
                 {t("取消")}
               </button>
+              {reportModal.alreadySent && (
+                <button
+                  onClick={onForceResendReport}
+                  disabled={reportBusy}
+                  className="rounded px-3 py-1.5 text-xs font-medium"
+                  style={{
+                    background: "transparent",
+                    border: `1px solid ${D.accent}`,
+                    color: D.accent,
+                    opacity: reportBusy ? 0.5 : 1,
+                  }}
+                >
+                  {reportBusy ? t("发送中...") : `🔁 ${t("强制重新发布")}`}
+                </button>
+              )}
               <button
                 onClick={onSendReport}
                 disabled={reportBusy}

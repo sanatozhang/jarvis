@@ -185,7 +185,7 @@ async def test_set_focus_version_persists_and_returns_both_platforms(api_client)
         )
 
     assert resp.status_code == 200
-    mock_set.assert_awaited_once_with("ios", "4.0.302-1050")
+    mock_set.assert_awaited_once_with("ios", "4.0.302-1050", changed_by="")
     assert resp.json() == {"ios": "4.0.302-1050", "android": None}
 
 
@@ -201,7 +201,7 @@ async def test_set_focus_version_empty_string_clears_override(api_client):
         )
 
     assert resp.status_code == 200
-    mock_clear.assert_awaited_once_with("ios")
+    mock_clear.assert_awaited_once_with("ios", changed_by="")
     mock_set.assert_not_awaited()
 
 
@@ -222,3 +222,25 @@ async def test_get_focus_version_returns_current_state(api_client):
 
     assert resp.status_code == 200
     assert resp.json() == {"ios": None, "android": "4.0.302-2010"}
+
+
+@pytest.mark.asyncio
+async def test_focus_version_history_delegates_to_service(api_client):
+    fake_rows = [{
+        "platform": "ios", "old_value": "4.0.302-1100", "new_value": "4.0.302-1143",
+        "changed_by": "sanato.zhang@plaud.ai", "changed_at": "2026-09-15T02:00:00", "notify_sent": True,
+    }]
+    with patch.object(graygate_api, "get_focus_version_audit_history", new=AsyncMock(
+        return_value=fake_rows,
+    )) as mock_history:
+        resp = await api_client.get("/api/graygate/focus-version/history", params={"platform": "ios"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"items": fake_rows}
+    mock_history.assert_awaited_once_with("ios", 50)
+
+
+@pytest.mark.asyncio
+async def test_focus_version_history_invalid_platform_returns_400(api_client):
+    resp = await api_client.get("/api/graygate/focus-version/history", params={"platform": "windows"})
+    assert resp.status_code == 400

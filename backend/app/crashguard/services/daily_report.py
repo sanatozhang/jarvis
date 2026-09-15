@@ -2247,10 +2247,16 @@ async def send_daily_report(
     top_n: int = 5,
     chat_id_override: str = "",
     email_override: str = "",
+    force_resend: bool = False,
 ) -> Dict[str, Any]:
     """生成 → 发飞书 → 写 CrashDailyReport。
 
     推送目标优先级：email_override > chat_id_override > feishu_target_email > feishu_target_chat_id。
+
+    force_resend=True（2026-09-15 新增"重新发布"入口）：绕过下面 UNIQUE(report_date,
+    report_type) 去重锁，即使当天已经发过也强制重新生成 + 重发一次。之前唯一的跳锁
+    方式是隐式的（传了 chat_id_override/email_override 就跳锁），语义容易搞混——
+    "我想发到别的地址"和"我想重新发一遍"是两件不同的事，分开表达。
     """
     s = get_crashguard_settings()
     if target_date is None:
@@ -2277,8 +2283,10 @@ async def send_daily_report(
     # 多实例去重锁：抢先 INSERT 一行占位 (date, type)；
     # crash_daily_reports 上有 UniqueConstraint(report_date, report_type) → 第二个实例
     # 拿到 IntegrityError，直接返回 already_sent，不发飞书也不写 audit 失败。
-    # 注：手动触发场景（chat_id_override 非空）跳过锁，允许重发。
-    skip_lock = bool(chat_id_override or email_override)
+    # 注：手动触发场景（chat_id_override/email_override 非空，或显式 force_resend）跳过锁，
+    # 允许重发——跳锁之后走到下面「existing is None」分支会是 UPDATE 不是 INSERT，
+    # 不会跟已有行再撞一次 IntegrityError。
+    skip_lock = bool(chat_id_override or email_override or force_resend)
     if not skip_lock:
         from sqlalchemy.exc import IntegrityError
         async with get_session() as session:

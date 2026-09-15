@@ -1686,6 +1686,10 @@ class DailyReportRunRequest(BaseModel):
     chat_id: Optional[str] = Field(None, description="覆盖 config 的 target_chat_id（测试用）")
     email: Optional[str] = Field(None, description="发送到指定邮箱对应飞书用户的私聊（DM）")
     dry_run: bool = Field(False, description="True 时只生成 markdown 不发飞书")
+    # 2026-09-15：该 (date, type) 已经发过时，默认会被 UNIQUE(report_date, report_type)
+    # 去重锁拦下（skipped_reason=already_sent_by_other_instance）——这是"重新发布"的
+    # 唯一显式入口，跟 chat_id/email override 的隐式跳锁分开，语义更清楚。
+    force_resend: bool = Field(False, description="True 时绕过同日期+类型的去重锁，强制重新生成并发送")
 
 
 @router.post("/reports/run-now")
@@ -1713,6 +1717,7 @@ async def run_daily_report_now(req: DailyReportRunRequest) -> Dict[str, Any]:
             top_n=req.top_n,
             chat_id_override=req.chat_id or "",
             email_override=req.email or "",
+            force_resend=req.force_resend,
         )
     except Exception as e:
         logger.exception("send_daily_report failed")

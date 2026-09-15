@@ -132,3 +132,31 @@ async def test_manual_override_bypasses_lock(patched_session):
 
     # 应该尝试发送（不被锁拦截）
     assert send_mock.called or result.get("skipped_reason") != "lock_contended"
+
+
+@pytest.mark.asyncio
+async def test_force_resend_bypasses_lock_without_needing_chat_override(patched_session):
+    """2026-09-15 新增"重新发布"入口：force_resend=True 即使不传 chat_id/email
+    override，也照样跳过去重锁，走默认配置的投递目标重发一次。"""
+    from app.crashguard.services import daily_report
+    from app.crashguard.models import CrashDailyReport
+    from datetime import datetime
+
+    target = date(2026, 4, 29)
+    async with patched_session() as session:
+        session.add(CrashDailyReport(
+            report_date=target, report_type="morning",
+            top_n=0, new_count=0, regression_count=0, surge_count=0,
+            feishu_message_id="sent", report_payload="{}",
+            created_at=datetime.utcnow(),
+        ))
+        await session.commit()
+
+    with patch.object(daily_report, "get_crashguard_settings", return_value=_make_settings()), \
+         patch("app.services.feishu_cli.send_interactive_card", new_callable=AsyncMock, return_value=True) as send_mock:
+        result = await daily_report.send_daily_report(
+            "morning", target_date=target, top_n=5, force_resend=True,
+        )
+
+    assert result["skipped_reason"] != "already_sent_by_other_instance"
+    send_mock.assert_called_once()
