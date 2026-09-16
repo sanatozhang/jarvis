@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.db import database as db
@@ -110,24 +110,54 @@ async def get_focus_version_endpoint() -> dict:
     return await get_all_focus_versions()
 
 
+def _resolve_caller(request: Request, x_api_key: Optional[str]) -> str:
+    """解析这次写请求的调用方身份，没有合法身份直接拒绝。
+
+    2026-09-16：102 上实测发现有不明调用方持续把 focus-version 摁回一个值，
+    因为写路径完全不鉴权、任何人都能匿名调用——changed_by 记成 "aeolus" 只是
+    "记录了变化"，没解决"谁都能改"这个根问题。改成：
+    - SSO 登录态（浏览器 /settings 页面）→ 用邮箱识别，不需要额外带 key；
+    - 没有登录态 → 必须在 `X-Graygate-Api-Key` header 带上配置好的密钥之一
+      （`graygate_api_key_jarvis` / `graygate_api_key_runway`，每个调用方一把，
+      互不相同），命中哪把就记为哪个调用方；一把都不匹配直接 401。
+    """
+    user = getattr(request.state, "user", None) or {}
+    email = user.get("email") or user.get("username")
+    if email:
+        return email
+
+    s = get_graygate_settings()
+    key_map = {
+        s.api_key_jarvis: "jarvis",
+        s.api_key_runway: "runway",
+    }
+    key_map.pop("", None)  # 未配置的密钥是空字符串，不能被空 header 命中
+    caller = key_map.get(x_api_key or "")
+    if not caller:
+        raise HTTPException(status_code=401, detail="missing or invalid X-Graygate-Api-Key")
+    return caller
+
+
 @router.post("/focus-version")
-async def set_focus_version_endpoint(body: FocusVersionPatch, request: Request) -> dict:
+async def set_focus_version_endpoint(
+    body: FocusVersionPatch,
+    request: Request,
+    x_graygate_api_key: Optional[str] = Header(None, alias="X-Graygate-Api-Key"),
+) -> dict:
     """设置/清空某平台人工指定的"主要版本"——发布新版本时用这个接口告诉系统
     "现在关注这个 build"，不用等它自然爬到 session 数第一。
 
     传空字符串 `version` 清空指定，回落到 session 数自动判定的 top_version。
 
-    2026-09-15：每次变更都写审计（谁/何时/旧值→新值，落 DB 不随重启消失）+
-    飞书通知到 4.0灰度数据跟进群（见 focus_version.py::_record_and_notify）。
-    操作人取 `request.state.user`（SSO 登录态）拿邮箱；没有登录态（如脚本/CI
-    直接调 API，没带 SSO cookie）一律记为 "aeolus"（约定的系统调用方标识），
-    不留空——2026-09-15 实测发现有一次不带登录态的直接调用，changed_by 全空，
-    审计"谁改的"这一半直接失效。
+    2026-09-15/16：每次变更都写审计（谁/何时/旧值→新值，落 DB 不随重启消失，
+    同时打一行 INFO 日志方便 `docker compose logs` 直接 grep）+ 飞书通知到
+    4.0灰度数据跟进群（见 focus_version.py::_record_and_notify）。调用方鉴权
+    见 `_resolve_caller`：SSO 登录态用邮箱，否则必须带合法的 API key，两者都
+    没有直接 401——不再允许匿名调用。
     """
     if body.platform not in ("ios", "android"):
         raise HTTPException(status_code=400, detail="platform must be 'ios' or 'android'")
-    user = getattr(request.state, "user", None) or {}
-    changed_by = user.get("email") or user.get("username") or "aeolus"
+    changed_by = _resolve_caller(request, x_graygate_api_key)
     if body.version:
         await set_focus_version(body.platform, body.version, changed_by=changed_by)
     else:

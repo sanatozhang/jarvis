@@ -38,8 +38,14 @@ async def api_client():
         yield ac
 
 
-def _settings(feishu_enabled: bool = True, feishu_chat_id: str = "oc_graygate") -> SimpleNamespace:
-    return SimpleNamespace(feishu_enabled=feishu_enabled, feishu_chat_id=feishu_chat_id)
+def _settings(
+    feishu_enabled: bool = True, feishu_chat_id: str = "oc_graygate",
+    api_key_jarvis: str = "test-jarvis-key", api_key_runway: str = "test-runway-key",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        feishu_enabled=feishu_enabled, feishu_chat_id=feishu_chat_id,
+        api_key_jarvis=api_key_jarvis, api_key_runway=api_key_runway,
+    )
 
 
 def _report(available: bool = True, card: dict | None = None):
@@ -176,39 +182,92 @@ async def test_dry_run_false_but_report_unavailable_does_not_send(api_client):
 
 @pytest.mark.asyncio
 async def test_set_focus_version_persists_and_returns_both_platforms(api_client):
-    with patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set, \
+    """无 SSO 登录态时，必须带合法 X-Graygate-Api-Key 才放行——命中 jarvis 的
+    key 就记为 changed_by="jarvis"。"""
+    with patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set, \
          patch.object(graygate_api, "get_all_focus_versions", new=AsyncMock(
              return_value={"ios": "4.0.302-1050", "android": None}
          )):
         resp = await api_client.post(
-            "/api/graygate/focus-version", json={"platform": "ios", "version": "4.0.302-1050"},
+            "/api/graygate/focus-version",
+            json={"platform": "ios", "version": "4.0.302-1050"},
+            headers={"X-Graygate-Api-Key": "test-jarvis-key"},
         )
 
     assert resp.status_code == 200
-    mock_set.assert_awaited_once_with("ios", "4.0.302-1050", changed_by="aeolus")
+    mock_set.assert_awaited_once_with("ios", "4.0.302-1050", changed_by="jarvis")
     assert resp.json() == {"ios": "4.0.302-1050", "android": None}
 
 
 @pytest.mark.asyncio
+async def test_set_focus_version_runway_key_is_attributed_to_runway(api_client):
+    """Runway 的 key 跟 jarvis 的不同，命中后记为 changed_by="runway"。"""
+    with patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set, \
+         patch.object(graygate_api, "get_all_focus_versions", new=AsyncMock(
+             return_value={"ios": "4.0.201-1000", "android": None}
+         )):
+        resp = await api_client.post(
+            "/api/graygate/focus-version",
+            json={"platform": "ios", "version": "4.0.201-1000"},
+            headers={"X-Graygate-Api-Key": "test-runway-key"},
+        )
+
+    assert resp.status_code == 200
+    mock_set.assert_awaited_once_with("ios", "4.0.201-1000", changed_by="runway")
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_without_key_or_sso_is_rejected(api_client):
+    """2026-09-16 铁律：没有 SSO 登录态、没带合法 key 的写请求一律 401——
+    102 上实测发现有不明调用方靠"完全不鉴权"反复覆盖这个值，改成强制鉴权。"""
+    with patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set:
+        resp = await api_client.post(
+            "/api/graygate/focus-version", json={"platform": "ios", "version": "4.0.302-1050"},
+        )
+
+    assert resp.status_code == 401
+    mock_set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_wrong_key_is_rejected(api_client):
+    with patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set:
+        resp = await api_client.post(
+            "/api/graygate/focus-version",
+            json={"platform": "ios", "version": "4.0.302-1050"},
+            headers={"X-Graygate-Api-Key": "not-a-real-key"},
+        )
+
+    assert resp.status_code == 401
+    mock_set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_set_focus_version_empty_string_clears_override(api_client):
-    with patch.object(graygate_api, "clear_focus_version", new=AsyncMock()) as mock_clear, \
+    with patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api, "clear_focus_version", new=AsyncMock()) as mock_clear, \
          patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set, \
          patch.object(graygate_api, "get_all_focus_versions", new=AsyncMock(
              return_value={"ios": None, "android": None}
          )):
         resp = await api_client.post(
             "/api/graygate/focus-version", json={"platform": "ios", "version": ""},
+            headers={"X-Graygate-Api-Key": "test-jarvis-key"},
         )
 
     assert resp.status_code == 200
-    mock_clear.assert_awaited_once_with("ios", changed_by="aeolus")
+    mock_clear.assert_awaited_once_with("ios", changed_by="jarvis")
     mock_set.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_set_focus_version_uses_logged_in_user_email_when_present():
-    """有 SSO 登录态（request.state.user）时用邮箱；没有时（如脚本直接调 API）
-    记为 "aeolus"，不留空——2026-09-15 用户要求：审计"谁改的"不能是空字符串。"""
+    """有 SSO 登录态（request.state.user）时用邮箱识别，不需要额外带 key——
+    浏览器 /settings 页面走这条路径。"""
     app = FastAPI()
 
     @app.middleware("http")
@@ -233,7 +292,8 @@ async def test_set_focus_version_uses_logged_in_user_email_when_present():
 
 
 @pytest.mark.asyncio
-async def test_set_focus_version_invalid_platform_returns_400(api_client):
+async def test_set_focus_version_invalid_platform_returns_400_before_auth_check(api_client):
+    """platform 校验先于鉴权——无效 platform 直接 400，即使也没带 key。"""
     resp = await api_client.post(
         "/api/graygate/focus-version", json={"platform": "windows", "version": "1.0"},
     )

@@ -24,6 +24,12 @@
    报 `230002 Bot/User can NOT be out of the chat`——那个 app 根本不在这个
    群里，改回用户确认"一直在群里"的这个 IM app。
 值没变化（例如重复点两次清空）不记录也不通知，避免噪声。
+
+2026-09-16 新增鉴权：102 上实测发现有不明调用方持续覆盖这个值，写路径此前完全
+不鉴权，任何人都能匿名调用。改成 API key 鉴权（见 `api/graygate.py::_resolve_caller`
+和 `GraygateSettings.api_key_jarvis` / `api_key_runway`）——SSO 登录态用邮箱，
+否则必须带合法 key，两者都没有直接 401，不再允许匿名调用；同时给每次真实变更
+加了一行 INFO 日志，方便直接从容器日志里 grep 到"谁改的"。
 """
 from __future__ import annotations
 
@@ -62,7 +68,7 @@ async def _notify_version_change(
 
     action = "清空（回落 session 数自动判定）" if not new_value else f"设为 `{new_value}`"
     old_note = f"原值：`{old_value}`" if old_value else "原值：未设置（自动判定）"
-    operator = changed_by or "未知（SSO 未登录）"
+    operator = changed_by or "未知（调用方未提供身份）"
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -99,6 +105,15 @@ async def _record_and_notify(
             changed_by=changed_by, notify_sent=notify_sent,
         ))
         await session.commit()
+
+    # 2026-09-16：显式打一行 INFO 日志（不止 DB 审计）——102 上曾经排查"是谁在
+    # 反复改这个值"时，只能从 uvicorn 访问日志里数 POST 次数、猜时间对不对得上，
+    # 这行日志直接把 platform/旧值/新值/调用方一次性打全，`docker compose logs
+    # backend | grep focus_version_changed` 就能定位，不用再翻访问日志对时间戳。
+    logger.info(
+        "focus_version_changed platform=%s %s -> %s changed_by=%s notify_sent=%s",
+        platform, old_value or "(unset)", new_value or "(unset)", changed_by, notify_sent,
+    )
 
 
 async def set_focus_version(platform: str, version: str, changed_by: str = "") -> None:

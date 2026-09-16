@@ -34,6 +34,14 @@ class GraygateSettings(BaseSettings):
     datadog_app_key: str = ""
     datadog_site: str = "datadoghq.com"
 
+    # 2026-09-16：主要版本写接口调用方鉴权。背景——102 上实测发现有不明调用方
+    # 持续把 focus-version 摁回一个值，changed_by 全是匿名（无 SSO 也无身份），
+    # 审计表能记录"变了"但记录不了"谁"。改成每个调用方一把独立密钥，写请求必须
+    # 带上其中一把才放行；SSO 登录态（浏览器 /settings 页面）不受影响，仍然
+    # 用邮箱识别，不需要额外带 key。见 api/graygate.py::_resolve_caller。
+    api_key_jarvis: str = ""   # jarvis 自己（脚本/技能直接调 API）用
+    api_key_runway: str = ""  # Runway 发版工具用，独立于 jarvis 的 key
+
     model_config = {
         "env_prefix": "GRAYGATE_",
         # 用绝对路径（同 crashguard/coreguard 模式），避免 cwd 在 backend/ 时找不到根目录 .env
