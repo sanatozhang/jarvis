@@ -27,6 +27,7 @@ _resolve_release_build() / _read_dsym_build_via_range()（HTTP Range 读远端 z
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Optional
 
@@ -52,6 +53,59 @@ def _looks_like_symbol_asset(name: str) -> bool:
     if not n:
         return False
     return any(h.lower() in n.lower() for h in _SYMBOL_ASSET_HINTS)
+
+
+# Release tag → (semver, tag 后缀)。`v4.0.100+999-2026_08_11-203603-global`
+# → ("4.0.100", "999")。与 github_symbols._version_to_tag_prefix 的构造规则互逆。
+_TAG_SEMVER_BUILD_RE = re.compile(r"^v?(\d+(?:\.\d+){0,3})\+(\d+)")
+
+
+def _parse_tag(tag: str) -> tuple:
+    m = _TAG_SEMVER_BUILD_RE.match(tag or "")
+    if not m:
+        return "", ""
+    return m.group(1), m.group(2)
+
+
+def _release_app_version(
+    tag: str, family: str, build_index: dict, assets: list,
+) -> tuple:
+    """Release tag → (app_version, verified)。
+
+    app_version 必须是 Datadog @application.version 的 `semver-build` 形式
+    （如 `4.0.100-1004`）——那才是 symbolicate / repo_router.resolve 认的输入。
+    **绝不返回裸 build 号**（2026-09-22 在 102 实测踩过：候选显示成 "1171"，
+    丢了语义版本，用户看不出是哪个版本，且排序把纯数字当主版本全乱）。
+
+    两个仓规则不同（见 github_symbols._version_to_tag_prefix 上方那段注释）：
+
+    - **flutter 仓**（Plaud-AI/Plaud-App）：tag 后缀 `+NNN` **就是**真实 build 号
+    - **native 仓**（Plaud-AI/plaud-native-app）：`+NNN` 是假的（几十个 build 才
+      冻结换一次，如 +813/+910/+999），真实 build 号要么在 _build_index 里
+      （之前解析过并缓存的），要么能从 .aab 资产名抠出来（零额外请求）
+
+    两处都拿不到 → 返回 (tag, False)，让前端显示「⚠ tag 未校验」。
+    宁可标未校验，也绝不拿假 build 号冒充真版本号——用户选了个假的会静默
+    符号化失败，正是本功能要消除的坑。
+    """
+    from app.crashguard.services.github_symbols import _aab_build_from_assets
+
+    semver, tag_build = _parse_tag(tag)
+    if not semver:
+        return tag, False
+
+    if (family or "").lower() == "flutter":
+        real_build = tag_build
+    else:
+        real_build = (
+            (build_index or {}).get(tag)
+            or _aab_build_from_assets(assets or [])
+            or ""
+        )
+
+    if real_build:
+        return f"{semver}-{real_build}", True
+    return tag, False
 
 
 def invalidate_version_cache() -> None:
@@ -149,9 +203,10 @@ async def _list_release_versions(platform: str) -> tuple:
 
     for entry in _repos_for_platform(platform):
         repo, family = entry["repo"], entry["family"]
+        # _build_index 的结构是 {tag: build}（2026-09-22 在 102 实测确认，
+        # 形如 {"v4.0.100+999-2026_08_11-203603-global": "1004"}）。
+        # 不要反转——之前那版做了 {v:k} 反转，导致 get(tag) 必然 miss。
         index = _load_build_index(repo) or {}
-        # _build_index 的方向可能是 build→tag，这里两个方向都试，谁命中算谁
-        tag_to_build = {v: k for k, v in index.items()}
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(
                 f"{_GITHUB_API}/repos/{repo}/releases",
@@ -164,8 +219,10 @@ async def _list_release_versions(platform: str) -> tuple:
                 tag = rel.get("tag_name") or ""
                 if not tag:
                     continue
-                build = tag_to_build.get(tag) or index.get(tag)
                 assets = rel.get("assets") or []
+                app_version, verified = _release_app_version(
+                    tag, family, index, assets,
+                )
                 # asset_size：符号资产里最大的那个（preflight 用它算下载耗时提示）。
                 # 从 Release API 的 assets[].size 直接读，无需下载。
                 sym_sizes = [
@@ -173,8 +230,8 @@ async def _list_release_versions(platform: str) -> tuple:
                     if _looks_like_symbol_asset(a.get("name") or "")
                 ]
                 cands.append({
-                    "app_version": build or tag,
-                    "verified": bool(build),
+                    "app_version": app_version,
+                    "verified": verified,
                     "tag": tag,
                     "family": family,
                     "asset_size": max(sym_sizes) if sym_sizes else 0,
