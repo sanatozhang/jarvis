@@ -121,6 +121,10 @@ def _version_sort_key(v: str) -> tuple:
     head, _, build = (v or "").partition("-")
     parts = []
     for seg in head.lstrip("vV").split("."):
+        # tag 形态的第三段形如 "301+1000"，只取 "+" 之前 —— 否则抠出 3011000
+        # 这种畸形大数，会把未校验的 tag 顶到列表最前面
+        # （2026-09-22 在 102 实测踩过）
+        seg = seg.split("+", 1)[0]
         digits = "".join(ch for ch in seg if ch.isdigit())
         parts.append(int(digits) if digits else 0)
     while len(parts) < 3:
@@ -307,9 +311,12 @@ async def list_symbol_versions(platform: str) -> dict:
         logger.warning("release versions failed: %s", exc)
         warnings.append(f"GitHub Release 列表拉取失败，仅显示本地已有版本：{exc}")
 
+    # verified 优先，其次按版本号倒序。未校验的（只有 Release tag、拿不到真实
+    # build 号）对用户基本不可用，不该把真正能用的候选挤到列表后面
+    # （2026-09-22 在 102 实测：61 个候选里 46 个可用，却从第 15 位才开始）。
     versions = sorted(
         merged.values(),
-        key=lambda c: _version_sort_key(c["app_version"]),
+        key=lambda c: (bool(c.get("verified")), _version_sort_key(c["app_version"])),
         reverse=True,
     )
     payload = {"versions": versions, "warnings": warnings}

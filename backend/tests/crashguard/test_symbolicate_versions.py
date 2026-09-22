@@ -250,3 +250,52 @@ async def test_app_version_is_never_a_bare_build_number(monkeypatch):
     assert [v["app_version"] for v in res["versions"]] == [
         "4.0.201-941", "4.0.100-1004",
     ]
+
+
+# ── 排序：verified 优先 + tag 形态不产生畸形大数（2026-09-22 二次实测）─────────
+#
+# 修掉裸 build 号后在 102 实测：61 个候选里 46 个 verified（用户真正能用的），
+# 但它们从位置 15 才开始——前 15 个全是不可用的 tag 形态，下拉基本没法用。
+#
+# 根因：_version_sort_key("v4.0.301+1000-2026_08_21-193837-global") 按第一个
+# "-" 切，head = "v4.0.301+1000"，第三段 "301+1000" 抠数字得 3011000，
+# 畸形大数把 unverified 的 tag 顶到最前面。
+
+def test_version_sort_key_does_not_explode_on_tag_form():
+    k = symbol_catalog._version_sort_key
+    # "301+1000" 必须只取 "+" 之前的 301，不能变成 3011000
+    assert k("v4.0.301+1000-2026_08_21-193837-global")[0] == (4, 0, 301)
+    assert k("4.0.302-1171")[0] == (4, 0, 302)
+    # 正常语义版本应当大于同主版本的 tag 形态
+    assert k("4.0.302-1171") > k("v4.0.301+1000-2026_08_21-193837-global")
+
+
+@pytest.mark.asyncio
+async def test_verified_candidates_sort_first(monkeypatch):
+    """verified 的排在前面——用户真正能用的不该被 tag 形态挤到 15 位之后。"""
+    monkeypatch.setattr(symbol_catalog, "_list_cached_versions", lambda p: [])
+    async def _u(p):
+        return []
+    monkeypatch.setattr(symbol_catalog, "_list_uploaded_versions", _u)
+    async def _r(p):
+        return ([
+            # 版本号更高但未校验 —— 不该排第一
+            {"app_version": "v4.0.999+1000-2026_09_01-120000-global",
+             "verified": False, "tag": "v4.0.999+1000-x", "family": "native",
+             "symbol_types": [], "asset_size": 0},
+            {"app_version": "4.0.302-1143", "verified": True,
+             "tag": "v4.0.302+1000-x", "family": "native",
+             "symbol_types": [], "asset_size": 0},
+            {"app_version": "4.0.100-1004", "verified": True,
+             "tag": "v4.0.100+999-x", "family": "native",
+             "symbol_types": [], "asset_size": 0},
+        ], [])
+    monkeypatch.setattr(symbol_catalog, "_list_release_versions", _r)
+
+    res = await symbol_catalog.list_symbol_versions("ios")
+    got = [(v["app_version"], v["verified"]) for v in res["versions"]]
+    assert got == [
+        ("4.0.302-1143", True),
+        ("4.0.100-1004", True),
+        ("v4.0.999+1000-2026_09_01-120000-global", False),
+    ], got
