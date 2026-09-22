@@ -2728,6 +2728,10 @@ _JOB_META: List[Dict[str, str]] = [
      "label": "符号表健康度监控",
      "desc": "每日查覆盖率缺口并主动拉取（已上传→GitHub 兜底）+ 符号化成功率 + 全平台无新符号入库兜底，拉取仍失败才告警",
      "enabled_field": "symbol_health_enabled"},
+    {"name": "symbol_prewarm", "cron_field": "symbol_prewarm_cron",
+     "label": "符号包预热",
+     "desc": "按 graygate 主要版本提前下载符号包，让 QA 查新灰度包时命中缓存；已缓存则跳过（幂等）",
+     "enabled_field": "symbol_prewarm_enabled"},
 ]
 
 
@@ -3712,6 +3716,93 @@ async def delete_symbol_package(symbol_id: str) -> Dict[str, Any]:
 
 # ── 手工符号化任意堆栈 ────────────────────────────────────────────────────────
 
+def _infer_app_module(stack: str, binary_images: List[dict]) -> str:
+    """推断 App 自己的 module 名。
+
+    端点层拿不到 dSYM 里的 module 列表（那在 symbolication 内部），所以无法直接
+    判断"某帧的 module 是否属于符号包"。但 App 自己的 module 名是可以从堆栈推断的：
+      1. binary_images 里 source == "P" 的那个（.ips 格式里 P = 主可执行文件）
+      2. 退而用堆栈里出现频率最高的 module（App 帧通常占多数）
+
+    推断不出就返回 ""，此时 _compute_frame_stats 只给粗粒度，不假装能细分。
+    """
+    from collections import Counter
+
+    from app.crashguard.services.stack_inspector import FRAME_RE_IOS
+
+    for img in binary_images or []:
+        if (img or {}).get("source") == "P" and (img or {}).get("name"):
+            return str(img["name"])
+
+    counts = Counter(m.group(2) for m in FRAME_RE_IOS.finditer(stack or ""))
+    if not counts:
+        return ""
+    return counts.most_common(1)[0][0]
+
+
+def _compute_frame_stats(
+    before: str, after: str, app_module: str = "",
+) -> Dict[str, Any]:
+    """逐帧比对 before/after 得出符号化统计。
+
+    **粗粒度**（总是准确，纯文本比对）：
+      total_frames / symbolicated / unresolved / unparsed_lines
+
+    **细分**（仅当传入 app_module 才有，否则三个字段为 None）：
+      app_frames / app_symbolicated / non_app_frames
+
+    为什么需要细分：_symbolicate_ios_with_dir 只对 module 名能匹配到某个 dSYM 的帧
+    发起 atos 查询，系统库帧原样保留（该函数 docstring 记录了生产实测 —— 不做这层
+    gating 会给每一帧都凑出一个看似合理实则无关的 Plaud 符号，比不符号化更误导）。
+    所以"一半帧还是裸地址"往往是**正确行为**。只看粗粒度的 unresolved，用户会把
+    一次正常成功误判为失败。
+
+    但端点层**不知道** dSYM 里到底有哪些 module，所以 app_module 靠推断
+    （_infer_app_module）。推断不到时诚实地返回 None，不编造区分。
+    """
+    from app.crashguard.services.stack_inspector import FRAME_RE_IOS
+
+    b_lines = (before or "").splitlines()
+    a_lines = (after or "").splitlines()
+
+    total = resolved = unresolved = unparsed = 0
+    app_total = app_resolved = non_app = 0
+
+    for i, bl in enumerate(b_lines):
+        m = FRAME_RE_IOS.match(bl)
+        if not m:
+            if bl.strip():
+                unparsed += 1
+            continue
+        total += 1
+        al = a_lines[i] if i < len(a_lines) else bl
+        # after 行仍能被"未符号化帧"正则匹配 → 这帧没解出来
+        is_resolved = not FRAME_RE_IOS.match(al)
+        if is_resolved:
+            resolved += 1
+        else:
+            unresolved += 1
+
+        if app_module:
+            if m.group(2).lower() == app_module.lower():
+                app_total += 1
+                if is_resolved:
+                    app_resolved += 1
+            else:
+                non_app += 1
+
+    return {
+        "total_frames": total,
+        "symbolicated": resolved,
+        "unresolved": unresolved,
+        "unparsed_lines": unparsed,
+        "app_module": app_module or "",
+        "app_frames": app_total if app_module else None,
+        "app_symbolicated": app_resolved if app_module else None,
+        "non_app_frames": non_app if app_module else None,
+    }
+
+
 class SymbolicateRequest(BaseModel):
     stack: str = Field(..., description="原始堆栈文本")
     platform: str = Field(..., description="ios / android / flutter（不做后端猜测）")
@@ -3809,8 +3900,24 @@ async def symbolicate_ad_hoc_stack(body: SymbolicateRequest) -> Dict[str, Any]:
         }
         for r in rows
     ]
-    if not available_symbol_packages:
-        warnings.append("该 (platform, app_version) 无已上传符号包，可能不是线上包（Jenkins 仅在 IS_ONLINE_PACKAGE=true 时上传）")
+    # 符号可用性：用 preflight 的三档判定取代原先"无条件说没上传包"的误导性 warning。
+    # 原逻辑（2026-09-22 前）只查 CrashSymbolPackage（本地上传表），完全不看
+    # GitHub Release —— 所以 Plan C 下载成功、符号化完美时照样吐
+    # "该 (platform, app_version) 无已上传符号包"，是纯噪音，会让人误判成失败。
+    preflight: Dict[str, Any] = {}
+    if app_version and platform in ("ios", "android"):
+        try:
+            from app.crashguard.services import symbol_catalog
+
+            preflight = await symbol_catalog.preflight_symbols(
+                platform, app_version,
+                symbol_profile=symbol_profile, github_repo=github_repo,
+            )
+            if preflight.get("status") == "missing":
+                reason = (preflight.get("suggestions") or {}).get("reason", "")
+                warnings.append(f"该版本无符号表，符号化不会有任何效果。{reason}")
+        except Exception as exc:
+            logger.warning("preflight in symbolicate failed (non-fatal): %s", exc)
 
     return {
         "symbolicated_stack": symbolicated_stack,
@@ -3825,4 +3932,136 @@ async def symbolicate_ad_hoc_stack(body: SymbolicateRequest) -> Dict[str, Any]:
         "available_symbol_packages": available_symbol_packages,
         "duration_ms": duration_ms,
         "warnings": warnings,
+        # 2026-09-22 新增（向后兼容：只加字段，不改既有字段语义）
+        "frame_stats": _compute_frame_stats(
+            stack, symbolicated_stack,
+            app_module=_infer_app_module(stack, body.binary_images or []),
+        ),
+        "preflight": preflight or None,
     }
+
+
+# ── Ad-hoc 符号化工作台：探测端点（2026-09-22）───────────────────────────────
+# 三个只读端点（inspect / versions / preflight），配合前端
+# /crashguard/symbolicate 页面。全部不下载任何符号包，秒级返回。
+
+
+class StackInspectRequest(BaseModel):
+    stack: str = Field(..., description="原始堆栈文本（粘贴进来的裸文本）")
+
+
+@router.post("/symbolicate/inspect")
+async def inspect_stack_endpoint(body: StackInspectRequest) -> Dict[str, Any]:
+    """解析堆栈文本，尽力提取符号化所需元数据（只读、不下载任何符号包）。
+
+    给前端工作台做「贴进去就预填」用。解析失败会降级为 stack_format="unknown"
+    而不报错 —— 用户仍可手选平台/版本走通符号化。
+
+    注意 app_version 的可得性因格式而异：Apple .ips/.crash 能全自动解析出版本号，
+    而 Android ProGuard 混淆栈物理上不含任何版本信息（此时返回 app_version=""
+    并在 notes 里明确告知"必须手动指定版本号"）。
+    """
+    from dataclasses import asdict
+
+    from app.config import get_repo_routing
+    from app.crashguard.services.stack_inspector import inspect_stack
+    from app.services import repo_router
+
+    stack = body.stack
+    if not stack or not stack.strip():
+        raise HTTPException(status_code=400, detail="stack 不能为空")
+    if len(stack) > 200_000:
+        raise HTTPException(status_code=413, detail="stack 超过 200000 字符上限")
+
+    insight = inspect_stack(stack)
+    payload: Dict[str, Any] = asdict(insight)
+
+    # 路由预览：只有同时拿到 platform + app_version 才能算
+    routing = None
+    if insight.platform and insight.app_version:
+        # path_exists=lambda _p: True 是必需的 —— 见 symbolicate_ad_hoc_stack 的注释：
+        # resolve() 默认校验源码 wrapper 目录，容器内裸机路径不存在会返回 None，
+        # 导致 symbol_profile 丢失、iOS 下错误的 dSYM 资产。
+        res = repo_router.resolve(
+            insight.platform, insight.app_version, get_repo_routing(),
+            path_exists=lambda _p: True,
+        )
+        if res is not None:
+            routing = {
+                "symbol_profile": res.symbol_profile,
+                "github_repo": res.github_repo,
+                "family": res.family,
+                "confidence": res.confidence,
+            }
+    payload["routing"] = routing
+    return payload
+
+
+@router.get("/symbolicate/versions")
+async def list_symbolicate_versions(
+    platform: str = Query(..., description="ios | android"),
+) -> Dict[str, Any]:
+    """符号化版本候选列表（只读，不下载任何符号包）。
+
+    合并三个来源：本地 github_cache / 已上传符号包 / 两仓 GitHub Release。
+
+    为什么必须带 Release 源：Jenkins 仅在 IS_ONLINE_PACKAGE=true 时上传符号包，
+    所以 QA 手上的灰度包大概率没上传过 —— 只列已上传包的话下拉会经常是空的。
+
+    verified=False 的项是「Release tag 未校验真实 build 号」，前端必须标注 ⚠，
+    不能让用户误以为是真版本号（选错会静默符号化失败）。
+    """
+    from app.crashguard.services.symbol_catalog import list_symbol_versions
+
+    p = (platform or "").strip().lower()
+    if p not in ("ios", "android"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"platform 必须是 ios/android，收到: {platform!r}",
+        )
+    return await list_symbol_versions(p)
+
+
+class SymbolPreflightRequest(BaseModel):
+    platform: str = Field(..., description="ios | android")
+    app_version: str = Field(..., description="如 '4.0.201-941'")
+    symbol_profile: Optional[str] = Field(None, description="覆盖自动路由")
+    github_repo: Optional[str] = Field(None, description="覆盖自动路由")
+
+
+@router.post("/symbolicate/preflight")
+async def preflight_symbolicate(body: SymbolPreflightRequest) -> Dict[str, Any]:
+    """符号可用性预检：在用户点「开始符号化」**之前**就告诉他会不会白等。
+
+    三档：cached（秒级）/ available（需下载 ~90MB）/ missing（不会有任何效果）。
+    只做本地 stat + 已缓存索引 + 最多一次 GH API，不下载任何字节，秒级返回。
+
+    missing 时会给邻近版本建议 —— QA 记错 build 号是高频事件，这条能直接救场。
+    """
+    from app.crashguard.services.symbol_catalog import preflight_symbols
+
+    p = (body.platform or "").strip().lower()
+    if p not in ("ios", "android"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"platform 必须是 ios/android，收到: {body.platform!r}",
+        )
+    if not (body.app_version or "").strip():
+        raise HTTPException(status_code=400, detail="app_version 不能为空")
+    return await preflight_symbols(
+        p, body.app_version.strip(),
+        symbol_profile=body.symbol_profile or "",
+        github_repo=body.github_repo or "",
+    )
+
+
+@router.post("/symbols/prewarm")
+async def prewarm_symbols_now() -> Dict[str, Any]:
+    """立即为 graygate 主要版本预热符号包（发版后手动触发，不用等 cron）。
+
+    幂等：已缓存的版本会被跳过。可能耗时数分钟（每个平台下载 ~90MB），
+    调用方应设置足够长的超时。
+    """
+    from app.crashguard.services.symbol_prewarmer import prewarm_focus_versions
+
+    return await prewarm_focus_versions()

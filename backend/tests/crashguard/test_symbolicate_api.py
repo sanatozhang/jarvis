@@ -228,6 +228,18 @@ async def test_does_not_write_any_symbol_package_row(patched_session, monkeypatc
 
     monkeypatch.setattr(symbolication, "symbolicate_stack", fake_symbolicate_stack_noop)
 
+    # 2026-09-22：端点接入了 symbol_catalog.preflight_symbols（三档符号可用性
+    # 预检）。这里把 Release 源打掉，避免本测试依赖真实 GitHub 网络 —— 本测试
+    # 关心的是"不写表"，不是符号可用性判定（那个有 test_symbolicate_preflight.py）。
+    from app.crashguard.services import symbol_catalog
+
+    symbol_catalog.invalidate_version_cache()
+
+    async def _no_releases(platform):
+        return ([], [])
+
+    monkeypatch.setattr(symbol_catalog, "_list_release_versions", _no_releases)
+
     async with patched_session() as session:
         before = (await session.execute(select(CrashSymbolPackage))).scalars().all()
     assert before == []
@@ -235,7 +247,11 @@ async def test_does_not_write_any_symbol_package_row(patched_session, monkeypatc
     body = SymbolicateRequest(stack="raw stack line", platform="ios", app_version="4.0.201-941")
     result = await symbolicate_ad_hoc_stack(body)
     assert result["available_symbol_packages"] == []
-    assert any("无已上传符号包" in w for w in result["warnings"])
+    # 2026-09-22：原断言是 "无已上传符号包"。那条 warning 无条件输出（只查本地
+    # 上传表、不看 GitHub Release），Plan C 下载成功时也会吐，是误导性噪音，
+    # 已改为基于 preflight 三档的准确措辞。这里三源皆空 → missing。
+    assert any("无符号表" in w for w in result["warnings"])
+    assert result["preflight"]["status"] == "missing"
 
     async with patched_session() as session:
         after = (await session.execute(select(CrashSymbolPackage))).scalars().all()

@@ -514,9 +514,21 @@ class CrashguardSettings(BaseSettings):
 
     # === 符号化设置 ===
     # 每次上传符号包后，同 platform+symbol_type 最多保留多少个版本（超出自动删除文件+DB）
-    symbol_upload_keep_versions: int = 10
+    # 2026-09-22：10 → 20。symbol_prewarmer 会按 graygate 主要版本主动占名额，
+    # keep=10 会挤掉研发正在回查的老版本。磁盘影响：单版本 dSYM ~90MB / mapping /
+    # native_so，10→20 增量约 +4.5GB。
+    symbol_upload_keep_versions: int = 20
     # GitHub release 缓存最多保留多少个版本目录（超出按 mtime 淘汰）
-    github_cache_keep_versions: int = 10
+    # 2026-09-22：10 → 20。单版本约 200MB，10→20 增量约 +2GB。
+    # 注意：本项在 /settings 页面可在线改（范围 1–50），改动写入 config.local.yaml，
+    # 而 config.local.yaml 优先级高于此默认值 —— 部署后须确认那边没有残留的 10。
+    github_cache_keep_versions: int = 20
+    # 符号包预热（2026-09-22）：按 graygate 主要版本提前下载符号包，让 QA 查新
+    # 灰度包时永远命中缓存，而不是等 1–3 分钟下载。必须走 job queue（下载 90MB
+    # 会拖垮 60s 主 tick）。首次部署后 30 分钟内会触发一次，不想立刻发生就先在
+    # config.local.yaml 里设 symbol_prewarm_enabled: false。
+    symbol_prewarm_enabled: bool = True
+    symbol_prewarm_cron: str = "*/30 * * * *"
 
     # === jank 回填（占位符堆栈重新符号化，2026-07-22）===
     # 定期扫一遍最近窗口内的卡顿(jank)原始日志，若匹配到的 fixable jank issue 仍是

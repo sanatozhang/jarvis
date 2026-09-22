@@ -1083,6 +1083,19 @@ function CrashguardPageInner() {
               )}
             </a>
             <a
+              href="/crashguard/symbolicate"
+              className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
+              style={{
+                background: "transparent",
+                border: `1px solid ${D.borderStrong}`,
+                color: D.text1,
+                textDecoration: "none",
+              }}
+              title={t("粘贴任意崩溃堆栈手动符号化，提交前先做符号表预检")}
+            >
+              🧩 {t("堆栈符号化")}
+            </a>
+            <a
               href="/crashguard/jobs"
               className="rounded px-2.5 py-1 text-xs font-medium inline-flex items-center gap-1"
               style={{

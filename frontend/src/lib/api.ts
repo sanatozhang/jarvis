@@ -2507,3 +2507,159 @@ export const triggerGraygateReport = (
     })}`,
     { method: "POST", timeoutMs: 120_000 },
   );
+
+// ============================================================
+// Ad-hoc 堆栈符号化工作台（2026-09-22）
+// 页面：/crashguard/symbolicate
+// 后端 router 前缀是 /api/crash，BASE 已含 /api，所以这里写 /crash/...
+// ============================================================
+
+export interface StackInsightRouting {
+  symbol_profile: string;
+  github_repo: string;
+  family: string;
+  confidence: string;
+}
+
+export interface StackInsight {
+  stack_format: string;
+  platform: string;
+  /** Android ProGuard 混淆栈物理上不含版本信息，此时为 ""，notes 里会说明 */
+  app_version: string;
+  uuids: string[];
+  build_ids: string[];
+  binary_images: Record<string, unknown>[];
+  normalized_stack: string;
+  frame_count: number;
+  confidence: "high" | "medium" | "low";
+  /** 人类可读说明，直接逐条展示给用户 */
+  notes: string[];
+  /** 只有同时解析出 platform + app_version 才有值 */
+  routing: StackInsightRouting | null;
+}
+
+export interface VersionCandidate {
+  app_version: string;
+  source: "cached" | "uploaded" | "release";
+  family: string;
+  /** false = 这是 Release tag，未校验真实 build 号，选它可能静默符号化失败 → UI 必须标 ⚠ */
+  verified: boolean;
+  symbol_types: string[];
+  tag: string;
+  asset_size: number;
+}
+
+export interface SymbolPreflight {
+  status: "cached" | "available" | "missing";
+  eta_hint: string;
+  symbol_sources: { source: string; detail: string }[];
+  suggestions: {
+    nearby_versions?: string[];
+    reason?: string;
+    upload_hint?: string;
+  };
+  warnings: string[];
+}
+
+export interface FrameStats {
+  total_frames: number;
+  symbolicated: number;
+  unresolved: number;
+  unparsed_lines: number;
+  app_module: string;
+  // 以下三项仅当能从堆栈推断出 App module 时有值；推断不到为 null，
+  // 此时前端只展示粗粒度，不假装能区分系统库帧（null 绝不能当 0 显示）
+  app_frames: number | null;
+  app_symbolicated: number | null;
+  non_app_frames: number | null;
+}
+
+export interface SymbolicateResult {
+  symbolicated_stack: string;
+  changed: boolean;
+  stack_quality_before: string;
+  stack_quality_after: string;
+  platform: string;
+  app_version: string;
+  symbol_profile: string;
+  github_repo: string;
+  routing_confidence: string;
+  available_symbol_packages: {
+    symbol_type: string;
+    app_version: string;
+    file_name: string;
+    created_at: string | null;
+  }[];
+  duration_ms: number;
+  warnings: string[];
+  frame_stats: FrameStats;
+  preflight: SymbolPreflight | null;
+}
+
+export interface SymbolUploadResult {
+  id: string;
+  platform: string;
+  app_version: string;
+  symbol_type: string;
+  size_bytes: number;
+  created_at: string | null;
+  purged_count: number;
+}
+
+export const inspectStack = (stack: string) =>
+  request<StackInsight>("/crash/symbolicate/inspect", {
+    method: "POST",
+    body: JSON.stringify({ stack }),
+  });
+
+export const listSymbolicateVersions = (platform: string) =>
+  request<{ versions: VersionCandidate[]; warnings: string[] }>(
+    `/crash/symbolicate/versions?platform=${encodeURIComponent(platform)}`,
+  );
+
+export const preflightSymbolicate = (body: {
+  platform: string;
+  app_version: string;
+  symbol_profile?: string;
+  github_repo?: string;
+}) =>
+  request<SymbolPreflight>("/crash/symbolicate/preflight", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+// timeoutMs 300s：首次遇到新版本要现场下载符号包（dSYM 可达 90MB），
+// 默认 15s 会被 AbortController 掐断。已有先例：VoC digest 用 330s。
+export const symbolicateStack = (body: {
+  stack: string;
+  platform: string;
+  app_version?: string;
+  symbol_profile?: string;
+  github_repo?: string;
+}) =>
+  request<SymbolicateResult>("/crash/symbolicate", {
+    method: "POST",
+    body: JSON.stringify(body),
+    timeoutMs: 300_000,
+  });
+
+// 注意：后端 upload_symbol_package 的 platform / app_version / symbol_type 是
+// **query 参数**（裸 str 注解，没有 Form(...)），只有 file 走 multipart body。
+// request() 会识别 FormData 并跳过 Content-Type，让浏览器自己带 boundary。
+export const uploadSymbolPackage = (
+  platform: string,
+  appVersion: string,
+  symbolType: string,
+  file: File,
+) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  return request<SymbolUploadResult>(
+    `/crash/symbols/upload?${new URLSearchParams({
+      platform,
+      app_version: appVersion,
+      symbol_type: symbolType,
+    })}`,
+    { method: "POST", body: fd, timeoutMs: 300_000 },
+  );
+};

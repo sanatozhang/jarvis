@@ -37,6 +37,7 @@ _top_crash_auto_pr_last_fired: str = ""  # Top crash 自动 PR 进程级幂等
 _backfill_last_fired: str = ""      # 周度 baseline 回填 tick 进程级幂等
 _deep_analyze_auto_last_fired: str = ""  # Phase 1 深度诊断自动 tick 进程级幂等
 _jank_backfill_last_fired: str = ""  # 卡顿回填 tick 进程级幂等
+_symbol_prewarm_last_fired: str = ""  # 符号包预热 tick 进程级幂等
 _symbol_health_last_fired: str = ""  # 符号表健康度监控 tick 进程级幂等
 
 
@@ -342,6 +343,32 @@ async def _tick_once() -> None:
                     res.get("scanned_events", 0), res.get("candidates", 0), res.get("resymbolized", 0),
                 )
         _enqueue_job("jank_backfill", _jank_backfill_job)
+
+    # 符号包预热：按 graygate 主要版本提前下载符号包（独立 cron，默认 */30）。
+    # 必须走 _enqueue_job —— 下载 90MB 直接 await 会拖垮 60s 主 tick。
+    global _symbol_prewarm_last_fired
+    prewarm_cron = getattr(s, "symbol_prewarm_cron", "") or ""
+    if (
+        getattr(s, "symbol_prewarm_enabled", False)
+        and prewarm_cron
+        and _symbol_prewarm_last_fired != tag
+        and _cron_matches(prewarm_cron, now)
+    ):
+        _symbol_prewarm_last_fired = tag
+        async def _symbol_prewarm_job():
+            async with record_heartbeat("symbol_prewarm") as hb:
+                from app.crashguard.services.symbol_prewarmer import (
+                    prewarm_focus_versions,
+                )
+                res = await prewarm_focus_versions()
+                hb.set_summary(res)
+                if not res.get("prewarmed"):
+                    hb.status = "skipped"
+                logger.info(
+                    "crashguard symbol_prewarm fired: prewarmed=%s skipped=%s missing=%s",
+                    res.get("prewarmed"), res.get("skipped"), res.get("missing"),
+                )
+        _enqueue_job("symbol_prewarm", _symbol_prewarm_job)
 
     # Hourly alert（SHoW 对比；独立 cron，默认每小时第 5 分钟）
     global _hourly_alert_last_fired
