@@ -288,8 +288,14 @@ async def list_symbol_versions(platform: str) -> dict:
             if v not in ("", [], 0) and not cur.get(k):
                 cur[k] = v
 
-    for ver in _list_cached_versions(platform) or []:
-        _put(ver, "cached")
+    # 三个源各自独立降级——docstring 承诺"任一源失败都降级而非报错"，
+    # 本地 stat 也不例外（磁盘异常 / 权限问题都可能抛）
+    try:
+        for ver in _list_cached_versions(platform) or []:
+            _put(ver, "cached")
+    except Exception as exc:
+        logger.warning("cached versions failed: %s", exc)
+        warnings.append(f"本地符号缓存读取失败：{_exc_text(exc)}")
 
     try:
         for row in (await _list_uploaded_versions(platform)) or []:
@@ -297,7 +303,7 @@ async def list_symbol_versions(platform: str) -> dict:
                  symbol_types=row.get("symbol_types") or [])
     except Exception as exc:
         logger.warning("uploaded versions failed: %s", exc)
-        warnings.append(f"已上传符号包列表读取失败：{exc}")
+        warnings.append(f"已上传符号包列表读取失败：{_exc_text(exc)}")
 
     try:
         rel, rel_warn = await _list_release_versions(platform)
@@ -309,7 +315,7 @@ async def list_symbol_versions(platform: str) -> dict:
                  symbol_types=row.get("symbol_types") or [])
     except Exception as exc:
         logger.warning("release versions failed: %s", exc)
-        warnings.append(f"GitHub Release 列表拉取失败，仅显示本地已有版本：{exc}")
+        warnings.append(f"GitHub Release 列表拉取失败，仅显示本地已有版本：{_exc_text(exc)}")
 
     # verified 优先，其次按版本号倒序。未校验的（只有 Release tag、拿不到真实
     # build 号）对用户基本不可用，不该把真正能用的候选挤到列表后面
@@ -326,6 +332,16 @@ async def list_symbol_versions(platform: str) -> dict:
 
 # ── 三档符号可用性预检 ──────────────────────────────────────────────────────
 
+def _exc_text(exc: Exception) -> str:
+    """异常消息为空时用类名兜底。
+
+    httpx.ReadTimeout 等的 str() 恰好是空串，直接插值会产出
+    "xxx失败：" 这种无法诊断的 warning（2026-09-22 在 102 实测踩过）。
+    """
+    msg = str(exc).strip()
+    return msg or type(exc).__name__
+
+
 def _human_mb(size_bytes: Optional[int]) -> str:
     """字节数 → 「约 N」MB 文案。拿不到体积时给经验值（dSYM 典型 ~90MB）。"""
     if not size_bytes:
@@ -339,8 +355,8 @@ async def preflight_symbols(
     symbol_profile: str = "",
     github_repo: str = "",
 ) -> dict:
-    """三档符号可用性预检。**只做本地 stat + 已缓存索引 + 最多一次 GH API，
-    绝不下载任何字节。**
+    """三档符号可用性预检。**只读本地 stat + 已缓存索引 + 目录缓存，
+    绝不下载任何符号字节。**
 
     | status | 含义 | 前端表现 |
     |---|---|---|
@@ -348,104 +364,76 @@ async def preflight_symbols(
     | available | Release 有符号 asset，需下载 | 🟡 约 N MB / 1–3 分钟 |
     | missing | 三处都没有 | 🔴 符号化不会有任何效果 + 出路建议 |
 
+    实现上**复用 list_symbol_versions 的 5 分钟缓存**，而不是自己直连
+    _list_release_versions —— 后者每次真打两个仓的 GH API，会超时
+    （2026-09-22 在 102 实测：warnings 里吐 "GitHub Release 检查失败："
+    而同期 versions 端点正常）。preflight 的全部价值在于比真符号化快几个
+    数量级，自己去打网络就本末倒置了。
+
     missing 时 suggestions 给三条可执行出路：
       - nearby_versions：最近有符号包的版本（QA 记错 build 号是高频事件）
       - reason：为什么没有（有 Release 无符号 asset → 大概率不是线上包）
       - upload_hint：指向手动上传入口
-
-    任一数据源失败都降级为 warning，不让预检本身失败。
     """
-    warnings: list = []
-    sources: list = []
+    catalog = await list_symbol_versions(platform)
+    warnings = list(catalog.get("warnings") or [])
+    versions = catalog.get("versions") or []
 
-    # 1) 本地 github_cache
-    try:
-        if app_version in (_list_cached_versions(platform) or []):
-            sources.append({
-                "source": "cached", "detail": "github_cache 已有符号文件",
-            })
-    except Exception as exc:
-        logger.warning("preflight: cached check failed: %s", exc)
-        warnings.append(f"本地缓存检查失败：{exc}")
+    hit = next(
+        (v for v in versions if v.get("app_version") == app_version), None
+    )
 
-    # 2) 已上传符号包（Plan B）
-    uploaded_versions: list = []
-    try:
-        uploaded = (await _list_uploaded_versions(platform)) or []
-        uploaded_versions = [u["app_version"] for u in uploaded]
-        for u in uploaded:
-            if u["app_version"] == app_version:
-                sources.append({
-                    "source": "uploaded",
-                    "detail": f"已上传符号包：{', '.join(u.get('symbol_types') or [])}",
-                })
-    except Exception as exc:
-        logger.warning("preflight: uploaded check failed: %s", exc)
-        warnings.append(f"已上传符号包检查失败：{exc}")
-
-    if sources:
+    if hit and hit.get("source") in ("cached", "uploaded"):
+        detail = (
+            "github_cache 已有符号文件" if hit["source"] == "cached"
+            else f"已上传符号包：{', '.join(hit.get('symbol_types') or [])}"
+        )
         return {
             "status": "cached",
             "eta_hint": "符号包已就绪，预计秒级返回",
-            "symbol_sources": sources,
+            "symbol_sources": [{"source": hit["source"], "detail": detail}],
             "suggestions": {},
             "warnings": warnings,
         }
 
-    # 3) GitHub Release（Plan C）
-    release_rows: list = []
-    release_hit = None
-    try:
-        release_rows, rel_warn = await _list_release_versions(platform)
-        warnings.extend(rel_warn or [])
-        for row in release_rows or []:
-            if row.get("app_version") == app_version:
-                release_hit = row
-                break
-    except Exception as exc:
-        logger.warning("preflight: release check failed: %s", exc)
-        warnings.append(f"GitHub Release 检查失败：{exc}")
-
-    if release_hit:
+    if hit and hit.get("source") == "release":
         symbol_assets = [
-            n for n in (release_hit.get("symbol_types") or [])
+            n for n in (hit.get("symbol_types") or [])
             if _looks_like_symbol_asset(n)
         ]
         if symbol_assets:
             return {
                 "status": "available",
                 "eta_hint": (
-                    f"需下载{_human_mb(release_hit.get('asset_size'))}MB 符号包，"
+                    f"需下载{_human_mb(hit.get('asset_size'))}MB 符号包，"
                     f"预计 1–3 分钟（之后同版本秒级）"
                 ),
                 "symbol_sources": [{
                     "source": "release",
-                    "detail": f"{release_hit.get('tag')}：{', '.join(symbol_assets)}",
+                    "detail": f"{hit.get('tag')}：{', '.join(symbol_assets)}",
                 }],
                 "suggestions": {},
                 "warnings": warnings,
             }
 
     # ── missing：给可执行的出路，而不是只说"没有" ──
-    release_with_symbols = [
-        r["app_version"] for r in (release_rows or [])
-        if any(_looks_like_symbol_asset(n) for n in (r.get("symbol_types") or []))
+    available = [
+        v["app_version"] for v in versions
+        if v.get("source") in ("cached", "uploaded")
+        or any(_looks_like_symbol_asset(n) for n in (v.get("symbol_types") or []))
     ]
-    all_available = list(dict.fromkeys(
-        list(_safe_cached(platform)) + uploaded_versions + release_with_symbols
-    ))
     target = _version_sort_key(app_version)
     nearby = sorted(
-        all_available,
+        available,
         key=lambda v: (
             0 if _version_sort_key(v)[0] == target[0] else 1,   # 同 minor 优先
             abs(_version_sort_key(v)[1] - target[1]),           # build 号最接近
         ),
     )[:5]
 
-    if release_hit:
+    if hit:
         reason = (
-            f"{release_hit.get('tag')} 这个 Release 存在，但没有符号资产。"
+            f"{hit.get('tag')} 这个 Release 存在，但没有符号资产。"
             "Jenkins 仅在 IS_ONLINE_PACKAGE=true 时上传符号包，该包可能不是线上包。"
         )
     else:
@@ -464,9 +452,3 @@ async def preflight_symbols(
     }
 
 
-def _safe_cached(platform: str) -> list:
-    """_list_cached_versions 的不抛版本（missing 分支里再取一次用于邻近版本建议）。"""
-    try:
-        return _list_cached_versions(platform) or []
-    except Exception:
-        return []

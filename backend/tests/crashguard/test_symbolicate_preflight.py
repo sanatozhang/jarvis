@@ -170,3 +170,50 @@ async def test_api_validates_input():
             SymbolPreflightRequest(platform="ios", app_version="   ")
         )
     assert e2.value.status_code == 400
+
+
+# ── preflight 必须复用 list_symbol_versions 的缓存（2026-09-22 三次实测）──────
+#
+# 102 实测：preflight 返回 warnings=["GitHub Release 检查失败："]（异常消息为空），
+# 而同期 versions 端点能正常拉到 61 个候选。根因是 preflight 直连
+# _list_release_versions、绕过 5 分钟缓存，每次真打两个仓的 GH API 并超时
+# （httpx ReadTimeout 的 str() 恰好是空的）。这砸掉了 preflight "秒级返回"
+# 的立身之本——它的全部价值就在于比真符号化快几个数量级。
+
+@pytest.mark.asyncio
+async def test_preflight_reuses_catalog_cache(monkeypatch):
+    """连续三次 preflight 只应打一次 GH API（其余走 5 分钟缓存）。"""
+    calls = {"n": 0}
+    monkeypatch.setattr(symbol_catalog, "_list_cached_versions", lambda p: [])
+    async def _u(p):
+        return []
+    monkeypatch.setattr(symbol_catalog, "_list_uploaded_versions", _u)
+    async def _r(p):
+        calls["n"] += 1
+        return ([{"app_version": "4.0.302-1171", "verified": True,
+                  "tag": "v4.0.302+1000-x", "family": "native",
+                  "symbol_types": ["Plaud-Global.dSYMs.zip"],
+                  "asset_size": 94_371_840}], [])
+    monkeypatch.setattr(symbol_catalog, "_list_release_versions", _r)
+
+    for _ in range(3):
+        r = await symbol_catalog.preflight_symbols("ios", "4.0.302-1171")
+        assert r["status"] == "available"
+    assert calls["n"] == 1, f"打了 {calls['n']} 次 GH API，应只打 1 次"
+
+
+@pytest.mark.asyncio
+async def test_empty_exception_message_is_not_swallowed(monkeypatch):
+    """异常消息为空时（httpx ReadTimeout 就是这样）必须用异常类名兜底，
+    否则 warning 是 'xxx失败：' 这种无法诊断的空串。"""
+    monkeypatch.setattr(symbol_catalog, "_list_cached_versions", lambda p: [])
+    async def _u(p):
+        return []
+    monkeypatch.setattr(symbol_catalog, "_list_uploaded_versions", _u)
+    async def _r(p):
+        raise TimeoutError("")        # 空消息，模拟 httpx.ReadTimeout
+    monkeypatch.setattr(symbol_catalog, "_list_release_versions", _r)
+
+    r = await symbol_catalog.preflight_symbols("ios", "4.0.302-1171")
+    assert r["status"] == "missing"
+    assert any("TimeoutError" in w for w in r["warnings"]), r["warnings"]
