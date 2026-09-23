@@ -200,3 +200,45 @@ async def test_slack_unresolvable_email_fails_loudly(caplog):
     assert ok is False
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert any("ghost@plaud.ai" in m for m in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# 启动期校验
+# ---------------------------------------------------------------------------
+def test_validate_provider_raises_on_unknown():
+    """启动期 fail-fast。
+
+    不校验的后果不是报错，而是：配置写了个 `slak`，服务正常起来，然后每一次
+    告警在 resolve_transport 抛异常被上游 `except Exception` 吞掉——表现是
+    "这个模块的告警悄悄没了"。
+    """
+    from app.services.im import validate_provider
+
+    assert validate_provider("crashguard", "slack") == "slack"
+    assert validate_provider("crashguard", "") == "feishu"   # 空 = 默认
+    with pytest.raises(ValueError) as e:
+        validate_provider("crashguard", "slak")
+    assert "crashguard" in str(e.value) and "slak" in str(e.value)
+
+
+def test_runtime_falls_back_instead_of_raising(caplog):
+    """运行期跟启动期**刻意不同**：非法值回落默认渠道 + 记 error，不抛。
+
+    运行期抛异常等于把这条告警丢掉，而告警本身可能正在报线上故障。
+    """
+    from types import SimpleNamespace
+
+    from app.crashguard.services import notify
+
+    assert notify.provider(SimpleNamespace(notify_provider="slak")) == "feishu"
+    assert any("slak" in r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+
+
+def test_runtime_tolerates_mock_settings():
+    """测试里的 settings 桩常常是 MagicMock，`notify_provider` 取出来不是字符串。
+    不能让桩对象把告警路径炸掉。"""
+    from unittest.mock import MagicMock
+
+    from app.crashguard.services import notify
+
+    assert notify.provider(MagicMock()) == "feishu"

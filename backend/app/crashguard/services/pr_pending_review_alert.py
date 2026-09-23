@@ -485,15 +485,12 @@ async def run_pending_review_alert() -> Dict:
         yesterday_created_prs=yesterday_created_prs,
     )
 
-    from app.services import feishu_cli
-    try:
-        ok = await feishu_cli.send_interactive_card(email=target_email, card=card)
-    except Exception as e:
-        logger.exception("send_interactive_card failed: %s", e)
-        return {
-            "pending_count": total_pending, "approved_count": total_approved, **stats,
-            "sent": False, "skip_reason": f"send_error:{e}",
-        }
+    from app.crashguard.services import notify
+    from app.services.im.feishu_to_slack import compile_card
+
+    # send_card_to 内部已经吞异常并记日志；这里只看结果。
+    ok = await notify.send_card_to(target_email, card, lambda: compile_card(card),
+                                   s=s, what="pr_pending_review")
 
     if not ok:
         return {

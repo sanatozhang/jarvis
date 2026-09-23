@@ -613,26 +613,14 @@ async def run_hourly_alert_tick(
     if not s.feishu_enabled:
         logger.info("hourly_alerter: feishu_enabled=False, skip send (snapshot 已落表)")
     else:
-        # 路由：feishu_alert_email（点对点）> chat_id（群）> feishu_target_email（兼容旧路径）
-        # 早晚报继续走 chat_id 进群；hourly_alert 默认走 alert_email 不打扰群里其他人
-        try:
-            from app.services.feishu_cli import send_interactive_card
-            if s.feishu_alert_email:
-                sent_ok = await send_interactive_card(
-                    email=s.feishu_alert_email, card=card,
-                )
-            elif s.feishu_target_chat_id:
-                sent_ok = await send_interactive_card(
-                    chat_id=s.feishu_target_chat_id, card=card,
-                )
-            elif s.feishu_target_email:
-                sent_ok = await send_interactive_card(
-                    email=s.feishu_target_email, card=card,
-                )
-            else:
-                logger.warning("hourly_alerter: no alert_email/chat_id configured, skip send")
-        except Exception:
-            logger.exception("hourly_alerter: feishu send error")
+        # 路由（alert_email > 群 > target_email）已经收口到 notify.alert_target()
+        # ——这条链迁移前在六个文件里各写了一遍。
+        from app.crashguard.services import notify
+        from app.services.im.feishu_to_slack import compile_card
+
+        sent_ok = await notify.send_alert(
+            card, lambda: compile_card(card), s=s, what="hourly_alert",
+        )
 
     logger.info(
         "hourly_alerter fired: hour=%s new=%d surge=%d nv=%d nc=%d sent=%s",

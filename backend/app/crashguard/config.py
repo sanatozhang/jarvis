@@ -225,6 +225,17 @@ class CrashguardSettings(BaseSettings):
     # 避免噪声打扰群里所有人。空值则退化到 chat_id / target_email 老路径。
     feishu_alert_email: str = ""
     feishu_admin_open_ids: List[str] = Field(default_factory=list)
+
+    # --- 通知渠道（Slack 迁移，2026-09）---------------------------------
+    # 模块粒度开关。合法值由 `services/im.implemented_providers()` 决定。
+    notify_provider: str = "feishu"
+    # 早晚报进的「群」在 Slack 下的对应物。**没有默认值、没有硬编码兜底**
+    # ——渠道专属 id 带默认值会在切换时指向另一个渠道，发送方看起来成功、
+    # 收件人是空气（见设计文档）。
+    slack_channel: str = ""
+    # 告警（hourly / core_metric / job_health / symbol）的点对点目标在 Slack
+    # 下仍然用**邮箱**寻址（users.lookupByEmail），所以不需要并行字段
+    # ——`feishu_alert_email` 两个渠道通用。
     # 飞书消息中链接前缀（指向 frontend）
     # 优先级：env CRASHGUARD_FRONTEND_BASE_URL > yaml.frontend_base_url > env HOST_IP 派生
     #        > 本机出口 IP 自动探测 > http://localhost:3000
@@ -713,6 +724,16 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["feishu_alert_email"] = f["alert_email"]
         if "admin_open_ids" in f:
             flat["feishu_admin_open_ids"] = f["admin_open_ids"]
+
+    # notify 段：**必须显式映射**。crashguard 的 yaml→settings 是逐 key 的
+    # `if "x" in cfg`，漏了就是个死配置——yaml 里写了 notify.provider: slack
+    # 但没人读，于是"切了但没切"。
+    if "notify" in cfg:
+        n = cfg["notify"] or {}
+        if "provider" in n:
+            flat["notify_provider"] = n["provider"]
+        if "slack_channel" in n:
+            flat["slack_channel"] = n["slack_channel"]
         if "morning_cron" in f:
             flat["morning_cron"] = f["morning_cron"]
         if "evening_cron" in f:

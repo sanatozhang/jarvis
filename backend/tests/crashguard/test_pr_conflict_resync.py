@@ -99,8 +99,16 @@ async def test_dirty_pr_is_not_touched_only_notified(tmp_path, monkeypatch):
         sent.update(kwargs)
         return True
 
+    # 发送已经收口到 crashguard.services.notify（模块不再直接 import
+    # send_message），所以 patch 点跟着搬。
+    import app.crashguard.services.notify as notify_mod
     import app.crashguard.services.pr_conflict_resync as mod
-    monkeypatch.setattr(mod, "send_message", _fake_send)
+
+    async def _capture(text, *, email="", s=None, what=""):
+        await _fake_send(text=text, email=email)
+        return True
+
+    monkeypatch.setattr(notify_mod, "send_text", _capture)
 
     res = await mod.run_conflict_resync_sweep()
     assert res["updated"] == 0
@@ -119,8 +127,13 @@ async def test_update_branch_failure_is_treated_as_conflict_not_error(tmp_path, 
         update_branch_ok=False,
     ))
 
+    import app.crashguard.services.notify as notify_mod
     import app.crashguard.services.pr_conflict_resync as mod
-    monkeypatch.setattr(mod, "send_message", lambda **kw: True)
+
+    async def _noop(text, **kw):
+        return True
+
+    monkeypatch.setattr(notify_mod, "send_text", _noop)
 
     res = await mod.run_conflict_resync_sweep()
     assert res["updated"] == 0

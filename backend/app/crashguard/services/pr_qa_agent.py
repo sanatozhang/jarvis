@@ -194,8 +194,8 @@ async def _notify_low_quality(
         if parsed["regression_risks"]:
             lines.append(f"   回归风险: {'; '.join(parsed['regression_risks'])}")
         text = "\n".join(lines)
-        from app.services.feishu_cli import send_message
-        await send_message(email=target_email, text=text)
+        from app.crashguard.services import notify
+        await notify.send_text(text, email=target_email, s=s, what="pr_qa")
     except Exception:
         logger.exception("pr_qa_agent feishu notify failed (non-fatal)")
 

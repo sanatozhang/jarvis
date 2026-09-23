@@ -114,17 +114,12 @@ async def _check_fatal_backlog_and_alert(session) -> Dict[str, Any]:
         frontend_base_url=s.frontend_base_url,
     )
     sent_ok = False
-    try:
-        from app.services.feishu_cli import send_interactive_card
-        # 路由：alert_email > chat_id > target_email，跟 run_job_health_check 现有逻辑一致
-        if s.feishu_alert_email:
-            sent_ok = await send_interactive_card(email=s.feishu_alert_email, card=card)
-        elif s.feishu_target_chat_id:
-            sent_ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
-        elif s.feishu_target_email:
-            sent_ok = await send_interactive_card(email=s.feishu_target_email, card=card)
-    except Exception:
-        logger.exception("fatal_backlog_alerter: feishu send error")
+    # 路由收口到 notify.alert_target()（alert_email > 群 > target_email）
+    from app.crashguard.services import notify
+    from app.services.im.feishu_to_slack import compile_card
+
+    sent_ok = await notify.send_alert(card, lambda: compile_card(card),
+                                      s=s, what="fatal_backlog_alert")
 
     _fatal_backlog_last_alerted_at = now
     logger.info(
@@ -468,17 +463,11 @@ async def run_job_health_check() -> Dict[str, Any]:
         frontend_base_url=s.frontend_base_url,
     )
     sent_ok = False
-    try:
-        from app.services.feishu_cli import send_interactive_card
-        # 路由：alert_email > chat_id > target_email；job_health 是非早晚报告警，走点对点
-        if s.feishu_alert_email:
-            sent_ok = await send_interactive_card(email=s.feishu_alert_email, card=card)
-        elif s.feishu_target_chat_id:
-            sent_ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
-        elif s.feishu_target_email:
-            sent_ok = await send_interactive_card(email=s.feishu_target_email, card=card)
-    except Exception:
-        logger.exception("job_health_alerter: feishu send error")
+    # 路由收口到 notify.alert_target()（alert_email > 群 > target_email）
+    from app.crashguard.services import notify
+    from app.services.im.feishu_to_slack import compile_card
+
+    sent_ok = await notify.send_alert(card, lambda: compile_card(card), s=s, what="job_health_alert")
 
     # 记节流戳（即使发送失败也算告警尝试，避免一直刷屏）
     for it in unhealthy:

@@ -46,6 +46,26 @@ def resolve_transport(provider: str) -> IMTransport:
     return transport
 
 
+def validate_provider(module: str, value: str) -> str:
+    """启动期校验一个模块配的 provider。非法就 **raise**，不回落。
+
+    启动期 fail-fast 和运行期回落是刻意的分工：
+    - 这里配错了立刻炸，运维在部署那一刻就看见；
+    - 运行期（各模块 `notify.provider()`）回落到默认渠道 + 记 error，
+      因为那时候抛异常等于**把一条告警丢掉**，而告警本身可能正在报线上故障。
+
+    判据是「实现了吗」（注册表），不是字面量白名单——接第三个渠道时不用
+    回来改这里。
+    """
+    name = (value or DEFAULT_PROVIDER).strip().lower()
+    if name not in _TRANSPORTS:
+        raise ValueError(
+            f"{module} 的通知 provider={value!r} 不是已实现的渠道；"
+            f"可选：{implemented_providers()}"
+        )
+    return name
+
+
 __all__ = [
     "DEFAULT_PROVIDER",
     "Fold",
@@ -54,4 +74,5 @@ __all__ = [
     "Rendered",
     "implemented_providers",
     "resolve_transport",
+    "validate_provider",
 ]

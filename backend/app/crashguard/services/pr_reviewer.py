@@ -5,7 +5,7 @@ PR 创建后通过 git blame 定位"原作者"作为推荐 reviewer，飞书私�
 找不到 owner 时 fallback 给 settings.pr_reviewer_fallback_email（默认 sanato）。
 未 review 的 PR 每日 09:30 cron 滚动提醒，review/merged/closed 即停。
 
-隔离合约：仅引用 app.services.feishu_cli / app.db.database / 模块内部符号。
+隔离合约：仅引用 app.crashguard.services.notify / app.db.database / 模块内部符号。
 """
 from __future__ import annotations
 
@@ -364,7 +364,6 @@ async def notify_reviewers(
     飞书 send_interactive_card(email=...) 用 email 直发：飞书 API 会自动把
     email 解析为 open_id（前提：用户飞书绑定了该 email），无需我们维护映射。
     """
-    from app.services import feishu_cli  # 隔离合约白名单
 
     pr_title = _pr_display_title(pr)
     crash_url = _build_crash_url(getattr(pr, "datadog_issue_id", "") or "")
@@ -388,12 +387,13 @@ async def notify_reviewers(
                 line_count=n,
                 total_lines=total,
             )
-            try:
-                ok = await feishu_cli.send_interactive_card(email=email, card=card)
-            except Exception as e:
-                logger.warning("send_interactive_card raised pr=%s email=%s: %s",
-                               pr.pr_url, email, e)
-                ok = False
+            # 收件人是**算出来的**（PR 的 reviewer），不是配置里的固定地址，
+            # 所以走 send_card_to 而不是 alert_target()。
+            from app.crashguard.services import notify
+            from app.services.im.feishu_to_slack import compile_card
+
+            ok = await notify.send_card_to(email, card, lambda: compile_card(card),
+                                           s=settings, what="pr_reviewer")
             if ok:
                 sent.append(email)
                 logger.info("reviewer notified pr=%s email=%s lines=%d",
@@ -435,17 +435,17 @@ async def _send_fallback(
     unresolved_emails: Optional[List[str]],
     fallback_email: str,
 ) -> None:
-    from app.services import feishu_cli
     if not fallback_email:
         logger.error("pr_reviewer_fallback_email empty — cannot send fallback (pr=%s)", pr_url)
         return
     card = build_fallback_card(pr_url, pr_title, reason, unresolved_emails)
-    try:
-        await feishu_cli.send_interactive_card(email=fallback_email, card=card)
+    from app.crashguard.services import notify
+    from app.services.im.feishu_to_slack import compile_card
+
+    if await notify.send_card_to(fallback_email, card, lambda: compile_card(card),
+                                 what="pr_reviewer_fallback"):
         logger.info("fallback sent to %s for pr=%s reason=%s",
                     fallback_email, pr_url, reason)
-    except Exception as e:
-        logger.error("fallback send failed pr=%s: %s", pr_url, e)
 
 
 # ============================================================

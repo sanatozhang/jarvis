@@ -44,6 +44,33 @@ def _validate_sso_startup(sso: "SSOSettings") -> None:
 
 
 @asynccontextmanager
+def _validate_notify_startup() -> None:
+    """三个模块各自的通知 provider 都必须是已实现的渠道，否则**启动即失败**。
+
+    不校验的后果不是报错，而是：配置写了个 `slak`，服务正常起来，然后每一次
+    告警在 resolve_transport 抛异常被上游 `except Exception` 吞掉——表现是
+    "这个模块的告警悄悄没了"，没有任何人会收到信号。
+
+    这里只校验渠道名。**不校验 channel 配没配**：那是"切过去之前要做的事"，
+    而不是"起不来的理由"——provider 还是 feishu 时 slack_channel 为空完全正常。
+    """
+    from app.services.im import validate_provider
+
+    for module, getter in (
+        ("crashguard", "app.crashguard.config:get_crashguard_settings"),
+        ("coreguard", "app.coreguard.config:get_coreguard_settings"),
+        ("graygate", "app.graygate.config:get_graygate_settings"),
+    ):
+        mod_path, fn_name = getter.split(":")
+        try:
+            mod = __import__(mod_path, fromlist=[fn_name])
+            cfg = getattr(mod, fn_name)()
+        except Exception:
+            logger.warning("notify 校验：读不到 %s 的配置，跳过", module)
+            continue
+        validate_provider(module, getattr(cfg, "notify_provider", "") or "feishu")
+
+
 async def lifespan(app: FastAPI):
     """Application startup / shutdown."""
     settings = get_settings()
@@ -54,6 +81,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting jarvis...")
 
     _validate_sso_startup(settings.sso)
+    _validate_notify_startup()
 
     # Import crashguard models to register with SQLAlchemy Base
     from app.crashguard import models as _crashguard_models  # noqa: F401
