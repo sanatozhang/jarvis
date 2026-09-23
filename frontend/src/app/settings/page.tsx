@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, getGraygateFocusVersions, setGraygateFocusVersion, getGraygateFocusVersionHistory, triggerGraygateReport, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult, type GraygateFocusVersions, type GraygateFocusVersionAuditItem, type GraygateTriggerResult } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, getGraygateFocusVersions, setGraygateFocusVersion, getGraygateFocusVersionHistory, triggerGraygateReport, fetchNotifyStatus, updateNotifyProvider, type NotifyStatus, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult, type GraygateFocusVersions, type GraygateFocusVersionAuditItem, type GraygateTriggerResult } from "@/lib/api";
 import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
@@ -776,6 +776,9 @@ export default function SettingsPage() {
 
   const [autoDeepAnalysis, setAutoDeepAnalysis] = useState<AutoDeepAnalysisConfig | null>(null);
   const [autoDeepAnalysisSaving, setAutoDeepAnalysisSaving] = useState(false);
+  const [notify, setNotify] = useState<NotifyStatus | null>(null);
+  const [notifySwitching, setNotifySwitching] = useState("");
+  const [notifyChannelDraft, setNotifyChannelDraft] = useState<Record<string, string>>({});
 
   const username = typeof window !== "undefined" ? localStorage.getItem("appllo_username") || "" : "";
   const isAdmin = username === "sanato";
@@ -789,6 +792,7 @@ export default function SettingsPage() {
       .catch(console.error);
     fetchCondensationConfig().then(setCondensation).catch(console.error);
     fetchAutoDeepAnalysisConfig().then(setAutoDeepAnalysis).catch(console.error);
+    fetchNotifyStatus().then(setNotify).catch(console.error);
     if (isAdmin) loadEnv();
   }, []);
 
@@ -875,6 +879,36 @@ export default function SettingsPage() {
       setToast(t("已保存"));
     } catch (e: any) { setToast(t("保存失败") + ": " + e.message); }
     finally { setAutoDeepAnalysisSaving(false); }
+  };
+
+  const switchNotifyProvider = async (module: string, provider: "feishu" | "slack") => {
+    const row = notify?.modules.find((m) => m.module === module);
+    if (!row || row.provider === provider) return;
+
+    // 切过去之前先确认目标渠道配齐了。**不配齐也允许切**（"先切再配"是正常
+    // 顺序），但必须让人知道这一步之后告警会静默消失，而不是等下一次告警
+    // 触发时才发现。
+    const draft = (notifyChannelDraft[module] ?? "").trim();
+    const willBeReady = provider === "slack"
+      ? row.slack_token_configured && (draft || row.slack_channel || row.alert_email)
+      : row.ready.feishu;
+    if (!willBeReady) {
+      const why = provider === "slack" && !row.slack_token_configured
+        ? t("SLACK_BOT_TOKEN 未配置")
+        : t("目标渠道没有配频道，也没有兜底邮箱");
+      if (!confirm(
+        `${row.label}\n\n${t("切到")} ${provider}：${why}。\n` +
+        t("切过去之后这个模块的告警会静默不发（不会报错）。仍要切换吗？")
+      )) return;
+    }
+
+    setNotifySwitching(module);
+    try {
+      await updateNotifyProvider(module, provider, draft || undefined);
+      setNotify(await fetchNotifyStatus());
+      setToast(`${row.label} → ${provider}`);
+    } catch (e: any) { setToast(t("切换失败") + ": " + e.message); }
+    finally { setNotifySwitching(""); }
   };
 
   const ruleTypes = ["recording_missing", "timestamp_drift", "bluetooth", "cloud_sync", "speaker", "flutter_crash", "file_transfer", "membership_payment", "hardware_firmware", "general"];
@@ -1161,6 +1195,104 @@ export default function SettingsPage() {
                   style={{ background: "rgba(22,163,74,0.1)", color: "#16A34A" }}>{t("已启用")}</span>
               )}
             </label>
+          </section>
+        )}
+
+        {/* NOTIFY CHANNEL（飞书 / Slack，模块粒度） */}
+        {notify && (
+          <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+            <div className="mb-4">
+              <h2 className="text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+                {t("通知渠道")}
+              </h2>
+              <p className="mt-0.5 text-xs" style={{ color: S.text3 }}>
+                {t("每个模块单独切换。切换立即生效，不需要重启。")}
+              </p>
+            </div>
+
+            {!notify.slack_token_configured && (
+              <div className="mb-4 rounded-lg px-3 py-2 text-xs"
+                style={{ background: "rgba(234,179,8,0.10)", color: "#A16207",
+                         border: "1px solid rgba(234,179,8,0.25)" }}>
+                {t("SLACK_BOT_TOKEN 未配置——切到 Slack 的模块会静默不发。先在 .env 里配好并重启。")}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {notify.modules.map((m) => {
+                const busy = notifySwitching === m.module;
+                const target = m.provider === "slack" ? m.slack_channel : m.feishu_channel;
+                return (
+                  <div key={m.module} className="rounded-lg p-3"
+                    style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium" style={{ color: S.text1 }}>{m.label}</div>
+                        <div className="mt-0.5 font-mono text-[11px]" style={{ color: S.text3 }}>
+                          {target
+                            ? `${m.provider} · ${target}`
+                            : `${m.provider} · ${m.alert_email
+                                ? t("无频道，走点对点 ") + m.alert_email
+                                : t("⚠️ 没有可用的目标地址")}`}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {(["feishu", "slack"] as const).map((p) => {
+                          const active = m.provider === p;
+                          const ready = m.ready[p];
+                          return (
+                            <button key={p} disabled={busy || m.env_pinned || active}
+                              onClick={() => switchNotifyProvider(m.module, p)}
+                              title={m.env_pinned
+                                ? t("被 env 钉死（{K}），界面上改不了").replace(
+                                    "{K}", `${m.module.toUpperCase()}_NOTIFY_PROVIDER`)
+                                : ready ? "" : t("目标渠道未配齐，切过去会静默不发")}
+                              className="rounded-md px-3 py-1 text-xs font-semibold transition-opacity disabled:cursor-not-allowed"
+                              style={{
+                                background: active ? S.accent : "transparent",
+                                color: active ? "#fff" : S.text2,
+                                border: `1px solid ${active ? S.accent : S.border}`,
+                                opacity: m.env_pinned && !active ? 0.4 : 1,
+                              }}>
+                              {p === "feishu" ? t("飞书") : "Slack"}
+                              {!ready && <span className="ml-1 opacity-70">⚠</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {m.env_pinned && (
+                      <div className="mt-2 text-[11px]" style={{ color: S.text3 }}>
+                        {t("被 env 钉死（{K}），界面上改不了").replace(
+                          "{K}", `${m.module.toUpperCase()}_NOTIFY_PROVIDER`)}
+                      </div>
+                    )}
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <input
+                        value={notifyChannelDraft[m.module] ?? m.slack_channel}
+                        onChange={(e) => setNotifyChannelDraft(
+                          { ...notifyChannelDraft, [m.module]: e.target.value })}
+                        placeholder={t("Slack 频道 id（C 开头，存 id 不存名字）")}
+                        disabled={m.env_pinned}
+                        className="min-w-0 flex-1 rounded-md px-2 py-1 font-mono text-[11px]"
+                        style={inputStyle} />
+                      <span className="text-[11px]" style={{ color: S.text3 }}>
+                        {t("飞书")}: {m.ready.feishu ? "✅" : "⚠️"} · Slack: {m.ready.slack ? "✅" : "⚠️"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <p className="mt-3 text-[11px] leading-relaxed" style={{ color: S.text3 }}>
+              {t("⚠️ 切到一个没配齐的渠道不会报错——发送会静默失败，表现是「一切正常，只是没人收到告警」，而且要等下一次告警触发才暴露。所以上面每行都标了两个渠道各自的就绪状态。")}
+              <br />
+              {t("env 里的 <MODULE>_NOTIFY_PROVIDER 优先级高于这里，配了就会禁用该行的开关。")}
+            </p>
           </section>
         )}
 

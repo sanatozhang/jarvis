@@ -2411,11 +2411,14 @@ async def send_daily_report(
             logger.exception("coreguard daily_section 拼装失败（non-fatal，跳过该板块）")
             coreguard_section = None
 
-    # 优先用飞书 interactive card；失败回退到 text
+    # 优先用卡片；失败回退到纯文本
     sent = False
     try:
-        from app.services.feishu_cli import send_interactive_card, send_message
+        from app.crashguard.services import notify
         from app.crashguard.services.feishu_card import build_daily_card
+        from app.services.im import NotifyTarget, Rendered, resolve_transport
+        from app.services.im.feishu_to_slack import compile_card
+
         card = build_daily_card(
             report_type=report_type,
             target_date=target_date.isoformat(),
@@ -2424,16 +2427,28 @@ async def send_daily_report(
             frontend_base_url=s.frontend_base_url or "http://localhost:3000",
             coreguard_section=coreguard_section,
         )
-        if target_email:
-            sent = await send_interactive_card(email=target_email, card=card)
-            if not sent:
-                logger.warning("interactive card (email) send failed, falling back to text")
-                sent = await send_message(email=target_email, text=text)
-        else:
-            sent = await send_interactive_card(chat_id=chat_id, card=card)
-            if not sent:
-                logger.warning("interactive card (chat) send failed, falling back to text")
-                sent = await send_message(chat_id=chat_id, text=text)
+
+        # ⚠️ 这里**刻意不用 `notify.report_target()`**，而是就地拼 target。
+        #
+        # 两个原因：
+        # 1. 早晚报支持 `email_override` / `chat_id_override`（`/trigger` 端点
+        #    和运维脚本在用），report_target() 读的是配置，接不住 override。
+        # 2. **优先级是 email 在前**（`if target_email: ... else: chat`），
+        #    跟告警那条链（alert_email > 群 > target_email）不是一回事。
+        #    生产上 `feishu_target_email` 是空的所以走群；把它改成"群优先"
+        #    在生产上看不出区别，但会让带 email_override 的手动触发悄悄发错
+        #    地方。保持原样。
+        prov = notify.provider(s)
+        channel = (s.slack_channel if prov == "slack" else chat_id) or ""
+        target = (NotifyTarget(provider=prov, email=target_email) if target_email
+                  else NotifyTarget(provider=prov, channel=channel))
+
+        msg = compile_card(card) if prov == "slack" else Rendered(payload=card)
+        transport = resolve_transport(prov)
+        sent = await transport.send(target, msg)
+        if not sent:
+            logger.warning("daily_report 卡片发送失败，降级成纯文本再试一次")
+            sent = await transport.send_text(target, text)
     except Exception:
         logger.exception("crashguard daily_report send failed")
         sent = False

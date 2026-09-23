@@ -21,7 +21,6 @@ from sqlalchemy import select
 from app.crashguard.config import get_crashguard_settings
 from app.crashguard.models import CrashPullRequest
 from app.db.database import get_session
-from app.services.feishu_cli import send_message
 
 logger = logging.getLogger("crashguard.pr_conflict_resync")
 
@@ -160,6 +159,7 @@ async def _notify_conflicts(conflicts: List[Dict[str, Any]]) -> None:
         lines.append(f"- {c['pr_url']}（负责人：{who}）")
 
     try:
-        await send_message(email=target, text="\n".join(lines))
+        from app.crashguard.services import notify
+        await notify.send_text("\n".join(lines), email=target, s=s, what="pr_conflict_resync")
     except Exception:
         logger.exception("conflict_resync: failed to send Feishu notification")

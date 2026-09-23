@@ -828,6 +828,38 @@ export const updateAutoDeepAnalysisConfig = (data: Partial<AutoDeepAnalysisConfi
     body: JSON.stringify(data),
   });
 
+// 通知渠道开关（飞书 / Slack，模块粒度）——2026-09 迁移期
+//
+// `ready` 是切换前的**体检**：切到一个没配齐的渠道不会报错，只会在发送时
+// 静默失败（表现是"一切正常，只是没人收到告警"，且要等下一次告警才发生）。
+// 所以 UI 上必须先把它摆出来。
+export interface NotifyModuleStatus {
+  module: string;
+  label: string;
+  provider: "feishu" | "slack";
+  env_pinned: boolean;
+  feishu_channel: string;
+  slack_channel: string;
+  alert_email: string;
+  ready: { feishu: boolean; slack: boolean };
+  slack_token_configured: boolean;
+}
+export interface NotifyStatus {
+  implemented: string[];
+  slack_token_configured: boolean;
+  modules: NotifyModuleStatus[];
+}
+export const fetchNotifyStatus = () => request<NotifyStatus>("/settings/notify");
+export const updateNotifyProvider = (
+  module: string,
+  provider: string,
+  slackChannel?: string,
+) =>
+  request<NotifyModuleStatus>("/settings/notify", {
+    method: "PUT",
+    body: JSON.stringify({ module, provider, slack_channel: slackChannel }),
+  });
+
 // ============================================================
 // Golden Samples
 // ============================================================

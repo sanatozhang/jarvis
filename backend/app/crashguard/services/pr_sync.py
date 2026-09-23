@@ -305,8 +305,8 @@ async def _notify_review_activity(
         if len(human_items) > 5:
             lines.append(f"  · …还有 {len(human_items) - 5} 条")
         text = "\n".join(lines)
-        from app.services.feishu_cli import send_message
-        await send_message(email=target_email, text=text)
+        from app.crashguard.services import notify
+        await notify.send_text(text, email=target_email, s=s, what="pr_sync_review")
     except Exception:
         logger.exception("crashguard pr_sync review-notify failed (non-fatal)")
 

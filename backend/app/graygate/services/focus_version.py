@@ -18,11 +18,11 @@
 之前只是覆盖 KV 值，没有任何操作留痕，docker 容器日志还会随重启清空。现在
 每次变更都：
 1. 写一行 `GraygateFocusVersionAudit`（DB 表，不随进程/容器重启消失）；
-2. 用 jarvis 自己的 IM 专属 app（`send_interactive_card`，跟灰度日报本身走
-   同一个发送者身份）推一条飞书通知到 graygate 配置的 `feishu_chat_id`
-   （即"4.0灰度数据跟进群"）。原本想用另一个"主" app 身份区分开，102 实测
-   报 `230002 Bot/User can NOT be out of the chat`——那个 app 根本不在这个
-   群里，改回用户确认"一直在群里"的这个 IM app。
+2. 推一条变更通知到 graygate 配置的通知渠道（`services/notify.py`，跟灰度
+   日报**同一个 target、同一个发送者身份**）。原本想用另一个"主" app 身份
+   区分开，102 实测报 `230002 Bot/User can NOT be out of the chat`——那个
+   app 根本不在"4.0灰度数据跟进群"里。这条约束在 Slack 侧同样成立（bot
+   必须已经在那个私有频道里），所以不要在这里另配一个 target。
 值没变化（例如重复点两次清空）不记录也不通知，避免噪声。
 
 2026-09-16 新增鉴权：102 上实测发现有不明调用方持续覆盖这个值，写路径此前完全
@@ -50,39 +50,29 @@ def _key(platform: str) -> str:
 async def _notify_version_change(
     platform: str, old_value: str, new_value: str, changed_by: str,
 ) -> bool:
-    """飞书通知版本变更。
+    """通知「主要版本」变更，跟灰度日报走同一个渠道和同一个发送者身份。
 
-    2026-09-15 实测：一开始想用"主" app（历史上以为是 Apollo 的机器人身份）发送，
-    结果 102 上实测报 `230002 Bot/User can NOT be out of the chat`——那个 app 根本
-    不在"4.0灰度数据跟进群"里。群里真正在用、灰度日报本身也在用的是 jarvis 自己的
-    IM 专属 app（`send_interactive_card`），改用这个，跟日报走同一个发送者身份。
+    2026-09-15 实测（飞书路径）：一开始想用"主" app（历史上以为是 Apollo 的机器人
+    身份）发送，结果 102 上实测报 `230002 Bot/User can NOT be out of the chat`
+    ——那个 app 根本不在"4.0灰度数据跟进群"里。群里真正在用、灰度日报本身也在用
+    的是 jarvis 自己的 IM 专属 app，所以这里必须复用日报的 target，不要另配。
+    这条约束在 Slack 侧同样成立（bot 得在那个私有频道里），所以走
+    `notify.report_target()` 而不是自己拼。
 
     发送失败不影响主流程（audit 仍会记录 notify_sent=False，事后可查）。
     """
     from app.graygate.config import get_graygate_settings
-    from app.services.feishu_cli import send_interactive_card
+    from app.graygate.services import notify
 
     s = get_graygate_settings()
-    if not s.feishu_enabled or not s.feishu_chat_id:
+    if not s.send_enabled or not notify.report_target().configured:
         return False
 
     action = "清空（回落 session 数自动判定）" if not new_value else f"设为 `{new_value}`"
     old_note = f"原值：`{old_value}`" if old_value else "原值：未设置（自动判定）"
     operator = changed_by or "未知（调用方未提供身份）"
-    card = {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": "blue",
-            "title": {"tag": "plain_text", "content": f"🔖 4.0.3 灰度「主要版本」变更 · {platform.upper()}"},
-        },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**{platform.upper()}** {action}"}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": old_note}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"操作人：{operator}"}},
-        ],
-    }
     try:
-        return await send_interactive_card(chat_id=s.feishu_chat_id, card=card)
+        return await notify.send_focus_change(platform, action, old_note, operator)
     except Exception:
         logger.exception("focus_version change notify failed (non-fatal)")
         return False

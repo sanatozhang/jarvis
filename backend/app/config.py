@@ -136,6 +136,36 @@ class FeishuSettings(BaseSettings):
         return aid, asecret
 
 
+class SlackSettings(BaseSettings):
+    """Slack 通知渠道的凭证（通知层迁移 Slack，2026-09）。
+
+    形态刻意跟 `FeishuSettings` 对齐：**bot token 走 env / `.env`，不进 yaml**
+    （`config.yaml` 是进 git 的）。`xoxb-` token 是静态的、不过期，不需要像
+    飞书那样先用 app_id+secret 换 tenant_access_token，所以这里只有一个凭证
+    字段。
+
+    运行时**不依赖 Slack CLI**：httpx 直连 `https://slack.com/api/*`。CLI 只
+    用于一次性建 app / 建频道。
+
+    ⚠️ **这个 token 跟 Apollo 共用同一个 Slack app（Apollo Notify）。**
+    轮换它会同时打断两个产品的通知——换的时候两边的 `.env` 都要改。
+    见 `DEPLOY.md` 和设计文档的「Slack app：复用 Apollo Notify」。
+
+    ⚠️ 各模块的 channel id **不在这里**，在各自模块的配置里
+    （`crashguard.notify.slack_channel` 等）——那是每模块一份的非密配置，
+    跟"全局单份的凭证"是两层。
+    """
+
+    bot_token: str = ""            # env SLACK_BOT_TOKEN（xoxb-...）
+
+    model_config = {
+        "env_prefix": "SLACK_",
+        "env_file": str(PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+
 class LinearSettings(BaseSettings):
     api_key: str = ""                       # Linear API key
     webhook_secret: str = ""                # Webhook signing secret
@@ -410,6 +440,7 @@ class Settings(BaseSettings):
 
     # --- Sub-configs (populated from yaml + env) ---
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
+    slack: SlackSettings = Field(default_factory=SlackSettings)
     linear: LinearSettings = Field(default_factory=LinearSettings)
     sso: SSOSettings = Field(default_factory=SSOSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)

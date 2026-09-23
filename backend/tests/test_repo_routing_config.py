@@ -11,7 +11,13 @@ def test_native_band_cutover_is_4():
     routing = config.get_repo_routing()
     native = [b for b in routing["android"]["bands"] if b["family"] == "native"][0]
     assert native["min_version"] == "4.0.0"
-    assert native["github_repo"] == "Plaud-AI/plaud-native-android"
+    # `github_repo` 是**取符号包的仓**，不是源码仓。native 的符号包发在
+    # `Plaud-AI/plaud-native-app` 的 Release assets 里；`plaud-native-android`
+    # / `plaud-native-ios` 两个源码仓只有 git build tag，没有 Release
+    # （见 config.yaml 第 129-130 行的注释）。2026-07 改过来之后这条断言
+    # 没跟着改，一直红着。`sub` 才是源码仓的逻辑名。
+    assert native["github_repo"] == "Plaud-AI/plaud-native-app"
+    assert native["sub"] == "plaud-native-android"
     assert native["symbol_profile"] == "native_android"
 
 def test_backfill_from_legacy_env(monkeypatch):

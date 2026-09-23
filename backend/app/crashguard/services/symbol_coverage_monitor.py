@@ -325,17 +325,11 @@ async def run_symbol_health_check() -> Dict[str, Any]:
         frontend_base_url=s.frontend_base_url,
     )
     sent_ok = False
-    try:
-        from app.services.feishu_cli import send_interactive_card
-        # 路由：alert_email > chat_id > target_email，跟 job_health_alerter 现有逻辑一致
-        if s.feishu_alert_email:
-            sent_ok = await send_interactive_card(email=s.feishu_alert_email, card=card)
-        elif s.feishu_target_chat_id:
-            sent_ok = await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
-        elif s.feishu_target_email:
-            sent_ok = await send_interactive_card(email=s.feishu_target_email, card=card)
-    except Exception:
-        logger.exception("symbol_health_check: feishu send error")
+    # 路由收口到 notify.alert_target()（alert_email > 群 > target_email）
+    from app.crashguard.services import notify
+    from app.services.im.feishu_to_slack import compile_card
+
+    sent_ok = await notify.send_alert(card, lambda: compile_card(card), s=s, what="symbol_health_alert")
 
     for it in fresh_missing:
         _coverage_last_alerted_at[(it["platform"], it["version"])] = now

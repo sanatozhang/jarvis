@@ -16,12 +16,25 @@ from app.config import PROJECT_ROOT
 
 class GraygateSettings(BaseSettings):
     enabled: bool = True              # 总开关
-    feishu_enabled: bool = True       # 发送开关（False = 只算不发）
+    # ⚠️ 历史名。它是**发送总开关**（False = 只算不发），跟走哪个渠道无关
+    # ——切到 slack 之后它照样管用。不改名是因为 env `GRAYGATE_FEISHU_ENABLED`
+    # 已经配在各台机器上，改名要同步改部署；代码里一律通过 `send_enabled`
+    # 这个属性读它，让调用点的名字是对的。
+    feishu_enabled: bool = True
     scheduler_enabled: bool = True    # 该实例是否跑 cron（多机部署兜底）
 
     dashboard_id: str = "mbn-8h9-m2p"
     version_pattern: str = "4.0.3*"   # 灰度批次，可随版本推进改
     feishu_chat_id: str = ""
+
+    # --- 通知渠道（Slack 迁移，2026-09）---------------------------------
+    # 模块粒度开关：graygate 可以先于 crashguard/coreguard 切到 Slack。
+    # 合法值由 `services/im.implemented_providers()` 决定，不写字面量白名单。
+    notify_provider: str = "feishu"
+    # Slack 频道 id（`C...`）。**刻意没有默认值、没有硬编码兜底**：
+    # 渠道专属 id 带默认值的后果见设计文档——切过去时拿到的是另一个渠道的 id，
+    # 发送方看起来成功、收件人是空气。没配就是没配，启动期会报出来。
+    slack_channel: str = ""
     report_hour_bjt: int = 9
     min_sessions: int = 50            # 样本地板，低于此不出该单元格
     # 2026-08-23：报告构建/发送失败时私聊告警的收件人（跟 crashguard 那几个
@@ -41,6 +54,11 @@ class GraygateSettings(BaseSettings):
     # 用邮箱识别，不需要额外带 key。见 api/graygate.py::_resolve_caller。
     api_key_jarvis: str = ""   # jarvis 自己（脚本/技能直接调 API）用
     api_key_runway: str = ""  # Runway 发版工具用，独立于 jarvis 的 key
+
+    @property
+    def send_enabled(self) -> bool:
+        """发送总开关。读的是历史名 `feishu_enabled`，但语义与渠道无关。"""
+        return self.feishu_enabled
 
     model_config = {
         "env_prefix": "GRAYGATE_",

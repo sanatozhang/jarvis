@@ -41,16 +41,36 @@ async def api_client():
 def _settings(
     feishu_enabled: bool = True, feishu_chat_id: str = "oc_graygate",
     api_key_jarvis: str = "test-jarvis-key", api_key_runway: str = "test-runway-key",
+    notify_provider: str = "feishu", slack_channel: str = "",
 ) -> SimpleNamespace:
+    # send_enabled 在真实 GraygateSettings 上是读 feishu_enabled 的 property，
+    # SimpleNamespace 桩不了 property，这里直接算好同一个值。
     return SimpleNamespace(
-        feishu_enabled=feishu_enabled, feishu_chat_id=feishu_chat_id,
+        feishu_enabled=feishu_enabled, send_enabled=feishu_enabled,
+        feishu_chat_id=feishu_chat_id,
         api_key_jarvis=api_key_jarvis, api_key_runway=api_key_runway,
+        notify_provider=notify_provider, slack_channel=slack_channel,
     )
 
 
-def _report(available: bool = True, card: dict | None = None):
-    from app.graygate.services.card_builder import GraygateReportCard
-    return GraygateReportCard(available=available, card=card if card is not None else {"schema": "2.0"})
+def _data(target_date: date = date(2026, 8, 18), *, worsen: bool = False):
+    """一份最小但**真实**的 GraygateReportData。
+
+    刻意不 mock 渲染函数：这个端点的价值就是"发之前先看一眼要发什么"，
+    mock 掉渲染等于把唯一值得测的东西测没了。用真数据跑真渲染，顺带
+    覆盖两个 provider 的 assemble_*。
+    """
+    from app.graygate.services.card_builder import GraygateReportData
+    return GraygateReportData(
+        target_date=target_date,
+        d1_day=date(2026, 8, 17),
+        version_pattern="4.0.3*",
+        worsen_lines=["- 🍎 iOS 大盘 crash-free 掉了 0.3%"] if worsen else [],
+        columns_md=["**🍎 iOS**\n\n大盘 ok", "**🤖 Android**\n\n大盘 ok"],
+        new_crash_md=None,
+        top_crash_md=None,
+        top_jank_md=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -72,15 +92,20 @@ async def test_unknown_user_forbidden(api_client):
 @pytest.mark.asyncio
 async def test_dry_run_default_returns_markdown_without_sending(api_client):
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report(card={"schema": "2.0", "x": "hello"}))) as mock_build, \
-         patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock()) as mock_send:
+         patch.object(graygate_api, "collect_report_data", new=AsyncMock(return_value=_data())) as mock_build, \
+         patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api.notify, "send_daily_report", new=AsyncMock()) as mock_send:
         resp = await api_client.post("/api/graygate/trigger", params={"username": "sanato"})
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["dry_run"] is True
     assert body["available"] is True
-    assert body["card"] == {"schema": "2.0", "x": "hello"}
+    assert body["provider"] == "feishu"
+    # 真渲染出来的飞书 card（不是桩），至少得是 v2 schema + 带上标题
+    assert body["card"]["schema"] == "2.0"
+    assert "4.0.3 灰度" in body["card"]["header"]["title"]["content"]
+    assert body["blocks"] == []
     assert body["sent"] is False
     mock_build.assert_awaited_once()
     mock_send.assert_not_awaited()
@@ -89,9 +114,9 @@ async def test_dry_run_default_returns_markdown_without_sending(api_client):
 @pytest.mark.asyncio
 async def test_dry_run_false_and_feishu_enabled_sends(api_client):
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report(card={"schema": "2.0", "x": "hi"}))), \
+         patch.object(graygate_api, "collect_report_data", new=AsyncMock(return_value=_data())), \
          patch.object(graygate_api, "get_graygate_settings", return_value=_settings(feishu_enabled=True)), \
-         patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock(return_value=True)) as mock_send:
+         patch.object(graygate_api.notify, "send_daily_report", new=AsyncMock(return_value=True)) as mock_send:
         resp = await api_client.post(
             "/api/graygate/trigger", params={"username": "sanato", "dry_run": "false"},
         )
@@ -99,16 +124,18 @@ async def test_dry_run_false_and_feishu_enabled_sends(api_client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["sent"] is True
-    mock_send.assert_awaited_once_with(chat_id="oc_graygate", card={"schema": "2.0", "x": "hi"})
+    # 没传 target_date → 端点自己算 BJT 昨天，转发给 send_daily_report 的
+    # 必须是**同一个**日期（不能一边预览 D-1、一边发 D）。
+    mock_send.assert_awaited_once_with(date.fromisoformat(body["target_date"]))
 
 
 @pytest.mark.asyncio
 async def test_dry_run_false_but_feishu_enabled_false_does_not_send(api_client):
-    """feishu_enabled 是总闸——dry_run=false 也不能绕过它，返回体说明原因。"""
+    """send_enabled（历史名 feishu_enabled）是总闸——dry_run=false 也不能绕过它。"""
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report(card={"schema": "2.0", "x": "hi"}))), \
+         patch.object(graygate_api, "collect_report_data", new=AsyncMock(return_value=_data())), \
          patch.object(graygate_api, "get_graygate_settings", return_value=_settings(feishu_enabled=False)), \
-         patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock()) as mock_send:
+         patch.object(graygate_api.notify, "send_daily_report", new=AsyncMock()) as mock_send:
         resp = await api_client.post(
             "/api/graygate/trigger", params={"username": "sanato", "dry_run": "false"},
         )
@@ -116,7 +143,7 @@ async def test_dry_run_false_but_feishu_enabled_false_does_not_send(api_client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["sent"] is False
-    assert body["reason"] == "feishu_enabled=False"
+    assert body["reason"] == "send_enabled=False"
     mock_send.assert_not_awaited()
 
 
@@ -132,7 +159,8 @@ async def test_target_date_not_passed_defaults_to_bjt_yesterday(api_client, monk
     monkeypatch.setattr(graygate_api, "datetime", _FakeDatetime)
 
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build:
+         patch.object(graygate_api, "collect_report_data", new=AsyncMock(return_value=_data())) as mock_build, \
+         patch.object(graygate_api, "get_graygate_settings", return_value=_settings()):
         resp = await api_client.post("/api/graygate/trigger", params={"username": "sanato"})
 
     assert resp.status_code == 200
@@ -143,7 +171,8 @@ async def test_target_date_not_passed_defaults_to_bjt_yesterday(api_client, monk
 @pytest.mark.asyncio
 async def test_explicit_target_date_is_used(api_client):
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build:
+         patch.object(graygate_api, "collect_report_data", new=AsyncMock(return_value=_data())) as mock_build, \
+         patch.object(graygate_api, "get_graygate_settings", return_value=_settings()):
         resp = await api_client.post(
             "/api/graygate/trigger", params={"username": "sanato", "target_date": "2026-01-01"},
         )
@@ -166,9 +195,9 @@ async def test_invalid_target_date_returns_400(api_client):
 @pytest.mark.asyncio
 async def test_dry_run_false_but_report_unavailable_does_not_send(api_client):
     with patch.object(graygate_api.db, "get_user", new=AsyncMock(return_value={"username": "sanato", "role": "admin"})), \
-         patch.object(graygate_api, "build_report_card", new=AsyncMock(return_value=_report(available=False))), \
+         patch.object(graygate_api, "collect_report_data", new=AsyncMock(return_value=None)), \
          patch.object(graygate_api, "get_graygate_settings", return_value=_settings(feishu_enabled=True)), \
-         patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock()) as mock_send:
+         patch.object(graygate_api.notify, "send_daily_report", new=AsyncMock()) as mock_send:
         resp = await api_client.post(
             "/api/graygate/trigger", params={"username": "sanato", "dry_run": "false"},
         )
