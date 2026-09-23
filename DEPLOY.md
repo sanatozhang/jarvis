@@ -281,6 +281,27 @@ sudo systemctl reload nginx
 | `PORT` | 否 | 监听端口 | `8000` |
 | `LOG_LEVEL` | 否 | 日志级别 | `info` |
 | `SECRET_KEY` | 否 | 安全密钥（生产环境必改） | 随机字符串 |
+| `SLACK_BOT_TOKEN` | 否 | Slack bot token，仅在有模块切到 slack 时必填 | `xoxb-...` |
+| `GRAYGATE_NOTIFY_PROVIDER` | 否 | graygate 走哪个渠道（`feishu`/`slack`） | `feishu` |
+| `GRAYGATE_SLACK_CHANNEL` | 否 | graygate 的 Slack 频道 id | `C0C3P854KN1` |
+
+#### ⚠️ `SLACK_BOT_TOKEN` 与 Apollo 共用
+
+jarvis 和 Apollo 用的是**同一个 Slack app**（Apollo Notify，bot uid
+`U0C3FBW0NKY`，Team `T05DCGBSHN2`）。当初为 jarvis 单独建过一个「Jarvis Notify」
+（App ID `A0C34498HRV`），卡在工作区「管理员批准才能安装」的策略上，未安装。
+
+共用带来三个后果，换 token / 排查通知问题前必须知道：
+
+1. **轮换 token 会同时打断两个产品。** 改的时候两边的 `.env` 都要改、两边都要重启。
+2. **Slack 里的发送者显示为「Apollo Notify」。** 改 per-message 发送者名需要
+   `chat:write.customize` scope，目前没有；靠频道和卡片标题区分。
+3. **限速预算共用**（约 1 条/秒/频道，app 级也有配额）。实际冲突面小：
+   jarvis 是 08:00/17:00 + 每 3h，Apollo 是 09:00 催办扫描，频道也不同。
+
+现有频道：`#jarvis-crashguard`（`C0C3S90ULGN`，crashguard + coreguard 共用）、
+`#jarvis-graygate`（`C0C3P854KN1`）。都是**私有**频道，bot 必须在里面
+——否则发送会报 `not_in_channel`，而且这个错误只会进日志。
 
 ### 4.2 全局配置 (config.yaml)
 
