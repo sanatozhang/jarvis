@@ -37,6 +37,18 @@ class CoreguardSettings(BaseSettings):
     # 群配额溢出的个人邮箱；不设回落 feishu_target_email
     feishu_overflow_email: str = ""
 
+    # --- 通知渠道（Slack 迁移，2026-09）---------------------------------
+    # 模块粒度开关。合法值由 `services/im.implemented_providers()` 决定。
+    notify_provider: str = "feishu"
+    # coreguard 的 Slack 频道。跟 feishu_target_chat_id 同一路数——**默认跟
+    # crashguard 共用一个频道**（见 get_coreguard_settings 里的回落），因为
+    # 今天飞书侧就是这么用的（coreguard 回落到 crashguard 的群），换渠道不该
+    # 顺手改变"发到哪儿"这件事。
+    #
+    # 群配额溢出仍然走 feishu_overflow_email —— **邮箱寻址在两个渠道下都成立**
+    # （Slack 侧 users.lookupByEmail），所以不需要一个并行的 slack 溢出字段。
+    slack_channel: str = ""
+
     # Demo dashboard 锁定
     dashboard_id: str = "4h8-qff-zra"
 
@@ -127,4 +139,14 @@ def get_coreguard_settings() -> CoreguardSettings:
     # overflow_email：未单独配置时回落 target_email；保证"群配额满 → 总有去处"
     if not s.feishu_overflow_email:
         s.feishu_overflow_email = s.feishu_target_email
+
+    # Slack 频道回落：COREGUARD_SLACK_CHANNEL → CRASHGUARD_SLACK_CHANNEL。
+    # 跟上面 feishu_target_chat_id 回落到 crashguard 群是同一个道理——两个模块
+    # 今天就共用一个去处，换渠道不该顺手改变这件事。
+    #
+    # ⚠️ 这里**没有**硬编码默认值。渠道专属 id 带默认值的后果见
+    # `docs/superpowers/specs/2026-09-23-jarvis-slack-notify-design.md`：
+    # 切过去时拿到的是另一个渠道的 id，发送方看起来成功、收件人是空气。
+    if not s.slack_channel:
+        s.slack_channel = os.environ.get("CRASHGUARD_SLACK_CHANNEL", "")
     return s
