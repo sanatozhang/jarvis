@@ -1,9 +1,15 @@
-"""github_symbols.py::_github_token() 单测（2026-07-13）。
+"""github_symbols.py::_github_token() 单测。
 
-背景：_github_token() 原来直读 GH_TOKEN/GITHUB_TOKEN env，这俩存的是个人
-fine-grained PAT，超过 Plaud-AI org 90 天生命周期策略会被硬拒绝（release 列表
-接口全 403）。修复：优先问 `gh auth token` 要服务器上已登录的 OAuth token，
-env 只作 gh 不可用时的兜底。
+背景（2026-07-13）：_github_token() 原来直读 GH_TOKEN/GITHUB_TOKEN env，
+这俩存的是个人 fine-grained PAT，超过 Plaud-AI org 90 天生命周期策略会被
+硬拒绝（release 列表接口全 403）。第一版修复是"优先 `gh auth token`，
+env 作兜底"。
+
+**2026-08-06 起 env 兜底被彻底删掉**（见 `_github_token` 的 docstring）：
+兜底回一个必定 403 的过期 PAT，比干脆没有 token 更糟——没 token 时走匿名
+请求，公开 release 反而下得下来；带一个过期 PAT 则是直接 403。本文件里
+原来那两条 `falls_back_to_env` 用例断言的正是被删掉的行为，从那之后一直
+红着，现在改成钉住"**不**兜底"这个性质。
 """
 from __future__ import annotations
 
@@ -26,7 +32,12 @@ def test_github_token_prefers_gh_auth_token(monkeypatch):
     assert G._github_token() == "gho_liveoauthtoken"
 
 
-def test_github_token_falls_back_to_env_when_gh_fails(monkeypatch):
+def test_github_token_does_not_fall_back_to_env_when_gh_fails(monkeypatch):
+    """`gh auth token` 失败 → 返回 None，**不**回落 env 里的 PAT。
+
+    回落一个必定 403 的过期 PAT 比没有 token 更糟：没 token 走匿名请求，
+    公开 release 还下得下来；带过期 PAT 直接 403。
+    """
     from app.crashguard.services import github_symbols as G
 
     monkeypatch.setenv("GH_TOKEN", "expired-pat")
@@ -36,10 +47,11 @@ def test_github_token_falls_back_to_env_when_gh_fails(monkeypatch):
         return SimpleNamespace(returncode=1, stdout="", stderr="not logged in")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert G._github_token() == "expired-pat"
+    assert G._github_token() is None
 
 
-def test_github_token_falls_back_to_env_when_gh_missing(monkeypatch):
+def test_github_token_does_not_fall_back_to_env_when_gh_missing(monkeypatch):
+    """机器上没装 `gh` → 同样返回 None，理由同上。"""
     from app.crashguard.services import github_symbols as G
 
     monkeypatch.setenv("GITHUB_TOKEN", "expired-pat")
@@ -49,7 +61,20 @@ def test_github_token_falls_back_to_env_when_gh_missing(monkeypatch):
         raise FileNotFoundError("gh not found")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert G._github_token() == "expired-pat"
+    assert G._github_token() is None
+
+
+def test_github_token_ignores_env_even_when_gh_returns_empty(monkeypatch):
+    """`gh` 退出码 0 但吐空串（登录态坏了的一种形态）也不能回落 env。"""
+    from app.crashguard.services import github_symbols as G
+
+    monkeypatch.setenv("GH_TOKEN", "expired-pat")
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="  \n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert G._github_token() is None
 
 
 def test_github_token_strips_gh_token_env_before_invoking_gh(monkeypatch):
