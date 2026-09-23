@@ -83,6 +83,33 @@ def _text_of(el: Dict[str, Any]) -> str:
     return el.get("content", "") or ""
 
 
+def _button_url(btn: Dict[str, Any]) -> str:
+    """取按钮的跳转 URL，兼容飞书的三种写法。
+
+    | 写法 | 出现在 |
+    |---|---|
+    | `url` | v1 的 action/button（几个告警卡） |
+    | `behaviors: [{type: open_url, default_url}]` | v2 的 button（早晚报底部） |
+    | `multi_url.url` | 飞书的多端差异化链接 |
+
+    只认 `url` 的话，v2 那种按钮会被当成回调按钮丢掉——而它其实是个正常的
+    跳转链接。
+    """
+    if btn.get("url"):
+        return btn["url"]
+    for b in btn.get("behaviors") or []:
+        if b.get("type") == "open_url":
+            # default_url 是兜底，其余是分端覆盖；桌面端优先级最接近 Slack 的场景
+            for key in ("default_url", "pc_url", "web_url", "url"):
+                if b.get(key):
+                    return b[key]
+    multi = btn.get("multi_url") or {}
+    for key in ("url", "pc_url", "web_url"):
+        if multi.get(key):
+            return multi[key]
+    return ""
+
+
 def _compile_elements(elements: List[Dict[str, Any]]) -> Tuple[List[dict], List[Fold]]:
     """递归编译一组飞书元素 → (blocks, folds)。
 
@@ -110,11 +137,16 @@ def _compile_elements(elements: List[Dict[str, Any]]) -> Tuple[List[dict], List[
             if joined:
                 blocks.append(context(lark_md_to_mrkdwn(joined)))
 
-        elif tag == "action":
+        elif tag in ("action", "button"):
+            # 飞书两种写法都有：v1 是 `action` 容器包一组 `button`；
+            # v2 允许 `button` **直接作为 element**（crashguard 早晚报就是这样，
+            # 见 feishu_card.py「底部按钮（v2 schema）」那段）。只认 action 的话
+            # 早晚报的按钮会被静默丢掉——2026-09-23 真机验证时就是这么发现的。
+            raw_buttons = (el.get("actions") or []) if tag == "action" else [el]
             buttons = []
-            for a in el.get("actions") or []:
+            for a in raw_buttons:
                 label = _text_of(a) or "打开"
-                url = a.get("url") or ""
+                url = _button_url(a)
                 if not url:
                     # 没有 url 的按钮是回调按钮，需要 interactivity + HMAC 端点，
                     # 本次迁移刻意不做。丢掉按钮但保留日志——静默丢会让人以为

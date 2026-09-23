@@ -80,6 +80,32 @@ def test_url_button_survives():
     assert btn["text"]["text"] == "打开看板"
 
 
+def test_bare_v2_button_with_behaviors_survives():
+    """飞书 v2 允许 `button` 直接做 element，且 URL 藏在 `behaviors[].default_url`。
+
+    crashguard 早晚报底部那个「在 Web 端查看 / 操作」就是这种写法。只认
+    `action` + `url` 的话它会被当成回调按钮静默丢掉 —— 2026-09-23 真机验证
+    时就是这么发现的（日志里一行 `未知元素 tag='button'`）。
+    """
+    msg = compile_card(_card([{
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "📊 在 Web 端查看 / 操作"},
+        "type": "primary",
+        "behaviors": [{"type": "open_url",
+                       "default_url": "https://jarvis.nicebuild.click/crashguard"}],
+    }]))
+    btn = msg.payload[-1]["elements"][0]
+    assert btn["url"] == "https://jarvis.nicebuild.click/crashguard"
+
+
+def test_multi_url_button_survives():
+    msg = compile_card(_card([{"tag": "action", "actions": [
+        {"tag": "button", "text": {"tag": "plain_text", "content": "打开"},
+         "multi_url": {"url": "https://x.com/a", "pc_url": "https://x.com/pc"}},
+    ]}]))
+    assert msg.payload[-1]["elements"][0]["url"] == "https://x.com/a"
+
+
 def test_callback_button_is_dropped_loudly(caplog):
     """没有 url 的按钮是回调按钮，Slack 侧需要 interactivity + HMAC 端点，
     本期不支持。丢掉可以，但必须留日志——静默丢会让人以为是渲染 bug。"""
@@ -214,6 +240,10 @@ def test_real_crashguard_daily_card_compiles_within_limits():
     assert msg.payload[0]["type"] == "header"
     assert msg.color == "#E01E5A"
     assert len(msg.payload) <= MAX_BLOCKS
+    # 底部那个 v2 裸 button 必须活下来（它是读者跳回 Web 端的唯一入口）
+    actions = [b for b in msg.payload if b["type"] == "actions"]
+    assert actions, "早晚报底部的 Web 端按钮被丢了"
+    assert actions[-1]["elements"][0]["url"].endswith("/crashguard")
     for fold in msg.folds:
         assert len(fold.blocks) <= MAX_BLOCKS
     # 每个 section 的文本不能超 3000（超了 Slack 直接 invalid_blocks）
