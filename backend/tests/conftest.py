@@ -116,7 +116,7 @@ async def client(db_engine, db_session):
 def _make_test_settings():
     """Build a minimal Settings object for tests."""
     from app.config import (
-        Settings, FeishuSettings, LinearSettings,
+        Settings, FeishuSettings, LinearSettings, SlackSettings,
         AgentSettings, AgentProviderConfig, ConcurrencySettings, StorageSettings,
     )
     import tempfile, os
@@ -129,6 +129,16 @@ def _make_test_settings():
         log_level="warning",
     )
     s.feishu = FeishuSettings(app_id="test", app_secret="test")
+    # 显式桩空 token —— 这一行是**安全边界，不是样板**。
+    #
+    # `SlackSettings` 带 `env_prefix="SLACK_"` 且读项目根 `.env`，而生产/开发机
+    # 的 `.env` 里有真的 `SLACK_BOT_TOKEN`（还跟 Apollo 共用同一个 app）。不显式
+    # 桩的话，测试里任何一条没 mock 干净的通知路径都会真的往 plaud workspace
+    # 发消息。显式传参在 pydantic-settings 里优先级高于 env/env_file，所以这
+    # 一行同时起到"钉死空 token"和"屏蔽本机 env"两个作用。
+    #
+    # 删这行等于重演上面注释里那次 2026-08-23 飞书事故，只是换成 Slack。
+    s.slack = SlackSettings(bot_token="")
     s.linear = LinearSettings(api_key="test", webhook_secret="test-secret", trigger_keyword="@ai-agent")
     s.agent = AgentSettings(
         default="codex", timeout=10, max_turns=5,
