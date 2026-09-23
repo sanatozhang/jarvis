@@ -104,6 +104,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("apply_agent_overrides_from_db failed (non-fatal): %s", e)
 
+    # 通知渠道的 DB override 回灌。漏掉这一步的表现是"界面上切了渠道、
+    # 重启后偷偷弹回 yaml 的值"——上面 agent override 那段注释记的
+    # fb_f57ddda7d0 就是这个形状。
+    try:
+        from app.services.notify_switch import apply_notify_overrides_from_db
+        await apply_notify_overrides_from_db()
+    except Exception as e:
+        logger.warning("apply_notify_overrides_from_db failed (non-fatal): %s", e)
+
     try:
         from app.api.settings import apply_repo_routing_overrides_from_db
         await apply_repo_routing_overrides_from_db()

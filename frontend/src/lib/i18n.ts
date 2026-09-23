@@ -28,6 +28,21 @@ export function useLang(): Lang {
 
 const EN: Record<string, string> = {
   // Sidebar
+  "⚠️ 没有可用的目标地址": "⚠️ no usable target",
+  "通知渠道": "Notification channel",
+  "每个模块单独切换。切换立即生效，不需要重启。": "Switch per module. Takes effect immediately, no restart needed.",
+  "SLACK_BOT_TOKEN 未配置": "SLACK_BOT_TOKEN is not configured",
+  "SLACK_BOT_TOKEN 未配置——切到 Slack 的模块会静默不发。先在 .env 里配好并重启。": "SLACK_BOT_TOKEN is not configured - modules switched to Slack will silently send nothing. Set it in .env and restart first.",
+  "目标渠道没有配频道，也没有兜底邮箱": "the target channel has no channel id and no fallback email",
+  "切到": "Switching to",
+  "切过去之后这个模块的告警会静默不发（不会报错）。仍要切换吗？": "After switching, this module's alerts will silently go nowhere (no error). Switch anyway?",
+  "无频道，走点对点 ": "no channel, direct message to ",
+  "没有可用的目标地址": "no usable target",
+  "被 env 钉死（{K}），界面上改不了": "Pinned by env ({K}); cannot be changed here",
+  "目标渠道未配齐，切过去会静默不发": "Target channel is not fully configured; switching will silently send nothing",
+  "Slack 频道 id（C 开头，存 id 不存名字）": "Slack channel id (starts with C; store the id, not the name)",
+  "env 里的 <MODULE>_NOTIFY_PROVIDER 优先级高于这里，配了就会禁用该行的开关。": "<MODULE>_NOTIFY_PROVIDER in env takes precedence over this page; when set, that row's toggle is disabled.",
+  "⚠️ 切到一个没配齐的渠道不会报错——发送会静默失败，表现是「一切正常，只是没人收到告警」，而且要等下一次告警触发才暴露。所以上面每行都标了两个渠道各自的就绪状态。": "Switching to an unconfigured channel raises no error - sending fails silently, which looks like everything is fine but nobody got the alert, and only surfaces at the next alert. That is why each row shows readiness for both channels.",
   "工单分析": "Ticket Analysis",
   "工单跟踪": "Ticket Tracking",
   "提交反馈": "Submit Feedback",

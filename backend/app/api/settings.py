@@ -498,3 +498,42 @@ async def update_auto_deep_analysis_config(req: AutoDeepAnalysisConfigUpdate):
     await db.set_oncall_config(AUTO_DEEP_ANALYSIS_KEY, json.dumps(config, ensure_ascii=False))
     logger.info("Updated auto_deep_analysis config: enabled=%s", config.get("enabled"))
     return {"status": "updated"}
+
+
+# ---------------------------------------------------------------------------
+# 通知渠道开关（飞书 / Slack，模块粒度）
+# ---------------------------------------------------------------------------
+@router.get("/notify")
+async def get_notify_status():
+    """三个模块各自走哪个渠道 + 目标地址配齐了没。
+
+    返回体里的 `ready` 是**切换前必须看的体检结果**：切到一个没配频道的
+    渠道不会报错，只会在发送时记一行 warning 然后静默不发——表现是
+    "一切正常，只是没人收到告警"，而且要等下一次告警触发才发生。
+    """
+    from app.services import notify_switch
+
+    return notify_switch.status()
+
+
+class NotifyProviderUpdate(BaseModel):
+    module: str
+    provider: str
+    slack_channel: str | None = None
+
+
+@router.put("/notify")
+async def update_notify_provider(req: NotifyProviderUpdate):
+    """切换某个模块的通知渠道。写 DB + 立刻对运行中的进程生效。
+
+    **不校验目标地址配齐没有**——那是 `GET /notify` 的 `ready` 负责呈现、
+    由人决定的事。这里硬拦的话，"先切过去再配频道"这种正常顺序就走不通了。
+    """
+    from app.services import notify_switch
+
+    try:
+        return await notify_switch.set_provider(
+            req.module, req.provider, req.slack_channel,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
