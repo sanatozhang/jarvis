@@ -10,6 +10,66 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.db.database import Base
 
 
+class RealIMCallBlocked(RuntimeError):
+    """测试里有代码路径摸到了真实的飞书 / Slack 出口。"""
+
+
+@pytest.fixture(autouse=True)
+def _block_real_im(monkeypatch, request):
+    """测试一律不准真发飞书 / Slack —— 在最底层三个出口上兜底拦截。
+
+    2026-09-23 事故：graygate 通知层改造的中间态把 `get_graygate_settings`
+    写成了模块级 import，测试里的 monkeypatch 碰不到，拿到本机 `.env` 真实的
+    `GRAYGATE_FEISHU_CHAT_ID`，往「4.0灰度数据跟进群」发了一张「主要版本
+    1100→1143 · 操作人 sanato」的假卡片。2026-08-23 已经出过同形状的事故
+    （见下方 `client` fixture 注释）。靠"每个模块记得延迟 import / 记得
+    patch 早绑定名"防不住，所以在出口本身拦：
+
+    - 飞书 IM（发消息 / 卡片 / 传图 / 建群）都先走 `_get_tenant_token`；
+    - 飞书多维表格等走 `lark-cli` 子进程；
+    - Slack 全部走 `slack_cli.slack_api`。
+
+    业务代码大多 `except Exception` 吞掉发送失败，光抛错会被静默成
+    "发送失败"，所以另外记账，测试结束时有记录就判失败，把漏 mock 的
+    测试暴露出来。需要验证发送行为的测试照常在更上层 mock（它们的 patch
+    后生效，会覆盖这里）。
+    """
+    import asyncio
+
+    from app.services import feishu_cli, slack_cli
+
+    hits: list = []
+
+    def _blocked(what: str):
+        hits.append(what)
+        raise RealIMCallBlocked(f"测试试图走真实出口：{what}")
+
+    async def _no_tenant_token(*a, **kw):
+        _blocked("feishu_cli._get_tenant_token（飞书 IM）")
+
+    async def _no_slack_api(method, *a, **kw):
+        _blocked(f"slack_cli.slack_api({method})")
+
+    real_exec = asyncio.create_subprocess_exec
+
+    async def _guarded_exec(program, *args, **kw):
+        if str(program) == "lark-cli":
+            _blocked(f"lark-cli {' '.join(map(str, args[:3]))}")
+        return await real_exec(program, *args, **kw)
+
+    monkeypatch.setattr(feishu_cli, "_get_tenant_token", _no_tenant_token)
+    monkeypatch.setattr(slack_cli, "slack_api", _no_slack_api)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _guarded_exec)
+
+    yield
+
+    if hits:
+        pytest.fail(
+            f"{request.node.nodeid} 没 mock 掉通知出口，会用本机真实凭证发消息：{hits}",
+            pytrace=False,
+        )
+
+
 @pytest.fixture()
 async def db_engine():
     """Create a fresh in-memory SQLite engine per test."""

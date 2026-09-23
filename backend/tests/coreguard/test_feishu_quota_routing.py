@@ -1,9 +1,17 @@
-"""验证 coreguard 飞书告警群配额 + overflow 路由。
+"""验证 coreguard 告警的群配额 + overflow 路由。
 
-底层逻辑：
+底层逻辑（**跟渠道无关的产品策略**，Slack 迁移一个字节都没动）：
 - 群配额未满 → 走群（target_kind='group'）
-- 群配额已满 → 走 overflow_email（target_kind='email', overflow_from_group=True）
+- 群配额已满 → 走 overflow 邮箱（target_kind='email', overflow_from_group=True）
 - 都没配置 → skip 不发
+
+⚠️ 2026-09-23：路由从 `feishu_summary_card.send()` 搬到
+`coreguard/services/notify.py::send_alert()` —— 原来它长在飞书**渲染**模块里，
+等于策略和渠道绑死。现在这个文件测的是策略，渲染由
+`test_coreguard_slack_summary.py` 覆盖。
+
+`target_kind` 记的是 group/email 这个**语义**，不是 feishu/slack，所以切换
+渠道之后历史配额计数仍然连续——不会出现"切完当天配额清零、于是把群刷一遍"。
 """
 from __future__ import annotations
 
@@ -22,6 +30,12 @@ def _fake_card(title: str = "[coreguard] ⚠️ 核心指标异常告警 (1/18)"
         "header": {"title": {"tag": "plain_text", "content": title}},
         "elements": [],
     }
+
+
+def _rendered(title: str = "[coreguard] ⚠️ 核心指标异常告警 (1/18)"):
+    """已渲染的飞书告警。路由层只认 Rendered，不关心里面长什么样。"""
+    from app.services.im import Rendered
+    return Rendered(payload=_fake_card(title))
 
 
 @pytest.fixture()
@@ -77,7 +91,7 @@ async def _count_dispatches(target_kind: str | None = None):
 @pytest.mark.asyncio
 async def test_group_under_quota_sends_to_group(patched_db):
     """配额未满 → 走群通道，dispatch 记 target_kind='group'。"""
-    from app.coreguard.services import feishu_summary_card as fsc
+    from app.coreguard.services import notify
 
     sent_args = {}
 
@@ -88,7 +102,7 @@ async def test_group_under_quota_sends_to_group(patched_db):
 
     with patch("app.coreguard.config.get_coreguard_settings", return_value=_settings_with()), \
          patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock(side_effect=_fake_send)):
-        ok = await fsc.send(_fake_card(), breach_count=1)
+        ok = await notify.send_alert(_rendered(), breach_count=1)
 
     assert ok is True
     assert sent_args.get("chat_id") == "oc_TEST_GROUP"
@@ -101,7 +115,7 @@ async def test_group_under_quota_sends_to_group(patched_db):
 async def test_group_at_quota_overflows_to_email(patched_db):
     """已发 2 条（=quota）后第 3 条走 overflow_email；dispatch 标 overflow_from_group=True。"""
     from app.coreguard.models import CoreguardAlertDispatch
-    from app.coreguard.services import feishu_summary_card as fsc
+    from app.coreguard.services import notify
     from app.db.database import get_session
 
     today = _date_t.today()
@@ -123,7 +137,7 @@ async def test_group_at_quota_overflows_to_email(patched_db):
 
     with patch("app.coreguard.config.get_coreguard_settings", return_value=_settings_with()), \
          patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock(side_effect=_fake_send)):
-        ok = await fsc.send(_fake_card(), breach_count=3)
+        ok = await notify.send_alert(_rendered(), breach_count=3)
 
     assert ok is True
     assert received.get("email") == "user@plaud.ai"
@@ -145,7 +159,7 @@ async def test_group_at_quota_overflows_to_email(patched_db):
 @pytest.mark.asyncio
 async def test_failed_group_send_does_not_consume_quota(patched_db):
     """群发送失败（sent_ok=False）不计入配额，下次仍可发群。"""
-    from app.coreguard.services import feishu_summary_card as fsc
+    from app.coreguard.services import notify
 
     call_count = {"n": 0}
 
@@ -158,8 +172,8 @@ async def test_failed_group_send_does_not_consume_quota(patched_db):
 
     with patch("app.coreguard.config.get_coreguard_settings", return_value=_settings_with()), \
          patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock(side_effect=_fake_send)):
-        ok1 = await fsc.send(_fake_card(), breach_count=1)
-        ok2 = await fsc.send(_fake_card(), breach_count=1)
+        ok1 = await notify.send_alert(_rendered(), breach_count=1)
+        ok2 = await notify.send_alert(_rendered(), breach_count=1)
 
     assert ok1 is False
     assert ok2 is True
@@ -171,7 +185,7 @@ async def test_failed_group_send_does_not_consume_quota(patched_db):
 @pytest.mark.asyncio
 async def test_no_chat_id_falls_back_to_email_immediately(patched_db):
     """没配群 → 直接走 overflow_email，不算 overflow_from_group。"""
-    from app.coreguard.services import feishu_summary_card as fsc
+    from app.coreguard.services import notify
     from app.coreguard.models import CoreguardAlertDispatch
     from app.db.database import get_session
 
@@ -185,7 +199,7 @@ async def test_no_chat_id_falls_back_to_email_immediately(patched_db):
 
     with patch("app.coreguard.config.get_coreguard_settings", return_value=s), \
          patch("app.services.feishu_cli.send_interactive_card", new=AsyncMock(side_effect=_fake_send)):
-        ok = await fsc.send(_fake_card(), breach_count=1)
+        ok = await notify.send_alert(_rendered(), breach_count=1)
 
     assert ok is True
     assert received.get("email") == "user@plaud.ai"
@@ -201,7 +215,7 @@ async def test_no_chat_id_falls_back_to_email_immediately(patched_db):
 @pytest.mark.asyncio
 async def test_no_targets_skips(patched_db):
     """chat_id / overflow_email / target_email 都没 → 不发，不写 dispatch。"""
-    from app.coreguard.services import feishu_summary_card as fsc
+    from app.coreguard.services import notify
 
     s = _settings_with(
         feishu_target_chat_id="", feishu_target_email="", feishu_overflow_email="",
@@ -209,7 +223,7 @@ async def test_no_targets_skips(patched_db):
     sent_calls = AsyncMock(return_value=True)
     with patch("app.coreguard.config.get_coreguard_settings", return_value=s), \
          patch("app.services.feishu_cli.send_interactive_card", new=sent_calls):
-        ok = await fsc.send(_fake_card(), breach_count=1)
+        ok = await notify.send_alert(_rendered(), breach_count=1)
 
     assert ok is False
     assert sent_calls.await_count == 0

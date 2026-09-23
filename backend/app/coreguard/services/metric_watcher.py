@@ -440,8 +440,9 @@ async def run_all(dry_run: bool = False, now: Optional[datetime] = None,
 
     alert_sent = False
     if not dry_run and (alertable or force_alert):
-        from app.coreguard.services.feishu_summary_card import build_summary_card, send
-        card = build_summary_card(
+        from app.coreguard.services import notify
+        # 渲染按 provider 二选一、投递走群配额路由，都在 notify 里。
+        alert_sent = await notify.send_summary(
             cur_start=cur_start, cur_end=cur_end,
             base_start=base_start, base_end=base_end,
             breached=results_to_dict(alertable),   # 只把通过 gate 的入卡片
@@ -450,8 +451,8 @@ async def run_all(dry_run: bool = False, now: Optional[datetime] = None,
             forced=force_alert,
             dashboard_id=cfg.dashboard.get("id") or settings.dashboard_id,
             datadog_site=settings.datadog_site,
+            breach_count=len(alertable),
         )
-        alert_sent = await send(card, breach_count=len(alertable))
 
     return {
         "current_window": [cur_start.isoformat(), cur_end.isoformat()],

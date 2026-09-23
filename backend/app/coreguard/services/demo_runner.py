@@ -28,21 +28,44 @@ logger = logging.getLogger("coreguard.demo_runner")
 
 
 async def _send_feishu(card: Dict[str, Any]) -> bool:
-    s = get_coreguard_settings()
-    if not s.feishu_enabled:
-        logger.info("feishu_enabled=false, skip send")
-        return False
-    if not s.feishu_target_chat_id and not s.feishu_target_email:
-        logger.warning("no feishu target configured (chat_id / email)")
-        return False
+    """名字保持不变（调用方和测试都按这个名字来），但内部已经 provider 无关。
+
+    demo 走 `send_simple_card`，**刻意不走群配额路由** —— 手动触发的一次性
+    演示不该消耗当天留给真实告警的群配额。
+    """
+    from app.coreguard.services import notify
+
+    return await notify.send_simple_card(
+        card,
+        slack_blocks=_demo_slack_blocks(card),
+        text=_demo_title(card),
+        color="#1D9BD1",
+    )
+
+
+def _demo_title(card: Dict[str, Any]) -> str:
     try:
-        from app.services.feishu_cli import send_interactive_card
-        if s.feishu_target_chat_id:
-            return await send_interactive_card(chat_id=s.feishu_target_chat_id, card=card)
-        return await send_interactive_card(email=s.feishu_target_email, card=card)
-    except Exception as e:
-        logger.error("feishu send failed: %s", e)
-        return False
+        return ((card.get("header") or {}).get("title") or {}).get("content", "") or "coreguard demo"
+    except Exception:
+        return "coreguard demo"
+
+
+def _demo_slack_blocks(card: Dict[str, Any]) -> list:
+    """demo 卡片的 Slack 版。
+
+    demo 是给人看效果的一次性动作，不值得再写一套渲染器——直接把飞书 card 里
+    那几段 lark_md 抽出来转换。真实告警走的是
+    `slack_summary.build_summary_message()`，跟这里没关系。
+    """
+    from app.services.im.mrkdwn import header as _header, lark_md_to_mrkdwn, section
+
+    blocks = [_header(_demo_title(card))]
+    for el in card.get("elements") or []:
+        content = ((el.get("text") or {}).get("content")
+                   if isinstance(el.get("text"), dict) else None)
+        if content:
+            blocks.append(section(lark_md_to_mrkdwn(content)))
+    return blocks
 
 
 async def run_demo(force_alert: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
