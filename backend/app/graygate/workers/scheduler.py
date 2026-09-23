@@ -22,14 +22,21 @@
 三层 kill switch（`GraygateSettings`，见 `app/graygate/config.py`）：
 - `enabled=False` 或 `scheduler_enabled=False` → 整个 tick 直接返回，不跑
   `build_report`（省 Datadog 请求）。
-- `feishu_enabled=False` → 正常跑 `build_report`（算出数据、写心跳），但跳过
-  实际发送——这个开关的语义是"算但不吵群"，不是失败。
+- `feishu_enabled=False`（读作 `settings.send_enabled`，历史名，跟渠道无关）
+  → **连取数都跳过**，只写心跳。这个开关的语义是"不吵群"，不是失败。
+  ⚠️ 2026-09-23 改：原来是先 `build_report` 再判这个开关，等于关掉发送也照样
+  把 Datadog 查一遍（两平台 × 两口径 × 三个时间窗）。现在前置判断。
+
+通知渠道由 `settings.notify_provider` 决定（`feishu` | `slack`），发送统一走
+`app/graygate/services/notify.py`，这个文件里不再直接 import `feishu_cli`。
 
 三态（写进心跳 `status` 字段）：
-- `success`——正常发送，或 `available=False` 时按预期跳过发送，都算 success。
-- `degraded`——`build_report` 取数成功，但飞书发送失败（`send_message` 返回 False
-  或抛异常）。
-- `failed`——`build_report` 本身抛异常。
+- `success`——正常发送，或"没有数据可报"时按预期跳过发送，都算 success。
+- `degraded`——取数成功，但发送失败（transport 返回 False 或抛异常）。
+- `failed`——取数本身抛异常。
+
+心跳 `summary` 里的 `available` 三个取值：`True`=有数据且发了；`False`=两平台
+版本枚举都空，没数据可报；`None`=`send_enabled=False`，压根没查。
 
 `degraded`/`failed` 现在都会额外私聊告警 `settings.alert_email`（2026-08-23 加，
 见 `_send_failure_alert`）——之前只写心跳表，没人主动查就等于没人知道，8/21~8/22
@@ -67,8 +74,7 @@ from zoneinfo import ZoneInfo
 
 from app.db.database import get_session
 from app.graygate.config import get_graygate_settings
-from app.graygate.services.card_builder import build_report_card
-from app.services.feishu_cli import send_interactive_card, send_message
+from app.graygate.services import notify
 
 logger = logging.getLogger("graygate.scheduler")
 
@@ -117,8 +123,6 @@ async def _write_heartbeat(status: str, duration_ms: int, summary: dict, error: 
 
 async def _send_failure_alert(status: str, target_date: date, error: Optional[str], summary: dict) -> None:
     """`degraded`/`failed` 时私聊告警——绝不能因为告警本身发不出去就影响 job 结果。"""
-    settings = get_graygate_settings()
-    target = getattr(settings, "alert_email", "") or "sanato.zhang@plaud.ai"
     if status == "failed":
         text = (
             f"🔴 4.0 灰度日报构建失败（{target_date.isoformat()}），今天不会发到群里。\n"
@@ -133,7 +137,7 @@ async def _send_failure_alert(status: str, target_date: date, error: Optional[st
             "可能是飞书 API 抖动，也可能是 chat_id 配置有问题，需要人工确认。"
         )
     try:
-        await send_message(email=target, text=text)
+        await notify.send_ops_alert(text)
     except Exception:
         logger.exception("graygate_daily_report: failed to send failure alert itself")
 
@@ -147,25 +151,34 @@ async def _run_daily_report_once(target_date: date) -> None:
 
     try:
         settings = get_graygate_settings()
-        report = await build_report_card(target_date)
-        summary["available"] = report.available
+        summary["provider"] = settings.notify_provider
 
-        if not report.available:
-            # available=False 不是错误——只是两平台版本枚举都是空，没有数据可报。
-            # 只写心跳记录这个事实（方便运维知道"今天为什么没发"），不发送、不算失败。
+        if not settings.send_enabled:
+            # "算但不吵群"的总闸。主动跳过发送不是失败。
+            # 注意这个分支在**取数之前**——原来是先构建 card 再判断，等于
+            # 关掉发送也照样把 Datadog 查一遍。
+            summary["available"] = None
             summary["sent"] = False
-        elif not settings.feishu_enabled:
-            # feishu_enabled 是"算但不吵群"的总闸，主动跳过发送不是失败。
-            summary["sent"] = False
-            summary["skip_reason"] = "feishu_enabled=False"
+            summary["skip_reason"] = "send_enabled=False"
         else:
-            sent = False
-            try:
-                sent = await send_interactive_card(chat_id=settings.feishu_chat_id, card=report.card)
-            except Exception as e:
-                logger.warning("graygate_daily_report: send_interactive_card raised: %s", e)
-            summary["sent"] = sent
-            if not sent:
+            # ⚠️ 这里**刻意不包 try/except**。
+            #
+            # `send_daily_report` 里抛出来的异常只可能来自取数/渲染
+            # ——两个 transport 都自己吞掉发送异常并返回 False（见
+            # `im/feishu.py`、`im/slack.py`）。所以：
+            #   抛异常  → 落到外层 except → status=failed（取数炸了）
+            #   返回 False → status=degraded（算出来了但没发出去）
+            #   返回 None  → 没有数据可报，success
+            # 包一层 try 把异常转成 False 会让这两态塌成一个，而
+            # `_send_failure_alert` 给这两种情况发的是**不同的文案**
+            # （"今天不会发到群里" vs "数据算出来了但群里没收到"），
+            # 塌掉之后排查方向会被带偏。
+            sent = await notify.send_daily_report(target_date)
+            # None = 没有数据可报（两平台版本枚举都空）。这不是错误，
+            # 只写心跳记录这个事实（方便运维知道"今天为什么没发"）。
+            summary["available"] = sent is not None
+            summary["sent"] = bool(sent)
+            if sent is False:
                 status = "degraded"
     except Exception as e:
         status = "failed"
@@ -289,8 +302,6 @@ async def _check_staleness() -> None:
         return
 
     _last_staleness_alert_at = now
-    settings = get_graygate_settings()
-    target = getattr(settings, "alert_email", "") or "sanato.zhang@plaud.ai"
     text = (
         f"🔴 4.0 灰度日报已经 {age_hours:.0f} 小时没成功运行过了"
         f"（上次成功：{row.fired_at.isoformat()} UTC）。\n"
@@ -299,7 +310,7 @@ async def _check_staleness() -> None:
         "开关有没有被静默改掉。"
     )
     try:
-        await send_message(email=target, text=text)
+        await notify.send_ops_alert(text)
     except Exception:
         logger.exception("graygate staleness alert: failed to send itself")
 

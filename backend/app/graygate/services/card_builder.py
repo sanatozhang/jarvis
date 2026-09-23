@@ -492,13 +492,51 @@ def _build_top_jank_md(janks: List[TopJank]) -> Optional[str]:
     return "\n".join(lines)
 
 
-async def build_report_card(target_date: date) -> GraygateReportCard:
-    """组装 4.0.3 灰度日报 interactive card。target_date 是 BJT 日历日（代表"昨日"）。
+@dataclass
+class GraygateReportData:
+    """一次日报的**全部内容**，渲染无关。
 
-    结构（自上而下）：header → 🔴 恶化摘要（核心指标连续两个工作日同向恶化才出，
-    有才出）→ iOS/Android 双列版本数据（大盘/主要版本/🆕最新版本）→
-    🆕 新增崩溃堆栈（有才出）→ 🔥 Top5 崩溃 + 🟠 Top5 卡顿（有才出，不看是否
-    新增，按 events 量）。
+    拆出这层是为了**不让 Slack 路径把 Datadog 再查一遍** —— 上面那堆
+    `_fetch_tier_history` / `find_new_crashes` / `find_top_crashes` 是这个模块
+    最贵的部分（每个平台每个口径各三个时间窗），复制一份给 Slack 用既慢又会
+    立刻漂移。
+
+    ⚠️ 这**不是**设计文档里否决的那个「中立卡片 IR」。这里装的是**数据**
+    （已经拼好的 markdown 片段 + 严重度），不是"标题/分栏/折叠"这种结构原语；
+    两个 provider 各自决定这些片段怎么排版。
+    """
+
+    target_date: date
+    d1_day: date
+    version_pattern: str
+    worsen_lines: List[str]
+    columns_md: List[str]                 # [ios, android]
+    new_crash_md: Optional[str]
+    top_crash_md: Optional[str]
+    top_jank_md: Optional[str]
+
+    @property
+    def is_red(self) -> bool:
+        """红色（有恶化或有新增崩溃）vs 绿色。两个渠道共用同一判据。"""
+        return bool(self.worsen_lines or self.new_crash_md)
+
+    @property
+    def banner_md(self) -> str:
+        return (
+            f"📊 窗口 {self.target_date.strftime('%m-%d')} 00:00~24:00 BJT · "
+            f"基线 {self.d1_day.strftime('%m-%d')}（上一个工作日）· "
+            f"大盘版本模式 `{self.version_pattern}`"
+        )
+
+    @property
+    def title(self) -> str:
+        return f"🆕 [4.0.3 灰度] 每日指标 · {self.target_date.isoformat()}"
+
+
+async def collect_report_data(target_date: date) -> Optional[GraygateReportData]:
+    """跑完取数并拼好所有 markdown 片段。两平台版本枚举都空时返回 `None`。
+
+    `target_date` 是 BJT 日历日（代表"昨日"）。
     """
     settings = get_graygate_settings()
     today_ms = _window_ms(target_date)
@@ -510,7 +548,7 @@ async def build_report_card(target_date: date) -> GraygateReportCard:
     versions = await resolve_versions(*today_ms)
     ios_v, android_v = versions["ios"], versions["android"]
     if ios_v.top_version is None and android_v.top_version is None:
-        return GraygateReportCard(available=False, card={})
+        return None
 
     metrics_config = load_metrics_config()
     dashboard_json = await get_dashboard_json(settings.dashboard_id)
@@ -534,25 +572,37 @@ async def build_report_card(target_date: date) -> GraygateReportCard:
     worsen_lines = _build_worsen_lines(worsen_candidates, directionality_by_key)
 
     new_crashes = await find_new_crashes(target_date)
-    new_crash_md = _build_new_crash_md(new_crashes)
-
     top_crashes = await find_top_crashes(target_date)
     top_jank = await find_top_jank(target_date)
-    top_crash_md = _build_top_crash_md(top_crashes)
-    top_jank_md = _build_top_jank_md(top_jank)
 
-    elements: List[Dict[str, Any]] = [
-        _div(
-            f"📊 窗口 {target_date.strftime('%m-%d')} 00:00~24:00 BJT · "
-            f"基线 {d1_day.strftime('%m-%d')}（上一个工作日）· "
-            f"大盘版本模式 `{settings.version_pattern}`"
-        ),
-    ]
+    return GraygateReportData(
+        target_date=target_date,
+        d1_day=d1_day,
+        version_pattern=settings.version_pattern,
+        worsen_lines=worsen_lines,
+        columns_md=columns_md,
+        new_crash_md=_build_new_crash_md(new_crashes),
+        top_crash_md=_build_top_crash_md(top_crashes),
+        top_jank_md=_build_top_jank_md(top_jank),
+    )
 
-    if worsen_lines:
+
+def assemble_feishu_card(data: GraygateReportData) -> Dict[str, Any]:
+    """`GraygateReportData` → 飞书 interactive card（v2 schema）。
+
+    结构（自上而下）：header → 🔴 恶化摘要（核心指标连续两个工作日同向恶化才出，
+    有才出）→ iOS/Android 双列版本数据（大盘/主要版本）→ 🆕 新增崩溃堆栈
+    （有才出）→ 🔥 Top5 崩溃 + 🟠 Top5 卡顿（有才出，不看是否新增，按 events 量）。
+
+    ⚠️ 这个函数的输出必须跟拆分前**逐字节一致** —— 迁移期飞书仍是生产渠道，
+    `tests/graygate/test_card_builder.py` 钉住了这件事。
+    """
+    elements: List[Dict[str, Any]] = [_div(data.banner_md)]
+
+    if data.worsen_lines:
         elements.append({"tag": "hr"})
         elements.append(_div(
-            "**🔴 恶化（核心指标，连续 2 个工作日同向恶化）**\n\n" + "\n".join(worsen_lines)
+            "**🔴 恶化（核心指标，连续 2 个工作日同向恶化）**\n\n" + "\n".join(data.worsen_lines)
         ))
 
     elements.append({"tag": "hr"})
@@ -563,30 +613,41 @@ async def build_report_card(target_date: date) -> GraygateReportCard:
         "horizontal_spacing": "default",
         "columns": [
             {"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "top",
-             "elements": [_div(columns_md[0])]},
+             "elements": [_div(data.columns_md[0])]},
             {"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "top",
-             "elements": [_div(columns_md[1])]},
+             "elements": [_div(data.columns_md[1])]},
         ],
     })
 
-    if new_crash_md:
+    if data.new_crash_md:
         elements.append({"tag": "hr"})
-        elements.append(_div(new_crash_md))
+        elements.append(_div(data.new_crash_md))
 
-    if top_crash_md or top_jank_md:
+    if data.top_crash_md or data.top_jank_md:
         elements.append({"tag": "hr"})
-        if top_crash_md:
-            elements.append(_div(top_crash_md))
-        if top_jank_md:
-            elements.append(_div(top_jank_md))
+        if data.top_crash_md:
+            elements.append(_div(data.top_crash_md))
+        if data.top_jank_md:
+            elements.append(_div(data.top_jank_md))
 
-    card = {
+    return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
-            "template": "red" if (worsen_lines or new_crash_md) else "turquoise",
-            "title": {"tag": "plain_text", "content": f"🆕 [4.0.3 灰度] 每日指标 · {target_date.isoformat()}"},
+            "template": "red" if data.is_red else "turquoise",
+            "title": {"tag": "plain_text", "content": data.title},
         },
         "body": {"elements": elements},
     }
-    return GraygateReportCard(available=True, card=card)
+
+
+async def build_report_card(target_date: date) -> GraygateReportCard:
+    """组装 4.0.3 灰度日报 interactive card（飞书）。
+
+    取数与渲染已经拆开：取数在 `collect_report_data()`，Slack 侧走
+    `services/slack_report.py::build_report_message()` 消费同一份数据。
+    """
+    data = await collect_report_data(target_date)
+    if data is None:
+        return GraygateReportCard(available=False, card={})
+    return GraygateReportCard(available=True, card=assemble_feishu_card(data))

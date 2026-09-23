@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -24,7 +24,8 @@ from pydantic import BaseModel
 
 from app.db import database as db
 from app.graygate.config import get_graygate_settings
-from app.graygate.services.card_builder import build_report_card
+from app.graygate.services import notify
+from app.graygate.services.card_builder import collect_report_data
 from app.graygate.services.focus_version import (
     clear_focus_version,
     get_all_focus_versions,
@@ -62,37 +63,55 @@ async def trigger_report(
     else:
         resolved_date = _default_target_date()
 
-    report = await build_report_card(resolved_date)
+    settings = get_graygate_settings()
+    provider = (settings.notify_provider or "feishu").strip().lower()
 
-    result = {
+    # 预览按**当前 provider** 渲染，不是恒渲染飞书卡片：这个端点的用途是
+    # "发之前先看一眼要发什么"，切到 Slack 之后还给飞书 card 就失去意义了。
+    # 取数只跑一次（collect_report_data），两个渲染器消费同一份数据。
+    data = await collect_report_data(resolved_date)
+
+    result: Dict[str, Any] = {
         "target_date": resolved_date.isoformat(),
-        "available": report.available,
-        "card": report.card,
+        "available": data is not None,
+        "provider": provider,
+        # `card` 保持原字段名和语义（飞书 card）；provider=slack 时为空，
+        # 预览看 `blocks`。前端的 GraygateTriggerResult 里 card 本来就是可选的。
+        "card": {},
+        "blocks": [],
         "dry_run": dry_run,
         "sent": False,
         "reason": "",
     }
+    if data is not None:
+        if provider == "slack":
+            from app.graygate.services.slack_report import assemble_slack_message
 
-    # dry_run=True（默认）→ 只预览，绝不调用 send_interactive_card。
+            msg = assemble_slack_message(data)
+            result["blocks"] = msg.payload
+            result["thread_folds"] = [f.title for f in msg.folds]
+        else:
+            from app.graygate.services.card_builder import assemble_feishu_card
+
+            result["card"] = assemble_feishu_card(data)
+
+    # dry_run=True（默认）→ 只预览，绝不真发。
     if dry_run:
         return result
 
-    settings = get_graygate_settings()
-
-    # feishu_enabled 是总闸——手动触发不能绕过它，即使显式传了 dry_run=false。
-    if not settings.feishu_enabled:
-        result["reason"] = "feishu_enabled=False"
+    # send_enabled（历史名 feishu_enabled）是总闸——手动触发不能绕过它，
+    # 即使显式传了 dry_run=false。
+    if not settings.send_enabled:
+        result["reason"] = "send_enabled=False"
         return result
 
-    if not report.available:
+    if data is None:
         # 没有数据可报（两平台版本枚举都是空），没有内容值得发送。
         result["reason"] = "available=False"
         return result
 
-    from app.services.feishu_cli import send_interactive_card
-
-    sent = await send_interactive_card(chat_id=settings.feishu_chat_id, card=report.card)
-    result["sent"] = sent
+    sent = await notify.send_daily_report(resolved_date)
+    result["sent"] = bool(sent)
     if not sent:
         result["reason"] = "send_failed"
     return result

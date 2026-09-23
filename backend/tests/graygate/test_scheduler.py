@@ -1,16 +1,26 @@
 """graygate.workers.scheduler 单测。
 
 覆盖 task-6-brief.md「验证要求」第 1 条列出的全部场景：
-1. BJT 9 点整命中 → 触发一次 build_report_card + 发送（mock send_interactive_card）。
+1. BJT 9 点整命中 → 触发一次发送。
 2. 同一天内多次 tick（9:00 和 9:01 都落在 hour==9）→ 只发一次（进程级幂等）。
 3. 次日 9 点 → 再次触发（幂等状态按天重置）。
-4. enabled=False / scheduler_enabled=False → 不调用 build_report_card。
-5. feishu_enabled=False → 调用 build_report_card 但不调用 send_interactive_card。
-6. GraygateReportCard(available=False) → 不调用 send_interactive_card，心跳仍然写
-   （断言被调用且 summary 里记录了 available=false 的事实）。
+4. enabled=False / scheduler_enabled=False → 不发送、不写心跳。
+5. send_enabled=False → **连取数都不做**。
+6. 没有数据可报 → 不发送，心跳仍然写（summary 记录 available=false 这个事实）。
 
-全部 mock `get_graygate_settings` / `_now_bjt` / `build_report_card` / `send_interactive_card` /
-`_write_heartbeat`，不碰真实 DB / Datadog / 飞书。
+⚠️ 2026-09-23 Slack 迁移后这个文件的 mock 缝变了：scheduler 不再直接 import
+`build_report_card` / `send_interactive_card` / `send_message`，全部发送收口到
+`app/graygate/services/notify.py`。所以这里 patch 的是 `sched.notify.*` 两个函数：
+
+- `notify.send_daily_report(target_date)` → `True`=发了、`False`=发送失败、
+  **`None`=没有数据可报**（这三态就是心跳 status 的判据）
+- `notify.send_ops_alert(text)` → 运维私聊告警
+
+好处是取数和发送变成了同一个缝：原来"build 调了没 / send 调了没"两个断言现在
+是一个，而这两件事本来也没有单独关心的价值。
+
+全部 mock `get_graygate_settings` / `_now_bjt` / `notify.*` / `_write_heartbeat`，
+不碰真实 DB / Datadog / 飞书 / Slack。
 """
 from __future__ import annotations
 
@@ -35,14 +45,22 @@ def _settings(
     report_hour_bjt: int = 9,
     feishu_chat_id: str = "oc_graygate",
     alert_email: str = "test-alert@plaud.ai",
+    notify_provider: str = "feishu",
+    slack_channel: str = "",
 ) -> SimpleNamespace:
+    # `send_enabled` 在真实的 GraygateSettings 上是个读 feishu_enabled 的
+    # property；SimpleNamespace 桩不了 property，所以这里直接算好同一个值。
+    # 两者一旦漂移，test_send_enabled_property_tracks_feishu_enabled 会红。
     return SimpleNamespace(
         enabled=enabled,
         scheduler_enabled=scheduler_enabled,
         feishu_enabled=feishu_enabled,
+        send_enabled=feishu_enabled,
         report_hour_bjt=report_hour_bjt,
         feishu_chat_id=feishu_chat_id,
         alert_email=alert_email,
+        notify_provider=notify_provider,
+        slack_channel=slack_channel,
     )
 
 
@@ -61,20 +79,17 @@ def _report(available: bool = True, card: Optional[dict] = None) -> object:
 
 @pytest.mark.asyncio
 async def test_fires_at_report_hour_and_sends():
-    """BJT 9 点整命中 → build_report 被调用一次，且用昨天作为 target_date，
-    send_message 被调用一次（feishu_enabled=True，available=True）。"""
+    """BJT 9 点整命中 → 发送被调用一次，且用昨天（BJT）作为 target_date。"""
     fake_now = datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)
 
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_now_bjt", return_value=fake_now), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build, \
-         patch.object(sched, "send_interactive_card", new=AsyncMock(return_value=True)) as mock_send, \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock(return_value=True)) as mock_send, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb:
         await sched._tick_once()
 
-    mock_build.assert_awaited_once_with(date(2026, 8, 18))  # BJT 昨天
-    mock_send.assert_awaited_once_with(chat_id="oc_graygate", card={"schema": "2.0"})
+    mock_send.assert_awaited_once_with(date(2026, 8, 18))  # BJT 昨天
     mock_hb.assert_awaited_once()
     status, duration_ms, summary, error = mock_hb.await_args.args
     assert status == "success"
@@ -86,8 +101,7 @@ async def test_same_day_multiple_ticks_send_only_once():
     """9:00 和 9:01 都落在 hour==9 → 只应该真正触发一次（进程级按天幂等）。"""
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build, \
-         patch.object(sched, "send_interactive_card", new=AsyncMock(return_value=True)), \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock(return_value=True)) as mock_build, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()):
 
         with patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)):
@@ -103,8 +117,7 @@ async def test_next_day_fires_again_after_idempotency_reset():
     """次日同一小时 → 再次触发，幂等状态按天重置，不是永久锁死。"""
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build, \
-         patch.object(sched, "send_interactive_card", new=AsyncMock(return_value=True)), \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock(return_value=True)) as mock_build, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()):
 
         with patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)):
@@ -121,12 +134,10 @@ async def test_next_day_fires_again_after_idempotency_reset():
 async def test_enabled_false_skips_build_report():
     with patch.object(sched, "get_graygate_settings", return_value=_settings(enabled=False)), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
-         patch.object(sched, "build_report_card", new=AsyncMock()) as mock_build, \
-         patch.object(sched, "send_interactive_card", new=AsyncMock()) as mock_send, \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock()) as mock_send, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb:
         await sched._tick_once()
 
-    mock_build.assert_not_awaited()
     mock_send.assert_not_awaited()
     mock_hb.assert_not_awaited()
 
@@ -135,49 +146,50 @@ async def test_enabled_false_skips_build_report():
 async def test_scheduler_enabled_false_skips_build_report():
     with patch.object(sched, "get_graygate_settings", return_value=_settings(scheduler_enabled=False)), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
-         patch.object(sched, "build_report_card", new=AsyncMock()) as mock_build, \
-         patch.object(sched, "send_interactive_card", new=AsyncMock()) as mock_send, \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock()) as mock_send, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb:
         await sched._tick_once()
 
-    mock_build.assert_not_awaited()
     mock_send.assert_not_awaited()
     mock_hb.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_feishu_enabled_false_builds_but_does_not_send():
-    """feishu_enabled=False 是"算但不吵群"的总闸：build_report 照跑，
-    send_message 不应被调用；status 仍是 success（这是预期的跳过，不是失败）。"""
+async def test_send_enabled_false_skips_everything_including_fetch():
+    """send_enabled=False 是"不吵群"的总闸；status 仍是 success（预期跳过，不是失败）。
+
+    ⚠️ 2026-09-23 行为变更：原来是先 `build_report_card` 再判这个开关，等于
+    关掉发送之后**照样把 Datadog 查一遍**（两平台 × 两口径 × 三个时间窗）。
+    现在前置判断，一次请求都不发。`available=None` 表达的就是"压根没查"，
+    跟 `False`（查了但两平台版本枚举都空）是两件事。"""
     with patch.object(sched, "get_graygate_settings", return_value=_settings(feishu_enabled=False)), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build, \
-         patch.object(sched, "send_interactive_card", new=AsyncMock()) as mock_send, \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock()) as mock_send, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb:
         await sched._tick_once()
 
-    mock_build.assert_awaited_once()
     mock_send.assert_not_awaited()
     status, duration_ms, summary, error = mock_hb.await_args.args
     assert status == "success"
     assert summary["sent"] is False
-    assert summary["skip_reason"] == "feishu_enabled=False"
+    assert summary["available"] is None
+    assert summary["skip_reason"] == "send_enabled=False"
 
 
 @pytest.mark.asyncio
 async def test_report_unavailable_skips_send_but_still_writes_heartbeat():
-    """GraygateReportCard(available=False) → 不调用 send_interactive_card，心跳仍然写，
-    summary 里记录 available=false 这个事实（不是报错，status 仍是 success）。"""
+    """send_daily_report 返回 None（没有数据可报）→ 心跳仍然写，summary 里
+    记录 available=false 这个事实（不是报错，status 仍是 success）。"""
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report(available=False))), \
-         patch.object(sched, "send_interactive_card", new=AsyncMock()) as mock_send, \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock(return_value=None)) as mock_send, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb:
         await sched._tick_once()
 
-    mock_send.assert_not_awaited()
+    # 发送这一层被调用了（它内部才知道"没有数据"），返回 None 表达这个事实。
+    mock_send.assert_awaited_once()
     mock_hb.assert_awaited_once()
     status, duration_ms, summary, error = mock_hb.await_args.args
     assert status == "success"
@@ -191,17 +203,19 @@ async def test_send_failure_marks_degraded():
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())), \
-         patch.object(sched, "send_interactive_card", new=AsyncMock(return_value=False)), \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock(return_value=False)), \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb, \
-         patch.object(sched, "send_message", new=AsyncMock(return_value=True)) as mock_alert:
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock(return_value=True)) as mock_alert:
         await sched._tick_once()
 
     status, duration_ms, summary, error = mock_hb.await_args.args
     assert status == "degraded"
     assert summary["sent"] is False
     mock_alert.assert_awaited_once()
-    assert mock_alert.await_args.kwargs["email"] == "test-alert@plaud.ai"
+    # 收件人已经不在这一层了 —— send_ops_alert 内部从 graygate 配置解析 target
+    # （`notify.alert_target()`），scheduler 只负责给文案。收件人本身由
+    # tests/graygate/test_notify.py 覆盖。
+    assert "发送失败" in mock_alert.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -210,18 +224,17 @@ async def test_build_report_exception_marks_failed():
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(side_effect=RuntimeError("datadog boom"))), \
-         patch.object(sched, "send_interactive_card", new=AsyncMock()) as mock_send, \
+         patch.object(sched.notify, "send_daily_report",
+                      new=AsyncMock(side_effect=RuntimeError("datadog boom"))) as mock_send, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb, \
-         patch.object(sched, "send_message", new=AsyncMock(return_value=True)) as mock_alert:
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock(return_value=True)) as mock_alert:
         await sched._tick_once()
 
-    mock_send.assert_not_awaited()
     status, duration_ms, summary, error = mock_hb.await_args.args
     assert status == "failed"
     assert "datadog boom" in error
     mock_alert.assert_awaited_once()
-    assert "datadog boom" in mock_alert.await_args.kwargs["text"]
+    assert "datadog boom" in mock_alert.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -230,10 +243,9 @@ async def test_success_does_not_trigger_failure_alert():
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())), \
-         patch.object(sched, "send_interactive_card", new=AsyncMock(return_value=True)), \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock(return_value=True)), \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()), \
-         patch.object(sched, "send_message", new=AsyncMock()) as mock_alert:
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock()) as mock_alert:
         await sched._tick_once()
 
     mock_alert.assert_not_awaited()
@@ -245,9 +257,10 @@ async def test_failure_alert_send_error_does_not_propagate():
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 9, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(side_effect=RuntimeError("boom"))), \
+         patch.object(sched.notify, "send_daily_report",
+                      new=AsyncMock(side_effect=RuntimeError("boom"))), \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()) as mock_hb, \
-         patch.object(sched, "send_message", new=AsyncMock(side_effect=RuntimeError("feishu also down"))):
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock(side_effect=RuntimeError("im also down"))):
         await sched._tick_once()  # 不应该抛出任何异常
 
     status, duration_ms, summary, error = mock_hb.await_args.args
@@ -259,7 +272,7 @@ async def test_before_hour_does_not_fire():
     """当前小时早于 report_hour_bjt → 还没到点，不触发。"""
     with patch.object(sched, "get_graygate_settings", return_value=_settings(report_hour_bjt=9)), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 8, 0, 0, tzinfo=_BJT)), \
-         patch.object(sched, "build_report_card", new=AsyncMock()) as mock_build:
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock()) as mock_build:
         await sched._tick_once()
 
     mock_build.assert_not_awaited()
@@ -274,8 +287,7 @@ async def test_late_tick_after_missed_hour_still_fires():
     with patch.object(sched, "get_graygate_settings", return_value=_settings(report_hour_bjt=9)), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 10, 9, 0, tzinfo=_BJT)), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=False)), \
-         patch.object(sched, "build_report_card", new=AsyncMock(return_value=_report())) as mock_build, \
-         patch.object(sched, "send_interactive_card", new=AsyncMock(return_value=True)), \
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock(return_value=True)) as mock_build, \
          patch.object(sched, "_write_heartbeat", new=AsyncMock()):
         await sched._tick_once()
 
@@ -290,8 +302,8 @@ async def test_restart_after_already_sent_does_not_resend():
     with patch.object(sched, "get_graygate_settings", return_value=_settings(report_hour_bjt=9)), \
          patch.object(sched, "_now_bjt", return_value=datetime(2026, 8, 19, 14, 0, 0, tzinfo=_BJT)), \
          patch.object(sched, "_already_handled_today", new=AsyncMock(return_value=True)), \
-         patch.object(sched, "build_report_card", new=AsyncMock()) as mock_build, \
-         patch.object(sched, "send_interactive_card", new=AsyncMock()) as mock_send:
+         patch.object(sched.notify, "send_daily_report", new=AsyncMock()) as mock_build, \
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock()) as mock_send:
         await sched._tick_once()
         assert sched._last_fired_date == date(2026, 8, 19)  # 补记内存态，避免每个 tick 都重新查心跳表
 
@@ -378,11 +390,11 @@ async def test_staleness_alert_fires_when_last_success_too_old(tmp_path, monkeyp
     await _seed_heartbeat(dt.utcnow() - td(hours=30))  # 超过 26h 阈值
 
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
-         patch.object(sched, "send_message", new=AsyncMock(return_value=True)) as mock_alert:
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock(return_value=True)) as mock_alert:
         await sched._check_staleness()
 
     mock_alert.assert_awaited_once()
-    assert "小时没成功运行" in mock_alert.await_args.kwargs["text"]
+    assert "小时没成功运行" in mock_alert.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -392,7 +404,7 @@ async def test_staleness_alert_does_not_fire_when_recent_success_exists(tmp_path
     await _seed_heartbeat(dt.utcnow() - td(hours=5))  # 5h 前刚成功过，远低于阈值
 
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
-         patch.object(sched, "send_message", new=AsyncMock()) as mock_alert:
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock()) as mock_alert:
         await sched._check_staleness()
 
     mock_alert.assert_not_awaited()
@@ -407,7 +419,7 @@ async def test_staleness_alert_ignores_failed_rows_only_counts_success(tmp_path,
     await _seed_heartbeat(dt.utcnow() - td(hours=40), status="failed")
 
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
-         patch.object(sched, "send_message", new=AsyncMock()) as mock_alert:
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock()) as mock_alert:
         await sched._check_staleness()
 
     mock_alert.assert_not_awaited()
@@ -420,7 +432,7 @@ async def test_staleness_alert_respects_cooldown(tmp_path, monkeypatch):
     await _seed_heartbeat(dt.utcnow() - td(hours=30))
 
     with patch.object(sched, "get_graygate_settings", return_value=_settings()), \
-         patch.object(sched, "send_message", new=AsyncMock(return_value=True)) as mock_alert:
+         patch.object(sched.notify, "send_ops_alert", new=AsyncMock(return_value=True)) as mock_alert:
         await sched._check_staleness()
         await sched._check_staleness()  # 冷却期内，不该再发一次
 
