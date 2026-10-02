@@ -724,16 +724,6 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["feishu_alert_email"] = f["alert_email"]
         if "admin_open_ids" in f:
             flat["feishu_admin_open_ids"] = f["admin_open_ids"]
-
-    # notify 段：**必须显式映射**。crashguard 的 yaml→settings 是逐 key 的
-    # `if "x" in cfg`，漏了就是个死配置——yaml 里写了 notify.provider: slack
-    # 但没人读，于是"切了但没切"。
-    if "notify" in cfg:
-        n = cfg["notify"] or {}
-        if "provider" in n:
-            flat["notify_provider"] = n["provider"]
-        if "slack_channel" in n:
-            flat["slack_channel"] = n["slack_channel"]
         if "morning_cron" in f:
             flat["morning_cron"] = f["morning_cron"]
         if "evening_cron" in f:
@@ -744,6 +734,16 @@ def _yaml_overrides() -> Dict[str, Any]:
             flat["evening_enabled"] = bool(f["evening_enabled"])
         if "evening_window_hours" in f:
             flat["evening_window_hours"] = int(f["evening_window_hours"])
+
+    # notify 段：**必须显式映射**。crashguard 的 yaml→settings 是逐 key 的
+    # `if "x" in cfg`，漏了就是个死配置——yaml 里写了 notify.provider: slack
+    # 但没人读，于是"切了但没切"。
+    if "notify" in cfg:
+        n = cfg["notify"] or {}
+        if "provider" in n:
+            flat["notify_provider"] = n["provider"]
+        if "slack_channel" in n:
+            flat["slack_channel"] = n["slack_channel"]
     if "repo_paths" in cfg:
         rp = cfg["repo_paths"] or {}
         if "flutter" in rp:
