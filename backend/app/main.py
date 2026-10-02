@@ -56,10 +56,11 @@ def _validate_notify_startup() -> None:
     """
     from app.services.im import validate_provider
 
-    for module, getter in (
-        ("crashguard", "app.crashguard.config:get_crashguard_settings"),
-        ("coreguard", "app.coreguard.config:get_coreguard_settings"),
-        ("graygate", "app.graygate.config:get_graygate_settings"),
+    for module, getter, attr in (
+        ("crashguard", "app.crashguard.config:get_crashguard_settings", "notify_provider"),
+        ("coreguard", "app.coreguard.config:get_coreguard_settings", "notify_provider"),
+        ("graygate", "app.graygate.config:get_graygate_settings", "notify_provider"),
+        ("system", "app.config:get_settings", "system_notify_provider"),
     ):
         mod_path, fn_name = getter.split(":")
         try:
@@ -68,7 +69,7 @@ def _validate_notify_startup() -> None:
         except Exception:
             logger.warning("notify 校验：读不到 %s 的配置，跳过", module)
             continue
-        validate_provider(module, getattr(cfg, "notify_provider", "") or "feishu")
+        validate_provider(module, getattr(cfg, attr, "") or "feishu")
 
 
 async def lifespan(app: FastAPI):

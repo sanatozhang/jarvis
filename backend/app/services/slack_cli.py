@@ -38,6 +38,7 @@ _BASE = "https://slack.com/api"
 _GET_METHODS = frozenset({
     "auth.test",
     "conversations.info",
+    "files.getUploadURLExternal",
     "users.info",
     "users.lookupByEmail",
 })
@@ -255,6 +256,45 @@ async def open_dm(user_id: str) -> str:
     """
     data = await slack_api("conversations.open", users=user_id)
     return (data.get("channel") or {}).get("id", "")
+
+
+# ---------------------------------------------------------------------------
+# 文件
+# ---------------------------------------------------------------------------
+async def upload_file(
+    channel_id: str,
+    content: bytes,
+    filename: str,
+    *,
+    title: str = "",
+    initial_comment: str = "",
+) -> str:
+    """上传一个文件到频道 / DM，返回 file id。
+
+    三步走（`files.upload` 已被 Slack 下线）：
+      1. `files.getUploadURLExternal`（GET 语义，见 `_GET_METHODS`）拿一次性 upload_url
+      2. 把字节 POST 到那个 url（**不带 Slack token**，url 本身是凭证）
+      3. `files.completeUploadExternal` 投递到频道
+
+    `channel_id` 必须是 `C/G/D/Z` 开头，**不能传 `U...`**（Slack 侧正则
+    `^[CGDZ][A-Z0-9]{8,}$`）。DM 要先 `open_dm()`。
+    """
+    data = await slack_api("files.getUploadURLExternal",
+                           filename=filename, length=len(content))
+    upload_url, file_id = data["upload_url"], data["file_id"]
+
+    async with httpx.AsyncClient(timeout=60) as http:
+        resp = await http.post(upload_url, files={"file": (filename, content)})
+        resp.raise_for_status()
+
+    async with _lock_for(channel_id):
+        await slack_api(
+            "files.completeUploadExternal",
+            files=[{"id": file_id, "title": title or filename}],
+            channel_id=channel_id,
+            initial_comment=initial_comment or None,
+        )
+    return file_id
 
 
 async def healthcheck() -> Dict[str, Any]:

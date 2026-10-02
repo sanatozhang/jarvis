@@ -18,19 +18,20 @@ from app.services import notify_switch as ns
 @pytest.fixture(autouse=True)
 def _restore_settings():
     """这些测试直接改运行中的 settings 单例，必须还原，否则会污染后面的测试。"""
-    saved = {m: (ns._settings_for(m).notify_provider,
-                 getattr(ns._settings_for(m), "slack_channel", ""))
+    saved = {m: (getattr(ns._settings_for(m), ns._provider_attr(m)),
+                 getattr(ns._settings_for(m), "slack_channel", None))
              for m in ns.modules()}
     yield
     for m, (prov, ch) in saved.items():
         s = ns._settings_for(m)
-        s.notify_provider = prov
-        s.slack_channel = ch
+        setattr(s, ns._provider_attr(m), prov)
+        if ch is not None:
+            s.slack_channel = ch
 
 
 async def test_default_is_feishu_for_every_module(client):
     st = ns.status()
-    assert {m["module"] for m in st["modules"]} == {"crashguard", "coreguard", "graygate"}
+    assert {m["module"] for m in st["modules"]} == {"crashguard", "coreguard", "graygate", "system"}
     assert all(m["provider"] == "feishu" for m in st["modules"])
     assert st["implemented"] == ["feishu", "slack"]
 
@@ -68,7 +69,8 @@ async def test_switch_is_per_module(client):
     （graygate 先烤，crashguard 最后动）。"""
     await ns.set_provider("graygate", "slack", slack_channel="C_gray")
     st = {m["module"]: m["provider"] for m in ns.status()["modules"]}
-    assert st == {"graygate": "slack", "coreguard": "feishu", "crashguard": "feishu"}
+    assert st == {"graygate": "slack", "coreguard": "feishu", "crashguard": "feishu",
+                  "system": "feishu"}
 
 
 async def test_unknown_provider_is_rejected(client):
@@ -138,7 +140,7 @@ async def test_get_notify_endpoint(client):
     resp = await client.get("/api/settings/notify")
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["modules"]) == 3
+    assert len(body["modules"]) == 4
     assert body["implemented"] == ["feishu", "slack"]
 
 
@@ -159,3 +161,55 @@ async def test_put_notify_rejects_bad_provider_with_400(client):
     })
     assert resp.status_code == 400
     assert "telegram" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# system 行：发版通知 / modulehub / DB 健康 / 站内反馈这几处非模块私聊
+# ---------------------------------------------------------------------------
+async def test_system_switch_routes_system_notify(client):
+    """切 system 行必须让 services/system_notify 立刻换渠道——这一行存在的
+    全部意义就是让三个模块之外的私聊不再悄悄走飞书。"""
+    from app.services import system_notify
+
+    assert system_notify.provider() == "feishu"
+    await ns.set_provider("system", "slack")
+    assert system_notify.provider() == "slack"
+    # 其他模块不受影响
+    assert ns.status_for("crashguard")["provider"] == "feishu"
+
+
+async def test_system_has_no_channel_and_ignores_slack_channel(client):
+    """system 只有点对点，没有频道：传了 slack_channel 也不能落到顶层
+    Settings 上（它没有这个字段，pydantic 会直接抛）。"""
+    row = await ns.set_provider("system", "slack", slack_channel="C_should_be_ignored")
+    assert row["has_channel"] is False
+    assert row["slack_channel"] == ""
+    raw = json.loads(await db.get_oncall_config(ns.NOTIFY_OVERRIDE_KEY, ""))
+    assert "slack_channel" not in raw["system"]
+
+
+async def test_system_override_survives_restart(client):
+    await ns.set_provider("system", "slack")
+    from app.config import get_settings
+
+    get_settings().system_notify_provider = "feishu"     # 模拟重启后回到默认
+    await ns.apply_notify_overrides_from_db()
+    assert get_settings().system_notify_provider == "slack"
+
+
+async def test_system_readiness_uses_feedback_recipient(client, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings().slack, "bot_token", "xoxb-test")
+    row = ns.status_for("system")
+    assert row["alert_email"] == get_settings().feedback_recipient
+    assert row["ready"] == {"feishu": True, "slack": True}
+
+
+async def test_system_env_pin(client, monkeypatch):
+    monkeypatch.setenv("SYSTEM_NOTIFY_PROVIDER", "feishu")
+    await ns.set_provider("system", "slack")
+    from app.config import get_settings
+
+    assert get_settings().system_notify_provider == "feishu"
+    assert ns.status_for("system")["env_pinned"] is True

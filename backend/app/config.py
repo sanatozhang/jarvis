@@ -436,7 +436,13 @@ class Settings(BaseSettings):
     log_level: str = "info"
     secret_key: str = "change-me"
     frontend_base_url: str = ""    # Jarvis 前端 URL，用于告警深链（env: APPLLO_BASE_URL）
-    feedback_recipient: str = "sanato.zhang@plaud.ai"   # 反馈 widget 收件人（飞书邮箱）
+    feedback_recipient: str = "sanato.zhang@plaud.ai"   # 反馈 widget 收件人（邮箱，飞书/Slack 通用）
+    # 系统私聊（发版通知 / modulehub / DB 健康告警 / 站内反馈）走哪个渠道。
+    # 这几处都是**按邮箱点对点**，不进群，所以没有并行的 slack_channel 字段——
+    # 邮箱在两个渠道下都可寻址（Slack 走 users.lookupByEmail）。
+    # 优先级 env SYSTEM_NOTIFY_PROVIDER > 设置页 DB override > 默认，见
+    # services/notify_switch.py 的 "system" 行；发送统一走 services/system_notify.py。
+    system_notify_provider: str = "feishu"
 
     # --- Sub-configs (populated from yaml + env) ---
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
