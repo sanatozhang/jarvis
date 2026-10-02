@@ -8,19 +8,19 @@ SAMPLE = '''# shell module versions
 [logger]
 version = "1.0.0"   # pinned
 sha256 = "aaaa"
-repo = "Plaud-AI/plaud-module-logger-android"
+repo = "Plaud-AI/logger-android"
 
 [network]
 version = "2.3.1"
 sha256 = "bbbb"
-repo = "Plaud-AI/plaud-module-network-android"
+repo = "Plaud-AI/network-android"
 '''
 
 
 def test_parse_returns_tables_in_order():
     t = vt.parse(SAMPLE)
     assert list(t) == ["logger", "network"]
-    assert t["logger"] == {"version": "1.0.0", "sha256": "aaaa", "repo": "Plaud-AI/plaud-module-logger-android"}
+    assert t["logger"] == {"version": "1.0.0", "sha256": "aaaa", "repo": "Plaud-AI/logger-android"}
 
 
 def test_parse_rejects_key_outside_table():
@@ -48,7 +48,7 @@ def test_rewrite_changes_only_the_target_table_and_keeps_comments():
     assert 'sha256 = "%s"' % C in out
     # untouched table is byte-identical
     assert out.split("[network]")[1] == SAMPLE.split("[network]")[1]
-    assert vt.read_module(out, "logger")["repo"] == "Plaud-AI/plaud-module-logger-android"
+    assert vt.read_module(out, "logger")["repo"] == "Plaud-AI/logger-android"
 
 
 def test_rewrite_is_idempotent():

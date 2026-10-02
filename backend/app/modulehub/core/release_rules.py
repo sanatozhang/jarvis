@@ -23,4 +23,4 @@ def validate_platform(platform: str) -> None:
 
 
 def module_repo(owner: str, name: str, platform: str) -> str:
-    return "%s/plaud-module-%s-%s" % (owner, name, platform)
+    return "%s/%s-%s" % (owner, name, platform)

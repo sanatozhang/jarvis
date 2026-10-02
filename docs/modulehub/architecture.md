@@ -2,7 +2,7 @@
 
 modulehub releases independent native modules (Android AAR / iOS XCFramework) on behalf of engineers. It is a
 **pure scheduler**: it triggers one Jenkins job, waits, opens PRs, reconciles branches and notifies. It does not
-compute versions, build, sign or upload anything — that is all in `plaud-module-kit` (the job it triggers).
+compute versions, build, sign or upload anything — that is all in `module-kit` (the job it triggers).
 
 Contracts it implements against (owned by the kit repo, `docs/orchestrator/`): `publish-job.md`,
 `publish-result.schema.json`, `versioning.md`, `bump-pr.md`, `backport-pr.md`, `branch-mirror.md`, `api.md`.
@@ -71,4 +71,4 @@ change); a branch that pins no such module is logged as `no_pin`. Results go to 
 - `range_applied_on` treats a range as already on `main` only if its head tag is an ancestor of `main`
   (cherry-picked duplicates are not detected by patch-id).
 - Backport conflicts open a `[CONFLICT]` placeholder PR (empty commit); the owner resolves it by hand.
-- Shell and module repos are located by convention (`plaud-module-<name>-<platform>`, shell repos from config).
+- Shell and module repos are located by convention (`<name>-<platform>`, shell repos from config).

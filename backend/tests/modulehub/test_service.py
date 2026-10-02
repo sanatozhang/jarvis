@@ -6,7 +6,7 @@ from app.modulehub.service import MirrorService, ReleaseConflict, ReleaseNotFoun
 from tests.modulehub.fakes import SETTINGS, TOML, FakeBuild, FakeScm, MemStore, RecNotifier, result_json
 
 SHELL = "Plaud-AI/shell-android"
-MOD = "Plaud-AI/plaud-module-logger-android"
+MOD = "Plaud-AI/logger-android"
 
 
 @pytest.fixture

@@ -24,8 +24,8 @@ def test_platform_validation():
 
 
 def test_repo_names():
-    assert r.module_repo("Plaud-AI", "logger", "android") == "Plaud-AI/plaud-module-logger-android"
-    assert r.module_repo("Plaud-AI", "logger", "ios") == "Plaud-AI/plaud-module-logger-ios"
+    assert r.module_repo("Plaud-AI", "logger", "android") == "Plaud-AI/logger-android"
+    assert r.module_repo("Plaud-AI", "logger", "ios") == "Plaud-AI/logger-ios"
 
 
 def test_is_release_branch():
