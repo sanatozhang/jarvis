@@ -284,6 +284,7 @@ sudo systemctl reload nginx
 | `SLACK_BOT_TOKEN` | 否 | Slack bot token，仅在有模块切到 slack 时必填 | `xoxb-...` |
 | `GRAYGATE_NOTIFY_PROVIDER` | 否 | graygate 走哪个渠道（`feishu`/`slack`） | `feishu` |
 | `GRAYGATE_SLACK_CHANNEL` | 否 | graygate 的 Slack 频道 id | `C0C3P854KN1` |
+| `SYSTEM_NOTIFY_PROVIDER` | 否 | 系统私聊（发版通知 / modulehub / DB 健康告警 / 站内反馈）走哪个渠道；配了会禁用设置页「system」那行开关 | `slack` |
 
 #### ⚠️ `SLACK_BOT_TOKEN` 与 Apollo 共用
 

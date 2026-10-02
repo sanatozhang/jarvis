@@ -56,6 +56,17 @@ _MODULES: Dict[str, Dict[str, str]] = {
         "feishu_channel_attr": "feishu_chat_id",
         "label": "Graygate（灰度期每日指标）",
     },
+    # 不属于任何业务模块的点对点私聊，发送统一走 services/system_notify.py。
+    # 只有私聊、没有群/频道，所以 has_channel=False：不接受 slack_channel，
+    # readiness 也只看收件邮箱。provider 存在顶层 Settings 上，字段名带
+    # system_ 前缀（顶层 Settings 没有 env_prefix，裸 notify_provider 太泛）。
+    "system": {
+        "getter": "app.config:get_settings",
+        "provider_attr": "system_notify_provider",
+        "has_channel": False,
+        "dm_email_attr": "feedback_recipient",
+        "label": "系统私聊（发版通知 / modulehub 发版 / DB 健康告警 / 站内反馈）",
+    },
 }
 
 
@@ -68,6 +79,10 @@ def _settings_for(module: str):
     mod_path, fn_name = spec["getter"].split(":")
     mod = __import__(mod_path, fromlist=[fn_name])
     return getattr(mod, fn_name)()
+
+
+def _provider_attr(module: str) -> str:
+    return _MODULES[module].get("provider_attr", "notify_provider")
 
 
 def _env_pinned(module: str) -> bool:
@@ -100,14 +115,18 @@ def status_for(module: str) -> Dict[str, Any]:
 
     spec = _MODULES[module]
     s = _settings_for(module)
-    provider = (getattr(s, "notify_provider", "") or "feishu").strip().lower()
+    provider = (getattr(s, _provider_attr(module), "") or "feishu").strip().lower()
+    has_channel = spec.get("has_channel", True)
 
-    feishu_channel = getattr(s, spec["feishu_channel_attr"], "") or ""
-    slack_channel = getattr(s, "slack_channel", "") or ""
+    feishu_channel = (getattr(s, spec["feishu_channel_attr"], "") or "") if has_channel else ""
+    slack_channel = (getattr(s, "slack_channel", "") or "") if has_channel else ""
     # 告警走点对点的那条链在两个渠道下都用邮箱，所以它不影响 readiness
-    alert_email = (getattr(s, "feishu_alert_email", "")
-                   or getattr(s, "alert_email", "")
-                   or getattr(s, "feishu_target_email", "") or "")
+    if "dm_email_attr" in spec:
+        alert_email = getattr(s, spec["dm_email_attr"], "") or ""
+    else:
+        alert_email = (getattr(s, "feishu_alert_email", "")
+                       or getattr(s, "alert_email", "")
+                       or getattr(s, "feishu_target_email", "") or "")
     token_ok = bool((get_settings().slack.bot_token or "").strip())
 
     return {
@@ -115,6 +134,7 @@ def status_for(module: str) -> Dict[str, Any]:
         "label": spec["label"],
         "provider": provider,
         "env_pinned": _env_pinned(module),
+        "has_channel": has_channel,
         "feishu_channel": feishu_channel,
         "slack_channel": slack_channel,
         "alert_email": alert_email,
@@ -144,6 +164,10 @@ async def set_provider(module: str, provider: str,
     prov = (provider or "").strip().lower()
     if prov not in implemented_providers():
         raise ValueError(f"未实现的渠道 {provider!r}；可选：{list(implemented_providers())}")
+    if slack_channel is not None and not _MODULES[module].get("has_channel", True):
+        # 前端那一行不显示频道输入框；这里兜住直接调 API 的情况。不报错而是
+        # 忽略：传了个空串（前端的默认形态）不该让切换失败。
+        slack_channel = None
 
     overrides = await _load_overrides()
     entry = dict(overrides.get(module) or {})
@@ -171,8 +195,8 @@ def _apply_one(module: str, entry: Dict[str, Any]) -> None:
         return
     s = _settings_for(module)
     if entry.get("provider"):
-        s.notify_provider = entry["provider"]
-    if entry.get("slack_channel") is not None:
+        setattr(s, _provider_attr(module), entry["provider"])
+    if entry.get("slack_channel") is not None and _MODULES[module].get("has_channel", True):
         s.slack_channel = entry["slack_channel"]
 
 

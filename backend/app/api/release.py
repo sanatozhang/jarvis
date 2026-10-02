@@ -165,14 +165,14 @@ def _parse_branch(branch: str) -> Optional[Dict[str, str]]:
     }
 
 
-async def _notify_feishu_branch_created(
+async def _notify_branch_created(
     branch: str,
     creator: str,
     commits: Dict[str, str],
     version_after: str = "",
     source_branch: str = "main",
 ) -> None:
-    """Best-effort 飞书 notification. Failure is logged but never blocks the API."""
+    """Best-effort DM notification (飞书/Slack，见 services/system_notify). Failure is logged but never blocks the API."""
     settings = get_settings()
     recipients: List[str] = []
     if creator and "@" in creator:
@@ -193,17 +193,11 @@ async def _notify_feishu_branch_created(
         f"创建人：{creator}\n"
         f"子仓 HEAD：\n{commit_lines}"
     )
-    try:
-        from app.services.feishu_cli import send_message
-        for email in recipients:
-            try:
-                ok = await send_message(email=email, text=text)
-                if not ok:
-                    logger.warning("Feishu notify to %s returned False", email)
-            except Exception as e:
-                logger.warning("Feishu notify to %s failed: %s", email, e)
-    except Exception as e:
-        logger.warning("Feishu notify skipped (import/send error): %s", e)
+    from app.services import system_notify
+    for email in recipients:
+        # send_text 自己吞异常、只回 bool：一个人发不出去不影响其他人
+        if not await system_notify.send_text(email, text):
+            logger.warning("Release notify to %s failed", email)
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +392,7 @@ async def create_branch(req: CreateBranchRequest, request: Request):
         await s.refresh(record)
 
     # Fire-and-forget Feishu (non-blocking — we still return success even if 飞书 is down).
-    asyncio.create_task(_notify_feishu_branch_created(
+    asyncio.create_task(_notify_branch_created(
         req.branch, creator, commits,
         version_after=result.get("version_after", ""),
         source_branch=source_branch,

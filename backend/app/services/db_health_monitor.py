@@ -124,11 +124,9 @@ def _check_journal_mode_sync(db_path: str) -> tuple[bool, str]:
 async def _send_alert(text: str) -> None:
     settings = get_settings()
     target = getattr(settings, "db_health_alert_email", "") or "sanato.zhang@plaud.ai"
-    try:
-        from app.services.feishu_cli import send_message
-        await send_message(email=target, text=text)
-    except Exception:
-        logger.exception("db_health_monitor: failed to send Feishu alert")
+    from app.services import system_notify
+    if not await system_notify.send_text(target, text):
+        logger.error("db_health_monitor: failed to send alert to %s", target)
 
 
 async def _check_io_error_frequency() -> None:

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from app.config import get_settings
-from app.services import feishu_cli
+from app.services import system_notify
 
 logger = logging.getLogger("jarvis.api.site_feedback")
 router = APIRouter()
@@ -51,17 +51,16 @@ async def submit_site_feedback(req: SiteFeedbackInput):
     lines.append(f"时间：{ts}")
     text = "\n".join(lines)
 
-    text_ok = await feishu_cli.send_message(email=recipient, text=text)
+    text_ok = await system_notify.send_text(recipient, text)
 
     image_sent = False
     img_bytes = _decode_screenshot(req.screenshot) if req.screenshot else None
     if img_bytes:
-        try:
-            image_key = await feishu_cli.upload_image(img_bytes)
-            image_sent = await feishu_cli.send_image_message(image_key=image_key, email=recipient)
-        except Exception as e:
-            logger.warning("Feedback screenshot delivery failed: %s", e)
+        image_sent = await system_notify.send_image(recipient, img_bytes, "feedback-screenshot.png")
+        if not image_sent:
+            logger.warning("Feedback screenshot delivery failed")
 
     if not text_ok:
-        raise HTTPException(status_code=502, detail="Failed to deliver feedback to Feishu")
+        raise HTTPException(status_code=502,
+                            detail=f"Failed to deliver feedback via {system_notify.provider()}")
     return {"status": "sent", "image_sent": image_sent}
