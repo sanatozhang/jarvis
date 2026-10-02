@@ -1271,14 +1271,14 @@ export default function SettingsPage() {
                     )}
 
                     <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <input
+                      {m.has_channel !== false && <input
                         value={notifyChannelDraft[m.module] ?? m.slack_channel}
                         onChange={(e) => setNotifyChannelDraft(
                           { ...notifyChannelDraft, [m.module]: e.target.value })}
                         placeholder={t("Slack 频道 id（C 开头，存 id 不存名字）")}
                         disabled={m.env_pinned}
                         className="min-w-0 flex-1 rounded-md px-2 py-1 font-mono text-[11px]"
-                        style={inputStyle} />
+                        style={inputStyle} />}
                       <span className="text-[11px]" style={{ color: S.text3 }}>
                         {t("飞书")}: {m.ready.feishu ? "✅" : "⚠️"} · Slack: {m.ready.slack ? "✅" : "⚠️"}
                       </span>

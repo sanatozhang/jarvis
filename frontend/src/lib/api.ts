@@ -838,6 +838,8 @@ export interface NotifyModuleStatus {
   label: string;
   provider: "feishu" | "slack";
   env_pinned: boolean;
+  /** false = 只有点对点私聊、没有群/频道（system 行），不显示频道输入框 */
+  has_channel?: boolean;
   feishu_channel: string;
   slack_channel: string;
   alert_email: string;
