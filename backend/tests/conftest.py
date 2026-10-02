@@ -1,7 +1,23 @@
 """Shared test fixtures for Jarvis backend API tests."""
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, patch
+
+# 测试默认关 SSO —— 必须在**模块顶层**、早于任何 `from app.main import app`。
+#
+# `SSOSettings.enabled` 默认 True（漏配的部署应该"进不去"而不是"谁都进得去"，
+# 见 test_sso_settings.py）。于是走真实 lifespan / 真实 Settings 的测试
+# （TestClient(app)、模块级 `from app.main import app`）全靠开发机 `.env` 里的
+# `ENABLE_SSO=false` 才能过：换一台没有 `.env` 的机器，21 条测试一起红
+# （lifespan 里 `_validate_sso_startup` 抛 "requires SSO_FEISHU_APP_ID"，或者
+# SSO 中间件把请求挡成 401）。
+#
+# 写进 os.environ 而不是 setdefault：os.environ 优先级高于 pydantic 的
+# env_file，这样开发机 `.env` 里不管写的是什么，测试拿到的都是同一个值。
+# 要测 SSO 开启行为的用例自己 monkeypatch（test_sso_settings.py 会先清掉
+# 所有 SSO_* / ENABLE_SSO 再断言默认值）。
+os.environ["ENABLE_SSO"] = "false"
 
 import pytest
 from httpx import ASGITransport, AsyncClient

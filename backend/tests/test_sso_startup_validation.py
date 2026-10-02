@@ -39,5 +39,7 @@ def test_fails_on_short_jwt_secret():
 
 
 def test_disabled_skips_all_checks():
+    # 显式关：SSOSettings 默认 enabled=True，不写这行就是在测本机 env
     s = SSOSettings()
+    s.enabled = False
     _validate_sso_startup(s)
