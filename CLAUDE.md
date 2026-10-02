@@ -23,6 +23,7 @@ Datadog  (crashguard/coreguard 直连 Datadog Error Tracking + RUM)
 | **Crashguard 崩溃监控** | 后端 `backend/app/crashguard/`<br>前端 `frontend/src/app/crashguard/` | 后端：`backend/app/crashguard/CLAUDE.md`<br>前端：`frontend/src/app/crashguard/CLAUDE.md` |
 | **Coreguard 核心指标** | 后端 `backend/app/coreguard/` | `docs/modules/coreguard-thresholds.md` |
 | **Graygate 灰度监控** | 后端 `backend/app/graygate/` | 无独立文档，代码即文档（模块小，见 `backend/app/graygate/CLAUDE.md` 若存在） |
+| **Modulehub 模块发版编排** | 后端 `backend/app/modulehub/` | `docs/modulehub/architecture.md`（隔离合约由 `tests/modulehub/test_architecture.py` 强制） |
 | **Release 自动化** | 后端 `app/api/release.py` + `app/workers/release_poller.py` | `docs/superpowers/specs/2026-05-20-release-automation-design.md` |
 
 通用基础设施文档：

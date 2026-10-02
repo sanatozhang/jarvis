@@ -40,6 +40,7 @@ API 文档：`http://localhost:8000/docs`
 | `/api/coreguard` | `app/coreguard/api/coreguard.py` | coreguard（独立子模块） |
 | `/api/graygate` | `app/graygate/api/graygate.py` | graygate（独立子模块） |
 | `/api/release` | `api/release.py` | Release 自动化（Jenkins 状态轮询） |
+| `/api/modulehub` | `app/modulehub/api/router.py` | modulehub：独立 native 模块发版编排（隔离子系统，见 `docs/modulehub/`） |
 | `/api/users` | `api/users.py` | 用户账号（登录/鉴权，不含 oncall——oncall 现在是 Apollo 的功能） |
 | `/api/site-feedback` | `api/site_feedback.py` | 全局反馈 widget → 飞书私聊管理员 |
 | `/api/settings`、`/api/env`、`/api/health`、`/api/auth` | 通用 | 系统接口 |
@@ -48,7 +49,7 @@ API 文档：`http://localhost:8000/docs`
 
 - 默认 SQLite：`data/appllo.db`（宿主机相对于项目根；容器内挂在 `/data/`）——文件名沿用历史命名，与内容无关
 - 切 PostgreSQL：`DATABASE_URL=postgresql+asyncpg://...` + 取消 `requirements.txt` 中 `asyncpg` 注释
-- 表前缀域：`crash_*`（crashguard）、`coreguard_*`、`pt_*`（platform_tickets，仅为兼容 `db/database.py` 里未清理的 UNION 查询保留，本仓库无 API 会写入/读取）——三者互相隔离，无跨界外键，启动自检见下
+- 表前缀域：`mh_*`（modulehub，见 `docs/modulehub/data-model.md`）、`crash_*`（crashguard）、`coreguard_*`、`pt_*`（platform_tickets，仅为兼容 `db/database.py` 里未清理的 UNION 查询保留，本仓库无 API 会写入/读取）——三者互相隔离，无跨界外键，启动自检见下
 - 严禁跨前缀域 join（隔离合约见 `app/crashguard/CLAUDE.md`，历史决策见 `docs/adr/0001-crashguard-isolation.md`）
 
 ## 启动顺序（`app/main.py` lifespan）

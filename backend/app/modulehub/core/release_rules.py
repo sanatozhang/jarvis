@@ -1,0 +1,48 @@
+"""Request validation. The version rule itself lives in module-kit; modulehub never computes versions."""
+from __future__ import annotations
+
+from typing import Dict, Iterable, List
+
+PLATFORMS = ("android", "ios")
+
+
+class InvalidRequest(ValueError):
+    pass
+
+
+def is_release_branch(branch: str) -> bool:
+    return branch.startswith("release/") and len(branch) > len("release/")
+
+
+def validate_request(branch: str, major: bool) -> None:
+    if not (branch == "main" or is_release_branch(branch)):
+        raise InvalidRequest("branch must be main or release/*: %r" % branch)
+    if major and is_release_branch(branch):
+        raise InvalidRequest("major bump is not allowed on release/*")
+
+
+def normalize_platforms(platforms: Iterable[str]) -> List[str]:
+    """Non-empty subset of android/ios in canonical order (the order the job runs them)."""
+    wanted = list(platforms)
+    bad = [p for p in wanted if p not in PLATFORMS]
+    if bad:
+        raise InvalidRequest("platforms must be android and/or ios: %r" % bad)
+    out = [p for p in PLATFORMS if p in wanted]
+    if not out:
+        raise InvalidRequest("select at least one platform")
+    return out
+
+
+def module_repo(name: str, repos: Dict[str, str]) -> str:
+    """The module's repository (one per module, every platform in it) as the shells' tomls declare it
+    (`repo = "Plaud-AI/mobile_logger"`). All shells must name the same repository."""
+    found = sorted(set(repos.values()))
+    if not found or "" in found:
+        raise InvalidRequest("%s: modules.versions.toml has no repo for it in %s" % (name, sorted(p for p, r in repos.items() if not r)))
+    if len(found) > 1:
+        raise InvalidRequest("%s: the shells name different repositories %s" % (name, found))
+    return found[0]
+
+
+def semver_key(version: str):
+    return tuple(int(x) for x in version.split("."))

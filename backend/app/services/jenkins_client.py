@@ -195,6 +195,31 @@ class JenkinsClient:
                 )
             return r.json()
 
+    async def fetch_console_tail(self, server: str, build_url: str, max_bytes: int = 20000) -> str:
+        """Last `max_bytes` of the console log (used to read the STEP= markers of module publish jobs)."""
+        creds = self._resolve_creds(server)
+        url = build_url.rstrip("/") + "/consoleText"
+        async with self._client(creds) as client:
+            try:
+                r = await client.get(url)
+            except httpx.HTTPError as e:
+                raise JenkinsError(f"console fetch transport error: {e}", server=server)
+            if r.status_code != 200:
+                raise JenkinsError(f"console fetch {r.status_code}", status=r.status_code, server=server)
+            return r.text[-max_bytes:]
+
+    async def fetch_artifact_text(self, server: str, build_url: str, relative_path: str) -> str:
+        creds = self._resolve_creds(server)
+        url = f"{build_url.rstrip('/')}/artifact/{relative_path}"
+        async with self._client(creds) as client:
+            try:
+                r = await client.get(url)
+            except httpx.HTTPError as e:
+                raise JenkinsError(f"artifact fetch transport error: {e}", server=server)
+            if r.status_code != 200:
+                raise JenkinsError(f"artifact fetch {r.status_code}", status=r.status_code, server=server)
+            return r.text
+
     @staticmethod
     def pick_artifact_url(build_url: str, artifacts: List[Dict[str, Any]], platform: str) -> Optional[str]:
         """Pick the matching .apk/.aab (android) or .ipa (ios) artifact."""
