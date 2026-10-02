@@ -89,6 +89,8 @@ async def lifespan(app: FastAPI):
     from app.coreguard import models as _coreguard_models  # noqa: F401
     # Import graygate models too (independent module, same Base)
     from app.graygate import models as _graygate_models  # noqa: F401
+    # modulehub models (mh_* tables, isolated subsystem, same Base)
+    from app.modulehub import models as _modulehub_models  # noqa: F401
     # Import platform_tickets models too (same Base; module kept only because
     # db/database.py's UNION queries reference PlatformTicket — not used by
     # crashguard/coreguard/graygate themselves)
@@ -122,7 +124,7 @@ async def lifespan(app: FastAPI):
     # DB 解耦自检（crash_* + pt_* 两个独立前缀域）— 违规则阻止启动
     try:
         from scripts.check_crash_decoupling import assert_crash_tables_decoupled
-        assert_crash_tables_decoupled(("crash_", "pt_"))
+        assert_crash_tables_decoupled(("crash_", "pt_", "mh_"))
         logger.info("Crash/platform-ticket decoupling check passed.")
     except RuntimeError as e:
         logger.error("Crash/platform-ticket decoupling check FAILED: %s", e)
@@ -150,6 +152,11 @@ async def lifespan(app: FastAPI):
     # Release build status poller (Jenkins) — only spins if jenkins.enabled
     from app.workers.release_poller import release_poller_loop
     release_poller_task = asyncio.create_task(release_poller_loop())
+
+    # modulehub workers (build poller + release branch reconciliation); no-op unless modulehub.enabled
+    _modulehub = getattr(app.state, "modulehub", None)
+    if _modulehub is not None:
+        await _modulehub.start()
 
     # Crashguard 早晚报调度（每 60 秒 tick；命中 morning/evening cron 即推飞书）
     from app.crashguard.workers.scheduler import report_scheduler_loop
@@ -207,6 +214,8 @@ async def lifespan(app: FastAPI):
         coreguard_scheduler_task.cancel()
     if graygate_scheduler_task is not None:
         graygate_scheduler_task.cancel()
+    if _modulehub is not None:
+        await _modulehub.stop()
     release_poller_task.cancel()
     repo_update_task.cancel()
     if db_health_task is not None:
@@ -266,6 +275,10 @@ app.include_router(_crash_api.router)
 # Coreguard API（独立子模块，prefix /api/coreguard，demo 阶段）
 from app.coreguard.api import coreguard as _coreguard_api  # noqa: E402
 app.include_router(_coreguard_api.router)
+
+# modulehub (isolated subsystem: releases independent native modules; prefix /api/modulehub)
+from app.modulehub import register as _register_modulehub  # noqa: E402
+_register_modulehub(app)
 
 # Graygate API（独立子模块，prefix /api/graygate，4.0.3 灰度期临时功能）
 from app.graygate.api.graygate import router as _graygate_api_router  # noqa: E402
