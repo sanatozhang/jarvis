@@ -45,9 +45,9 @@ class Hub:
         return GitHubScm(token)
 
     def _notifier(self):
-        from app.modulehub.adapters.notifier import FeishuNotifier
+        from app.modulehub.adapters.notifier import DmNotifier
 
-        return FeishuNotifier(list(self.settings.notify_emails))
+        return DmNotifier(list(self.settings.notify_emails))
 
     @property
     def releases(self):

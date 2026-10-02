@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
 from app.modulehub import Hub, register
-from app.modulehub.adapters.notifier import FeishuNotifier
+from app.modulehub.adapters.notifier import DmNotifier
 from app.modulehub.config import ModulehubSettings, get_modulehub_settings, to_port_settings
 from app.modulehub.ports import BuildStatus
 from app.modulehub.service import MirrorService, ReleaseService
@@ -140,7 +140,7 @@ async def test_notifier_swallows_send_failures():
             raise RuntimeError("feishu down")
         return True
 
-    await FeishuNotifier(["bad@plaud.ai", "ok@plaud.ai"], send=send).notify("hi")
+    await DmNotifier(["bad@plaud.ai", "ok@plaud.ai"], send=send).notify("hi")
     assert sent == ["bad@plaud.ai", "ok@plaud.ai"]
 
 
@@ -174,8 +174,9 @@ def test_hub_wires_real_adapters_lazily(monkeypatch):
     assert hub.store is hub.store and hub.releases is hub.releases and hub.mirror is hub.mirror
 
 
-async def test_notifier_default_sender_is_feishu_cli(monkeypatch):
-    from app.services import feishu_cli
+async def test_notifier_default_sender_is_system_notify(monkeypatch):
+    """Goes through the jarvis-wide system notify switch, not feishu_cli directly."""
+    from app.services import system_notify
 
     sent = []
 
@@ -183,6 +184,6 @@ async def test_notifier_default_sender_is_feishu_cli(monkeypatch):
         sent.append((email, text))
         return True
 
-    monkeypatch.setattr(feishu_cli, "send_message", fake)
-    await FeishuNotifier(["a@plaud.ai"]).notify("hello")
+    monkeypatch.setattr(system_notify, "send_text", fake)
+    await DmNotifier(["a@plaud.ai"]).notify("hello")
     assert sent == [("a@plaud.ai", "hello")]
