@@ -10,15 +10,28 @@ from app.modulehub.ports import BuildHandle, BuildStatus, ModuleHubSettings, Pul
 SHA = "a" * 64
 GIT = "b" * 40
 
-TOML = '[logger]\nversion = "1.0.0"\nsha256 = "%s"\nrepo = "Plaud-AI/logger-android"\n' % ("c" * 64)
+TOML = '[logger]\nversion = "1.0.0"\nsha256 = "%s"\nrepo = "Plaud-AI/logger"\n' % ("c" * 64)
 
 SETTINGS = ModuleHubSettings(shell_repos={"android": "Plaud-AI/shell-android", "ios": "Plaud-AI/shell-ios"},
                              base_url="https://jarvis.example")
 
 
-def result_json(**kw) -> str:
-    d = {"schemaVersion": 1, "platform": "android", "name": "logger", "version": "1.1.0",
-         "coordinate": "ai.plaud.module:logger:1.1.0", "sha256": SHA, "gitSha": GIT, "branch": "main", "dryRun": False}
+IOS_SHA = "d" * 64
+
+
+def result_json(platforms=("android", "ios"), sha256=None, **kw) -> str:
+    """A v2 publish-result for `platforms`; `sha256` overrides every platform's sha (e.g. "" for a dry run)."""
+    version = kw.get("version", "1.1.0")
+    arts = {
+        "android": {"coordinate": "ai.plaud.module:logger:%s" % version, "sha256": SHA, "apiChanges": []},
+        "ios": {"coordinate": "ai/plaud/module/logger-ios/%s/Logger-%s.xcframework.zip" % (version, version),
+                "sha256": IOS_SHA, "apiChanges": ["Func LoggerAPI.flush() has been removed"], "product": "Logger"},
+    }
+    d = {"schemaVersion": 2, "name": "logger", "version": version, "gitSha": GIT, "branch": "main", "dryRun": False,
+         "major": False, "tag": "v" + version, "platforms": {p: arts[p] for p in platforms}}
+    if sha256 is not None:
+        for a in d["platforms"].values():
+            a["sha256"] = sha256
     d.update(kw)
     return json.dumps(d)
 
@@ -28,7 +41,6 @@ class MemStore:
         self.recs: Dict[int, ReleaseRecord] = {}
         self.events: List[tuple] = []
         self.mirror: List[tuple] = []
-        self.last: Dict[tuple, str] = {}
         self._id = 0
 
     async def create(self, rec):
@@ -45,9 +57,9 @@ class MemStore:
         self.recs[rec.id] = copy.copy(rec)
         self.events.append((rec.id, rec.state, event))
 
-    async def find_active(self, module, platform):
+    async def find_active(self, module):
         for r in self.recs.values():
-            if r.kind == "release" and (r.module, r.platform) == (module, platform) and r.state in ("pending", "building", "tagged", "pr_opened", "backport_opened"):
+            if r.kind == "release" and r.module == module and r.state in ("pending", "building", "tagged", "pr_opened", "backport_opened"):
                 return copy.copy(r)
         return None
 
@@ -57,11 +69,8 @@ class MemStore:
     async def list_recent(self, limit=50):
         return [copy.copy(r) for r in list(self.recs.values())[-limit:]][::-1]
 
-    async def last_released_version(self, module, platform, branch):
-        return self.last.get((module, platform, branch), "")
-
-    async def log_mirror(self, module, platform, branch, action, outcome):
-        self.mirror.append((module, platform, branch, action, outcome))
+    async def log_mirror(self, module, branch, action, outcome):
+        self.mirror.append((module, branch, action, outcome))
 
 
 class FakeBuild:
@@ -73,7 +82,7 @@ class FakeBuild:
     async def trigger(self, **kw):
         if self.raise_on_trigger:
             raise self.raise_on_trigger
-        self.triggers.append(kw)
+        self.triggers.append(copy.deepcopy(kw))
         return BuildHandle(ref="job-%d" % len(self.triggers), url="https://jenkins/%d" % len(self.triggers))
 
     async def status(self, ref):
@@ -85,6 +94,7 @@ class FakeScm:
         self.files: Dict[tuple, str] = {}
         self.branches: Dict[str, List[str]] = {}
         self.contains: Dict[tuple, bool] = {}
+        self.changed: Dict[tuple, List[str]] = {}
         self.created: List[tuple] = []
         self.file_prs: List[dict] = []
         self.backport_prs: List[dict] = []
@@ -111,6 +121,9 @@ class FakeScm:
         if self.fail_commits:
             raise RuntimeError("compare failed")
         return self.commits
+
+    async def changed_files(self, repo, base_ref, head_ref):
+        return self.changed.get((repo, base_ref, head_ref), [])
 
     async def open_or_update_file_pr(self, **kw):
         if self.fail_file_pr:

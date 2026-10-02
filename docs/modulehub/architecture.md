@@ -1,7 +1,8 @@
 # modulehub — architecture
 
-modulehub releases independent native modules (Android AAR / iOS XCFramework) on behalf of engineers. It is a
-**pure scheduler**: it triggers one Jenkins job, waits, opens PRs, reconciles branches and notifies. It does not
+modulehub releases independent native modules (Android AAR / iOS XCFramework) on behalf of engineers. A module is one
+repository `Plaud-AI/<name>` holding `android/` and/or `ios/`; one release ships the platforms the engineer ticks
+(both by default) as one version with one tag. It is a **pure scheduler**: it triggers one Jenkins job, waits, opens PRs, reconciles branches and notifies. It does not
 compute versions, build, sign or upload anything — that is all in `module-kit` (the job it triggers).
 
 Contracts it implements against (owned by the kit repo, `docs/orchestrator/`): `publish-job.md`,
@@ -15,10 +16,10 @@ backend/app/modulehub/
 │   ├── versions_toml.py   read / surgically rewrite one [module] table of modules.versions.toml
 │   ├── naming.py          bump / backport branch names, PR titles and bodies
 │   ├── states.py          release state machine + resume rules
-│   ├── release_rules.py   request validation (branch, major, platform), repo naming
-│   ├── mirror.py          release-branch reconciliation plan
+│   ├── release_rules.py   request validation (branch, major, platforms), repo naming, semver order
+│   ├── mirror.py          release-branch reconciliation plan (both shells' pins -> one module branch)
 │   ├── backport.py        release -> main backport plan
-│   └── result.py          publish-result.json parsing, STEP= marker parsing
+│   └── result.py          publish-result.json (v2, one entry per platform) parsing, STEP= marker parsing
 ├── ports.py       BuildRunner / ScmHost / Notifier / Store protocols + ReleaseRecord
 ├── service.py     ReleaseService (start/tick/resume), MirrorService (sync) — depends on core + ports only
 ├── adapters/      the ONLY place that knows jarvis: Jenkins client, GitHub REST+git, Feishu, SQLAlchemy
@@ -44,31 +45,40 @@ The Jenkins client in `app/services/jenkins_client.py` gained two additive metho
 ## Release flow
 
 ```
-POST /releases ──► validate (branch, major, platform; module listed in the shell's modules.versions.toml on that branch;
-                    one active release per module+platform) ──► Jenkins module-publish (REPO, BRANCH, PLATFORM, MAJOR, DRY_RUN, RESUME)
+POST /releases ──► validate (branch, major, platforms; module listed in every selected shell's modules.versions.toml on that
+                    branch; one active release per module) ──► Jenkins module-publish (REPO, BRANCH, PLATFORMS, MAJOR, DRY_RUN, RESUME)
                                                                     │ poll every poll_interval_seconds
-   building ──job ok + valid publish-result.json──► tagged ──bump PR (update if one is open)──► pr_opened
-        │                                                     └─ release/*: backport PR (conflict => placeholder PR + notify)
-        └─job failed── failed_from = uploaded if last STEP was `tag`, else building                 └──► done
+   building ──job ok + publish-result.json covers exactly the selected platforms──► tagged
+        │        ──one bump PR per shipped platform's shell (update if one is open)──► pr_opened
+        │                                                     └─ release/*: one backport PR in the module repo (conflict => placeholder PR + notify)
+        └─job failed── failed_from = uploaded if the last STEP was `upload`/`tag`, else building     └──► done
 ```
 
 State machine: `pending → building → tagged → pr_opened → (backport_opened) → done | failed`. `failed` remembers where
-it failed (`failed_from`); resume is possible when artifacts exist (`uploaded` → rerun job with `RESUME=true`;
-`tagged` → reopen the bump PR; `pr_opened` → reopen the backport PR). A failure before upload needs a fresh release.
+it failed (`failed_from`); resume is possible when artifacts exist (`uploaded` → rerun job with `RESUME=true`, which keeps
+the uploaded platforms, publishes the rest and tags; `tagged` → open the bump PRs still missing; `pr_opened` → reopen the
+backport PR). A failure before any upload needs a fresh release.
+
+The lock is per module, not per platform: all platforms share one version line, so two concurrent releases of one module
+would race for the same version.
 
 `POST /releases:preview` runs the same job with `DRY_RUN=true`, never takes the lock and never opens PRs; the version in
 its result is the version the real release would get.
 
 ## Branch reconciliation
 
-Every `mirror_interval_minutes` (default 10) and on `POST /mirror:sync`: for each module listed in the shell's
-`modules.versions.toml`, compare the shell's `release/*` with the module repo's `release/*`. A missing module branch is
-created from the tag the shell pins on that branch; an existing one is verified to contain that tag (mismatch → alert, no
-change); a branch that pins no such module is logged as `no_pin`. Results go to `mh_mirror_log`.
+Every `mirror_interval_minutes` (default 10) and on `POST /mirror:sync`: for each module listed in either shell's
+`modules.versions.toml`, collect what both shells pin on each `release/*` branch and compare with the module repo's
+`release/*`. A missing module branch is created from the newest pinned tag; an existing one is verified to contain every
+pinned tag (mismatch → alert, no change). When the shells pin different versions (after one-platform releases), the newest
+tag is used only if it contains the older one and the older platform's directory did not change in between; otherwise
+the branch is reported `DIVERGED` and a human cuts it. A branch that pins no such module is logged as `no_pin`. Results go
+to `mh_mirror_log`.
 
 ## Known limits
 
 - `range_applied_on` treats a range as already on `main` only if its head tag is an ancestor of `main`
   (cherry-picked duplicates are not detected by patch-id).
 - Backport conflicts open a `[CONFLICT]` placeholder PR (empty commit); the owner resolves it by hand.
-- Shell and module repos are located by convention (`<name>-<platform>`, shell repos from config).
+- Shell and module repos are located by convention (module repo `<owner>/<name>`, shell repos from config).
+- The divergence check reads GitHub's compare file list, which is capped at 300 files.

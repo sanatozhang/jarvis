@@ -15,7 +15,8 @@ from tests.modulehub.fakes import SETTINGS, TOML, FakeBuild, FakeScm, MemStore, 
 
 def build_app(allow_anonymous=True, user=None):
     store, build, scm, note = MemStore(), FakeBuild(), FakeScm(), RecNotifier()
-    scm.files[("Plaud-AI/shell-android", "main", "modules.versions.toml")] = TOML
+    for shell in ("Plaud-AI/shell-android", "Plaud-AI/shell-ios"):
+        scm.files[(shell, "main", "modules.versions.toml")] = TOML
     hub = Hub(ModulehubSettings(allow_anonymous=allow_anonymous), store=store,
               releases=ReleaseService(store=store, build=build, scm=scm, notifier=note, settings=SETTINGS),
               mirror=MirrorService(store=store, scm=scm, notifier=note, settings=SETTINGS))
@@ -35,21 +36,24 @@ def http(app):
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
 
 
-BODY = {"module": "logger", "platform": "android", "branch": "main"}
+BODY = {"module": "logger", "branch": "main"}   # platforms default to ["android", "ios"]
 
 
 async def test_modules_and_release_lifecycle_over_http():
     app, store, build, scm = build_app()
     async with http(app) as c:
-        assert (await c.get("/api/modulehub/modules")).json()[0]["name"] == "logger"
+        assert (await c.get("/api/modulehub/modules")).json() == [
+            {"name": "logger", "repo": "Plaud-AI/logger", "platforms": {"android": "1.0.0", "ios": "1.0.0"}}]
         r = await c.post("/api/modulehub/releases", json=BODY)
         assert r.status_code == 201 and r.json()["state"] == "building" and r.json()["requestedBy"] == "anonymous"
+        assert r.json()["platforms"] == ["android", "ios"]
         rid = r.json()["id"]
-        assert (await c.post("/api/modulehub/releases", json=BODY)).status_code == 409
+        assert (await c.post("/api/modulehub/releases", json={**BODY, "platforms": ["ios"]})).status_code == 409
         build.next_status = BuildStatus("success", result_json=result_json())
         await app.state.modulehub.releases.tick_all()
         got = (await c.get("/api/modulehub/releases/%d" % rid)).json()
-        assert got["state"] == "done" and got["version"] == "1.1.0" and got["bumpPrUrl"]
+        assert got["state"] == "done" and got["version"] == "1.1.0" and set(got["bumpPrs"]) == {"android", "ios"}
+        assert got["artifacts"]["ios"]["sha256"] and got["previousVersions"] == {"android": "1.0.0", "ios": "1.0.0"}
         assert [x["id"] for x in (await c.get("/api/modulehub/releases?limit=5")).json()] == [rid]
         assert (await c.get("/api/modulehub/releases/999")).status_code == 404
 
@@ -57,9 +61,11 @@ async def test_modules_and_release_lifecycle_over_http():
 async def test_preview_validation_and_errors():
     app, *_ = build_app()
     async with http(app) as c:
-        p = await c.post("/api/modulehub/releases:preview", json=BODY)
-        assert p.status_code == 200 and p.json()["kind"] == "preview"
+        p = await c.post("/api/modulehub/releases:preview", json={**BODY, "platforms": ["android"]})
+        assert p.status_code == 200 and p.json()["kind"] == "preview" and p.json()["platforms"] == ["android"]
         assert (await c.post("/api/modulehub/releases", json={**BODY, "branch": "feature/a/b"})).status_code == 400
+        assert (await c.post("/api/modulehub/releases", json={**BODY, "platforms": []})).status_code == 400
+        assert (await c.post("/api/modulehub/releases", json={**BODY, "platforms": ["harmony"]})).status_code == 400
         assert (await c.post("/api/modulehub/releases/999:resume")).status_code == 404
 
 

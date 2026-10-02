@@ -43,8 +43,9 @@ def is_active(state: str) -> bool:
 
 
 def failed_from_job(*, last_step: Optional[str]) -> str:
-    """Where a failed publish job stopped: only a failed `tag` step means artifacts are already uploaded."""
-    return UPLOADED if last_step == "tag" else BUILDING
+    """Where a failed job stopped. `./mkw release` ends a failed run with STEP=upload whenever any artifact of the
+    version exists (and STEP=tag means everything was uploaded): both are resumed, never restarted."""
+    return UPLOADED if last_step in ("upload", "tag") else BUILDING
 
 
 def resume_action(failed_from: str) -> Optional[str]:

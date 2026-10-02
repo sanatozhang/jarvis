@@ -42,11 +42,11 @@ def jk():
 
 
 async def test_trigger_sends_contract_parameters(jk):
-    h = await JenkinsBuildRunner(jk, "module-publish").trigger(repo="Plaud-AI/r", branch="release/1", platform="ios",
+    h = await JenkinsBuildRunner(jk, "module-publish").trigger(repo="Plaud-AI/r", branch="release/1", platforms=["android", "ios"],
                                                               major=False, dry_run=True, resume=False)
     assert h.ref == "http://jenkins:8080|42"
     assert jk.params == ("http://jenkins:8080", "module-publish", {
-        "REPO": "Plaud-AI/r", "BRANCH": "release/1", "PLATFORM": "ios", "MAJOR": "false", "DRY_RUN": "true", "RESUME": "false"})
+        "REPO": "Plaud-AI/r", "BRANCH": "release/1", "PLATFORMS": "android,ios", "MAJOR": "false", "DRY_RUN": "true", "RESUME": "false"})
 
 
 async def test_status_queue_running_and_gone(jk):

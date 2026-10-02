@@ -61,6 +61,11 @@ async def test_branch_contains(status, expected):
     assert await scm.branch_contains(REPO, "release/1", "v1.0.0") is expected
 
 
+async def test_changed_files_lists_compare_files():
+    scm, _ = make({("GET", "/repos/%s/compare/v1...v2" % REPO): (200, {"files": [{"filename": "ios/A.swift"}, {"filename": "android/b.kt"}]})})
+    assert await scm.changed_files(REPO, "v1", "v2") == ["ios/A.swift", "android/b.kt"]
+
+
 async def test_commits_between_uses_first_line():
     scm, _ = make({("GET", "/repos/%s/compare/v1...v2" % REPO): (200, {"commits": [{"commit": {"message": "feat: a\n\nbody"}}]})})
     assert await scm.commits_between(REPO, "v1", "v2") == ["feat: a"]

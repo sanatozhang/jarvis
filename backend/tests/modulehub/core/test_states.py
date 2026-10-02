@@ -29,8 +29,10 @@ def test_any_active_state_can_fail():
 
 
 def test_failed_from_after_job_depends_on_step():
-    assert s.failed_from_job(last_step="tag") == s.UPLOADED
-    for step in ("preflight", "test", "build", "api", "upload", "", None):
+    # ./mkw release ends a failed run with STEP=upload whenever an artifact of the version exists
+    for step in ("upload", "tag"):
+        assert s.failed_from_job(last_step=step) == s.UPLOADED
+    for step in ("preflight", "build", "", None):
         assert s.failed_from_job(last_step=step) == s.BUILDING
 
 

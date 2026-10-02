@@ -17,15 +17,20 @@ def test_major_not_allowed_on_release():
         r.validate_request("release/1.0", True)
 
 
-def test_platform_validation():
-    r.validate_platform("android"); r.validate_platform("ios")
-    with pytest.raises(r.InvalidRequest):
-        r.validate_platform("harmony")
+def test_platforms_are_normalized():
+    assert r.normalize_platforms(["ios", "android", "ios"]) == ["android", "ios"]
+    assert r.normalize_platforms(["ios"]) == ["ios"]
+    for bad in (["harmony"], [], ["android", "web"]):
+        with pytest.raises(r.InvalidRequest):
+            r.normalize_platforms(bad)
 
 
-def test_repo_names():
-    assert r.module_repo("Plaud-AI", "logger", "android") == "Plaud-AI/logger-android"
-    assert r.module_repo("Plaud-AI", "logger", "ios") == "Plaud-AI/logger-ios"
+def test_one_repo_per_module():
+    assert r.module_repo("Plaud-AI", "logger") == "Plaud-AI/logger"
+
+
+def test_semver_order():
+    assert sorted(["1.10.0", "1.9.0", "1.9.10"], key=r.semver_key) == ["1.9.0", "1.9.10", "1.10.0"]
 
 
 def test_is_release_branch():

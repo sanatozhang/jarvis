@@ -67,6 +67,11 @@ class GitHubScm:
         r = await self._req("GET", "/repos/%s/compare/%s...%s" % (repo, base_ref, head_ref))
         return [c["commit"]["message"].splitlines()[0] for c in r.json().get("commits", [])]
 
+    async def changed_files(self, repo: str, base_ref: str, head_ref: str) -> List[str]:
+        """Paths changed between two refs (GitHub lists at most 300; enough for the mirror's per-directory check)."""
+        r = await self._req("GET", "/repos/%s/compare/%s...%s" % (repo, base_ref, head_ref))
+        return [f["filename"] for f in r.json().get("files", []) or []]
+
     async def range_applied_on(self, repo: str, base: str, commit_range: str) -> bool:
         """True when the range's head tag is already an ancestor of `base` (merged, not merely cherry-picked)."""
         head = commit_range.split("..")[-1]

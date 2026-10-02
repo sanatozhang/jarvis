@@ -14,10 +14,10 @@ modulehub is designed to be lifted out of jarvis. What carries over untouched, a
 
 | Port | jarvis adapter | What a new system needs to provide |
 |---|---|---|
-| `BuildRunner` | `adapters/jenkins_runner.py` | trigger the kit's `module-publish` job with `REPO, BRANCH, PLATFORM, MAJOR, DRY_RUN, RESUME`; `status(ref)` → queued/running/success/failure/aborted + last console lines (for `STEP=`) + the `publish-result.json` text on success |
-| `ScmHost` | `adapters/github_scm.py` | read a file at a ref; list branches by prefix; create a branch from a tag; "branch contains ref"; commits between refs; open-or-update a one-file PR; open a backport PR (cherry-pick range, placeholder on conflict); "range already on base" |
+| `BuildRunner` | `adapters/jenkins_runner.py` | trigger the kit's `module-publish` job with `REPO, BRANCH, PLATFORMS, MAJOR, DRY_RUN, RESUME`; `status(ref)` → queued/running/success/failure/aborted + last console lines (for `STEP=`) + the `publish-result.json` text on success |
+| `ScmHost` | `adapters/github_scm.py` | read a file at a ref; list branches by prefix; create a branch from a tag; "branch contains ref"; commits and changed files between refs; open-or-update a one-file PR; open a backport PR (cherry-pick range, placeholder on conflict); "range already on base" |
 | `Notifier` | `adapters/notifier.py` | `notify(text)`; must never raise |
-| `Store` | `adapters/store_sqlalchemy.py` | CRUD for `ReleaseRecord`, `find_active` (the lock), `list_in_flight`, `last_released_version`, `log_mirror` |
+| `Store` | `adapters/store_sqlalchemy.py` | CRUD for `ReleaseRecord`, `find_active(module)` (the lock), `list_in_flight`, `list_recent`, `log_mirror` |
 | identity | `api/router.py::_actor` | return the acting user's name/email for `requested_by` |
 
 ## Steps
@@ -29,7 +29,8 @@ modulehub is designed to be lifted out of jarvis. What carries over untouched, a
 4. Wire `Hub`/`register` into the new app; start `run_forever(releases.tick_all, poll)` and `run_forever(mirror.sync, interval)`.
 5. Point it at the same Jenkins job and shell repos. **Nothing else changes**: versioning is in the kit, the job contract
    (`docs/orchestrator/publish-job.md`) and result schema are system-independent, and the toml format is owned by the shells.
-6. Verify with the kit's acceptance list (spec §8.2 G3): release from `main`, two releases → one bump PR, release-branch patch
-   with backport PR, API-break refusal, job runnable without modulehub.
+6. Verify with the kit's acceptance list (spec §8.2 G3): release both platforms from `main` (one bump PR per shell), a
+   one-platform release (one bump PR), two releases → the same PRs updated, release-branch patch with backport PR,
+   API-break refusal, job runnable without modulehub.
 
 Any scheduler that honours the contracts in module-kit `docs/orchestrator/` is a valid replacement — modulehub is just the first one.

@@ -36,8 +36,8 @@ Requests need a logged-in user (SSO middleware sets `request.state.user`); the a
 ```
 GET  /api/modulehub/modules
 GET  /api/modulehub/releases?limit=50
-POST /api/modulehub/releases:preview    {"module":"logger","platform":"android","branch":"main","major":false}
-POST /api/modulehub/releases            same body; 201, state=building
+POST /api/modulehub/releases:preview    {"module":"logger","platforms":["android","ios"],"branch":"main","major":false}
+POST /api/modulehub/releases            same body; 201, state=building ("platforms" defaults to both; ["ios"] ships iOS only)
 GET  /api/modulehub/releases/{id}
 POST /api/modulehub/releases/{id}:resume
 POST /api/modulehub/mirror:sync
@@ -49,9 +49,10 @@ Errors: 400 invalid request, 401 not logged in, 404 unknown release, 409 another
 | Symptom | Meaning | Action |
 |---|---|---|
 | release `failed`, `failed_from=building` | the job failed before anything was uploaded (preflight/test/build/API check) | read `build_url`, fix, start a new release |
-| `failed_from=uploaded` | artifacts exist, tag step failed | `POST …:resume` (reruns the job with `RESUME=true`, which only tags) |
-| `failed_from=tagged` / `pr_opened` | bump / backport PR step failed (GitHub error, conflict, token) | fix the cause, `POST …:resume` |
-| `409` on start | active release for that module+platform | wait, or resume/finish the active one |
+| `failed_from=uploaded` | some artifacts of the version exist (a platform or the tag step failed after an upload) | fix the cause, `POST …:resume` (reruns the job with `RESUME=true`: uploaded platforms are kept, the rest is published, then tagged) |
+| `failed_from=tagged` / `pr_opened` | a bump / backport PR step failed (GitHub error, conflict, token) | fix the cause, `POST …:resume` (only the missing PRs are opened) |
+| `409` on start | an active release of that module (any platform) | wait, or resume/finish the active one |
+| mirror log `DIVERGED` | the shells pin different versions on a release branch and the older platform changed in between | cut the module branch by hand; next time ship both platforms before release branches are cut |
 | backport PR titled `[CONFLICT]` | cherry-pick conflicts | resolve the placeholder PR by hand |
 | mirror log `MISMATCH` | module `release/x` exists but lacks the shell's pinned tag | a human decides; modulehub never rewrites existing branches |
 | release stuck in `building` | Jenkins build gone or poller disabled | check `modulehub.enabled`, `JENKINS_*`; the queue item disappearing marks the release failed |
@@ -67,4 +68,13 @@ Python 3.12 (the Dockerfile's version) is required for the whole app; `core/` it
 ## Frontend
 
 Not implemented: the repo's frontend pattern needs edits to shared files (sidebar, `lib/api.ts`, `i18n.ts`). The API is complete,
-so a UI can be added as an isolated `frontend/src/app/modulehub/` directory that only calls `/api/modulehub`.
+so a UI can be added as an isolated `frontend/src/app/modulehub/` directory that only calls `/api/modulehub`. The release form
+needs: module, branch, an Android and an iOS checkbox (both ticked by default; at least one), major, and Preview / Release
+buttons; the release page shows the version, one artifact and one bump PR per platform, and a Resume button when `failedFrom`
+allows it.
+
+## Schema change (2026-10-02)
+
+`mh_release` moved from one row per (module, platform) to one row per module release (`platforms`, `artifacts_json`,
+`previous_versions_json`, `bump_prs_json`); `mh_mirror_log` lost `platform`. modulehub has never been deployed, so there is
+no migration: `create_all` builds the new tables. If an environment ever created the old ones, drop the three `mh_*` tables.

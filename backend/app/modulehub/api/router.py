@@ -15,7 +15,8 @@ router = APIRouter()
 
 class ReleaseRequest(BaseModel):
     module: str
-    platform: str
+    # Platforms to ship as one version; untick one to release the other alone.
+    platforms: List[str] = ["android", "ios"]
     branch: str = "main"
     major: bool = False
 
@@ -36,10 +37,10 @@ def _actor(request: Request) -> str:
 
 def _dto(r: ReleaseRecord) -> Dict[str, Any]:
     return {
-        "id": r.id, "module": r.module, "platform": r.platform, "branch": r.branch, "major": r.major, "kind": r.kind,
-        "state": r.state, "failedFrom": r.failed_from, "version": r.version, "previousVersion": r.previous_version,
-        "coordinate": r.coordinate, "sha256": r.sha256, "buildUrl": r.build_url, "bumpPrUrl": r.bump_pr_url,
-        "backportPrUrl": r.backport_pr_url, "apiChanges": r.api_changes, "error": r.error, "requestedBy": r.requested_by,
+        "id": r.id, "module": r.module, "platforms": r.platforms, "branch": r.branch, "major": r.major, "kind": r.kind,
+        "state": r.state, "failedFrom": r.failed_from, "version": r.version, "gitSha": r.git_sha,
+        "artifacts": r.artifacts, "previousVersions": r.previous_versions, "bumpPrs": r.bump_prs,
+        "buildUrl": r.build_url, "backportPrUrl": r.backport_pr_url, "error": r.error, "requestedBy": r.requested_by,
         "resumeCount": r.resume_count, "createdAt": r.created_at.isoformat() if r.created_at else None,
         "updatedAt": r.updated_at.isoformat() if r.updated_at else None,
     }
@@ -57,7 +58,7 @@ async def _call(coro):
 
 
 @router.get("/modules")
-async def list_modules(request: Request) -> List[Dict[str, str]]:
+async def list_modules(request: Request) -> List[Dict[str, Any]]:
     return await _hub(request).releases.list_modules()
 
 
@@ -69,7 +70,7 @@ async def list_releases(request: Request, limit: int = 50) -> List[Dict[str, Any
 @router.post("/releases:preview")
 async def preview_release(body: ReleaseRequest, request: Request) -> Dict[str, Any]:
     actor = _actor(request)
-    rec = await _call(_hub(request).releases.start(module=body.module, platform=body.platform, branch=body.branch,
+    rec = await _call(_hub(request).releases.start(module=body.module, platforms=body.platforms, branch=body.branch,
                                                    major=body.major, actor=actor, dry_run=True))
     return _dto(rec)
 
@@ -77,7 +78,7 @@ async def preview_release(body: ReleaseRequest, request: Request) -> Dict[str, A
 @router.post("/releases", status_code=201)
 async def start_release(body: ReleaseRequest, request: Request) -> Dict[str, Any]:
     actor = _actor(request)
-    rec = await _call(_hub(request).releases.start(module=body.module, platform=body.platform, branch=body.branch,
+    rec = await _call(_hub(request).releases.start(module=body.module, platforms=body.platforms, branch=body.branch,
                                                    major=body.major, actor=actor))
     return _dto(rec)
 

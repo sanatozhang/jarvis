@@ -25,7 +25,7 @@ class BuildStatus:
 
 
 class BuildRunner(Protocol):
-    async def trigger(self, *, repo: str, branch: str, platform: str, major: bool, dry_run: bool, resume: bool) -> BuildHandle: ...
+    async def trigger(self, *, repo: str, branch: str, platforms: List[str], major: bool, dry_run: bool, resume: bool) -> BuildHandle: ...
 
     async def status(self, ref: str) -> BuildStatus: ...
 
@@ -49,6 +49,8 @@ class ScmHost(Protocol):
 
     async def commits_between(self, repo: str, base_ref: str, head_ref: str) -> List[str]: ...
 
+    async def changed_files(self, repo: str, base_ref: str, head_ref: str) -> List[str]: ...
+
     async def open_or_update_file_pr(self, *, repo: str, base: str, branch: str, path: str, content: str,
                                      title: str, body: str, commit_message: str) -> PullRequest: ...
 
@@ -64,24 +66,24 @@ class Notifier(Protocol):
 
 @dataclass
 class ReleaseRecord:
+    """One release of one module repo: the selected platforms ship as one version (one tag)."""
     id: Optional[int] = None
     module: str = ""
-    platform: str = ""
+    platforms: List[str] = field(default_factory=list)          # canonical order: android, ios
     branch: str = ""
     major: bool = False
     kind: str = "release"              # release | preview
     state: str = "pending"
     failed_from: str = ""
     version: str = ""
-    previous_version: str = ""
-    sha256: str = ""
-    coordinate: str = ""
     git_sha: str = ""
+    # platform -> {"coordinate", "sha256", "apiChanges"} from publish-result.json
+    artifacts: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    previous_versions: Dict[str, str] = field(default_factory=dict)  # platform -> version its shell pinned before
+    bump_prs: Dict[str, str] = field(default_factory=dict)           # platform -> PR url ("" = shell already pinned it)
     build_ref: str = ""
     build_url: str = ""
-    bump_pr_url: str = ""
     backport_pr_url: str = ""
-    api_changes: List[str] = field(default_factory=list)
     error: str = ""
     requested_by: str = ""
     resume_count: int = 0
@@ -96,15 +98,13 @@ class Store(Protocol):
 
     async def save(self, rec: ReleaseRecord, event: str = "") -> None: ...
 
-    async def find_active(self, module: str, platform: str) -> Optional[ReleaseRecord]: ...
+    async def find_active(self, module: str) -> Optional[ReleaseRecord]: ...
 
     async def list_in_flight(self) -> List[ReleaseRecord]: ...
 
     async def list_recent(self, limit: int = 50) -> List[ReleaseRecord]: ...
 
-    async def last_released_version(self, module: str, platform: str, branch: str) -> str: ...
-
-    async def log_mirror(self, module: str, platform: str, branch: str, action: str, outcome: str) -> None: ...
+    async def log_mirror(self, module: str, branch: str, action: str, outcome: str) -> None: ...
 
 
 @dataclass(frozen=True)

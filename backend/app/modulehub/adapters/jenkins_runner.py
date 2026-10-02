@@ -1,7 +1,7 @@
 """BuildRunner port on jarvis' Jenkins client. The job is module-kit's `module-publish` (publish-job.md)."""
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from app.modulehub.ports import BuildHandle, BuildStatus
@@ -22,9 +22,9 @@ class JenkinsBuildRunner:
     def __init__(self, client: Any, job: str):
         self._jk, self._job = client, job
 
-    async def trigger(self, *, repo: str, branch: str, platform: str, major: bool, dry_run: bool, resume: bool) -> BuildHandle:
+    async def trigger(self, *, repo: str, branch: str, platforms: List[str], major: bool, dry_run: bool, resume: bool) -> BuildHandle:
         server = await self._jk.pick_least_busy_server()
-        params: Dict[str, str] = {"REPO": repo, "BRANCH": branch, "PLATFORM": platform,
+        params: Dict[str, str] = {"REPO": repo, "BRANCH": branch, "PLATFORMS": ",".join(platforms),
                                   "MAJOR": str(major).lower(), "DRY_RUN": str(dry_run).lower(), "RESUME": str(resume).lower()}
         queue_id, _ = await self._jk.trigger_build(server, self._job, params)
         return BuildHandle(ref="%s|%d" % (server, queue_id))

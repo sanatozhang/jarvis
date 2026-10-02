@@ -19,37 +19,38 @@ async def _fresh(db_engine):
 
 async def test_roundtrip_and_active_lookup(db_engine, store):
     await _fresh(db_engine)
-    rec = await store.create(ReleaseRecord(module="logger", platform="android", branch="main", requested_by="a@b"))
+    rec = await store.create(ReleaseRecord(module="logger", platforms=["android", "ios"], branch="main", requested_by="a@b"))
     assert rec.id and rec.created_at
-    rec.state, rec.version, rec.api_changes = "building", "1.1.0", ["x"]
+    rec.state, rec.version = "building", "1.1.0"
+    rec.artifacts = {"ios": {"coordinate": "c", "sha256": "d" * 64, "apiChanges": ["x"]}}
+    rec.previous_versions, rec.bump_prs = {"ios": "1.0.0"}, {"ios": "https://pr/1", "android": ""}
     await store.save(rec, "building")
     got = await store.get(rec.id)
-    assert (got.state, got.version, got.api_changes) == ("building", "1.1.0", ["x"])
-    assert (await store.find_active("logger", "android")).id == rec.id
-    assert await store.find_active("logger", "ios") is None
+    assert (got.state, got.version, got.platforms) == ("building", "1.1.0", ["android", "ios"])
+    assert got.artifacts == rec.artifacts and got.previous_versions == {"ios": "1.0.0"}
+    assert got.bump_prs == {"android": "", "ios": "https://pr/1"}
+    assert (await store.find_active("logger")).id == rec.id
+    assert await store.find_active("network") is None
     assert [r.id for r in await store.list_in_flight()] == [rec.id]
     assert await store.get(999) is None
 
 
-async def test_previews_do_not_lock_and_done_releases_are_recalled(db_engine, store):
+async def test_previews_do_not_lock(db_engine, store):
     await _fresh(db_engine)
-    prev = await store.create(ReleaseRecord(module="logger", platform="android", branch="main", kind="preview", state="building"))
-    assert await store.find_active("logger", "android") is None
-    done = await store.create(ReleaseRecord(module="logger", platform="android", branch="main", state="pending"))
-    done.state, done.version = "done", "1.0.0"
-    await store.save(done)
-    assert await store.last_released_version("logger", "android", "main") == "1.0.0"
-    assert await store.last_released_version("logger", "android", "release/x") == ""
+    prev = await store.create(ReleaseRecord(module="logger", platforms=["ios"], branch="main", kind="preview", state="building"))
+    assert await store.find_active("logger") is None
+    done = await store.create(ReleaseRecord(module="logger", platforms=["android"], branch="main", state="done"))
+    assert await store.find_active("logger") is None
     assert [r.id for r in await store.list_recent(10)] == [done.id, prev.id]
 
 
 async def test_mirror_log(db_engine, store):
     await _fresh(db_engine)
-    await store.log_mirror("logger", "android", "release/1", "create", "created")
+    await store.log_mirror("logger", "release/1", "create", "created")
     from sqlalchemy import select
 
     from app.modulehub.models import MhMirrorLog
 
     async with store._sf() as s:
         rows = (await s.execute(select(MhMirrorLog))).scalars().all()
-    assert [(r.branch, r.action) for r in rows] == [("release/1", "create")]
+    assert [(r.module, r.branch, r.action) for r in rows] == [("logger", "release/1", "create")]

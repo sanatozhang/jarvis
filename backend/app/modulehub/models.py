@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 
 from app.db.database import Base
 
@@ -13,29 +13,26 @@ class MhRelease(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     module = Column(String(64), nullable=False, index=True)
-    platform = Column(String(16), nullable=False)
+    platforms = Column(String(32), nullable=False)        # "android,ios" | "android" | "ios"
     branch = Column(String(128), nullable=False)
     major = Column(Boolean, default=False)
     kind = Column(String(16), default="release")           # release | preview
     state = Column(String(24), default="pending", index=True)
     failed_from = Column(String(24), default="")
     version = Column(String(32), default="")
-    previous_version = Column(String(32), default="")
-    sha256 = Column(String(64), default="")
-    coordinate = Column(String(256), default="")
     git_sha = Column(String(40), default="")
+    artifacts_json = Column(Text, default="{}")            # platform -> {coordinate, sha256, apiChanges}
+    previous_versions_json = Column(Text, default="{}")    # platform -> version the shell pinned before
+    bump_prs_json = Column(Text, default="{}")             # platform -> bump PR url
     build_ref = Column(String(512), default="")
     build_url = Column(String(512), default="")
-    bump_pr_url = Column(String(512), default="")
     backport_pr_url = Column(String(512), default="")
-    api_changes_json = Column(Text, default="[]")
     error = Column(Text, default="")
     requested_by = Column(String(128), default="")
     resume_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (Index("ix_mh_release_module_platform", "module", "platform"),)
 
 
 class MhReleaseEvent(Base):
@@ -53,7 +50,6 @@ class MhMirrorLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     module = Column(String(64), nullable=False)
-    platform = Column(String(16), nullable=False)
     branch = Column(String(128), nullable=False)
     action = Column(String(16), default="")      # create | verify | no_pin
     outcome = Column(String(256), default="")
