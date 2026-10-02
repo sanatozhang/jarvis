@@ -1,7 +1,7 @@
 """Request validation. The version rule itself lives in module-kit; modulehub never computes versions."""
 from __future__ import annotations
 
-from typing import Iterable, List
+from typing import Dict, Iterable, List
 
 PLATFORMS = ("android", "ios")
 
@@ -33,9 +33,15 @@ def normalize_platforms(platforms: Iterable[str]) -> List[str]:
     return out
 
 
-def module_repo(owner: str, name: str) -> str:
-    """One repository per module, holding every platform (android/, ios/)."""
-    return "%s/%s" % (owner, name)
+def module_repo(name: str, repos: Dict[str, str]) -> str:
+    """The module's repository (one per module, every platform in it) as the shells' tomls declare it
+    (`repo = "Plaud-AI/mobile_logger"`). All shells must name the same repository."""
+    found = sorted(set(repos.values()))
+    if not found or "" in found:
+        raise InvalidRequest("%s: modules.versions.toml has no repo for it in %s" % (name, sorted(p for p, r in repos.items() if not r)))
+    if len(found) > 1:
+        raise InvalidRequest("%s: the shells name different repositories %s" % (name, found))
+    return found[0]
 
 
 def semver_key(version: str):

@@ -14,7 +14,7 @@ from app.modulehub.ports import ReleaseRecord
 
 def _to_record(row: m.MhRelease) -> ReleaseRecord:
     return ReleaseRecord(
-        id=row.id, module=row.module, platforms=[p for p in (row.platforms or "").split(",") if p], branch=row.branch,
+        id=row.id, module=row.module, repo=row.repo or "", platforms=[p for p in (row.platforms or "").split(",") if p], branch=row.branch,
         major=bool(row.major), kind=row.kind, state=row.state, failed_from=row.failed_from or "", version=row.version or "",
         git_sha=row.git_sha or "", artifacts=json.loads(row.artifacts_json or "{}"),
         previous_versions=json.loads(row.previous_versions_json or "{}"), bump_prs=json.loads(row.bump_prs_json or "{}"),
@@ -24,7 +24,7 @@ def _to_record(row: m.MhRelease) -> ReleaseRecord:
     )
 
 
-_FIELDS = ("module", "branch", "major", "kind", "state", "failed_from", "version", "git_sha", "build_ref", "build_url",
+_FIELDS = ("module", "repo", "branch", "major", "kind", "state", "failed_from", "version", "git_sha", "build_ref", "build_url",
            "backport_pr_url", "error", "requested_by", "resume_count")
 
 

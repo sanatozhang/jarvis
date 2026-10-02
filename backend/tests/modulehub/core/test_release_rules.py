@@ -25,8 +25,11 @@ def test_platforms_are_normalized():
             r.normalize_platforms(bad)
 
 
-def test_one_repo_per_module():
-    assert r.module_repo("Plaud-AI", "logger") == "Plaud-AI/logger"
+def test_module_repo_comes_from_the_shells_and_must_agree():
+    assert r.module_repo("logger", {"android": "Plaud-AI/mobile_logger", "ios": "Plaud-AI/mobile_logger"}) == "Plaud-AI/mobile_logger"
+    for bad in ({}, {"android": ""}, {"android": "Plaud-AI/a", "ios": "Plaud-AI/b"}):
+        with pytest.raises(r.InvalidRequest):
+            r.module_repo("logger", bad)
 
 
 def test_semver_order():

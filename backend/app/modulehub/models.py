@@ -13,6 +13,7 @@ class MhRelease(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     module = Column(String(64), nullable=False, index=True)
+    repo = Column(String(128), nullable=False, default="")   # module repo, from modules.versions.toml
     platforms = Column(String(32), nullable=False)        # "android,ios" | "android" | "ios"
     branch = Column(String(128), nullable=False)
     major = Column(Boolean, default=False)

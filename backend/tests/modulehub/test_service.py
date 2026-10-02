@@ -7,7 +7,7 @@ from tests.modulehub.fakes import IOS_SHA, SETTINGS, SHA, TOML, FakeBuild, FakeS
 
 A_SHELL = "Plaud-AI/shell-android"
 I_SHELL = "Plaud-AI/shell-ios"
-MOD = "Plaud-AI/logger"
+MOD = "Plaud-AI/mobile_logger"
 TOML_PATH = "modules.versions.toml"
 
 
@@ -65,6 +65,10 @@ async def test_start_checks_every_selected_shell(env):
     with pytest.raises(release_rules.InvalidRequest):
         await started(svc, branch="release/1.0")
     assert (await started(svc, branch="release/1.0", platforms=["android"])).state == states.BUILDING
+    scm.files[(I_SHELL, "main", TOML_PATH)] = TOML.replace("mobile_logger", "logger-ios")
+    with pytest.raises(release_rules.InvalidRequest):          # the shells must name the same module repo
+        await started(svc)
+    assert (await started(svc, platforms=["android"], dry_run=True)).repo == MOD   # preview: no lock
     svc.settings = svc.settings.__class__(shell_repos={"android": A_SHELL})
     with pytest.raises(release_rules.InvalidRequest):
         await started(svc, platforms=["ios"])
@@ -350,6 +354,13 @@ async def test_mirror_verify_ok_and_execution_errors(menv):
     scm.create_branch = boom
     report = await svc.sync()
     assert any("error: no permission" in r for r in report)
+
+
+async def test_mirror_reports_a_module_whose_shells_disagree_on_the_repo(menv):
+    svc, store, scm, note = menv
+    scm.files[(I_SHELL, "main", TOML_PATH)] = TOML.replace("mobile_logger", "other")
+    report = await svc.sync()
+    assert any("different repositories" in r for r in report) and scm.created == []
 
 
 async def test_mirror_skips_platform_without_toml():

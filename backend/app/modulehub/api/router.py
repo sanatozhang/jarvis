@@ -37,7 +37,7 @@ def _actor(request: Request) -> str:
 
 def _dto(r: ReleaseRecord) -> Dict[str, Any]:
     return {
-        "id": r.id, "module": r.module, "platforms": r.platforms, "branch": r.branch, "major": r.major, "kind": r.kind,
+        "id": r.id, "module": r.module, "repo": r.repo, "platforms": r.platforms, "branch": r.branch, "major": r.major, "kind": r.kind,
         "state": r.state, "failedFrom": r.failed_from, "version": r.version, "gitSha": r.git_sha,
         "artifacts": r.artifacts, "previousVersions": r.previous_versions, "bumpPrs": r.bump_prs,
         "buildUrl": r.build_url, "backportPrUrl": r.backport_pr_url, "error": r.error, "requestedBy": r.requested_by,

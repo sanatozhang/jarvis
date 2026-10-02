@@ -10,7 +10,7 @@ from app.modulehub.ports import BuildHandle, BuildStatus, ModuleHubSettings, Pul
 SHA = "a" * 64
 GIT = "b" * 40
 
-TOML = '[logger]\nversion = "1.0.0"\nsha256 = "%s"\nrepo = "Plaud-AI/logger"\n' % ("c" * 64)
+TOML = '[logger]\nversion = "1.0.0"\nsha256 = "%s"\nrepo = "Plaud-AI/mobile_logger"\n' % ("c" * 64)
 
 SETTINGS = ModuleHubSettings(shell_repos={"android": "Plaud-AI/shell-android", "ios": "Plaud-AI/shell-ios"},
                              base_url="https://jarvis.example")

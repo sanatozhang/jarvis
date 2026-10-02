@@ -17,7 +17,6 @@ class ModulehubSettings(BaseSettings):
     mirror_interval_minutes: int = 10
     shell_repo_android: str = "Plaud-AI/plaud-native-android"
     shell_repo_ios: str = "Plaud-AI/plaud-native-ios"
-    module_repo_owner: str = "Plaud-AI"
     versions_path: str = "modules.versions.toml"
     github_token: str = ""                      # falls back to GH_TOKEN / GITHUB_TOKEN env
     notify_emails: List[str] = []
@@ -46,5 +45,5 @@ def get_modulehub_settings() -> ModulehubSettings:
 def to_port_settings(s: ModulehubSettings) -> ModuleHubSettings:
     return ModuleHubSettings(
         shell_repos={"android": s.shell_repo_android, "ios": s.shell_repo_ios},
-        module_repo_owner=s.module_repo_owner, versions_path=s.versions_path, base_url=s.base_url,
+        versions_path=s.versions_path, base_url=s.base_url,
     )

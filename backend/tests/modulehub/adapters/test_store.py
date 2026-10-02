@@ -19,14 +19,14 @@ async def _fresh(db_engine):
 
 async def test_roundtrip_and_active_lookup(db_engine, store):
     await _fresh(db_engine)
-    rec = await store.create(ReleaseRecord(module="logger", platforms=["android", "ios"], branch="main", requested_by="a@b"))
+    rec = await store.create(ReleaseRecord(module="logger", repo="Plaud-AI/mobile_logger", platforms=["android", "ios"], branch="main", requested_by="a@b"))
     assert rec.id and rec.created_at
     rec.state, rec.version = "building", "1.1.0"
     rec.artifacts = {"ios": {"coordinate": "c", "sha256": "d" * 64, "apiChanges": ["x"]}}
     rec.previous_versions, rec.bump_prs = {"ios": "1.0.0"}, {"ios": "https://pr/1", "android": ""}
     await store.save(rec, "building")
     got = await store.get(rec.id)
-    assert (got.state, got.version, got.platforms) == ("building", "1.1.0", ["android", "ios"])
+    assert (got.state, got.version, got.platforms, got.repo) == ("building", "1.1.0", ["android", "ios"], "Plaud-AI/mobile_logger")
     assert got.artifacts == rec.artifacts and got.previous_versions == {"ios": "1.0.0"}
     assert got.bump_prs == {"android": "", "ios": "https://pr/1"}
     assert (await store.find_active("logger")).id == rec.id

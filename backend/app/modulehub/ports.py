@@ -69,6 +69,7 @@ class ReleaseRecord:
     """One release of one module repo: the selected platforms ship as one version (one tag)."""
     id: Optional[int] = None
     module: str = ""
+    repo: str = ""                                               # module repo, from the shells' modules.versions.toml
     platforms: List[str] = field(default_factory=list)          # canonical order: android, ios
     branch: str = ""
     major: bool = False
@@ -111,7 +112,6 @@ class Store(Protocol):
 class ModuleHubSettings:
     """Plain settings the core services need (the adapter layer builds this from jarvis config)."""
     shell_repos: Dict[str, str]                 # platform -> "owner/shell-repo"
-    module_repo_owner: str = "Plaud-AI"
     versions_path: str = "modules.versions.toml"
     base_url: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)

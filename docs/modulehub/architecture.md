@@ -1,7 +1,7 @@
 # modulehub — architecture
 
 modulehub releases independent native modules (Android AAR / iOS XCFramework) on behalf of engineers. A module is one
-repository `Plaud-AI/<name>` holding `android/` and/or `ios/`; one release ships the platforms the engineer ticks
+repository (the `repo` both shells' `modules.versions.toml` name, e.g. `Plaud-AI/mobile_logger`) holding `android/` and/or `ios/`; one release ships the platforms the engineer ticks
 (both by default) as one version with one tag. It is a **pure scheduler**: it triggers one Jenkins job, waits, opens PRs, reconciles branches and notifies. It does not
 compute versions, build, sign or upload anything — that is all in `module-kit` (the job it triggers).
 
@@ -80,5 +80,5 @@ to `mh_mirror_log`.
 - `range_applied_on` treats a range as already on `main` only if its head tag is an ancestor of `main`
   (cherry-picked duplicates are not detected by patch-id).
 - Backport conflicts open a `[CONFLICT]` placeholder PR (empty commit); the owner resolves it by hand.
-- Shell and module repos are located by convention (module repo `<owner>/<name>`, shell repos from config).
+- Shell repos come from config; the module repo is the `repo` of the module's table in the shells' toml (both shells must agree, otherwise the release is refused and the mirror reports it).
 - The divergence check reads GitHub's compare file list, which is capped at 300 files.

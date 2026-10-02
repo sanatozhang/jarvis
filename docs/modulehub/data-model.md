@@ -8,7 +8,8 @@ Tables use the `mh_` prefix, are created by `Base.metadata.create_all` at startu
 | column | meaning |
 |---|---|
 | id | primary key |
-| module, platforms, branch | `logger`; `android,ios` \| `android` \| `ios` (shipped as one version); `main` \| `release/*` |
+| module, repo | `logger`; `Plaud-AI/mobile_logger` (from the shells' toml at start) |
+| platforms, branch | `android,ios` \| `android` \| `ios` (shipped as one version); `main` \| `release/*` |
 | major | major bump requested |
 | kind | `release` or `preview` (preview = dry run, takes no lock, opens no PR) |
 | state | `pending, building, tagged, pr_opened, backport_opened, done, failed` |

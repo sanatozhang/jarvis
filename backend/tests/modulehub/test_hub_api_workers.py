@@ -43,10 +43,10 @@ async def test_modules_and_release_lifecycle_over_http():
     app, store, build, scm = build_app()
     async with http(app) as c:
         assert (await c.get("/api/modulehub/modules")).json() == [
-            {"name": "logger", "repo": "Plaud-AI/logger", "platforms": {"android": "1.0.0", "ios": "1.0.0"}}]
+            {"name": "logger", "repo": "Plaud-AI/mobile_logger", "platforms": {"android": "1.0.0", "ios": "1.0.0"}}]
         r = await c.post("/api/modulehub/releases", json=BODY)
         assert r.status_code == 201 and r.json()["state"] == "building" and r.json()["requestedBy"] == "anonymous"
-        assert r.json()["platforms"] == ["android", "ios"]
+        assert r.json()["platforms"] == ["android", "ios"] and r.json()["repo"] == "Plaud-AI/mobile_logger"
         rid = r.json()["id"]
         assert (await c.post("/api/modulehub/releases", json={**BODY, "platforms": ["ios"]})).status_code == 409
         build.next_status = BuildStatus("success", result_json=result_json())

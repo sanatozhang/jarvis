@@ -26,9 +26,6 @@ class ReleaseService:
     def __init__(self, *, store: Store, build: BuildRunner, scm: ScmHost, notifier: Notifier, settings: ModuleHubSettings):
         self.store, self.build, self.scm, self.notifier, self.settings = store, build, scm, notifier, settings
 
-    def _repo(self, module: str) -> str:
-        return release_rules.module_repo(self.settings.module_repo_owner, module)
-
     # ---- queries -----------------------------------------------------------------------------
     async def list_modules(self) -> List[Dict[str, object]]:
         """One entry per module repo with the version each shell pins on main."""
@@ -47,6 +44,7 @@ class ReleaseService:
                     dry_run: bool = False) -> ReleaseRecord:
         platforms = release_rules.normalize_platforms(platforms)
         release_rules.validate_request(branch, major)
+        repos: Dict[str, str] = {}
         for platform in platforms:
             shell = self.settings.shell_repos.get(platform)
             if not shell:
@@ -54,20 +52,23 @@ class ReleaseService:
             text = await self.scm.read_file(shell, branch, self.settings.versions_path)
             if text is None:
                 raise release_rules.InvalidRequest("%s has no %s on branch %s" % (shell, self.settings.versions_path, branch))
-            if module not in versions_toml.parse(text):
+            tables = versions_toml.parse(text)
+            if module not in tables:
                 raise release_rules.InvalidRequest("module %r is not listed in %s on %s" % (module, shell, branch))
+            repos[platform] = tables[module].get("repo", "")
+        repo = release_rules.module_repo(module, repos)
         if not dry_run:
             active = await self.store.find_active(module)
             if active:
                 raise ReleaseConflict("release %s of %s is already in progress" % (active.id, module))
-        rec = await self.store.create(ReleaseRecord(module=module, platforms=platforms, branch=branch, major=major,
+        rec = await self.store.create(ReleaseRecord(module=module, repo=repo, platforms=platforms, branch=branch, major=major,
                                                     kind="preview" if dry_run else "release", requested_by=actor))
         await self._trigger(rec, dry_run=dry_run, resume=False)
         return rec
 
     async def _trigger(self, rec: ReleaseRecord, *, dry_run: bool, resume: bool) -> None:
         try:
-            handle = await self.build.trigger(repo=self._repo(rec.module), branch=rec.branch, platforms=list(rec.platforms),
+            handle = await self.build.trigger(repo=rec.repo, branch=rec.branch, platforms=list(rec.platforms),
                                               major=rec.major, dry_run=dry_run, resume=resume)
         except Exception as e:  # the build runner is an external system: any failure becomes a failed release
             await self._fail(rec, states.BUILDING, "could not trigger the publish job: %s" % e)
@@ -155,7 +156,7 @@ class ReleaseService:
             rec.bump_prs[platform] = ""
             return
         try:
-            changelog = await self.scm.commits_between(self._repo(rec.module), "v" + old, "v" + rec.version)
+            changelog = await self.scm.commits_between(rec.repo, "v" + old, "v" + rec.version)
         except Exception:  # changelog is decoration, never a reason to fail the bump
             changelog = []
         art = rec.artifacts.get(platform, {})
@@ -177,7 +178,7 @@ class ReleaseService:
         return max(known, key=release_rules.semver_key) if known else ""
 
     async def _backport_or_finish(self, rec: ReleaseRecord) -> None:
-        repo = self._repo(rec.module)
+        repo = rec.repo
         try:
             plan = backport.plan_backport(rec.module, rec.branch, rec.version, self._previous_version(rec), already_on_main=False)
             if plan is not None and await self.scm.range_applied_on(repo, "main", plan.commit_range):
@@ -249,10 +250,15 @@ class MirrorService:
             mains[platform] = text
             branch_texts[platform] = {b: await self.scm.read_file(shell, b, self.settings.versions_path)
                                       for b in await self.scm.list_branches(shell, "release/")}
-        modules = sorted({m for text in mains.values() for m in versions_toml.module_names(text)})
+        tables = {p: versions_toml.parse(text) for p, text in mains.items()}
+        modules = sorted({m for t in tables.values() for m in t})
         report: List[str] = []
         for module in modules:
-            repo = release_rules.module_repo(self.settings.module_repo_owner, module)
+            try:
+                repo = release_rules.module_repo(module, {p: t[module].get("repo", "") for p, t in tables.items() if module in t})
+            except release_rules.InvalidRequest as e:
+                report.append("%s: %s" % (module, e))
+                continue
             pins: Dict[str, Dict[str, Optional[str]]] = {}
             for platform, texts in branch_texts.items():
                 for b, t in texts.items():
