@@ -19,11 +19,13 @@ def _rewrite(server: str, url: str) -> str:
 
 
 class JenkinsBuildRunner:
-    def __init__(self, client: Any, job: str):
-        self._jk, self._job = client, job
+    def __init__(self, client: Any, job: str, server: str = ""):
+        # server: pin the Jenkins server. A release must run on the build machine (Xcode == the kit's publish toolchain),
+        # so it is never load-balanced onto another server when one is configured.
+        self._jk, self._job, self._server = client, job, server.strip().rstrip("/")
 
     async def trigger(self, *, repo: str, branch: str, platforms: List[str], major: bool, dry_run: bool, resume: bool) -> BuildHandle:
-        server = await self._jk.pick_least_busy_server()
+        server = self._server or await self._jk.pick_least_busy_server()
         params: Dict[str, str] = {"REPO": repo, "BRANCH": branch, "PLATFORMS": ",".join(platforms),
                                   "MAJOR": str(major).lower(), "DRY_RUN": str(dry_run).lower(), "RESUME": str(resume).lower()}
         queue_id, _ = await self._jk.trigger_build(server, self._job, params)

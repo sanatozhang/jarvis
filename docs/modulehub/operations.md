@@ -9,6 +9,7 @@ modulehub is **off by default**: the API is mounted, workers do not start. Confi
 modulehub:
   enabled: true
   jenkins_job: module-publish
+  jenkins_server: http://10.0.52.101:8080   # pin to the build machine (see below); empty = least busy of jenkins.servers
   poll_interval_seconds: 30
   mirror_interval_minutes: 10
   shell_repo_android: Plaud-AI/plaud-native-android
@@ -24,7 +25,10 @@ Every key can be overridden by env `MODULEHUB_<KEY>` (env wins). Secrets are env
 | `MODULEHUB_GITHUB_TOKEN` (optional; falls back to the server's `gh auth token` login, **never** to `GH_TOKEN` / `GITHUB_TOKEN` — personal PATs get rejected by the Plaud-AI org 90-day policy) | GitHub REST + git push: read shell/module repos, open PRs, create branches, push backport branches. Needs contents + pull-requests write on the shell and module repos. On 102 the `gh` login is `appbot-ctrl` (the same one crashguard opens PRs with) |
 | `JENKINS_*` (existing) | Jenkins servers/credentials, reused from the release automation |
 
-The Jenkins job `module-publish` (kit `jenkins/Jenkinsfile`) holds the Nexus and mirror credentials; modulehub never sees them.
+The Jenkins job `module-publish` (kit `jenkins/Jenkinsfile`, installed by kit `jenkins/install-job.sh`) holds the Nexus credential and
+mints the GitHub App token; modulehub never sees them. The job exists only on the build machine (10.0.52.101, the only machine with
+the Xcode an iOS release requires), so set `jenkins_server` to it; left empty, modulehub load-balances over `jenkins.servers` and a
+release can land on a server without the job.
 
 ## Authentication
 
