@@ -2417,6 +2417,106 @@ export const releaseArtifactUrl = (buildId: number, platform: "android" | "ios")
   `${BASE}/release/builds/${buildId}/artifacts/${platform}`;
 
 // ============================================================
+// Modulehub（独立 native 模块发版编排，后端 /api/modulehub）
+// ============================================================
+export type MhPlatform = "android" | "ios";
+
+export type MhReleaseState =
+  | "pending"
+  | "building"
+  | "tagged"
+  | "pr_opened"
+  | "backport_opened"
+  | "done"
+  | "failed";
+
+// 进行中的状态（与后端 core/states.py ACTIVE 一致）
+export const MH_ACTIVE_STATES: MhReleaseState[] = ["pending", "building", "tagged", "pr_opened", "backport_opened"];
+// failed 后可续跑的 failedFrom（与后端 states.resume_action 一致；building 失败只能重新发版）
+export const MH_RESUMABLE_FROM = ["uploaded", "tagged", "pr_opened"];
+
+/** One module repo and the version each shell pins on main. */
+export interface MhModule {
+  name: string;
+  repo: string;
+  platforms: Partial<Record<MhPlatform, string>>;
+}
+
+export interface MhArtifact {
+  coordinate: string;
+  sha256: string;
+  apiChanges: string[];
+}
+
+export interface MhRelease {
+  id: number;
+  module: string;
+  repo: string;
+  platforms: MhPlatform[];
+  branch: string;
+  major: boolean;
+  kind: "release" | "preview";
+  state: MhReleaseState;
+  failedFrom: string;
+  version: string;
+  gitSha: string;
+  artifacts: Partial<Record<MhPlatform, MhArtifact>>;
+  previousVersions: Partial<Record<MhPlatform, string>>;
+  /** platform -> bump PR url; "" means the shell already pinned this version */
+  bumpPrs: Partial<Record<MhPlatform, string>>;
+  buildUrl: string;
+  backportPrUrl: string;
+  error: string;
+  requestedBy: string;
+  resumeCount: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface MhReleaseRequest {
+  module: string;
+  platforms: MhPlatform[];
+  branch: string;
+  major: boolean;
+}
+
+// Reads both shells' modules.versions.toml from GitHub, so it can be slow.
+export const listMhModules = () => request<MhModule[]>("/modulehub/modules", { timeoutMs: 30000 });
+
+export const listMhReleases = (limit = 50) =>
+  request<MhRelease[]>(`/modulehub/releases?limit=${limit}`);
+
+export const getMhRelease = (id: number) => request<MhRelease>(`/modulehub/releases/${id}`);
+
+// Dry run: same Jenkins job with DRY_RUN=true, no lock, no PRs. Returns the record; poll getMhRelease until done/failed.
+export const previewMhRelease = (body: MhReleaseRequest) =>
+  request<MhRelease>("/modulehub/releases:preview", { method: "POST", body: JSON.stringify(body), timeoutMs: 60000 });
+
+export const startMhRelease = (body: MhReleaseRequest) =>
+  request<MhRelease>("/modulehub/releases", { method: "POST", body: JSON.stringify(body), timeoutMs: 60000 });
+
+export const resumeMhRelease = (id: number) =>
+  request<MhRelease>(`/modulehub/releases/${id}:resume`, { method: "POST", timeoutMs: 60000 });
+
+// Reconciles module release/* branches with the shells' pins (may create branches). Returns one line per action.
+export const syncMhMirror = () =>
+  request<{ results: string[] }>("/modulehub/mirror:sync", { method: "POST", timeoutMs: 120000 });
+
+/** FastAPI error body `{"detail": "..."}` → the detail string; falls back to the raw message. */
+export function mhErrorDetail(e: unknown): string {
+  if (e instanceof ApiError) {
+    try {
+      const d = JSON.parse(e.body)?.detail;
+      if (typeof d === "string") return d;
+    } catch {
+      /* not JSON */
+    }
+    return e.body || e.message;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
+// ============================================================
 // Repo Routing (源码仓库路由)
 // ============================================================
 
