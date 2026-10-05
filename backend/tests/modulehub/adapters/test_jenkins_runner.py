@@ -96,3 +96,14 @@ def test_rewrite_helper_handles_empty_url():
 
     assert _rewrite("http://s", "") == ""
     assert _rewrite("http://s/", "http://localhost/job/x/1/?a=b") == "http://s/job/x/1/?a=b"
+
+
+async def test_pinned_server_is_used_without_load_balancing(jk):
+    # publishing needs the build machine's Xcode: a pinned server must never be swapped for the least busy one
+    async def boom():
+        raise AssertionError("must not load-balance when a server is pinned")
+    jk.pick_least_busy_server = boom
+    h = await JenkinsBuildRunner(jk, "module-publish", server="http://10.0.52.101:8080/").trigger(
+        repo="Plaud-AI/r", branch="main", platforms=["ios"], major=False, dry_run=False, resume=False)
+    assert h.ref == "http://10.0.52.101:8080|42"
+    assert jk.params[0] == "http://10.0.52.101:8080"

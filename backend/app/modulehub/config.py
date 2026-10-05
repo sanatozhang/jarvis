@@ -13,6 +13,7 @@ from app.modulehub.ports import ModuleHubSettings
 class ModulehubSettings(BaseSettings):
     enabled: bool = False                       # workers only start when enabled
     jenkins_job: str = "module-publish"
+    jenkins_server: str = ""                    # pin the Jenkins server (the build machine); empty = least busy of jenkins.servers
     poll_interval_seconds: int = 30
     mirror_interval_minutes: int = 10
     shell_repo_android: str = "Plaud-AI/plaud-native-android"

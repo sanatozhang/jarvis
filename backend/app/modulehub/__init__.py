@@ -54,7 +54,8 @@ class Hub:
             from app.modulehub.service import ReleaseService
             from app.services.jenkins_client import build_client_from_settings
 
-            runner = JenkinsBuildRunner(build_client_from_settings(get_settings()), self.settings.jenkins_job)
+            runner = JenkinsBuildRunner(build_client_from_settings(get_settings()), self.settings.jenkins_job,
+                                         self.settings.jenkins_server)
             self._releases = ReleaseService(store=self.store, build=runner, scm=self._scm(),
                                             notifier=self._notifier(), settings=self._port_settings())
         return self._releases
