@@ -21,7 +21,7 @@ Every key can be overridden by env `MODULEHUB_<KEY>` (env wins). Secrets are env
 
 | env | purpose |
 |---|---|
-| `MODULEHUB_GITHUB_TOKEN` (falls back to `GH_TOKEN` / `GITHUB_TOKEN`) | GitHub REST + git push: read shell/module repos, open PRs, create branches, push backport branches. Needs contents + pull-requests write on the shell and module repos |
+| `MODULEHUB_GITHUB_TOKEN` (optional; falls back to the server's `gh auth token` login, **never** to `GH_TOKEN` / `GITHUB_TOKEN` — personal PATs get rejected by the Plaud-AI org 90-day policy) | GitHub REST + git push: read shell/module repos, open PRs, create branches, push backport branches. Needs contents + pull-requests write on the shell and module repos. On 102 the `gh` login is `appbot-ctrl` (the same one crashguard opens PRs with) |
 | `JENKINS_*` (existing) | Jenkins servers/credentials, reused from the release automation |
 
 The Jenkins job `module-publish` (kit `jenkins/Jenkinsfile`) holds the Nexus and mirror credentials; modulehub never sees them.

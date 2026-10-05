@@ -165,3 +165,51 @@ async def test_default_run_git_executes_real_git(tmp_path):
 
     rc, out = await _default_run_git(["--version"], str(tmp_path))
     assert rc == 0 and out.startswith("git version")
+
+
+# ---- token resolution ------------------------------------------------------------------------
+from app.modulehub.adapters import github_scm as gs  # noqa: E402
+
+
+class _Done:
+    def __init__(self, rc, out):
+        self.returncode, self.stdout = rc, out
+
+
+def test_resolve_token_prefers_explicit_setting(monkeypatch):
+    monkeypatch.setattr(gs.subprocess, "run", lambda *a, **kw: pytest.fail("gh must not run"))
+    assert gs.resolve_token("explicit") == "explicit"
+
+
+def test_resolve_token_uses_gh_login_and_strips_pat_env(monkeypatch):
+    """GH_TOKEN/GITHUB_TOKEN PATs get 403'd by the org 90-day policy, and `gh` would prefer them."""
+    monkeypatch.setenv("GH_TOKEN", "expired-pat")
+    monkeypatch.setenv("GITHUB_TOKEN", "expired-pat")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"], seen["env"] = cmd, kw["env"]
+        return _Done(0, "gho_abc\n")
+
+    monkeypatch.setattr(gs.subprocess, "run", fake_run)
+    assert gs.resolve_token("") == "gho_abc"
+    assert seen["cmd"] == ["gh", "auth", "token"]
+    assert "GH_TOKEN" not in seen["env"] and "GITHUB_TOKEN" not in seen["env"]
+
+
+@pytest.mark.parametrize("outcome", [_Done(1, ""), _Done(0, "  "), FileNotFoundError("gh")])
+def test_resolve_token_empty_when_unavailable(monkeypatch, caplog, outcome):
+    def fake_run(*a, **kw):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(gs.subprocess, "run", fake_run)
+    assert gs.resolve_token("") == ""
+    assert "MODULEHUB_GITHUB_TOKEN" in caplog.text
+
+
+async def test_empty_token_raises_clear_scm_error():
+    """Not httpx's opaque "Illegal header value b'Bearer '" (what 102 logged on 2026-10-02)."""
+    with pytest.raises(ScmError, match="no GitHub token"):
+        await GitHubScm("").read_file("o/r", "main", "x")

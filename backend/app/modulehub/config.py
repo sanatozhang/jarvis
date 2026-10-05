@@ -18,7 +18,7 @@ class ModulehubSettings(BaseSettings):
     shell_repo_android: str = "Plaud-AI/plaud-native-android"
     shell_repo_ios: str = "Plaud-AI/plaud-native-ios"
     versions_path: str = "modules.versions.toml"
-    github_token: str = ""                      # falls back to GH_TOKEN / GITHUB_TOKEN env
+    github_token: str = ""                      # falls back to `gh auth token` (never GH_TOKEN/GITHUB_TOKEN PATs)
     notify_emails: List[str] = []
     allow_anonymous: bool = False               # accept requests without a logged-in user (dev only)
     base_url: str = ""                          # jarvis frontend URL for deep links

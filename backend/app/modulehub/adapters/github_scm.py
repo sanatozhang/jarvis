@@ -1,12 +1,16 @@
 """ScmHost port on the GitHub REST API (+ the git CLI for backports).
 
-The token comes from settings / env and is never logged; git output is scrubbed before it is raised.
+The token comes from `MODULEHUB_GITHUB_TOKEN` or, when that is empty, the server's `gh` CLI login
+(`resolve_token`). It is never logged; git output is scrubbed before it is raised.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
+import logging
+import os
 import shutil
+import subprocess
 import tempfile
 from typing import Awaitable, Callable, List, Optional, Tuple
 
@@ -15,6 +19,30 @@ import httpx
 from app.modulehub.ports import PullRequest
 
 RunGit = Callable[[List[str], str], Awaitable[Tuple[int, str]]]
+
+logger = logging.getLogger("jarvis.modulehub")
+
+
+def resolve_token(explicit: str = "") -> str:
+    """Explicit setting first, else `gh auth token` (the OAuth login crashguard already uses on the server).
+
+    GH_TOKEN / GITHUB_TOKEN are deliberately NOT a fallback, and are stripped from the `gh` subprocess env:
+    personal PATs outlive the Plaud-AI org's 90-day policy and get hard-rejected (403), and `gh` itself
+    would prefer such an env PAT over its own OAuth login. Same policy as crashguard's github_symbols /
+    pr_drafter. Returns "" when nothing is available (callers surface that as a clear ScmError).
+    """
+    if explicit:
+        return explicit
+    env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+    try:
+        r = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=10, env=env)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.error("modulehub: no MODULEHUB_GITHUB_TOKEN and `gh auth token` failed: %s", e)
+        return ""
+    token = (r.stdout or "").strip() if r.returncode == 0 else ""
+    if not token:
+        logger.error("modulehub: no MODULEHUB_GITHUB_TOKEN and `gh` is not logged in; GitHub calls will fail")
+    return token
 
 
 class ScmError(RuntimeError):
@@ -37,6 +65,9 @@ class GitHubScm:
 
     # ---- plumbing ----------------------------------------------------------------------------
     def _h(self):
+        if not self._token:
+            # an empty token would otherwise surface as httpx "Illegal header value b'Bearer '"
+            raise ScmError("no GitHub token: set MODULEHUB_GITHUB_TOKEN or log in with `gh auth login`")
         return {"Authorization": "Bearer %s" % self._token, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
     async def _req(self, method: str, path: str, ok=(200, 201), **kw) -> httpx.Response:

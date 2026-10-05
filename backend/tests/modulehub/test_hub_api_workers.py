@@ -167,8 +167,7 @@ def test_hub_wires_real_adapters_lazily(monkeypatch):
 
     s = get_settings()
     monkeypatch.setattr(s.jenkins, "servers", [J()])
-    monkeypatch.setenv("GH_TOKEN", "tok")
-    hub = Hub(ModulehubSettings(notify_emails=["a@plaud.ai"]))
+    hub = Hub(ModulehubSettings(notify_emails=["a@plaud.ai"], github_token="tok"))
     assert isinstance(hub.store, SqlStore) and isinstance(hub.releases.scm, GitHubScm)
     assert hub.mirror.scm is not hub.releases.scm and hub.releases.notifier._emails == ["a@plaud.ai"]
     assert hub.store is hub.store and hub.releases is hub.releases and hub.mirror is hub.mirror

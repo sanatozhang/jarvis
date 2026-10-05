@@ -37,12 +37,9 @@ class Hub:
         return self._store
 
     def _scm(self):
-        import os
+        from app.modulehub.adapters.github_scm import GitHubScm, resolve_token
 
-        from app.modulehub.adapters.github_scm import GitHubScm
-
-        token = self.settings.github_token or os.environ.get("GH_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
-        return GitHubScm(token)
+        return GitHubScm(resolve_token(self.settings.github_token))
 
     def _notifier(self):
         from app.modulehub.adapters.notifier import DmNotifier
