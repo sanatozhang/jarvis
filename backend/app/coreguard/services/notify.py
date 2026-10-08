@@ -26,7 +26,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.services.im import NotifyTarget, Rendered, resolve_transport
+from app.services.im import (
+    NotifyTarget, Rendered, dual_send, effective_provider, is_secondary_leg, resolve_transport,
+)
 
 logger = logging.getLogger("coreguard.notify")
 
@@ -43,9 +45,14 @@ def _settings():
     return get_coreguard_settings()
 
 
+def _raw_provider():
+    return getattr(_settings(), "notify_provider", "")
+
+
 def _provider(s=None) -> str:
+    """当前这一次发送用的单个渠道。`both` 在双发里解析成当前腿。"""
     s = s or _settings()
-    return (getattr(s, "notify_provider", "") or "feishu").strip().lower()
+    return effective_provider((getattr(s, "notify_provider", "") or "feishu").strip().lower())
 
 
 def group_target(s=None) -> NotifyTarget:
@@ -155,6 +162,17 @@ async def send_alert(msg: Rendered, breach_count: int = 0) -> bool:
         )
         return False
 
+    # 双发的第二条腿（slack）：群配额是**飞书群**的限流策略，且第一条腿已经把这次
+    # 告警记进 dispatch 审计了——这里照着"群优先、没群转邮箱"发，不再计数/记审计，
+    # 否则一次告警被记两遍、配额被吃两份。
+    if is_secondary_leg():
+        target = group if group.configured else overflow
+        try:
+            return bool(await resolve_transport(_provider(s)).send(target, msg))
+        except Exception as e:
+            logger.error("coreguard send (secondary leg) failed: %s", e)
+            return False
+
     today = _today_local_date()
     title = _extract_title(msg)
     quota = int(s.feishu_group_daily_quota or 0)
@@ -194,11 +212,13 @@ async def send_alert(msg: Rendered, breach_count: int = 0) -> bool:
         return False
 
 
+@dual_send(_raw_provider)
 async def send_summary(*, breach_count: int = 0, **kwargs) -> bool:
     """渲染 + 投递。`kwargs` 逐字转给 `build_summary_card` / `build_summary_message`。"""
     return await send_alert(render_summary(**kwargs), breach_count=breach_count)
 
 
+@dual_send(_raw_provider)
 async def send_simple_card(feishu_card: Dict[str, Any],
                            slack_blocks: Optional[List[dict]] = None,
                            *, text: str = "", color: str = "") -> bool:

@@ -69,7 +69,8 @@ def _validate_notify_startup() -> None:
         except Exception:
             logger.warning("notify 校验：读不到 %s 的配置，跳过", module)
             continue
-        validate_provider(module, getattr(cfg, attr, "") or "feishu")
+        validate_provider(module, getattr(cfg, attr, "") or "feishu",
+                          allow_both=(module != "system"))
 
 
 async def lifespan(app: FastAPI):

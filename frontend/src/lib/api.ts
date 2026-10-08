@@ -836,14 +836,14 @@ export const updateAutoDeepAnalysisConfig = (data: Partial<AutoDeepAnalysisConfi
 export interface NotifyModuleStatus {
   module: string;
   label: string;
-  provider: "feishu" | "slack";
+  provider: "feishu" | "slack" | "both";
   env_pinned: boolean;
   /** false = 只有点对点私聊、没有群/频道（system 行），不显示频道输入框 */
   has_channel?: boolean;
   feishu_channel: string;
   slack_channel: string;
   alert_email: string;
-  ready: { feishu: boolean; slack: boolean };
+  ready: { feishu: boolean; slack: boolean; both?: boolean };
   slack_token_configured: boolean;
 }
 export interface NotifyStatus {

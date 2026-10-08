@@ -881,7 +881,7 @@ export default function SettingsPage() {
     finally { setAutoDeepAnalysisSaving(false); }
   };
 
-  const switchNotifyProvider = async (module: string, provider: "feishu" | "slack") => {
+  const switchNotifyProvider = async (module: string, provider: "feishu" | "slack" | "both") => {
     const row = notify?.modules.find((m) => m.module === module);
     if (!row || row.provider === provider) return;
 
@@ -889,11 +889,14 @@ export default function SettingsPage() {
     // 顺序），但必须让人知道这一步之后告警会静默消失，而不是等下一次告警
     // 触发时才发现。
     const draft = (notifyChannelDraft[module] ?? "").trim();
+    const slackReady = row.slack_token_configured && (draft || row.slack_channel || row.alert_email);
     const willBeReady = provider === "slack"
-      ? row.slack_token_configured && (draft || row.slack_channel || row.alert_email)
-      : row.ready.feishu;
+      ? slackReady
+      : provider === "both"
+        ? slackReady && row.ready.feishu
+        : row.ready.feishu;
     if (!willBeReady) {
-      const why = provider === "slack" && !row.slack_token_configured
+      const why = provider !== "feishu" && !row.slack_token_configured
         ? t("SLACK_BOT_TOKEN 未配置")
         : t("目标渠道没有配频道，也没有兜底邮箱");
       if (!confirm(
@@ -1221,7 +1224,11 @@ export default function SettingsPage() {
             <div className="space-y-3">
               {notify.modules.map((m) => {
                 const busy = notifySwitching === m.module;
-                const target = m.provider === "slack" ? m.slack_channel : m.feishu_channel;
+                const target = m.provider === "slack"
+                  ? m.slack_channel
+                  : m.provider === "both"
+                    ? [m.feishu_channel, m.slack_channel].filter(Boolean).join(" + ")
+                    : m.feishu_channel;
                 return (
                   <div key={m.module} className="rounded-lg p-3"
                     style={{ background: S.overlay, border: `1px solid ${S.border}` }}>
@@ -1238,9 +1245,9 @@ export default function SettingsPage() {
                       </div>
 
                       <div className="flex items-center gap-1.5">
-                        {(["feishu", "slack"] as const).map((p) => {
+                        {((m.has_channel === false ? ["feishu", "slack"] : ["feishu", "slack", "both"]) as ("feishu" | "slack" | "both")[]).map((p) => {
                           const active = m.provider === p;
-                          const ready = m.ready[p];
+                          const ready = p === "both" ? !!m.ready.both : m.ready[p];
                           return (
                             <button key={p} disabled={busy || m.env_pinned || active}
                               onClick={() => switchNotifyProvider(m.module, p)}
@@ -1255,7 +1262,7 @@ export default function SettingsPage() {
                                 border: `1px solid ${active ? S.accent : S.border}`,
                                 opacity: m.env_pinned && !active ? 0.4 : 1,
                               }}>
-                              {p === "feishu" ? t("飞书") : "Slack"}
+                              {p === "feishu" ? t("飞书") : p === "slack" ? "Slack" : t("双发")}
                               {!ready && <span className="ml-1 opacity-70">⚠</span>}
                             </button>
                           );
