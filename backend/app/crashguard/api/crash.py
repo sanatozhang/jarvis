@@ -2337,9 +2337,10 @@ async def get_report_detail(
     window_hours: 仅影响每 issue 的 events 数字（跨 N 天 CrashSnapshot sum）；
     SHoW-24h 基线对比逻辑不受影响（基线本身就是 24h 维度）。
     """
-    from sqlalchemy import select
+    from datetime import date as _date
+    from sqlalchemy import select, update
     from app.db.database import get_session
-    from app.crashguard.services.daily_report import compose_report
+    from app.crashguard.services.daily_report import REPORT_MARKDOWN_RETENTION_DAYS, compose_report
     from app.crashguard.models import CrashDailyReport
     import json as _json
 
@@ -2357,14 +2358,29 @@ async def get_report_detail(
         except Exception:
             payload = {}
 
-    # 历史报告未存全量 markdown，重新基于落库时的当日数据 compose 一次
-    try:
-        text, _ = await compose_report(
-            row.report_type, row.report_date, top_n=int(row.top_n or 5),
-            view_window_hours=window_hours,
-        )
-    except Exception:
-        text = "_报告内容已过期，无法重新生成（数据已轮转）_"
+    # 24h 视图（报告页默认、Slack「查看完整早报」）优先读发送时缓存的那份 markdown：
+    # 现算要重新拉 Datadog（30-60s），前端 15s 就超时了。其他窗口仍然现算。
+    cached = (row.report_markdown or "") if window_hours == 24 else ""
+    if cached:
+        text = cached
+    else:
+        try:
+            text, _ = await compose_report(
+                row.report_type, row.report_date, top_n=int(row.top_n or 5),
+                view_window_hours=window_hours,
+            )
+        except Exception:
+            text = "_报告内容已过期，无法重新生成（数据已轮转）_"
+        else:
+            # 缓存缺失（老报告 / 上线前发的）→ 现算一次后回填，保留期内下次直接读
+            if window_hours == 24 and row.report_date and (
+                    (_date.today() - row.report_date).days < REPORT_MARKDOWN_RETENTION_DAYS):
+                async with get_session() as session:
+                    await session.execute(
+                        update(CrashDailyReport).where(CrashDailyReport.id == row.id)
+                        .values(report_markdown=text)
+                    )
+                    await session.commit()
 
     return {
         "id": row.id,

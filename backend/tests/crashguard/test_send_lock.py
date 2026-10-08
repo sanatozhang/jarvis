@@ -160,3 +160,25 @@ async def test_force_resend_bypasses_lock_without_needing_chat_override(patched_
 
     assert result["skipped_reason"] != "already_sent_by_other_instance"
     send_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_persists_markdown_for_report_page_cache(patched_session):
+    """发送时把完整 markdown 落库，报告页直接读，不再现算。"""
+    from app.crashguard.services import daily_report
+    from app.crashguard.models import CrashDailyReport
+    from sqlalchemy import select
+
+    # 用今天：超过 30 天保留期的会在落库后立刻被 prune 清掉
+    target = date.today()
+    with patch.object(daily_report, "get_crashguard_settings", return_value=_make_settings()), \
+         patch.object(daily_report, "compose_report", new_callable=AsyncMock,
+                      return_value=("# 早报全文", {"new_count": 0})), \
+         patch("app.services.feishu_cli.send_interactive_card", new_callable=AsyncMock, return_value=True):
+        await daily_report.send_daily_report("morning", target_date=target, top_n=5, force_resend=True)
+
+    async with patched_session() as session:
+        row = (await session.execute(
+            select(CrashDailyReport).where(CrashDailyReport.report_date == target)
+        )).scalar_one()
+    assert row.report_markdown == "# 早报全文"
