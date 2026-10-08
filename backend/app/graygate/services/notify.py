@@ -14,7 +14,7 @@ import logging
 from datetime import date
 from typing import Optional
 
-from app.services.im import NotifyTarget, Rendered, resolve_transport
+from app.services.im import NotifyTarget, Rendered, dual_send, effective_provider, resolve_transport
 
 logger = logging.getLogger("jarvis.graygate.notify")
 
@@ -32,10 +32,19 @@ def _settings():
     return get_graygate_settings()
 
 
+def _raw_provider():
+    return _settings().notify_provider
+
+
+def _provider() -> str:
+    """当前这一次发送用的单个渠道。`both` 在双发里解析成当前腿。"""
+    return effective_provider((_settings().notify_provider or "feishu").strip().lower())
+
+
 def report_target() -> NotifyTarget:
     """日报/变更通知的去处：群 or 频道。"""
     s = _settings()
-    provider = (s.notify_provider or "feishu").strip().lower()
+    provider = _provider()
     if provider == "slack":
         return NotifyTarget(provider="slack", channel=s.slack_channel)
     return NotifyTarget(provider="feishu", channel=s.feishu_chat_id)
@@ -48,10 +57,11 @@ def alert_target() -> NotifyTarget:
     走 `users.lookupByEmail`。所以这里不需要一个并行的 `alert_slack_user` 配置。
     """
     s = _settings()
-    provider = (s.notify_provider or "feishu").strip().lower()
+    provider = _provider()
     return NotifyTarget(provider=provider, email=s.alert_email)
 
 
+@dual_send(_raw_provider)
 async def send_daily_report(target_date: date) -> Optional[bool]:
     """发一次日报。
 
@@ -78,6 +88,7 @@ async def send_daily_report(target_date: date) -> Optional[bool]:
     return await transport.send(target, msg)
 
 
+@dual_send(_raw_provider)
 async def send_focus_change(platform: str, action: str,
                             old_note: str, operator: str) -> bool:
     """「主要版本」变更通知。"""
@@ -106,6 +117,7 @@ async def send_focus_change(platform: str, action: str,
     return await transport.send(target, msg)
 
 
+@dual_send(_raw_provider)
 async def send_ops_alert(text: str) -> bool:
     """运维告警私聊。纯文本，两个渠道都不需要卡片。"""
     target = alert_target()

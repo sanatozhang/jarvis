@@ -29,7 +29,7 @@ import os
 from typing import Any, Dict, List
 
 from app.db import database as db
-from app.services.im import implemented_providers
+from app.services.im import BOTH, implemented_providers, selectable_providers
 
 logger = logging.getLogger("jarvis.notify_switch")
 
@@ -129,7 +129,7 @@ def status_for(module: str) -> Dict[str, Any]:
                        or getattr(s, "feishu_target_email", "") or "")
     token_ok = bool((get_settings().slack.bot_token or "").strip())
 
-    return {
+    row = {
         "module": module,
         "label": spec["label"],
         "provider": provider,
@@ -146,11 +146,16 @@ def status_for(module: str) -> Dict[str, Any]:
         },
         "slack_token_configured": token_ok,
     }
+    if has_channel:
+        # 双发：两边都得配齐，否则会"一边发了一边悄悄没发"。system 没有群/频道，不支持双发。
+        row["ready"]["both"] = bool(row["ready"]["feishu"] and row["ready"]["slack"])
+    return row
 
 
 def status() -> Dict[str, Any]:
     return {
         "implemented": list(implemented_providers()),
+        "selectable": list(selectable_providers()),
         "slack_token_configured": bool(status_for("crashguard")["slack_token_configured"]),
         "modules": [status_for(m) for m in _MODULES],
     }
@@ -162,8 +167,11 @@ async def set_provider(module: str, provider: str,
     if module not in _MODULES:
         raise ValueError(f"未知模块 {module!r}；可选：{modules()}")
     prov = (provider or "").strip().lower()
-    if prov not in implemented_providers():
-        raise ValueError(f"未实现的渠道 {provider!r}；可选：{list(implemented_providers())}")
+    if prov not in selectable_providers():
+        raise ValueError(f"未实现的渠道 {provider!r}；可选：{list(selectable_providers())}")
+    if prov == BOTH and not _MODULES[module].get("has_channel", True):
+        # system 是点对点私聊，没有"群/频道"；双发只对群/频道类通知有意义。
+        raise ValueError(f"{module} 是点对点私聊，不支持双发（both）")
     if slack_channel is not None and not _MODULES[module].get("has_channel", True):
         # 前端那一行不显示频道输入框；这里兜住直接调 API 的情况。不报错而是
         # 忽略：传了个空串（前端的默认形态）不该让切换失败。

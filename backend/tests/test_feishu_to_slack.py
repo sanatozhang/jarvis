@@ -40,8 +40,21 @@ def test_reads_both_v1_elements_and_v2_body_elements(v2):
     另一种会编译成一张只有标题的空卡，而且不报错。
     """
     msg = compile_card(_card([_div("**hi**")], v2=v2))
-    assert msg.payload[0]["type"] == "header"
-    assert msg.payload[1]["text"]["text"] == "*hi*"
+    # 带色条（template=red）：标题只放 text，不再额外放 header block（否则标题出现两次）
+    assert msg.text == "*标题*"
+    assert [b["type"] for b in msg.payload] == ["section"]
+    assert msg.payload[0]["text"]["text"] == "*hi*"
+
+
+def test_title_appears_once_with_color_and_as_header_without():
+    """attachment 模式下 Slack 会把 `text` 显示在顶部，header block 再放标题就重复。"""
+    colored = compile_card(_card([_div("x")], template="red"))
+    assert colored.text == "*标题*"
+    assert all(b["type"] != "header" for b in colored.payload)
+
+    plain = compile_card(_card([_div("x")], template=""))
+    assert plain.payload[0]["type"] == "header"
+    assert plain.text == "标题"
 
 
 @pytest.mark.parametrize("template,color", [
@@ -63,8 +76,8 @@ def test_hr_and_note_map_to_divider_and_context():
         {"tag": "note", "elements": [{"tag": "lark_md", "content": "小字 **说明**"}]},
     ]))
     types = [b["type"] for b in msg.payload]
-    assert types == ["header", "divider", "context"]
-    assert msg.payload[2]["elements"][0]["text"] == "小字 *说明*"
+    assert types == ["divider", "context"]
+    assert msg.payload[1]["elements"][0]["text"] == "小字 *说明*"
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +184,10 @@ def test_multiple_panels_keep_their_order():
     msg = compile_card(_card([
         _panel("A", [_div("a")]), _panel("B", [_div("b")]), _panel("C", [_div("c")]),
     ]))
-    assert [f.title for f in msg.folds] == ["A", "B", "C"]
+    # 多个折叠段合并成一条 thread 回复，段内顺序保持
+    assert len(msg.folds) == 1
+    body = json.dumps(msg.folds[0].blocks, ensure_ascii=False)
+    assert body.index("A") < body.index("B") < body.index("C")
 
 
 def test_nested_panels_are_flattened_to_one_level():
@@ -179,8 +195,9 @@ def test_nested_panels_are_flattened_to_one_level():
     msg = compile_card(_card([
         _panel("外层", [_div("x"), _panel("内层", [_div("y")])]),
     ]))
-    titles = [f.title for f in msg.folds]
-    assert "内层" in titles and "外层" in titles
+    assert len(msg.folds) == 1
+    body = json.dumps(msg.folds[0].blocks, ensure_ascii=False)
+    assert "内层" in body and "外层" in body
 
 
 def test_panel_inside_column_is_still_collected():
@@ -237,7 +254,8 @@ def test_real_crashguard_daily_card_compiles_within_limits():
     )
     msg = compile_card(card)
 
-    assert msg.payload[0]["type"] == "header"
+    assert all(b["type"] != "header" for b in msg.payload)
+    assert msg.text.startswith("*") and msg.text.endswith("*")
     assert msg.color == "#E01E5A"
     assert len(msg.payload) <= MAX_BLOCKS
     # 底部那个 v2 裸 button 必须活下来（它是读者跳回 Web 端的唯一入口）
@@ -250,3 +268,19 @@ def test_real_crashguard_daily_card_compiles_within_limits():
     for b in msg.payload:
         if b.get("type") == "section" and "text" in b:
             assert len(b["text"]["text"]) <= 3000
+
+
+def test_many_folds_merge_into_one_reply_unless_over_block_limit():
+    msg = compile_card(_card([_panel(f"P{i}", [_div(str(i))]) for i in range(6)]))
+    assert len(msg.folds) == 1          # 6 条 reply → 1 条
+
+
+def test_md_headings_bullets_and_cjk_bold_are_converted():
+    from app.services.im.mrkdwn import lark_md_to_mrkdwn
+
+    out = lark_md_to_mrkdwn("## 标题\n- 项 **x**受影响\n[a [String]](https://u)")
+    assert "#" not in out and "- " not in out
+    assert out.startswith("*标题*")
+    assert "• 项" in out
+    assert "*x*\u200b受影响" in out          # 紧贴汉字的加粗补零宽空格
+    assert "<https://u|a [String]>" in out   # 链接文本里的方括号不能断链

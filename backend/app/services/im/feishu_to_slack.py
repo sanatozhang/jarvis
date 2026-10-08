@@ -211,6 +211,25 @@ def _compile_elements(elements: List[Dict[str, Any]]) -> Tuple[List[dict], List[
     return blocks, folds
 
 
+def _merge_folds(folds: List[Fold]) -> List[Fold]:
+    """把所有折叠段合并成**一条** thread 回复（段间用分割线）。
+
+    飞书有 N 个折叠区就编译出 N 条回复，一张早报下面挂 5～6 条 reply，
+    读的人要逐条点开。合并后只有一条；超过 50 个 block 才拆成多条。
+    """
+    if len(folds) <= 1:
+        return folds
+    blocks: List[dict] = []
+    for i, f in enumerate(folds):
+        if i:
+            blocks.append(divider())
+        blocks.extend(f.blocks)
+    merged = []
+    for i in range(0, len(blocks), MAX_BLOCKS):
+        merged.append(Fold(title="详情", blocks=blocks[i:i + MAX_BLOCKS], text="详情"))
+    return merged
+
+
 def compile_card(card: Dict[str, Any]) -> Rendered:
     """飞书 interactive card → `Rendered`（Slack blocks + thread folds + 色条）。"""
     hdr = card.get("header") or {}
@@ -226,8 +245,15 @@ def compile_card(card: Dict[str, Any]) -> Rendered:
         elements = card.get("elements") or []
 
     blocks, folds = _compile_elements(elements)
-    if title:
+    color = _COLOR_BY_TEMPLATE.get(template, "")
+    # 带色条时 blocks 整体挂在 attachment 里，而 attachment 模式下 Slack 会把
+    # `text` 显示在消息顶部——再放一个 header block 标题就出现两次。
+    # 有色条：标题只用 text（加粗）；无色条：blocks 在顶层、text 只是通知栏
+    # 降级文本，header block 保留。
+    if title and not color:
         blocks.insert(0, header(title))
+    text = f"*{title}*" if (title and color) else (title or "jarvis 通知")
+    folds = _merge_folds(folds)
 
     # 撑爆 50 blocks 的后果是 invalid_blocks —— **整条消息发不出去**。
     # 溢出的部分进 thread 而不是直接丢：丢掉的恰恰是排在最后的详情段。
@@ -241,6 +267,6 @@ def compile_card(card: Dict[str, Any]) -> Rendered:
     return Rendered(
         payload=blocks,
         folds=tuple(folds),
-        text=title or "jarvis 通知",
-        color=_COLOR_BY_TEMPLATE.get(template, ""),
+        text=text,
+        color=color,
     )

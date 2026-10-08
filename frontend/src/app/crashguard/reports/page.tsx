@@ -164,6 +164,26 @@ function CrashReportsHistoryInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoOpenAlertId]);
 
+  // 深链：?type=morning&date=YYYY-MM-DD 打开当天早/晚报（Slack 早报的「查看完整早报」）。
+  // 早晚报没有稳定 id 可放进链接（发消息时还没落库），只能等列表加载后按日期匹配。
+  const [autoOpenDate, setAutoOpenDate] = useState<string | null>(
+    () => searchParams.get("date"),
+  );
+  useEffect(() => {
+    if (autoOpenDate === null || loading) return;
+    const hit = items.find(
+      (it) => it.kind === "daily" && it.report_date === autoOpenDate
+        && (filter === "all" || it.report_type === filter),
+    );
+    setAutoOpenDate(null);
+    if (hit) onOpen(hit);
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("date");
+    const qs = next.toString();
+    router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenDate, loading, items]);
+
   const loadDetail = useCallback(
     async (it: CrashReportHistoryItem, win: CrashWindowHours) => {
       setDetailLoading(true);

@@ -226,6 +226,7 @@ const EN: Record<string, string> = {
   "设备 SN": "Device SN",
   "Zendesk": "Zendesk",
   "飞书": "Feishu",
+  "双发": "Both",
   "状态": "Status",
   "操作": "Actions",
   "提交人": "Submitted by",

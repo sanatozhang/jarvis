@@ -22,19 +22,51 @@ from __future__ import annotations
 
 import re
 
-_LINK = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
+# 链接文本里允许一层 `[...]`：崩溃标题常含 `[String]` 这类方括号，
+# 原先的 `[^\]\n]+` 会在第一个 `]` 处断开，整条链接原样漏出来。
+_LINK = re.compile(r"\[((?:[^\[\]\n]|\[[^\]\n]*\])+)\]\(([^)\s]+)\)")
 _BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
 _UNDERLINE = re.compile(r"__(.+?)__", re.S)
+_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$", re.M)
+_BULLET = re.compile(r"^([ \t]*)[-+][ \t]+", re.M)
+_BOLD_SPAN = re.compile(r"\*[^*\n]+\*")
+
+_ZWSP = "\u200b"
+
+
+def _pad_cjk_bold(text: str) -> str:
+    """给紧贴着非空白字符的 `*bold*` 两侧补零宽空格。
+
+    Slack 的加粗标记要求前后是空白/标点，紧挨着汉字（`*727 人*受影响`、
+    `*98.42%*，较…`）会解析失败：星号原样显示、或者跟后面的星号错配把整句
+    弄成乱序加粗。零宽空格不可见，但能让 Slack 认出边界。
+    """
+    def fix(m: "re.Match[str]") -> str:
+        before = text[m.start() - 1] if m.start() > 0 else ""
+        after = text[m.end()] if m.end() < len(text) else ""
+        # `|` `<` `>` 是 Slack 链接语法的边界（`<url|*x*>`），本来就认得，不用补
+        lead = _ZWSP if before and not before.isspace() and before not in (_ZWSP, "|", "<") else ""
+        tail = _ZWSP if after and not after.isspace() and after not in (_ZWSP, ">") else ""
+        return f"{lead}{m.group(0)}{tail}"
+
+    return _BOLD_SPAN.sub(fix, text)
 
 
 def lark_md_to_mrkdwn(text: str) -> str:
-    """把一段飞书 lark_md 转成 Slack mrkdwn。空串原样返回。"""
+    """把一段飞书 lark_md 转成 Slack mrkdwn。空串原样返回。
+
+    除三条语法差异外，还处理 Slack 不支持、会原样漏出来的 markdown：
+    `#` 标题 → 加粗行，`- ` 列表 → `•`。
+    """
     if not text:
         return ""
     out = _LINK.sub(lambda m: f"<{m.group(2)}|{m.group(1)}>", text)
+    # 标题先于加粗：标题内部已有的 `**` 去掉，整行统一加粗，避免 `*a *b* c*` 嵌套
+    out = _HEADING.sub(lambda m: "**" + m.group(1).replace("**", "") + "**", out)
+    out = _BULLET.sub(r"\1• ", out)
     out = _BOLD.sub(r"*\1*", out)
     out = _UNDERLINE.sub(r"_\1_", out)
-    return out
+    return _pad_cjk_bold(out)
 
 
 # ---------------------------------------------------------------------------

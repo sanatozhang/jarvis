@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from app.services.im import NotifyTarget, Rendered, resolve_transport
+from app.services.im import NotifyTarget, Rendered, dual_send, effective_provider, resolve_transport
 
 logger = logging.getLogger("crashguard.notify")
 
@@ -59,6 +59,10 @@ def _settings():
     from app.crashguard.config import get_crashguard_settings
 
     return get_crashguard_settings()
+
+
+def _raw_provider() -> Any:
+    return getattr(_settings(), "notify_provider", None)
 
 
 def provider(s=None) -> str:
@@ -79,7 +83,7 @@ def provider(s=None) -> str:
     raw = getattr(s or _settings(), "notify_provider", None)
     if not isinstance(raw, str) or not raw.strip():
         return DEFAULT_PROVIDER
-    name = raw.strip().lower()
+    name = effective_provider(raw)  # both → 当前腿 / 默认渠道
     if name not in implemented_providers():
         logger.error("crashguard notify_provider=%r 不是已实现的渠道（%s），"
                      "本次按 %s 发送", raw, implemented_providers(), DEFAULT_PROVIDER)
@@ -138,6 +142,7 @@ async def _send(target: NotifyTarget, msg: Rendered, *, what: str) -> bool:
     return bool(ok)
 
 
+@dual_send(_raw_provider)
 async def send_alert(
     feishu_card: Dict[str, Any],
     slack: Optional[Callable[[], Rendered]] = None,
@@ -156,6 +161,7 @@ async def send_alert(
     return await _send(target, msg, what=what)
 
 
+@dual_send(_raw_provider)
 async def send_report(
     feishu_card: Dict[str, Any],
     slack: Optional[Callable[[], Rendered]] = None,
@@ -179,6 +185,7 @@ async def send_report(
     return ok
 
 
+@dual_send(_raw_provider)
 async def send_text(text: str, *, email: str = "", s=None, what: str = "text") -> bool:
     """纯文本点对点（PR 相关的几条通知用）。
 
@@ -196,6 +203,7 @@ async def send_text(text: str, *, email: str = "", s=None, what: str = "text") -
         return False
 
 
+@dual_send(_raw_provider)
 async def send_card_to(email: str, feishu_card: Dict[str, Any],
                        slack: Optional[Callable[[], Rendered]] = None,
                        *, s=None, what: str = "card") -> bool:

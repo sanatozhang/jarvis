@@ -2417,7 +2417,7 @@ async def send_daily_report(
         from app.crashguard.services import notify
         from app.crashguard.services.feishu_card import build_daily_card
         from app.services.im import NotifyTarget, Rendered, resolve_transport
-        from app.services.im.feishu_to_slack import compile_card
+        from app.crashguard.services.slack_daily import build_daily_slack
 
         card = build_daily_card(
             report_type=report_type,
@@ -2438,17 +2438,31 @@ async def send_daily_report(
         #    生产上 `feishu_target_email` 是空的所以走群；把它改成"群优先"
         #    在生产上看不出区别，但会让带 email_override 的手动触发悄悄发错
         #    地方。保持原样。
-        prov = notify.provider(s)
-        channel = (s.slack_channel if prov == "slack" else chat_id) or ""
-        target = (NotifyTarget(provider=prov, email=target_email) if target_email
-                  else NotifyTarget(provider=prov, channel=channel))
+        from app.services.im import dual_send
 
-        msg = compile_card(card) if prov == "slack" else Rendered(payload=card)
-        transport = resolve_transport(prov)
-        sent = await transport.send(target, msg)
-        if not sent:
-            logger.warning("daily_report 卡片发送失败，降级成纯文本再试一次")
-            sent = await transport.send_text(target, text)
+        @dual_send(notify._raw_provider)
+        async def _deliver() -> bool:
+            prov = notify.provider(s)
+            channel = (s.slack_channel if prov == "slack" else chat_id) or ""
+            target = (NotifyTarget(provider=prov, email=target_email) if target_email
+                      else NotifyTarget(provider=prov, channel=channel))
+
+            # Slack 不编译飞书卡片：折叠段会变成一串 thread 回复，单独排一版精简的
+            msg = (build_daily_slack(
+                report_type=report_type,
+                target_date=target_date.isoformat(),
+                payload=payload,
+                frontend_base_url=s.frontend_base_url or "http://localhost:3000",
+                coreguard_section=coreguard_section,
+            ) if prov == "slack" else Rendered(payload=card))
+            transport = resolve_transport(prov)
+            ok = await transport.send(target, msg)
+            if not ok:
+                logger.warning("daily_report 卡片发送失败，降级成纯文本再试一次")
+                ok = await transport.send_text(target, text)
+            return bool(ok)
+
+        sent = bool(await _deliver())
     except Exception:
         logger.exception("crashguard daily_report send failed")
         sent = False
