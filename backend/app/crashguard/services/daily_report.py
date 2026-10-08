@@ -2241,6 +2241,27 @@ async def _auto_analyze_attention(issue_ids: List[str]) -> int:
     return completed
 
 
+# 报告页的 markdown 缓存只留这么多天；更早的清空，点开时现算（行本身保留，历史列表要用）
+REPORT_MARKDOWN_RETENTION_DAYS = 30
+
+
+async def prune_report_markdown_cache(session, *, today: Optional[date] = None) -> int:
+    """清掉超过保留期的 report_markdown，返回清掉的行数。失败不影响主流程。"""
+    from sqlalchemy import update
+    cutoff = (today or date.today()) - timedelta(days=REPORT_MARKDOWN_RETENTION_DAYS)
+    try:
+        res = await session.execute(
+            update(CrashDailyReport)
+            .where(CrashDailyReport.report_date < cutoff, CrashDailyReport.report_markdown != "")
+            .values(report_markdown="")
+        )
+        await session.commit()
+        return int(res.rowcount or 0)
+    except Exception:
+        logger.exception("prune report_markdown cache failed (non-fatal)")
+        return 0
+
+
 async def send_daily_report(
     report_type: str,
     target_date: date | None = None,
@@ -2489,6 +2510,7 @@ async def send_daily_report(
                 surge_count=surge_count,
                 feishu_message_id="sent" if sent else "",
                 report_payload=_json.dumps(payload, ensure_ascii=False),
+                report_markdown=text,
                 created_at=datetime.utcnow(),
             )
             session.add(row)
@@ -2502,8 +2524,10 @@ async def send_daily_report(
             existing.surge_count = surge_count
             existing.feishu_message_id = "sent" if sent else existing.feishu_message_id
             existing.report_payload = _json.dumps(payload, ensure_ascii=False)
+            existing.report_markdown = text
             await session.commit()
             persisted_id = existing.id
+        await prune_report_markdown_cache(session)
 
     # audit
     try:

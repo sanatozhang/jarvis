@@ -221,6 +221,9 @@ class CrashDailyReport(Base):
     surge_count = Column(Integer, default=0)
     feishu_message_id = Column(String(128), default="")
     report_payload = Column(Text, default="{}")  # JSON
+    # 发送时那份完整 markdown 的缓存：报告页直接读，不再每次重跑 compose_report
+    # （要重新拉 Datadog，30-60s，前端会超时）。超过 REPORT_MARKDOWN_RETENTION_DAYS 的清空。
+    report_markdown = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (

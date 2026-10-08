@@ -31,10 +31,14 @@ def _payload(**over):
                 "ANDROID": {"crash_free_users_pct": 98.9711, "crashed_users": 129, "total_users": 12538},
             }},
             "top_user_versions": {"platforms": {
-                "IOS": {"version": "3.29.1-739"}, "ANDROID": {"version": "3.29.1-739"},
+                "IOS": {"version": "3.29.1-739", "share_of_platform_pct": 90.02,
+                        "crash_free_users_pct": 98.3799, "crashed_users": 637, "total_users": 39318},
+                "ANDROID": {"version": "3.29.1-739", "share_of_platform_pct": 93.16,
+                            "crash_free_users_pct": 99.0781, "crashed_users": 109, "total_users": 11823},
             }},
             "latest_versions": {"platforms": {
-                "IOS": {"version": "4.0.302-1203", "crash_free_users_pct": 85.7708, "total_users": 253},
+                "IOS": {"version": "4.0.302-1203", "crash_free_users_pct": 85.7708,
+                        "crashed_users": 36, "total_users": 253},
                 "ANDROID": {"version": "3.29.1-739", "crash_free_users_pct": 99.0, "total_users": 11823},
             }},
         },
@@ -89,14 +93,20 @@ def test_must_see_omitted_when_absent():
     assert "必看" not in _all_text(_render(p))
 
 
-def test_crash_free_two_columns_with_latest_build_only_when_different():
+def test_crash_free_columns_split_overall_main_and_latest():
     r = _render()
     cf = next(b for b in r.payload if "fields" in b)
     ios, android = (f["text"] for f in cf["fields"])
-    assert "98.25%" in ios and "727 / 41,484" in ios and "+20% vs 上周" in ios
-    assert "4.0.302-1203" in ios and "85.77%" in ios
-    # Android 最新版就是主要版本 → 不重复列
-    assert "新版" not in android
+    # 大盘
+    assert "_大盘_" in ios and "98.25%" in ios and "727 / 41,484" in ios and "+20% vs 上周" in ios
+    # 主要版本单独一段
+    assert "_主要版本_ `3.29.1-739`（占 90%）" in ios
+    assert "98.38%" in ios and "637 / 39,318" in ios
+    # 新版单独一段
+    assert "_新版_ `4.0.302-1203`" in ios and "85.77%" in ios and "36 / 253" in ios
+    assert ios.index("大盘") < ios.index("主要版本") < ios.index("新版")
+    # Android 新版就是主要版本 → 不重复列
+    assert "新版" not in android and "主要版本" in android
     # 上周 316 < 500 → 不给百分比
     assert "基数小" in android
 

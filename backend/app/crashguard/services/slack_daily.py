@@ -8,7 +8,7 @@ Slack 版单独排版，只保留一屏能读完的东西，其余收进一个�
 |---|---|---|
 | 总判断（headline） | 主消息首行 | 去掉"建议工程师跟进"这类话术，只留数字 |
 | 今日重点 + 必看 | 主消息 | 必看只在有异常 issue 时出现 |
-| Crash-free 详表 | 主消息，原生两列 | 只留 crash-free / 崩溃用户 / fatal 同比 / 灰度新版 |
+| Crash-free 详表 | 主消息，原生两列 | 大盘 / 主要版本 / 新版分开列，各自 crash-free + 崩溃用户；大盘带 fatal 同比 |
 | 数据口径、昨日承诺、4.0 Native、卡顿、关注点 Top3、分平台明细、核心指标详表 | 不发 | 全部在「查看完整早报」链接里 |
 
 **不发 thread**：没有 fold，消息就是完整的一条。飞书卡片不受影响。
@@ -98,37 +98,46 @@ def _focus_lines(tldr: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _tier_lines(stats: Dict[str, Any]) -> List[str]:
+    """一个口径（大盘 / 主要版本 / 新版）的 crash-free + 崩溃用户两行。"""
+    out: List[str] = []
+    cf = stats.get("crash_free_users_pct")
+    if cf is None:
+        cf = stats.get("crash_free_pct")
+    if cf is not None:
+        out.append(f"crash-free  **{float(cf):.2f}%**")
+    if int(stats.get("total_users") or 0) > 0:
+        out.append(f"崩溃用户  {int(stats.get('crashed_users') or 0):,} / {int(stats['total_users']):,}")
+    return out
+
+
 def _crash_free_column(label: str, all_stats: Optional[Dict[str, Any]],
                        main_stats: Optional[Dict[str, Any]],
                        latest_stats: Optional[Dict[str, Any]],
                        wow: Optional[Dict[str, Any]]) -> str:
+    """单平台一栏：大盘 / 主要版本 / 新版 三个口径分开列，各自 crash-free + 崩溃用户。"""
     lines = [f"**{label}**"]
     if all_stats:
-        cf = all_stats.get("crash_free_users_pct")
-        if cf is None:
-            cf = all_stats.get("crash_free_pct")
-        if cf is not None:
-            lines.append(f"crash-free  **{float(cf):.2f}%**")
-        if int(all_stats.get("total_users") or 0) > 0:
-            lines.append(f"崩溃用户  {int(all_stats.get('crashed_users') or 0):,}"
-                         f" / {int(all_stats['total_users']):,}")
-    if wow:
-        min_today, min_base = _fatal_thresholds()
-        today = int(wow.get("today_fatal") or 0)
-        if today < min_today or int(wow.get("baseline_fatal") or 0) < min_base:
-            cmp = "基数小"
-        else:
-            cmp = f"{_pct(wow.get('fatal_delta_pct'))} vs 上周"
-        lines.append(f"fatal  {today:,}（{cmp}）")
-    # 灰度新版：只在它跟主要版本不是同一个 build 时才单列，否则就是重复的一行
+        lines.append("__大盘__")
+        lines.extend(_tier_lines(all_stats))
+        if wow:
+            min_today, min_base = _fatal_thresholds()
+            today = int(wow.get("today_fatal") or 0)
+            if today < min_today or int(wow.get("baseline_fatal") or 0) < min_base:
+                cmp = "基数小"
+            else:
+                cmp = f"{_pct(wow.get('fatal_delta_pct'))} vs 上周"
+            lines.append(f"fatal  {today:,}（{cmp}）")
+    if main_stats and main_stats.get("version"):
+        share = main_stats.get("share_of_platform_pct")
+        share_str = f"（占 {float(share):.0f}%）" if share is not None else ""
+        lines.append(f"__主要版本__ `{main_stats['version']}`{share_str}")
+        lines.extend(_tier_lines(main_stats))
+    # 新版跟主要版本是同一个 build 时不重复列
     if latest_stats and latest_stats.get("version") and (
             not main_stats or latest_stats.get("version") != main_stats.get("version")):
-        cf = latest_stats.get("crash_free_users_pct")
-        if cf is None:
-            cf = latest_stats.get("crash_free_pct")
-        if cf is not None:
-            lines.append(f"新版 `{latest_stats['version']}`  **{float(cf):.2f}%**"
-                         f"（{int(latest_stats.get('total_users') or 0):,} 人）")
+        lines.append(f"__新版__ `{latest_stats['version']}`")
+        lines.extend(_tier_lines(latest_stats))
     return "\n".join(lines)
 
 

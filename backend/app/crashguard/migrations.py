@@ -84,6 +84,8 @@ _REQUIRED_COLUMNS: List[Tuple[str, str, str, str]] = [
     ("crash_issues", "jank_prewarm_attempts", "INTEGER", "0"),
     ("crash_issues", "jank_prewarm_last_error", "TEXT", "''"),
     ("crash_issues", "jank_prewarm_last_at", "DATETIME", "NULL"),
+    # 2026-10-08：早晚报完整 markdown 缓存（报告页秒开，见 CrashDailyReport.report_markdown）
+    ("crash_daily_reports", "report_markdown", "TEXT", "''"),
 ]
 
 

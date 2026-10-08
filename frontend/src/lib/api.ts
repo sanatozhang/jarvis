@@ -1833,7 +1833,10 @@ export const fetchCrashReportDetail = (id: number, window_hours?: CrashWindowHou
     markdown: string;
     payload: Record<string, unknown>;
     created_at: string | null;
-  }>(`/crash/reports/${id}${qs}`);
+  }>(`/crash/reports/${id}${qs}`, {
+    // 24h 视图走后端缓存秒回；7d/14d/30d 或缓存缺失时要现算（拉 Datadog 30-60s），默认 15s 会被中断
+    timeoutMs: 120_000,
+  });
 };
 
 export interface CrashJobStatusItem {
