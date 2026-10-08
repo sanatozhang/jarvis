@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from app.config import get_settings
 from app.db import database as db
 from app.graygate.config import get_graygate_settings
 from app.graygate.services import notify
@@ -136,7 +137,8 @@ def _resolve_caller(request: Request, x_api_key: Optional[str]) -> str:
     因为写路径完全不鉴权、任何人都能匿名调用——changed_by 记成 "aeolus" 只是
     "记录了变化"，没解决"谁都能改"这个根问题。改成：
     - SSO 登录态（浏览器 /settings 页面）→ 用邮箱识别，不需要额外带 key；
-    - 没有登录态 → 必须在 `X-Graygate-Api-Key` header 带上配置好的密钥之一
+    - 没有登录态 → （SSO 关闭的内网部署且没带 key 时放行，记为 internal-ui@IP）
+      否则必须在 `X-Graygate-Api-Key` header 带上配置好的密钥之一
       （`graygate_api_key_jarvis` / `graygate_api_key_runway`，每个调用方一把，
       互不相同），命中哪把就记为哪个调用方；一把都不匹配直接 401。
     """
@@ -152,9 +154,18 @@ def _resolve_caller(request: Request, x_api_key: Optional[str]) -> str:
     }
     key_map.pop("", None)  # 未配置的密钥是空字符串，不能被空 header 命中
     caller = key_map.get(x_api_key or "")
-    if not caller:
-        raise HTTPException(status_code=401, detail="missing or invalid X-Graygate-Api-Key")
-    return caller
+    if caller:
+        return caller
+
+    # 内网部署（102）关了 SSO：浏览器 /settings 页没有登录态也没有 key，这条路径
+    # 不放行的话设置页永远 401（前端还会把 401 当 SSO 过期跳 /login）。只放行
+    # "没带 key"的请求——带了错 key 仍然是 401；changed_by 带上来源 IP，保留
+    # "谁改的"可追溯性（09-16 排查不明调用方就是缺这个）。
+    if not x_api_key and not get_settings().sso.enabled:
+        ip = request.client.host if request.client else "unknown"
+        return f"internal-ui@{ip}"
+
+    raise HTTPException(status_code=401, detail="missing or invalid X-Graygate-Api-Key")
 
 
 @router.post("/focus-version")

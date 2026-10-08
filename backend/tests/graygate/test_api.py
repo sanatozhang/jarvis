@@ -251,7 +251,8 @@ async def test_set_focus_version_runway_key_is_attributed_to_runway(api_client):
 async def test_set_focus_version_without_key_or_sso_is_rejected(api_client):
     """2026-09-16 铁律：没有 SSO 登录态、没带合法 key 的写请求一律 401——
     102 上实测发现有不明调用方靠"完全不鉴权"反复覆盖这个值，改成强制鉴权。"""
-    with patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+    with patch.object(graygate_api, "get_settings", return_value=_sso(True)), \
+         patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
          patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set:
         resp = await api_client.post(
             "/api/graygate/focus-version", json={"platform": "ios", "version": "4.0.302-1050"},
@@ -360,3 +361,56 @@ async def test_focus_version_history_delegates_to_service(api_client):
 async def test_focus_version_history_invalid_platform_returns_400(api_client):
     resp = await api_client.get("/api/graygate/focus-version/history", params={"platform": "windows"})
     assert resp.status_code == 400
+
+
+def _sso(enabled: bool) -> SimpleNamespace:
+    return SimpleNamespace(sso=SimpleNamespace(enabled=enabled))
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_sso_disabled_allows_keyless_ui_and_records_ip(api_client):
+    """内网部署关了 SSO：设置页没登录态也没 key，放行，changed_by 记来源 IP。"""
+    with patch.object(graygate_api, "get_settings", return_value=_sso(False)), \
+         patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set, \
+         patch.object(graygate_api, "get_all_focus_versions", new=AsyncMock(
+             return_value={"ios": "4.0.302-1203", "android": None}
+         )):
+        resp = await api_client.post(
+            "/api/graygate/focus-version",
+            json={"platform": "ios", "version": "4.0.302-1203"},
+        )
+
+    assert resp.status_code == 200
+    args, kwargs = mock_set.await_args
+    assert args == ("ios", "4.0.302-1203")
+    assert kwargs["changed_by"].startswith("internal-ui@")
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_sso_disabled_still_rejects_wrong_key(api_client):
+    with patch.object(graygate_api, "get_settings", return_value=_sso(False)), \
+         patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set:
+        resp = await api_client.post(
+            "/api/graygate/focus-version",
+            json={"platform": "ios", "version": "4.0.302-1203"},
+            headers={"X-Graygate-Api-Key": "not-a-real-key"},
+        )
+
+    assert resp.status_code == 401
+    mock_set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_focus_version_sso_enabled_still_rejects_keyless(api_client):
+    with patch.object(graygate_api, "get_settings", return_value=_sso(True)), \
+         patch.object(graygate_api, "get_graygate_settings", return_value=_settings()), \
+         patch.object(graygate_api, "set_focus_version", new=AsyncMock()) as mock_set:
+        resp = await api_client.post(
+            "/api/graygate/focus-version",
+            json={"platform": "ios", "version": "4.0.302-1203"},
+        )
+
+    assert resp.status_code == 401
+    mock_set.assert_not_awaited()
