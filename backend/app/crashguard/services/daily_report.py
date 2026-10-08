@@ -2417,7 +2417,7 @@ async def send_daily_report(
         from app.crashguard.services import notify
         from app.crashguard.services.feishu_card import build_daily_card
         from app.services.im import NotifyTarget, Rendered, resolve_transport
-        from app.services.im.feishu_to_slack import compile_card
+        from app.crashguard.services.slack_daily import build_daily_slack
 
         card = build_daily_card(
             report_type=report_type,
@@ -2447,7 +2447,14 @@ async def send_daily_report(
             target = (NotifyTarget(provider=prov, email=target_email) if target_email
                       else NotifyTarget(provider=prov, channel=channel))
 
-            msg = compile_card(card) if prov == "slack" else Rendered(payload=card)
+            # Slack 不编译飞书卡片：折叠段会变成一串 thread 回复，单独排一版精简的
+            msg = (build_daily_slack(
+                report_type=report_type,
+                target_date=target_date.isoformat(),
+                payload=payload,
+                frontend_base_url=s.frontend_base_url or "http://localhost:3000",
+                coreguard_section=coreguard_section,
+            ) if prov == "slack" else Rendered(payload=card))
             transport = resolve_transport(prov)
             ok = await transport.send(target, msg)
             if not ok:
