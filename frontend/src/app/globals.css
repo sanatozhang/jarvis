@@ -303,3 +303,63 @@ html.theme-anim, html.theme-anim * {
   font-size: 13px;
 }
 
+
+/* MarkdownText 通用排版（早晚报 / 小时告警详情）：GFM 表格、标题、引用、分隔线 */
+.md-text h1, .md-text h2 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--j-ink);
+  margin: 20px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--j-border);
+}
+.md-text h3, .md-text h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--j-graphite);
+  margin: 14px 0 6px;
+}
+.md-text > :first-child { margin-top: 0; }
+.md-text hr {
+  border: none;
+  border-top: 1px dashed var(--j-border);
+  margin: 16px 0;
+}
+.md-text blockquote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--j-accent);
+  background: var(--j-accent-soft);
+  border-radius: 0 6px 6px 0;
+  color: var(--j-graphite);
+  font-size: 12px;
+}
+.md-text blockquote p { margin: 0; }
+.md-text a { color: var(--j-accent); text-decoration: underline; text-underline-offset: 2px; }
+.md-text .md-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0 12px;
+  border: 1px solid var(--j-border);
+  border-radius: 8px;
+}
+.md-text table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.md-text th, .md-text td {
+  padding: 6px 12px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--j-border-sm);
+}
+.md-text th {
+  background: var(--j-surface);
+  color: var(--j-graphite);
+  font-weight: 600;
+}
+.md-text td:first-child { color: var(--j-graphite); }
+.md-text tbody tr:last-child td { border-bottom: none; }
+.md-text tbody tr:hover td { background: var(--j-hover); }
+.md-text td em { color: var(--j-faint); font-style: normal; font-size: 11px; }
