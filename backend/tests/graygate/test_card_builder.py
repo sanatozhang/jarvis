@@ -266,3 +266,18 @@ async def test_build_report_card_shows_active_users_for_market_tier(monkeypatch)
     result = await _run_build_report_card_with(monkeypatch, None)
     ios_col = _ios_column_text(result)
     assert "· 活跃用户数（session 代理）：1,005" in ios_col
+
+
+@pytest.mark.asyncio
+async def test_collect_report_data_fills_structured_tiers_for_web_and_slack(monkeypatch):
+    """2026-10-09：网页端完整表 / Slack 精简版从 `tiers` 取数，取数路径必须填好，
+    且跟飞书列的口径一致（人工指定版本、session 数、样本门槛）。"""
+    await _run_build_report_card_with(monkeypatch, "4.0.302-2000")
+    data = await cb.collect_report_data(date(2026, 8, 18))
+    ios_market, ios_primary = data.tiers["ios"]
+    assert (ios_market.label, ios_market.sessions) == ("大盘", 1005)
+    assert (ios_primary.version, ios_primary.sessions, ios_primary.manual) == ("4.0.302-2000", 5, True)
+    assert ios_market.cells["fps"] == "60.00"
+    assert ios_primary.cells["fps"] == "—（样本不足）"   # 5 sessions 低于样本门槛
+    assert [t.label for t in data.tiers["android"]] == ["大盘", "主要版本"]
+    assert data.metric_rows == [("fps", "FPS", False)]

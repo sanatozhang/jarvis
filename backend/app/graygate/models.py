@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String
+from sqlalchemy import Boolean, Column, Date, DateTime, Index, Integer, String, Text
 
 from app.db.database import Base
 
@@ -31,3 +31,24 @@ class GraygateFocusVersionAudit(Base):
     __table_args__ = (
         Index("ix_graygate_focus_version_audit_platform_time", "platform", "changed_at"),
     )
+
+
+class GraygateDailyReport(Base):
+    """每日灰度日报的落库记录 + 网页端完整版 markdown 缓存（2026-10-09）。
+
+    Slack 主消息只放核心指标，「查看完整日报 →」跳前端读这里的 `report_markdown`；
+    现算要把 Datadog 再查一遍（几十个指标 × 两平台 × 三个时间窗），所以发送时就存下来。
+    超过保留期的只清空 markdown、保留行（列表页要用），点开时在 Datadog 保留期内现算回填。
+    """
+
+    __tablename__ = "graygate_daily_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_date = Column(Date, nullable=False, unique=True, index=True)  # BJT 日历日（"昨日"）
+    title = Column(String(128), default="")
+    is_red = Column(Boolean, default=False)
+    worsen_count = Column(Integer, default=0)
+    new_crash_count = Column(Integer, default=0)
+    report_markdown = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)

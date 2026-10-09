@@ -58,6 +58,16 @@ const EN: Record<string, string> = {
 
   // Crashguard
   "崩溃看板": "Crash Dashboard",
+  "灰度日报": "Gray Release Report",
+  "4.0.3 灰度 · 每日指标": "4.0.3 Gray Release · Daily Metrics",
+  "Slack 只推核心指标，这里是完整日报（全部指标 · 新增崩溃堆栈 · Top5 崩溃 / 卡顿）":
+    "Slack only shows core metrics; this is the full report (all metrics · new crash stacks · Top 5 crashes / jank)",
+  "暂无日报": "No reports yet",
+  "项恶化": "worsened",
+  "个新增崩溃": "new crashes",
+  "无恶化": "No regressions",
+  "首次打开需要现算（重新查询 Datadog），最多约 1 分钟…": "Generating on first open (re-querying Datadog), up to ~1 min…",
+  "选择左侧日期查看日报": "Pick a date on the left",
   "发布管理": "Release",
   "快照日期": "Snapshot date",
   "Datadog 未配置": "Datadog not configured",

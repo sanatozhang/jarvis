@@ -61,29 +61,39 @@ def alert_target() -> NotifyTarget:
     return NotifyTarget(provider=provider, email=s.alert_email)
 
 
-@dual_send(_raw_provider)
 async def send_daily_report(target_date: date) -> Optional[bool]:
     """发一次日报。
 
     返回 `None` 表示**没有数据可报**（两平台版本枚举都空），这跟"发送失败"
     是两回事——调用方要把它记成 `available=False` 而不是 `degraded`。
+
+    取数只跑一次（provider=both 时两条腿共用同一份 `GraygateReportData`，
+    以前每条腿各查一遍 Datadog），发送前先把网页端完整版落库缓存——Slack 的
+    「查看完整日报 →」读的就是它。缓存写失败不影响发送（`save_report` 自己兜底）。
     """
+    from app.graygate.services.card_builder import collect_report_data
+    from app.graygate.services.report_store import save_report
+
+    data = await collect_report_data(target_date)
+    if data is None:
+        return None
+    await save_report(data)
+    return await _send_report_data(data)
+
+
+@dual_send(_raw_provider)
+async def _send_report_data(data) -> bool:
     target = report_target()
     transport = resolve_transport(target.provider)
 
     if target.provider == "slack":
-        from app.graygate.services.slack_report import build_report_message
+        from app.graygate.services.slack_report import assemble_slack_message, report_url_for
 
-        msg = await build_report_message(target_date)
-        if msg is None:
-            return None
+        msg = assemble_slack_message(data, report_url_for(data.target_date))
     else:
-        from app.graygate.services.card_builder import build_report_card
+        from app.graygate.services.card_builder import assemble_feishu_card
 
-        report = await build_report_card(target_date)
-        if not report.available:
-            return None
-        msg = Rendered(payload=report.card)
+        msg = Rendered(payload=assemble_feishu_card(data))
 
     return await transport.send(target, msg)
 

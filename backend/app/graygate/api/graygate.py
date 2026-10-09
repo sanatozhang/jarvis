@@ -86,9 +86,9 @@ async def trigger_report(
     }
     if data is not None:
         if provider == "slack":
-            from app.graygate.services.slack_report import assemble_slack_message
+            from app.graygate.services.slack_report import assemble_slack_message, report_url_for
 
-            msg = assemble_slack_message(data)
+            msg = assemble_slack_message(data, report_url_for(resolved_date))
             result["blocks"] = msg.payload
             result["thread_folds"] = [f.title for f in msg.folds]
         else:
@@ -204,3 +204,27 @@ async def get_focus_version_history_endpoint(
     if platform and platform not in ("ios", "android"):
         raise HTTPException(status_code=400, detail="platform must be 'ios' or 'android'")
     return {"items": await get_focus_version_audit_history(platform or "", limit)}
+
+
+@router.get("/reports")
+async def list_reports_endpoint(limit: int = Query(60, ge=1, le=200)) -> dict:
+    """已发送的日报列表（新→旧），只读。"""
+    from app.graygate.services.report_store import list_reports
+
+    return {"items": await list_reports(limit)}
+
+
+@router.get("/reports/{report_date}")
+async def get_report_endpoint(report_date: str) -> dict:
+    """某天的完整日报（网页端，Slack「查看完整日报 →」跳这里）。
+
+    优先读发送时缓存的 markdown；缺失（老报告 / 缓存被清）且在保留期内时现算一次
+    并回填——现算要把 Datadog 全查一遍，可能几十秒，前端超时放宽到 120s。
+    """
+    from app.graygate.services.report_store import ensure_report_markdown
+
+    try:
+        d = date.fromisoformat(report_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {report_date}")
+    return await ensure_report_markdown(d)

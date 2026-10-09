@@ -162,8 +162,9 @@ async def test_slack_provider_does_not_touch_feishu():
     feishu = AsyncMock(return_value=True)
     with patch.object(gnotify, "_settings", return_value=_settings("slack")), \
          patch("app.services.feishu_cli.send_interactive_card", feishu), \
-         patch("app.graygate.services.slack_report.build_report_message",
-               AsyncMock(return_value=assemble_slack_message(_data()))), \
+         patch("app.graygate.services.card_builder.collect_report_data",
+               AsyncMock(return_value=_data())), \
+         patch("app.graygate.services.report_store.save_report", AsyncMock()), \
          patch("app.services.slack_cli.post_message",
                AsyncMock(return_value="1790.1")) as post:
         ok = await gnotify.send_daily_report(date(2026, 8, 18))
@@ -177,6 +178,6 @@ async def test_no_data_returns_none_not_false():
     """"没有数据可报"和"发送失败"必须分得开：前者 status=success，
     后者 status=degraded 且要私聊告警。"""
     with patch.object(gnotify, "_settings", return_value=_settings("slack")), \
-         patch("app.graygate.services.slack_report.build_report_message",
+         patch("app.graygate.services.card_builder.collect_report_data",
                AsyncMock(return_value=None)):
         assert await gnotify.send_daily_report(date(2026, 8, 18)) is None

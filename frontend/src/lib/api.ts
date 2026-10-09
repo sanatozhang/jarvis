@@ -2645,6 +2645,31 @@ export const triggerGraygateReport = (
     { method: "POST", timeoutMs: 120_000 },
   );
 
+// 灰度日报网页端完整版（2026-10-09）：Slack 只放核心指标，「查看完整日报 →」跳
+// /graygate/reports?date=...；详情优先读发送时缓存的 markdown，缺失时后端现算（可能几十秒）
+export interface GraygateReportItem {
+  date: string;
+  title: string;
+  is_red: boolean;
+  worsen_count: number;
+  new_crash_count: number;
+  has_markdown?: boolean;
+  updated_at?: string | null;
+}
+
+export interface GraygateReportDetail extends GraygateReportItem {
+  markdown: string;
+  cached: boolean;
+}
+
+export const listGraygateReports = (limit = 60) =>
+  request<{ items: GraygateReportItem[] }>(`/graygate/reports?limit=${limit}`);
+
+export const getGraygateReport = (date: string) =>
+  request<GraygateReportDetail>(`/graygate/reports/${encodeURIComponent(date)}`, {
+    timeoutMs: 120_000,  // 缓存缺失时后端要把 Datadog 重查一遍
+  });
+
 // ============================================================
 // Ad-hoc 堆栈符号化工作台（2026-09-22）
 // 页面：/crashguard/symbolicate

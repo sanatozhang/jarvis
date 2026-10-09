@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -61,6 +61,21 @@ class GraygateReportCard:
 class _Cell:
     value: Optional[CellValue]
     sentinel: Optional[str]
+
+
+@dataclass
+class TierSummary:
+    """一个平台下一层口径（大盘 / 主要版本）的展示数据，已格式化。
+
+    `columns_md` 是给飞书 column_set 拼好的整段 lark_md，没法再拆成表格；网页端
+    完整日报（指标 × 平台口径 的表）和 Slack 精简版（只挑核心指标）都从这里取。
+    """
+
+    label: str                    # "大盘" / "主要版本"
+    version: Optional[str]        # 大盘是 version_pattern；主要版本未判定出来时为 None
+    sessions: Optional[int]
+    manual: bool                  # 主要版本是否人工指定
+    cells: Dict[str, str]         # metric key → 带色点的格式化值 / sentinel 文案
 
 
 def _window_ms(day: date) -> Tuple[int, int]:
@@ -397,6 +412,7 @@ async def _build_platform_column(
     d1_ms: Tuple[int, int],
     d2_ms: Tuple[int, int],
     worsen_candidates: List[_WorsenCandidate],
+    tiers_out: Optional[List[TierSummary]] = None,
 ) -> str:
     core_metrics = [m for m in metrics if m.key in _CORE_WORSEN_KEYS]
     lines: List[str] = [f"**{_PLATFORM_LABEL[platform]}**", ""]
@@ -418,6 +434,11 @@ async def _build_platform_column(
     )
     lines.append("")
     _collect("大盘", market_today, market_d1, market_d2)
+    if tiers_out is not None:
+        tiers_out.append(TierSummary(
+            "大盘", version_pattern, pv.total_events, False,
+            {m.key: _fmt_cell_value(m, market_today[m.key]) for m in metrics},
+        ))
 
     # 主要版本：优先用人工指定的 focus version（发新版本时运营手动设置，见
     # services/focus_version.py）；未设置时回落到 session 数自动判定的 top_version。
@@ -441,8 +462,17 @@ async def _build_platform_column(
             metrics, primary_today,
         )
         _collect("主要版本", primary_today, primary_d1, primary_d2)
+        if tiers_out is not None:
+            tiers_out.append(TierSummary(
+                "主要版本", primary_version, primary_sessions, bool(override_version),
+                {m.key: _fmt_cell_value(m, primary_today[m.key]) for m in metrics},
+            ))
     else:
         lines += _tier_md("__主要版本__", metrics, None, _NO_DATA)
+        if tiers_out is not None:
+            tiers_out.append(TierSummary(
+                "主要版本", None, None, False, {m.key: _NO_DATA for m in metrics},
+            ))
 
     return "\n".join(lines)
 
@@ -514,6 +544,11 @@ class GraygateReportData:
     new_crash_md: Optional[str]
     top_crash_md: Optional[str]
     top_jank_md: Optional[str]
+    # 以下是给网页端完整日报 / Slack 精简版的结构化数据，飞书卡片不用。
+    # 带默认值：老代码/测试只传上面那些字段时照常工作（渲染端会回落到 columns_md）。
+    metric_rows: List[Tuple[str, str, bool]] = field(default_factory=list)  # (key, 展示名, 是否核心指标)
+    tiers: Dict[str, List[TierSummary]] = field(default_factory=dict)       # platform → [大盘, 主要版本]
+    new_crash_count: int = 0
 
     @property
     def is_red(self) -> bool:
@@ -560,12 +595,14 @@ async def collect_report_data(target_date: date) -> Optional[GraygateReportData]
 
     worsen_candidates: List[_WorsenCandidate] = []
     columns_md: List[str] = []
+    tiers: Dict[str, List[TierSummary]] = {}
     for platform, pv in (("ios", ios_v), ("android", android_v)):
+        tiers[platform] = []
         col_md = await _build_platform_column(
             dashboard_json, metrics_config.metrics, platform, pv,
             settings.version_pattern, settings.min_sessions,
             metrics_config.template_variables, today_ms, d1_ms, d2_ms,
-            worsen_candidates,
+            worsen_candidates, tiers[platform],
         )
         columns_md.append(col_md)
 
@@ -584,6 +621,9 @@ async def collect_report_data(target_date: date) -> Optional[GraygateReportData]
         new_crash_md=_build_new_crash_md(new_crashes),
         top_crash_md=_build_top_crash_md(top_crashes),
         top_jank_md=_build_top_jank_md(top_jank),
+        metric_rows=[(m.key, _metric_name(m), m.key in _CORE_WORSEN_KEYS) for m in metrics_config.metrics],
+        tiers=tiers,
+        new_crash_count=len(new_crashes),
     )
 
 
