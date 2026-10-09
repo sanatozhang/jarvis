@@ -48,6 +48,21 @@ class MetricConfig:
     datadog_widget_id: Optional[int] = None
     # Datadog widget 自带方向声明（requests[0].comparison.directionality）— 方向真相源
     dd_directionality: Optional[str] = None
+    # 英文标题（Slack 出口专用；飞书仍用 title）。yaml 未配时为空，用 `english_title()` 兜底。
+    # ⚠️ 不要拿它去跟 Datadog widget title 比对——那里认的是 `title`。
+    title_en: str = ""
+
+
+def english_title(title_en: Optional[str], title: Optional[str], key: Optional[str]) -> str:
+    """Slack 出口用的指标名：title_en → 纯 ASCII 的 title → key → "metric"。
+
+    Slack 消息必须全英文（2026-10-09），中文 title 宁可退回 key 也不能漏出去。
+    """
+    for cand in (title_en, title):
+        c = (cand or "").strip()
+        if c and c.isascii():
+            return c
+    return (key or "").strip() or "metric"
 
 
 @dataclass
@@ -153,6 +168,7 @@ async def load_metrics_config() -> MetricsConfig:
             MetricConfig(
                 key=m["key"],
                 title=m["title"],
+                title_en=str(m.get("title_en") or ""),
                 widget_id=int(m["widget_id"]),
                 widget_type=m.get("widget_type", "query_value"),
                 tier=m.get("tier", "P2"),

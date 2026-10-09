@@ -42,11 +42,21 @@ vs `slack_channel`）。
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 from app.services.im import NotifyTarget, Rendered, dual_send, effective_provider, resolve_transport
 
 logger = logging.getLogger("crashguard.notify")
+
+# CJK 符号/标点 + 统一汉字 + 全角字符。Slack 一律英文（2026-10-09）：拼 `text_en`
+# 时，用户/LLM 产出的自由文本（GitHub 评论、QA agent 总结）含中文就不带进去
+_CJK_RE = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
+
+
+def has_cjk(text: str) -> bool:
+    """文本里有没有中文（含全角标点）。拼 Slack 英文文案时过滤自由文本用。"""
+    return bool(_CJK_RE.search(text or ""))
 
 
 def _settings():
@@ -186,18 +196,22 @@ async def send_report(
 
 
 @dual_send(_raw_provider)
-async def send_text(text: str, *, email: str = "", s=None, what: str = "text") -> bool:
+async def send_text(text: str, *, text_en: str = "", email: str = "", s=None,
+                    what: str = "text") -> bool:
     """纯文本点对点（PR 相关的几条通知用）。
 
     `email` 显式给收件人（PR reviewer / owner 这类是按人算出来的，不是配置里
     的固定地址）；不给则回落到 `alert_target()`。
+
+    `text_en`：Slack 一律发英文（2026-10-09），飞书发 `text`。调用方都应该给。
     """
     target = (NotifyTarget(provider=provider(s), email=email) if email else alert_target(s))
     if not target.configured:
         logger.warning("crashguard %s: 没有收件人，跳过", what)
         return False
     try:
-        return await resolve_transport(target.provider).send_text(target, text)
+        body = (text_en or text) if target.provider == "slack" else text
+        return await resolve_transport(target.provider).send_text(target, body)
     except Exception:
         logger.exception("crashguard %s: 发送异常", what)
         return False

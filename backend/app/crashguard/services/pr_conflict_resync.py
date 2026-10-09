@@ -150,6 +150,12 @@ async def _notify_conflicts(conflicts: List[Dict[str, Any]]) -> None:
         "🔴 以下 crashguard PR 与 base 分支有冲突，需要人工解决（机器人不会自动改代码解冲突）：",
         "",
     ]
+    # Slack 一律英文（2026-10-09）：同步拼一份英文
+    en_lines = [
+        "🔴 The following crashguard PRs conflict with their base branch and need manual "
+        "resolution (the bot will not resolve conflicts automatically):",
+        "",
+    ]
     for c in conflicts:
         try:
             emails = json.loads(c.get("reviewer_emails") or "[]")
@@ -157,9 +163,11 @@ async def _notify_conflicts(conflicts: List[Dict[str, Any]]) -> None:
             emails = []
         who = "、".join(emails) if emails else "未指派"
         lines.append(f"- {c['pr_url']}（负责人：{who}）")
+        en_lines.append(f"- {c['pr_url']} (owner: {', '.join(emails) if emails else 'unassigned'})")
 
     try:
         from app.crashguard.services import notify
-        await notify.send_text("\n".join(lines), email=target, s=s, what="pr_conflict_resync")
+        await notify.send_text("\n".join(lines), text_en="\n".join(en_lines), email=target,
+                               s=s, what="pr_conflict_resync")
     except Exception:
         logger.exception("conflict_resync: failed to send Feishu notification")

@@ -24,6 +24,7 @@ dashboard:
 metrics:
   - key: crash_free_sessions
     title: "Crash-free sessions"
+    title_en: "Crash-free sessions"
     widget_id: 0
     widget_type: query_value
     tier: P0
@@ -34,6 +35,7 @@ metrics:
 
   - key: crash_free_users
     title: "Crash-free users"
+    title_en: "Crash-free users"
     widget_id: 1
     widget_type: query_value
     tier: P0
@@ -44,6 +46,7 @@ metrics:
 
   - key: android_anr
     title: "Android ANR"
+    title_en: "Android ANR"
     widget_id: 2
     widget_type: query_value
     tier: P0
@@ -54,6 +57,7 @@ metrics:
 
   - key: hang_rate
     title: "Hang Rate"
+    title_en: "Hang Rate"
     widget_id: 3
     widget_type: query_value
     tier: P0
@@ -64,6 +68,7 @@ metrics:
 
   - key: memory_usage
     title: "Memory Usage"
+    title_en: "Memory Usage"
     widget_id: 4
     widget_type: query_value
     tier: P1
@@ -74,6 +79,7 @@ metrics:
 
   - key: refresh_rate
     title: "Refresh Rate"
+    title_en: "Refresh Rate"
     widget_id: 5
     widget_type: query_value
     tier: P1
@@ -84,6 +90,7 @@ metrics:
 
   - key: app_avg_fps
     title: "APP单次运行平均FPS"
+    title_en: "Avg FPS per app session"
     widget_id: 6
     widget_type: query_value
     tier: P1
@@ -94,6 +101,7 @@ metrics:
 
   - key: cold_startup_p90
     title: "Cold Startup p90"
+    title_en: "Cold Startup p90"
     widget_id: 7
     widget_type: query_value
     tier: P1
@@ -108,6 +116,7 @@ metrics:
 
   - key: ios_jank_count_p90
     title: "APP单次使用的卡顿次数iOS（p90）"
+    title_en: "Jank count per app session, iOS (p90)"
     widget_id: 8
     widget_type: query_value
     tier: P2
@@ -118,6 +127,7 @@ metrics:
 
   - key: ios_jank_count_p75
     title: "APP单次使用的卡顿次数iOS（p75）"
+    title_en: "Jank count per app session, iOS (p75)"
     widget_id: 9
     widget_type: query_value
     tier: P2
@@ -128,6 +138,7 @@ metrics:
 
   - key: android_jank_count_p90
     title: "APP单次使用的卡顿次数Android（p90）"
+    title_en: "Jank count per app session, Android (p90)"
     widget_id: 10
     widget_type: query_value
     tier: P2
@@ -138,6 +149,7 @@ metrics:
 
   - key: android_jank_count_p75
     title: "APP单次使用的卡顿次数Android（p75）"
+    title_en: "Jank count per app session, Android (p75)"
     widget_id: 11
     widget_type: query_value
     tier: P2
@@ -148,6 +160,7 @@ metrics:
 
   - key: package_size
     title: "Package Size"
+    title_en: "Package Size"
     widget_id: 12
     widget_type: timeseries
     tier: P2
@@ -158,6 +171,7 @@ metrics:
 
   - key: cloud_upload_success_rate_v2
     title: "云同步上传成功率V2"
+    title_en: "Cloud sync upload success rate V2"
     widget_id: 13
     widget_type: query_value
     tier: P0
@@ -169,6 +183,7 @@ metrics:
 
   - key: cloud_download_success_rate
     title: "云下载/更新成功率"
+    title_en: "Cloud download/update success rate"
     widget_id: 14
     widget_type: query_value
     tier: P2
@@ -179,6 +194,7 @@ metrics:
 
   - key: websocket_connect_success_rate
     title: "Websocket连接成功率"
+    title_en: "WebSocket connect success rate"
     widget_id: 15
     widget_type: query_value
     tier: P2
@@ -189,6 +205,7 @@ metrics:
 
   - key: audio_import_success_rate
     title: "音频导入成功率"
+    title_en: "Audio import success rate"
     widget_id: 16
     widget_type: query_value
     tier: P0
@@ -202,6 +219,7 @@ metrics:
 
   - key: audio_decode_success_rate
     title: "音频解码成功率"
+    title_en: "Audio decode success rate"
     widget_id: 17
     widget_type: query_value
     tier: P2
@@ -212,6 +230,7 @@ metrics:
 
   - key: device_unbind_total_success_rate
     title: "设备总解绑成功率"
+    title_en: "Device unbind success rate (total)"
     widget_id: 18
     widget_type: query_value
     tier: P2
@@ -222,6 +241,7 @@ metrics:
 
   - key: audio_playback_success_rate
     title: "音频播放成功率"
+    title_en: "Audio playback success rate"
     widget_id: 19
     widget_type: query_value
     tier: P2
@@ -232,6 +252,7 @@ metrics:
 
   - key: device_bind_success_rate
     title: "设备绑定成功率"
+    title_en: "Device bind success rate"
     widget_id: 20
     widget_type: query_value
     tier: P2
@@ -242,6 +263,7 @@ metrics:
 
   - key: device_force_unbind_success_rate
     title: "强制解绑成功率（按SN去重）"
+    title_en: "Force unbind success rate (dedup by SN)"
     widget_id: 21
     widget_type: query_value
     tier: P2
@@ -252,6 +274,7 @@ metrics:
 
   - key: ota_transfer_success_rate
     title: "App设备OTA传输成功率"
+    title_en: "App device OTA transfer success rate"
     widget_id: 22
     widget_type: query_value
     tier: P2
@@ -262,6 +285,7 @@ metrics:
 
   - key: ota_download_success_rate
     title: "App云端下载OTABin包成功率"
+    title_en: "App OTA bin cloud download success rate"
     widget_id: 23
     widget_type: query_value
     tier: P2
@@ -272,6 +296,7 @@ metrics:
 
   - key: wifi_connect_success_rate
     title: "Wi-Fi连接成功率（按平台）"
+    title_en: "Wi-Fi connect success rate (by platform)"
     widget_id: 24
     widget_type: query_value
     tier: P2
@@ -282,6 +307,7 @@ metrics:
 
   - key: ask_add_note_success_rate
     title: "Ask Add Note成功率"
+    title_en: "Ask Add Note success rate"
     widget_id: 25
     widget_type: query_value
     tier: P2
@@ -292,6 +318,7 @@ metrics:
 
   - key: wifi_file_sync_success_rate
     title: "wifi 文件同步成功率(排除length_mismatch)"
+    title_en: "Wi-Fi file sync success rate (excl. length_mismatch)"
     widget_id: 26
     widget_type: query_value
     tier: P2
@@ -302,6 +329,7 @@ metrics:
 
   - key: ble_file_sync_success_rate
     title: "ble 文件同步成功率(排除length_mismatch)"
+    title_en: "BLE file sync success rate (excl. length_mismatch)"
     widget_id: 27
     widget_type: query_value
     tier: P2
@@ -312,6 +340,7 @@ metrics:
 
   - key: wifi_file_sync_speed_p75
     title: "wifi同步文件速度P75"
+    title_en: "Wi-Fi file sync speed P75"
     widget_id: 28
     widget_type: query_value
     # ⚠️ 吞吐量指标（pc75 of @context.avg_speed_kbps，单位 KB/s），越高越好。
@@ -327,6 +356,7 @@ metrics:
 
   - key: share_export_success_rate
     title: "分享导出成功率"
+    title_en: "Share/export success rate"
     widget_id: 29
     widget_type: query_value
     tier: P2
@@ -337,6 +367,7 @@ metrics:
 
   - key: home_file_list_load_p75
     title: "首页文件列表加载P75时长"
+    title_en: "Home file list load time P75"
     widget_id: 30
     widget_type: query_value
     tier: P1
@@ -347,6 +378,7 @@ metrics:
 
   - key: home_file_list_load_p90
     title: "首页文件列表加载P90时长"
+    title_en: "Home file list load time P90"
     widget_id: 31
     widget_type: query_value
     tier: P1
@@ -357,6 +389,7 @@ metrics:
 
   - key: detail_first_screen_load_p75
     title: "详情页首屏加载耗时P75"
+    title_en: "Detail page first screen load time P75"
     widget_id: 32
     widget_type: query_value
     tier: P1
@@ -367,6 +400,7 @@ metrics:
 
   - key: detail_webview_first_render_p75
     title: "详情页 WebView 首屏渲染时长 P75 (ms)"
+    title_en: "Detail page WebView first render time P75 (ms)"
     widget_id: 33
     widget_type: query_value
     tier: P1
@@ -377,6 +411,7 @@ metrics:
 
   - key: detail_tab_switch_p75
     title: "文件详情页切换Tab P75"
+    title_en: "File detail page tab switch P75"
     widget_id: 34
     widget_type: query_value
     tier: P1
@@ -388,6 +423,7 @@ metrics:
 
   - key: api_request_volume
     title: "API请求量(按接口)"
+    title_en: "API request volume (by endpoint)"
     widget_id: 35
     widget_type: timeseries
     tier: P2
@@ -398,6 +434,7 @@ metrics:
 
   - key: api_latency_p95
     title: "API延迟P95(按接口)"
+    title_en: "API latency P95 (by endpoint)"
     widget_id: 36
     widget_type: query_value
     tier: P1
@@ -408,6 +445,7 @@ metrics:
 
   - key: api_call_success_rate
     title: "API Call Success Rate"
+    title_en: "API Call Success Rate"
     widget_id: 37
     widget_type: query_value
     tier: P0
@@ -418,6 +456,7 @@ metrics:
 
   - key: ai_task_transcribe_success_rate
     title: "AI任务-转写成功率"
+    title_en: "AI task - transcription success rate"
     widget_id: 39
     widget_type: query_value
     tier: P0
@@ -429,6 +468,7 @@ metrics:
 
   - key: ai_task_add_note_success_rate
     title: "AI任务-Add Note 成功率"
+    title_en: "AI task - Add Note success rate"
     widget_id: 40
     widget_type: query_value
     tier: P2
@@ -439,6 +479,7 @@ metrics:
 
   - key: highlight_render_p75
     title: "Highlight页面渲染耗时 P75"
+    title_en: "Highlight page render time P75"
     widget_id: 43
     widget_type: query_value
     tier: P1
@@ -449,6 +490,7 @@ metrics:
 
   - key: highlight_click_success_rate
     title: "Highlight页面打点成功率"
+    title_en: "Highlight page event tracking success rate"
     widget_id: 45
     widget_type: query_value
     tier: P1
@@ -460,6 +502,7 @@ metrics:
 
   - key: audio_upload_cloud_duration
     title: "Audio Upload Cloud Duration (s) - P50 / P75 / P95"
+    title_en: "Audio Upload Cloud Duration (s) - P50 / P75 / P95"
     widget_id: 53          # v7 2026-06-05: 52→53（dashboard 改版漂移，52 变成"商业化购买成功率"带 group_by→报错）
     widget_type: timeseries
     tier: P1

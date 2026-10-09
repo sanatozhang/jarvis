@@ -72,7 +72,8 @@ async def _notify_version_change(
     old_note = f"原值：`{old_value}`" if old_value else "原值：未设置（自动判定）"
     operator = changed_by or "未知（调用方未提供身份）"
     try:
-        return await notify.send_focus_change(platform, action, old_note, operator)
+        return await notify.send_focus_change(platform, action, old_note, operator,
+                                              old_value=old_value or "", new_value=new_value or "")
     except Exception:
         logger.exception("focus_version change notify failed (non-fatal)")
         return False

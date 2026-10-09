@@ -109,17 +109,20 @@ async def _check_fatal_backlog_and_alert(session) -> Dict[str, Any]:
             break
 
     from app.crashguard.services.feishu_card import build_fatal_backlog_alert_card
-    card = build_fatal_backlog_alert_card(
+    card_kw = dict(
         count=count, threshold=threshold, sample_issues=sample_issues,
         frontend_base_url=s.frontend_base_url,
     )
+    card = build_fatal_backlog_alert_card(**card_kw)
     sent_ok = False
     # 路由收口到 notify.alert_target()（alert_email > 群 > target_email）
     from app.crashguard.services import notify
     from app.services.im.feishu_to_slack import compile_card
 
-    sent_ok = await notify.send_alert(card, lambda: compile_card(card),
-                                      s=s, what="fatal_backlog_alert")
+    # Slack 一律英文：同一份数据按 lang="en" 再构一张卡编译
+    sent_ok = await notify.send_alert(
+        card, lambda: compile_card(build_fatal_backlog_alert_card(**card_kw, lang="en")),
+        s=s, what="fatal_backlog_alert")
 
     _fatal_backlog_last_alerted_at = now
     logger.info(
@@ -457,17 +460,21 @@ async def run_job_health_check() -> Dict[str, Any]:
 
     # 发送聚合飞书卡片
     from app.crashguard.services.feishu_card import build_job_health_alert_card
-    card = build_job_health_alert_card(
+    card_kw = dict(
         items=unhealthy,
         cooldown_minutes=cooldown_min,
         frontend_base_url=s.frontend_base_url,
     )
+    card = build_job_health_alert_card(**card_kw)
     sent_ok = False
     # 路由收口到 notify.alert_target()（alert_email > 群 > target_email）
     from app.crashguard.services import notify
     from app.services.im.feishu_to_slack import compile_card
 
-    sent_ok = await notify.send_alert(card, lambda: compile_card(card), s=s, what="job_health_alert")
+    # Slack 一律英文：同一份数据按 lang="en" 再构一张卡编译
+    sent_ok = await notify.send_alert(
+        card, lambda: compile_card(build_job_health_alert_card(**card_kw, lang="en")),
+        s=s, what="job_health_alert")
 
     # 记节流戳（即使发送失败也算告警尝试，避免一直刷屏）
     for it in unhealthy:

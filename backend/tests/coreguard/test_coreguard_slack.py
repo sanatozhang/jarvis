@@ -69,21 +69,23 @@ def test_severity_matches_between_feishu_and_slack(breached, forced, template, c
     assert build_summary_message(**a).color == color
 
 
-def test_title_is_identical_between_providers():
+def test_title_carries_same_counts_but_slack_is_english():
+    """计数两边一致；Slack 标题全英文（2026-10-09），飞书标题保持中文不变。"""
     a = _args(breached=[_metric()])
     feishu_title = build_summary_card(**a)["header"]["title"]["content"]
-    assert build_summary_message(**a).text == feishu_title
+    assert feishu_title == "[coreguard] ⚠️ 核心指标异常告警 (1/2)"
+    assert build_summary_message(**a).text == "[coreguard] ⚠️ Core metric anomaly alert (1/2)"
 
 
 def test_p0_sorts_before_p1_same_as_feishu():
     """排序要跟飞书一致——P0 在前，同 tier 按偏离幅度降序。"""
     a = _args(breached=[
-        _metric("P1 小偏离", "P1", change=-0.1),
-        _metric("P0 大偏离", "P0", change=-2.0),
-        _metric("P1 大偏离", "P1", change=-1.5),
+        _metric("P1 小偏离", "P1", change=-0.1, title_en="P1 small"),
+        _metric("P0 大偏离", "P0", change=-2.0, title_en="P0 big"),
+        _metric("P1 大偏离", "P1", change=-1.5, title_en="P1 big"),
     ])
     body = json.dumps(build_summary_message(**a).payload, ensure_ascii=False)
-    assert body.index("P0 大偏离") < body.index("P1 大偏离") < body.index("P1 小偏离")
+    assert body.index("P0 big") < body.index("P1 big") < body.index("P1 small")
 
 
 def test_dashboard_button_is_a_url_button_not_a_callback():
@@ -100,7 +102,7 @@ def test_dashboard_button_is_a_url_button_not_a_callback():
 def test_missing_data_note_is_kept():
     msg = build_summary_message(**_args(breached=[_metric()],
                                         errored=[_metric("ANR rate", error="timeout")]))
-    assert "缺数据" in json.dumps(msg.payload, ensure_ascii=False)
+    assert "Missing data: ANR rate" in json.dumps(msg.payload, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +118,7 @@ def test_many_breaches_overflow_into_thread_instead_of_blowing_the_limit():
     msg = build_summary_message(**a)
     assert len(msg.payload) <= MAX_BLOCKS
     assert len(msg.folds) == 1
-    assert msg.folds[0].title == f"还有 {45 - _MAX_INLINE_BREACHES} 项异常"
+    assert msg.folds[0].title == f"{45 - _MAX_INLINE_BREACHES} more anomalies"
 
 
 def test_normal_breach_count_uses_no_thread():

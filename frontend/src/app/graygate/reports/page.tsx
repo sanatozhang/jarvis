@@ -89,23 +89,42 @@ function GraygateReportsInner() {
   // 没带 date 时默认打开最新一份
   const selected = dateParam || items[0]?.date || "";
 
+  const [generating, setGenerating] = useState(false);
+
   useEffect(() => {
     if (!selected) return;
     let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setDetail(null);
     setDetailLoading(true);
+    setGenerating(false);
     setError("");
-    getGraygateReport(selected)
-      .then((r) => alive && setDetail(r))
-      .catch((e) => alive && setError(String(e?.message || e)))
-      .finally(() => alive && setDetailLoading(false));
+    const load = () =>
+      getGraygateReport(selected)
+        .then((r) => {
+          if (!alive) return;
+          if (r.status === "generating") {
+            // 后端在后台现算（重新查 Datadog，要几分钟），隔 5s 再拉
+            setGenerating(true);
+            timer = setTimeout(load, 5000);
+            return;
+          }
+          setGenerating(false);
+          setDetail(r);
+          setDetailLoading(false);
+        })
+        .catch((e) => {
+          if (!alive) return;
+          setError(String(e?.message || e));
+          setDetailLoading(false);
+        });
+    load();
     return () => {
       alive = false;
+      if (timer) clearTimeout(timer);
     };
   }, [selected]);
 
-  const selectedItem = items.find((i) => i.date === selected);
-  // 缓存缺失时后端要现算，提示用户别以为卡死了
-  const willRecompute = selectedItem ? !selectedItem.has_markdown : !listLoading;
 
   return (
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text1 }}>
@@ -181,7 +200,7 @@ function GraygateReportsInner() {
               </div>
             ) : detailLoading ? (
               <div style={{ color: D.text2, fontSize: 13 }}>
-                {willRecompute ? t("首次打开需要现算（重新查询 Datadog），最多约 1 分钟…") : t("加载中…")}
+                {generating ? t("这天的日报还没有缓存，正在后台生成（重新查询 Datadog，约几分钟），完成后自动显示…") : t("加载中…")}
               </div>
             ) : error ? (
               <div style={{ color: D.danger, fontSize: 13 }}>

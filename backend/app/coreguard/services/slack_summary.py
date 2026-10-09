@@ -26,6 +26,7 @@ from app.coreguard.services.feishu_summary_card import (
     _breached_block,
     _build_dashboard_url,
     _headline,
+    _title_for,
 )
 from app.services.im.base import Fold, Rendered
 from app.services.im.mrkdwn import (
@@ -68,19 +69,23 @@ def build_summary_message(
     dashboard_id: str,
     datadog_site: str,
 ) -> Rendered:
-    """签名跟 `build_summary_card` **逐字对齐**，方便调用方按 provider 二选一。"""
+    """签名跟 `build_summary_card` **逐字对齐**，方便调用方按 provider 二选一。
+
+    Slack 出口**全英文**（2026-10-09）：共享的 `_headline` / `_breached_block`
+    一律 `lang="en"`，指标名走 `title_en`。飞书侧不受影响。
+    """
     n_breach, n_healthy, n_err = len(breached), len(healthy), len(errored)
     total = n_breach + n_healthy + n_err
 
     if n_breach > 0:
         template = "red"
-        title = f"[coreguard] ⚠️ 核心指标异常告警 ({n_breach}/{total})"
+        title = f"[coreguard] ⚠️ Core metric anomaly alert ({n_breach}/{total})"
     elif forced:
         template = "blue"
-        title = f"[coreguard] 🧪 演示 — {total} 项全部正常"
+        title = f"[coreguard] 🧪 Demo — all {total} metrics normal"
     else:
         template = "green"
-        title = f"[coreguard] ✅ {total} 项核心指标全部正常"
+        title = f"[coreguard] ✅ All {total} core metrics normal"
 
     cur_start_ms, cur_end_ms = _utc_ms(cur_start), _utc_ms(cur_end)
     base_start_ms, base_end_ms = _utc_ms(base_start), _utc_ms(base_end)
@@ -92,12 +97,12 @@ def build_summary_message(
 
     blocks: List[dict] = [
         header(title),
-        section(f"📢 {lark_md_to_mrkdwn(_headline(breached))}"),
+        section(f"📢 {lark_md_to_mrkdwn(_headline(breached, lang='en'))}"),
         context(
-            f"当前窗口 {cur_start.strftime('%m-%d %H:%M')} ~ {cur_end.strftime('%H:%M')} UTC"
-            f"  ·  基线 近 {baseline_days} 天同时段（预测带 median±k·MAD）"
-            f"  ·  共评估 {total} 项 (异常 {n_breach}"
-            f"{('，缺数据 ' + str(n_err)) if n_err else ''})"
+            f"Current window {cur_start.strftime('%m-%d %H:%M')} ~ {cur_end.strftime('%H:%M')} UTC"
+            f"  ·  Baseline: same hour over last {baseline_days} days (prediction band median±k·MAD)"
+            f"  ·  Evaluated {total} (anomalous {n_breach}"
+            f"{(', missing data ' + str(n_err)) if n_err else ''})"
         ),
     ]
 
@@ -113,7 +118,7 @@ def build_summary_message(
         def _block_for(r: Dict[str, Any]) -> dict:
             return section(lark_md_to_mrkdwn(_breached_block(
                 r, cur_start_ms, cur_end_ms, base_start_ms, base_end_ms,
-                dashboard_id, datadog_site,
+                dashboard_id, datadog_site, lang="en",
             )))
 
         blocks.extend(_block_for(r) for r in ordered[:_MAX_INLINE_BREACHES])
@@ -124,22 +129,22 @@ def build_summary_message(
                 len(ordered), _MAX_INLINE_BREACHES, len(overflow),
             )
             folds.append(Fold(
-                title=f"还有 {len(overflow)} 项异常",
+                title=f"{len(overflow)} more anomalies",
                 blocks=[_block_for(r) for r in overflow],
-                text=f"⚠️ 还有 {len(overflow)} 项异常",
+                text=f"⚠️ {len(overflow)} more anomalies",
             ))
 
     if errored and n_err > 0:
-        names = "、".join(r["title"] for r in errored[:5])
+        names = ", ".join(_title_for(r, "en") for r in errored[:5])
         if n_err > 5:
-            names += f" 等 {n_err} 项"
-        blocks.append(context(f"⚪ 缺数据：{names}"))
+            names += f" and {n_err - 5} more"
+        blocks.append(context(f"⚪ Missing data: {names}"))
 
     blocks.append({
         "type": "actions",
         "elements": [{
             "type": "button",
-            "text": {"type": "plain_text", "text": "📊 打开 Datadog Dashboard 排查",
+            "text": {"type": "plain_text", "text": "📊 Open Datadog dashboard",
                      "emoji": True},
             "style": "primary",
             "url": dashboard_url,

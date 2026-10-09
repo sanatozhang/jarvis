@@ -686,6 +686,16 @@ def _platform_emoji(p: str) -> str:
     return {"android": "🤖", "ios": "🍎", "flutter": "🎯"}.get(p, "📱")
 
 
+def _tr(lang: str, zh: str, en: str) -> str:
+    """告警卡片的双语字面量（2026-10-09）。
+
+    Slack 一律英文：Slack 路径用 `lang="en"` 构造卡片再 `compile_card`；飞书走默认
+    `lang="zh"`，产出必须跟加双语前**逐字节一致**（测试钉着）。动态数据（issue 标题、
+    版本号、数字、URL）不翻译。
+    """
+    return en if lang == "en" else zh
+
+
 def build_hourly_alert_card(
     *,
     hour_utc: datetime,
@@ -696,12 +706,14 @@ def build_hourly_alert_card(
     threshold_pct: float = 10.0,
     frontend_base_url: str = "http://localhost:3000",
     alert_id: int | None = None,
+    lang: str = "zh",
 ) -> Dict[str, Any]:
     """构造 hourly 告警 interactive card payload。
 
     复用早晚报色板：异常 → red header，平稳 → 不该走到这里。
     聚合 digest 一张卡，避免高频刷屏。
     严格不含 PR 修复内容——按用户要求，PR 状态查看走前端。
+    `lang="en"` 给 Slack 用（见 `_tr`）。
     """
     new_version_items = new_version_items or []
     new_crash_items = new_crash_items or []
@@ -714,15 +726,21 @@ def build_hourly_alert_card(
     sg_dt = hour_utc + _td(hours=8)
     hour_label = sg_dt.strftime("%Y-%m-%d %H:%M SGT")
     template = "red"  # 触发到这里必有异常
-    title_text = f"🚨 Crashguard 实时告警 · {hour_label}"
+    title_text = _tr(lang, f"🚨 Crashguard 实时告警 · {hour_label}",
+                     f"🚨 Crashguard real-time alert · {hour_label}")
 
     elements: List[Dict[str, Any]] = []
 
     # 顶部摘要
-    summary_md = (
+    summary_md = _tr(
+        lang,
         f"**Σ** 过去 3 小时 · 新增 **{new_n}** · 上涨 **{surge_n}**"
         f" · 新版本 **{nv_n}** · 新crash **{nc_n}**  ·  "
-        f"阈值 events +{threshold_pct:.0f}% **AND** rate 同步涨（对比上周同 3h 块，SHoW-3h）"
+        f"阈值 events +{threshold_pct:.0f}% **AND** rate 同步涨（对比上周同 3h 块，SHoW-3h）",
+        f"**Σ** Last 3 hours · New **{new_n}** · Spiking **{surge_n}**"
+        f" · New version **{nv_n}** · New crash **{nc_n}**  ·  "
+        f"Threshold events +{threshold_pct:.0f}% **AND** rate also rising "
+        f"(vs same 3h block last week, SHoW-3h)",
     )
     elements.append({
         "tag": "div",
@@ -734,7 +752,9 @@ def build_hourly_alert_card(
     if new_version_items:
         elements.append({
             "tag": "div",
-            "text": {"tag": "lark_md", "content": f"**🔴 [新版本] 灰度异常 · {nv_n} 项**"},
+            "text": {"tag": "lark_md", "content": _tr(
+                lang, f"**🔴 [新版本] 灰度异常 · {nv_n} 项**",
+                f"**🔴 [New version] Rollout anomalies · {nv_n} items**")},
         })
         for idx, it in enumerate(new_version_items, 1):
             pe = _platform_emoji(it.get("platform", ""))
@@ -743,8 +763,10 @@ def build_hourly_alert_card(
             user_rate = it.get("user_rate_pct", 0)
             content = (
                 f"{idx}. {pe} [{it.get('title') or it['issue_id']}]({url})\n"
-                f"   版本: {it.get('version') or '—'} | 首次出现: {first_ver}\n"
-                f"   3h events: {it.get('events_h', 0)} | sessions: {it.get('sessions_h', 0)}"
+                + _tr(lang,
+                      f"   版本: {it.get('version') or '—'} | 首次出现: {first_ver}\n",
+                      f"   Version: {it.get('version') or '—'} | First seen: {first_ver}\n")
+                + f"   3h events: {it.get('events_h', 0)} | sessions: {it.get('sessions_h', 0)}"
                 f" | user_rate: {user_rate}%"
             )
             elements.append({
@@ -757,7 +779,9 @@ def build_hourly_alert_card(
     if new_crash_items:
         elements.append({
             "tag": "div",
-            "text": {"tag": "lark_md", "content": f"**🟠 [新 crash] 全网首现 · {nc_n} 项**"},
+            "text": {"tag": "lark_md", "content": _tr(
+                lang, f"**🟠 [新 crash] 全网首现 · {nc_n} 项**",
+                f"**🟠 [New crash] First seen globally · {nc_n} items**")},
         })
         for idx, it in enumerate(new_crash_items, 1):
             pe = _platform_emoji(it.get("platform", ""))
@@ -766,8 +790,10 @@ def build_hourly_alert_card(
             first_at = it.get("first_seen_at") or "—"
             content = (
                 f"{idx}. {pe} [{it.get('title') or it['issue_id']}]({url})\n"
-                f"   首次出现版本: {first_ver} | 首现时间: {first_at}\n"
-                f"   24h events: {it.get('events_24h', 0)} | sessions: {it.get('sessions_24h', 0)}"
+                + _tr(lang,
+                      f"   首次出现版本: {first_ver} | 首现时间: {first_at}\n",
+                      f"   First seen version: {first_ver} | First seen at: {first_at}\n")
+                + f"   24h events: {it.get('events_24h', 0)} | sessions: {it.get('sessions_24h', 0)}"
             )
             elements.append({
                 "tag": "div",
@@ -779,14 +805,16 @@ def build_hourly_alert_card(
     if new_items:
         elements.append({
             "tag": "div",
-            "text": {"tag": "lark_md", "content": f"**🆕 新增崩溃（近 30 天首现）· {new_n} 项**"},
+            "text": {"tag": "lark_md", "content": _tr(
+                lang, f"**🆕 新增崩溃（近 30 天首现）· {new_n} 项**",
+                f"**🆕 New crashes (first seen in last 30 days) · {new_n} items**")},
         })
         new_lines: List[str] = []
         for it in new_items:
             url = f"{frontend_base_url.rstrip('/')}/crashguard?issue={it['issue_id']}"
             pe = _platform_emoji(it.get("platform", ""))
             sess = it.get("sessions_h") or 0
-            sess_str = f" · {sess} 会话" if sess else ""
+            sess_str = (_tr(lang, f" · {sess} 会话", f" · {sess} sessions") if sess else "")
             new_lines.append(
                 f"- {pe} [{it.get('title') or it['issue_id']}]({url})  ·  **{it['events_h']}** events{sess_str}"
             )
@@ -801,15 +829,16 @@ def build_hourly_alert_card(
         elements.append({
             "tag": "div",
             "text": {"tag": "lark_md",
-                     "content": f"**📈 异常上涨 · {surge_n} 项（vs 上周同时段）**"},
+                     "content": _tr(lang, f"**📈 异常上涨 · {surge_n} 项（vs 上周同时段）**",
+                                    f"**📈 Spiking · {surge_n} items (vs same window last week)**")},
         })
         surge_lines: List[str] = []
         for it in surge_items:
             url = f"{frontend_base_url.rstrip('/')}/crashguard?issue={it['issue_id']}"
             pe = _platform_emoji(it.get("platform", ""))
-            src = "SHoW" if it.get("baseline_source") == "show" else "7d 均值"
+            src = "SHoW" if it.get("baseline_source") == "show" else _tr(lang, "7d 均值", "7d avg")
             sess = it.get("sessions_h") or 0
-            sess_str = f" · {sess} 会话" if sess else ""
+            sess_str = (_tr(lang, f" · {sess} 会话", f" · {sess} sessions") if sess else "")
             # rate 维度：events/sessions × 100；可缺失（老 snapshot / API 空）→ 不显示
             rate_now = it.get("rate_now")
             rate_growth = it.get("rate_growth_pct")
@@ -836,7 +865,7 @@ def build_hourly_alert_card(
     action_buttons = [
         {
             "tag": "button",
-            "text": {"tag": "plain_text", "content": "📊 Web 端查看"},
+            "text": {"tag": "plain_text", "content": _tr(lang, "📊 Web 端查看", "📊 View on web")},
             "type": "primary",
             "url": btn_url,
         },
@@ -848,13 +877,13 @@ def build_hourly_alert_card(
         action_buttons.extend([
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "👍 准"},
+                "text": {"tag": "plain_text", "content": _tr(lang, "👍 准", "👍 Accurate")},
                 "type": "default",
                 "url": f"{feedback_base}&label=good",
             },
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "👎 不准"},
+                "text": {"tag": "plain_text", "content": _tr(lang, "👎 不准", "👎 Inaccurate")},
                 "type": "danger",
                 "url": f"{feedback_base}&label=bad",
             },
@@ -877,12 +906,14 @@ def build_core_metric_alert_card(
     threshold_pp: float = 0.3,
     frontend_base_url: str = "http://localhost:3000",
     alert_id: int | None = None,
+    lang: str = "zh",
 ) -> Dict[str, Any]:
     """核心指标报警卡片（crash-free sessions % 健康度告警）。
 
     items: [{platform, crash_free_pct, baseline_pct, delta_pp, direction,
              total_sessions, crashed_sessions}, ...]
     direction down=crash-free 跌（坏消息，红）；up=反弹（信号意义，黄）。
+    `lang="en"` 给 Slack 用（见 `_tr`）。
     """
     from datetime import timedelta as _td
     sg_dt = window_start + _td(hours=8)
@@ -890,18 +921,26 @@ def build_core_metric_alert_card(
 
     has_down = any(it.get("direction") == "down" for it in items)
     template = "red" if has_down else "yellow"
-    title_text = f"📉 Crashguard 核心指标告警 · {window_label}"
+    title_text = _tr(lang, f"📉 Crashguard 核心指标告警 · {window_label}",
+                     f"📉 Crashguard core metric alert · {window_label}")
 
-    _DIM_LABEL = {
+    _DIM_LABEL = ({
+        "overall":        "📊 Overall",
+        "main_version":   "👥 Primary version",
+        "latest_version": "🆕 Latest version",
+    } if lang == "en" else {
         "overall":        "📊 大盘",
         "main_version":   "👥 主要版本",
         "latest_version": "🆕 最新版本",
-    }
+    })
 
     elements: List[Dict[str, Any]] = []
-    summary_md = (
+    summary_md = _tr(
+        lang,
         f"**Σ** 30 分钟滑动均值 · 触发 **{len(items)}** 条  ·  "
-        f"阈值 ±{threshold_pp:.2f} pp（vs 前 1h 加权均值）  ·  崩溃数 ≥ 10"
+        f"阈值 ±{threshold_pp:.2f} pp（vs 前 1h 加权均值）  ·  崩溃数 ≥ 10",
+        f"**Σ** 30-min rolling avg · **{len(items)}** triggered  ·  "
+        f"Threshold ±{threshold_pp:.2f} pp (vs prior 1h weighted avg)  ·  Crashes ≥ 10",
     )
     elements.append({"tag": "div", "text": {"tag": "lark_md", "content": summary_md}})
     elements.append({"tag": "hr"})
@@ -931,10 +970,14 @@ def build_core_metric_alert_card(
         line = (
             f"{pe} **{platform_label}**  ·  "
             f"crash-free **{it.get('crash_free_pct', 0):.2f}%** "
-            f"(基线 {it.get('baseline_pct', 0):.2f}%)  ·  "
-            f"{arrow} **{sign}{delta:.2f} pp**\n"
-            f"  会话 {it.get('total_sessions', 0)} · "
-            f"崩溃 {it.get('crashed_sessions', 0)}"
+            + _tr(lang, f"(基线 {it.get('baseline_pct', 0):.2f}%)  ·  ",
+                  f"(baseline {it.get('baseline_pct', 0):.2f}%)  ·  ")
+            + f"{arrow} **{sign}{delta:.2f} pp**\n"
+            + _tr(lang,
+                  f"  会话 {it.get('total_sessions', 0)} · "
+                  f"崩溃 {it.get('crashed_sessions', 0)}",
+                  f"  Sessions {it.get('total_sessions', 0)} · "
+                  f"Crashes {it.get('crashed_sessions', 0)}")
         )
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": line}})
     elements.append({"tag": "hr"})
@@ -950,7 +993,7 @@ def build_core_metric_alert_card(
         "tag": "action",
         "actions": [{
             "tag": "button",
-            "text": {"tag": "plain_text", "content": "📊 在 Web 端查看"},
+            "text": {"tag": "plain_text", "content": _tr(lang, "📊 在 Web 端查看", "📊 View on web")},
             "type": "primary",
             "url": btn_url,
         }],
@@ -971,23 +1014,31 @@ def build_fatal_backlog_alert_card(
     threshold: int,
     sample_issues: List[Dict[str, Any]],
     frontend_base_url: str = "http://localhost:3000",
+    lang: str = "zh",
 ) -> Dict[str, Any]:
     """今日 fatal crash/ANR 积压告警——从未分析过的数量超过阈值。
 
     sample_issues: [{datadog_issue_id, title, platform, first_seen_at, events_count}, ...]
     独立卡片：跟 build_job_health_alert_card（任务心跳 stale/failing 专用 schema）
-    语义不同，不复用。
+    语义不同，不复用。`lang="en"` 给 Slack 用（见 `_tr`）。
     """
-    title_text = f"🔴 Crashguard fatal 崩溃积压 · {count} 个从未分析（阈值 {threshold}）"
+    title_text = _tr(
+        lang,
+        f"🔴 Crashguard fatal 崩溃积压 · {count} 个从未分析（阈值 {threshold}）",
+        f"🔴 Crashguard fatal crash backlog · {count} never analyzed (threshold {threshold})",
+    )
     elements: List[Dict[str, Any]] = []
 
     elements.append({
         "tag": "div",
         "text": {
             "tag": "lark_md",
-            "content": (
+            "content": _tr(
+                lang,
                 f"📊 今日 fatal/ANR + fixable + 从未分析过的 issue 共 **{count}** 个，"
-                f"超过阈值 **{threshold}** —— 排在最前的几个可能已积压较久。"
+                f"超过阈值 **{threshold}** —— 排在最前的几个可能已积压较久。",
+                f"📊 Today's fatal/ANR + fixable + never-analyzed issues: **{count}**, "
+                f"above threshold **{threshold}** — the top ones may have been waiting a while.",
             ),
         },
     })
@@ -1004,7 +1055,8 @@ def build_fatal_backlog_alert_card(
                 "tag": "lark_md",
                 "content": (
                     f"{pe} **{title}**\n"
-                    f"  首次出现：{first_seen} · events {events}"
+                    + _tr(lang, f"  首次出现：{first_seen} · events {events}",
+                          f"  First seen: {first_seen} · events {events}")
                 ),
             },
         })
@@ -1015,7 +1067,7 @@ def build_fatal_backlog_alert_card(
         "tag": "action",
         "actions": [{
             "tag": "button",
-            "text": {"tag": "plain_text", "content": "📊 在 Web 端查看"},
+            "text": {"tag": "plain_text", "content": _tr(lang, "📊 在 Web 端查看", "📊 View on web")},
             "type": "primary",
             "url": btn_url,
         }],
@@ -1035,23 +1087,29 @@ def build_job_health_alert_card(
     items: List[Dict[str, Any]],
     cooldown_minutes: int = 30,
     frontend_base_url: str = "http://localhost:3000",
+    lang: str = "zh",
 ) -> Dict[str, Any]:
     """定时任务健康度告警卡片。
 
     items: [{job_name, health (failing/stale), consecutive_failures, last_error,
              last_fired_at, last_success_at, ...}]
     health=stale → 超期未跑；health=failing → 连续 ≥3 次失败
+    `lang="en"` 给 Slack 用（见 `_tr`）；`last_error` 是异常原文，当数据不翻译。
     """
-    title_text = f"⚙️ Crashguard 定时任务异常 · {len(items)} 项需关注"
+    title_text = _tr(lang, f"⚙️ Crashguard 定时任务异常 · {len(items)} 项需关注",
+                     f"⚙️ Crashguard scheduled job issues · {len(items)} need attention")
     elements: List[Dict[str, Any]] = []
 
     elements.append({
         "tag": "div",
         "text": {
             "tag": "lark_md",
-            "content": (
+            "content": _tr(
+                lang,
                 f"📊 **检测窗口**：每 5 分钟扫描心跳表 · "
-                f"同任务节流 **{cooldown_minutes} 分钟**（避免刷屏）"
+                f"同任务节流 **{cooldown_minutes} 分钟**（避免刷屏）",
+                f"📊 **Check window**: heartbeat table scanned every 5 min · "
+                f"per-job cooldown **{cooldown_minutes} min** (to avoid spam)",
             ),
         },
     })
@@ -1060,9 +1118,11 @@ def build_job_health_alert_card(
     for it in items:
         h = it.get("health", "")
         health_emoji = "🔴" if h == "failing" else "⏰"
-        health_label = "连续失败" if h == "failing" else "超期未跑"
+        health_label = (_tr(lang, "连续失败", "Failing repeatedly") if h == "failing"
+                        else _tr(lang, "超期未跑", "Overdue"))
         last_err = (it.get("last_error") or "")
-        err_line = f"\n  ⚠️ 最近错误：`{last_err}`" if last_err and h == "failing" else ""
+        err_line = (_tr(lang, f"\n  ⚠️ 最近错误：`{last_err}`", f"\n  ⚠️ Last error: `{last_err}`")
+                    if last_err and h == "failing" else "")
         last_success = it.get("last_success_at") or "—"
         cf = it.get("consecutive_failures") or 0
         interval = it.get("interval_minutes")
@@ -1073,8 +1133,11 @@ def build_job_health_alert_card(
                 "tag": "lark_md",
                 "content": (
                     f"{health_emoji} **{it.get('job_name')}** · {health_label}\n"
-                    f"  连续失败 **{cf}** 次 · 预期间隔 {interval_str}\n"
-                    f"  上次成功：{last_success}{err_line}"
+                    + _tr(lang,
+                          f"  连续失败 **{cf}** 次 · 预期间隔 {interval_str}\n"
+                          f"  上次成功：{last_success}{err_line}",
+                          f"  Consecutive failures **{cf}** · Expected interval {interval_str}\n"
+                          f"  Last success: {last_success}{err_line}")
                 ),
             },
         })
@@ -1085,7 +1148,7 @@ def build_job_health_alert_card(
         "tag": "action",
         "actions": [{
             "tag": "button",
-            "text": {"tag": "plain_text", "content": "📊 查看任务监控"},
+            "text": {"tag": "plain_text", "content": _tr(lang, "📊 查看任务监控", "📊 View job monitor")},
             "type": "primary",
             "url": btn_url,
         }],
@@ -1106,15 +1169,18 @@ def build_symbol_health_alert_card(
     bad_quality: List[Dict[str, Any]],
     stale_upload: Optional[Dict[str, Any]],
     frontend_base_url: str = "http://localhost:3000",
+    lang: str = "zh",
 ) -> Dict[str, Any]:
     """符号表健康度告警卡片（2026-09-14，符号断供 19 天事故后新增）。
 
     missing_coverage: [{platform, version, events}, ...] —— 高流量版本符号包确实缺失
     bad_quality: [{platform, version, raw_count, total, raw_rate}, ...] —— 符号化成功率过低
     stale_upload: {last_upload_at, age_days, stale_days} 或 None —— 全平台无新符号入库兜底
+    `lang="en"` 给 Slack 用（见 `_tr`）。
     """
     total_items = len(missing_coverage) + len(bad_quality) + (1 if stale_upload else 0)
-    title_text = f"🧩 Crashguard 符号表健康度异常 · {total_items} 项需关注"
+    title_text = _tr(lang, f"🧩 Crashguard 符号表健康度异常 · {total_items} 项需关注",
+                     f"🧩 Crashguard symbol health issues · {total_items} need attention")
     elements: List[Dict[str, Any]] = []
 
     if stale_upload:
@@ -1122,11 +1188,20 @@ def build_symbol_health_alert_card(
         stale_days = stale_upload.get("stale_days")
         last_at = stale_upload.get("last_upload_at")
         if age is None:
-            content = f"🔴 **从未有过符号包入库记录**（阈值 {stale_days} 天）——上传通道可能从一开始就没打通。"
+            content = _tr(
+                lang,
+                f"🔴 **从未有过符号包入库记录**（阈值 {stale_days} 天）——上传通道可能从一开始就没打通。",
+                f"🔴 **No symbol package has ever been ingested** (threshold {stale_days} days) "
+                f"— the upload pipeline may never have worked.",
+            )
         else:
-            content = (
+            content = _tr(
+                lang,
                 f"🔴 **全平台已 {age} 天无任何新符号包入库**（阈值 {stale_days} 天）\n"
-                f"  上次入库：{last_at}"
+                f"  上次入库：{last_at}",
+                f"🔴 **No new symbol packages on any platform for {age} days** "
+                f"(threshold {stale_days} days)\n"
+                f"  Last ingested: {last_at}",
             )
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content}})
         elements.append({"tag": "hr"})
@@ -1136,9 +1211,13 @@ def build_symbol_health_alert_card(
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": (
+                "content": _tr(
+                    lang,
                     f"📉 **符号覆盖率缺失**（已自动尝试拉取——查已上传 + GitHub release 下载兜底"
-                    f"——仍找不到，共 {len(missing_coverage)} 项，需要人工上传）"
+                    f"——仍找不到，共 {len(missing_coverage)} 项，需要人工上传）",
+                    f"📉 **Missing symbol coverage** (auto-fetch already tried — uploaded store "
+                    f"+ GitHub release fallback — still not found, {len(missing_coverage)} items, "
+                    f"manual upload needed)",
                 ),
             },
         })
@@ -1148,9 +1227,12 @@ def build_symbol_health_alert_card(
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": (
+                    "content": _tr(
+                        lang,
                         f"{pe} **{it.get('version')}** · 今日 events {it.get('events', 0)}\n"
-                        f"  已上传符号库 + GitHub release 均查不到该版本对应符号包"
+                        f"  已上传符号库 + GitHub release 均查不到该版本对应符号包",
+                        f"{pe} **{it.get('version')}** · today events {it.get('events', 0)}\n"
+                        f"  No symbol package for this version in uploaded store or GitHub release",
                     ),
                 },
             })
@@ -1161,7 +1243,12 @@ def build_symbol_health_alert_card(
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"🔍 **符号化成功率过低**（符号包在但未生效，共 {len(bad_quality)} 项）",
+                "content": _tr(
+                    lang,
+                    f"🔍 **符号化成功率过低**（符号包在但未生效，共 {len(bad_quality)} 项）",
+                    f"🔍 **Low symbolication rate** (symbols present but not applied, "
+                    f"{len(bad_quality)} items)",
+                ),
             },
         })
         for it in bad_quality[:10]:
@@ -1170,10 +1257,15 @@ def build_symbol_health_alert_card(
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": (
+                    "content": _tr(
+                        lang,
                         f"{pe} **{it.get('version')}** · 未符号化占比 {it.get('raw_rate', 0) * 100:.0f}%"
                         f"（{it.get('raw_count', 0)}/{it.get('total', 0)}）\n"
-                        f"  常见原因：版本对不上 / GH_TOKEN 权限失效 / 符号包本身损坏"
+                        f"  常见原因：版本对不上 / GH_TOKEN 权限失效 / 符号包本身损坏",
+                        f"{pe} **{it.get('version')}** · unsymbolicated {it.get('raw_rate', 0) * 100:.0f}%"
+                        f" ({it.get('raw_count', 0)}/{it.get('total', 0)})\n"
+                        f"  Common causes: version mismatch / GH_TOKEN permission expired / "
+                        f"corrupted symbol package",
                     ),
                 },
             })
@@ -1184,7 +1276,7 @@ def build_symbol_health_alert_card(
         "tag": "action",
         "actions": [{
             "tag": "button",
-            "text": {"tag": "plain_text", "content": "📊 在 Web 端查看"},
+            "text": {"tag": "plain_text", "content": _tr(lang, "📊 在 Web 端查看", "📊 View on web")},
             "type": "primary",
             "url": btn_url,
         }],

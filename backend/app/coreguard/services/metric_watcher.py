@@ -56,6 +56,7 @@ class MetricResult:
     skip_reason: Optional[str] = None    # 被 gate 拦下时记原因（如 min_users 兜底 / 防抖等下次）
     datadog_widget_id: Optional[int] = None  # Datadog widget 真实 id（fullscreen 深链用）
     error: Optional[str] = None
+    title_en: str = ""                   # Slack 出口用的英文名（yaml title_en）
 
 
 def _judge(cfg: MetricConfig, cur: Optional[float], base: Optional[float]) -> tuple[bool, Optional[float]]:
@@ -262,7 +263,7 @@ async def evaluate_one(cfg: MetricConfig, cur_start, cur_end, settings=None) -> 
 
     def _err(msg):
         return MetricResult(
-            key=cfg.key, title=cfg.title, tier=cfg.tier, value_type=cfg.value_type,
+            key=cfg.key, title=cfg.title, title_en=getattr(cfg, "title_en", ""), tier=cfg.tier, value_type=cfg.value_type,
             direction=cfg.direction, threshold=cfg.threshold,
             current_value=None, baseline_value=None, change=None, sessions_count=None,
             breached=False, datadog_widget_id=cfg.datadog_widget_id, error=msg,
@@ -283,7 +284,7 @@ async def evaluate_one(cfg: MetricConfig, cur_start, cur_end, settings=None) -> 
         )
         breached, change = _judge(cfg, cur_val, base_val)
         return MetricResult(
-            key=cfg.key, title=cfg.title, tier=cfg.tier, value_type=cfg.value_type,
+            key=cfg.key, title=cfg.title, title_en=getattr(cfg, "title_en", ""), tier=cfg.tier, value_type=cfg.value_type,
             direction=cfg.direction, threshold=cfg.threshold,
             current_value=cur_val, baseline_value=base_val, change=change,
             sessions_count=None, breached=breached,
@@ -304,7 +305,7 @@ async def evaluate_one(cfg: MetricConfig, cur_start, cur_end, settings=None) -> 
     if len(baseline) < int(s.band_min_points):
         # 数据不足：不判 breach，只记录（run_all 里会标 skip_reason）
         return MetricResult(
-            key=cfg.key, title=cfg.title, tier=cfg.tier, value_type=cfg.value_type,
+            key=cfg.key, title=cfg.title, title_en=getattr(cfg, "title_en", ""), tier=cfg.tier, value_type=cfg.value_type,
             direction=cfg.direction, threshold=cfg.threshold,
             current_value=cur_val, baseline_value=None, change=None,
             sessions_count=None, breached=False, baseline_n=len(baseline),
@@ -316,7 +317,7 @@ async def evaluate_one(cfg: MetricConfig, cur_start, cur_end, settings=None) -> 
     j = judge_band(cfg, cur_val, baseline, float(s.band_k),
                    float(s.band_sigma_floor_pp), float(s.band_sigma_floor_rel))
     return MetricResult(
-        key=cfg.key, title=cfg.title, tier=cfg.tier, value_type=cfg.value_type,
+        key=cfg.key, title=cfg.title, title_en=getattr(cfg, "title_en", ""), tier=cfg.tier, value_type=cfg.value_type,
         direction=cfg.direction, threshold=cfg.threshold,
         current_value=cur_val, baseline_value=round(j["mu"], 4), change=j["sigma_dist"],
         sessions_count=None, breached=j["breached"],

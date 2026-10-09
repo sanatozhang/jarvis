@@ -113,7 +113,7 @@ def test_bare_v2_button_with_behaviors_survives():
 
 def test_multi_url_button_survives():
     msg = compile_card(_card([{"tag": "action", "actions": [
-        {"tag": "button", "text": {"tag": "plain_text", "content": "打开"},
+        {"tag": "button", "text": {"tag": "plain_text", "content": "Open"},
          "multi_url": {"url": "https://x.com/a", "pc_url": "https://x.com/pc"}},
     ]}]))
     assert msg.payload[-1]["elements"][0]["url"] == "https://x.com/a"
@@ -220,7 +220,7 @@ def test_too_many_blocks_overflow_into_thread_not_dropped():
     """
     msg = compile_card(_card([_div(f"第 {i} 段") for i in range(80)]))
     assert len(msg.payload) <= MAX_BLOCKS
-    assert msg.folds and msg.folds[0].title == "（续）"
+    assert msg.folds and msg.folds[0].title == "(continued)"
     assert "第 79 段" in json.dumps(msg.folds[0].blocks, ensure_ascii=False)
 
 

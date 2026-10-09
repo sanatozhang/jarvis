@@ -598,7 +598,7 @@ async def run_hourly_alert_tick(
 
     # === 构造并发送 feishu 卡片（URL 带 alert_id，点击直接打开 reports 页对应详情）===
     from app.crashguard.services.feishu_card import build_hourly_alert_card
-    card = build_hourly_alert_card(
+    card_kw = dict(
         hour_utc=now_hour,
         new_items=new_items[: s.hourly_alert_max_items],
         surge_items=surge_items[: s.hourly_alert_max_items],
@@ -608,6 +608,7 @@ async def run_hourly_alert_tick(
         frontend_base_url=s.frontend_base_url,
         alert_id=alert_id,
     )
+    card = build_hourly_alert_card(**card_kw)
 
     sent_ok = False
     if not s.feishu_enabled:
@@ -618,8 +619,10 @@ async def run_hourly_alert_tick(
         from app.crashguard.services import notify
         from app.services.im.feishu_to_slack import compile_card
 
+        # Slack 一律英文：同一份数据按 lang="en" 再构一张卡编译
         sent_ok = await notify.send_alert(
-            card, lambda: compile_card(card), s=s, what="hourly_alert",
+            card, lambda: compile_card(build_hourly_alert_card(**card_kw, lang="en")),
+            s=s, what="hourly_alert",
         )
 
     logger.info(

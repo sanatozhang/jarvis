@@ -145,7 +145,7 @@ def _compile_elements(elements: List[Dict[str, Any]]) -> Tuple[List[dict], List[
             raw_buttons = (el.get("actions") or []) if tag == "action" else [el]
             buttons = []
             for a in raw_buttons:
-                label = _text_of(a) or "打开"
+                label = _text_of(a) or "Open"
                 url = _button_url(a)
                 if not url:
                     # 没有 url 的按钮是回调按钮，需要 interactivity + HMAC 端点，
@@ -189,7 +189,7 @@ def _compile_elements(elements: List[Dict[str, Any]]) -> Tuple[List[dict], List[
             hdr = el.get("header") or {}
             if isinstance(hdr.get("title"), dict):
                 title_md = hdr["title"].get("content", "") or ""
-            title = lark_md_to_mrkdwn(title_md) or "详情"
+            title = lark_md_to_mrkdwn(title_md) or "Details"
             inner_blocks, inner_folds = _compile_elements(el.get("elements") or [])
             # 嵌套折叠拍平到同一层：Slack 没有"thread 里的 thread"
             folds.extend(inner_folds)
@@ -226,7 +226,7 @@ def _merge_folds(folds: List[Fold]) -> List[Fold]:
         blocks.extend(f.blocks)
     merged = []
     for i in range(0, len(blocks), MAX_BLOCKS):
-        merged.append(Fold(title="详情", blocks=blocks[i:i + MAX_BLOCKS], text="详情"))
+        merged.append(Fold(title="Details", blocks=blocks[i:i + MAX_BLOCKS], text="Details"))
     return merged
 
 
@@ -252,7 +252,7 @@ def compile_card(card: Dict[str, Any]) -> Rendered:
     # 降级文本，header block 保留。
     if title and not color:
         blocks.insert(0, header(title))
-    text = f"*{title}*" if (title and color) else (title or "jarvis 通知")
+    text = f"*{title}*" if (title and color) else (title or "jarvis notification")
     folds = _merge_folds(folds)
 
     # 撑爆 50 blocks 的后果是 invalid_blocks —— **整条消息发不出去**。
@@ -262,7 +262,7 @@ def compile_card(card: Dict[str, Any]) -> Rendered:
         logger.warning("feishu_to_slack: 编译出 %d 个 block，超过上限 %d —— "
                        "尾部 %d 个移进 thread", len(blocks), MAX_BLOCKS, len(overflow))
         blocks = blocks[:MAX_BLOCKS - 1]
-        folds.insert(0, Fold(title="（续）", blocks=overflow[:MAX_BLOCKS], text="（续）"))
+        folds.insert(0, Fold(title="(continued)", blocks=overflow[:MAX_BLOCKS], text="(continued)"))
 
     return Rendered(
         payload=blocks,

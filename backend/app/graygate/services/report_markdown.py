@@ -38,8 +38,10 @@ def _version_cell(t: TierSummary) -> str:
 
 
 def _metrics_table(data: GraygateReportData) -> List[str]:
+    # 每个平台主要版本在前、大盘在后（主要版本是这次灰度真正在看的包）
     cols: List[tuple] = [
-        (p, t) for p in ("ios", "android") for t in data.tiers.get(p) or []
+        (p, t) for p in ("ios", "android")
+        for t in sorted(data.tiers.get(p) or [], key=lambda t: 0 if t.label == "主要版本" else 1)
     ]
     header = "| 指标 | " + " | ".join(f"{_PLATFORM_LABEL[p]} · {t.label}" for p, t in cols) + " |"
     lines = [header, "|---" * (len(cols) + 1) + "|"]

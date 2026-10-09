@@ -195,7 +195,24 @@ async def _notify_low_quality(
             lines.append(f"   回归风险: {'; '.join(parsed['regression_risks'])}")
         text = "\n".join(lines)
         from app.crashguard.services import notify
-        await notify.send_text(text, email=target_email, s=s, what="pr_qa")
+
+        # Slack 一律英文（2026-10-09）。总结/范围问题/回归风险是 LLM 按中文 prompt
+        # 产出的自由文本，大概率是中文——只在纯英文时带上，否则省略（分数/verdict/链接足够判断）
+        en_lines = [
+            f"{verdict_emoji} Crashguard QA Agent report: {pr_url}",
+            f"   Quality score: {parsed['quality_score']}/100   verdict: {parsed['verdict']}",
+            f"   Addresses root cause: {'yes' if parsed['addresses_root_cause'] else 'no'}",
+        ]
+        if parsed["reviewer_summary"] and not notify.has_cjk(parsed["reviewer_summary"]):
+            en_lines.append(f"   Summary: {parsed['reviewer_summary']}")
+        scope_en = [x for x in parsed["scope_issues"] if not notify.has_cjk(x)]
+        if scope_en:
+            en_lines.append(f"   Scope issues: {'; '.join(scope_en)}")
+        risks_en = [x for x in parsed["regression_risks"] if not notify.has_cjk(x)]
+        if risks_en:
+            en_lines.append(f"   Regression risks: {'; '.join(risks_en)}")
+        await notify.send_text(text, text_en="\n".join(en_lines), email=target_email,
+                               s=s, what="pr_qa")
     except Exception:
         logger.exception("pr_qa_agent feishu notify failed (non-fatal)")
 

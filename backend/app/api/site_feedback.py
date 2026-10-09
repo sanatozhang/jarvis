@@ -50,8 +50,16 @@ async def submit_site_feedback(req: SiteFeedbackInput):
         lines.append(f"工单页：{req.page_url}")
     lines.append(f"时间：{ts}")
     text = "\n".join(lines)
+    # Slack 一律英文（2026-10-09）：标签全英文；反馈内容是用户原文，照发不翻译
+    lines_en = ["📝 Site feedback", f"Message: {req.message}"]
+    if req.user_email:
+        lines_en.append(f"Submitted by: {req.user_email}")
+    if req.page_url:
+        lines_en.append(f"Page: {req.page_url}")
+    lines_en.append(f"Time: {ts}")
+    text_en = "\n".join(lines_en)
 
-    text_ok = await system_notify.send_text(recipient, text)
+    text_ok = await system_notify.send_text(recipient, text, text_en=text_en)
 
     image_sent = False
     img_bytes = _decode_screenshot(req.screenshot) if req.screenshot else None

@@ -193,10 +193,18 @@ async def _notify_branch_created(
         f"创建人：{creator}\n"
         f"子仓 HEAD：\n{commit_lines}"
     )
+    # Slack 一律英文（2026-10-09）；飞书仍发上面的中文 text
+    text_en = (
+        f"[Release] New branch created: {branch}\n"
+        f"Source branch: {source_branch}\n"
+        + (f"Version: {version_after}\n" if version_after else "")
+        + f"Created by: {creator}\n"
+        f"Sub-repo HEADs:\n{commit_lines}"
+    )
     from app.services import system_notify
     for email in recipients:
         # send_text 自己吞异常、只回 bool：一个人发不出去不影响其他人
-        if not await system_notify.send_text(email, text):
+        if not await system_notify.send_text(email, text, text_en=text_en):
             logger.warning("Release notify to %s failed", email)
 
 

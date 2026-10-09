@@ -66,7 +66,8 @@ const EN: Record<string, string> = {
   "项恶化": "worsened",
   "个新增崩溃": "new crashes",
   "无恶化": "No regressions",
-  "首次打开需要现算（重新查询 Datadog），最多约 1 分钟…": "Generating on first open (re-querying Datadog), up to ~1 min…",
+  "这天的日报还没有缓存，正在后台生成（重新查询 Datadog，约几分钟），完成后自动显示…":
+    "Not cached yet — generating in the background (re-querying Datadog, a few minutes); it will show up automatically…",
   "选择左侧日期查看日报": "Pick a date on the left",
   "发布管理": "Release",
   "快照日期": "Snapshot date",

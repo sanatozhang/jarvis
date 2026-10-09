@@ -318,18 +318,22 @@ async def run_symbol_health_check() -> Dict[str, Any]:
         }
 
     from app.crashguard.services.feishu_card import build_symbol_health_alert_card
-    card = build_symbol_health_alert_card(
+    card_kw = dict(
         missing_coverage=fresh_missing,
         bad_quality=fresh_quality,
         stale_upload=fresh_stale,
         frontend_base_url=s.frontend_base_url,
     )
+    card = build_symbol_health_alert_card(**card_kw)
     sent_ok = False
     # 路由收口到 notify.alert_target()（alert_email > 群 > target_email）
     from app.crashguard.services import notify
     from app.services.im.feishu_to_slack import compile_card
 
-    sent_ok = await notify.send_alert(card, lambda: compile_card(card), s=s, what="symbol_health_alert")
+    # Slack 一律英文：同一份数据按 lang="en" 再构一张卡编译
+    sent_ok = await notify.send_alert(
+        card, lambda: compile_card(build_symbol_health_alert_card(**card_kw, lang="en")),
+        s=s, what="symbol_health_alert")
 
     for it in fresh_missing:
         _coverage_last_alerted_at[(it["platform"], it["version"])] = now

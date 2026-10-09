@@ -10,11 +10,28 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 
 from app.services.im.base import IMTransport, NotifyTarget, Rendered
 
 logger = logging.getLogger("jarvis.services.im.slack")
+
+
+# 2026-10-09：Slack 消息一律英文（飞书保持中文）。各出口自己负责出英文版，这里只做
+# 兜底观测：漏网的中文不拦截（拦了就是丢通知），但打 warning，grep 日志就能找到出口。
+_CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
+
+
+def warn_if_chinese(where: str, *parts) -> None:
+    try:
+        blob = json.dumps(parts, ensure_ascii=False, default=str)
+    except Exception:
+        return
+    hits = _CJK.findall(blob)
+    if hits:
+        logger.warning("Slack %s 含中文（应为英文）：%r", where, "".join(hits[:40]))
 
 
 class SlackTransport(IMTransport):
@@ -43,6 +60,8 @@ class SlackTransport(IMTransport):
 
     async def send(self, target: NotifyTarget, msg: Rendered) -> bool:
         from app.services import slack_cli
+
+        warn_if_chinese("send", msg.text, msg.payload, [(f.title, f.blocks) for f in msg.folds])
 
         if not target.configured:
             logger.warning("SlackTransport.send: target 没配（channel 和 email 都空），跳过")
@@ -86,6 +105,8 @@ class SlackTransport(IMTransport):
 
     async def send_text(self, target: NotifyTarget, text: str) -> bool:
         from app.services import slack_cli
+
+        warn_if_chinese("send_text", text)
 
         if not target.configured:
             logger.warning("SlackTransport.send_text: target 没配，跳过")

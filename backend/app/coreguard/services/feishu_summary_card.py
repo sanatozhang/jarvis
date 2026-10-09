@@ -44,15 +44,16 @@ def _fmt_threshold(value_type: str, threshold: Dict[str, float]) -> str:
     return f"±{threshold.get('pct', 0)*100:.0f}%"
 
 
-def _direction_word(direction: str, change: Optional[float]) -> str:
-    """生成「上涨/下降」自然语言。"""
+def _direction_word(direction: str, change: Optional[float], lang: str = "zh") -> str:
+    """生成「上涨/下降」自然语言。lang="en" 给 Slack 出口用（默认 zh，飞书逐字不变）。"""
+    en = lang == "en"
     if change is None:
-        return "无数据"
+        return "no data" if en else "无数据"
     if change > 0:
-        return "上涨"
+        return "up" if en else "上涨"
     if change < 0:
-        return "下降"
-    return "持平"
+        return "down" if en else "下降"
+    return "flat" if en else "持平"
 
 
 def _bad_emoji(direction: str, change: Optional[float]) -> str:
@@ -72,23 +73,34 @@ def _is_band(r: Dict[str, Any]) -> bool:
     return (r.get("baseline_mode") == "band") and r.get("band_lower") is not None
 
 
-def _sigma_level(dist: Optional[float]) -> tuple[str, str]:
+def _sigma_level(dist: Optional[float], lang: str = "zh") -> tuple[str, str]:
     """穿出 σ 数 → (emoji, 级别词)。design §5.1。"""
+    en = lang == "en"
     d = abs(dist or 0)
     if d >= 6:
-        return "🔴", "紧急"
+        return "🔴", ("Critical" if en else "紧急")
     if d >= 4:
-        return "🟠", "警告"
-    return "🟡", "关注"
+        return "🟠", ("Warning" if en else "警告")
+    return "🟡", ("Watch" if en else "关注")
+
+
+def _title_for(r: Dict[str, Any], lang: str = "zh") -> str:
+    """指标展示名：zh 用 yaml `title`；en 用 `title_en`（兜底见 `english_title`）。"""
+    if lang != "en":
+        return r["title"]
+    from app.coreguard.services.dashboard_loader import english_title
+
+    return english_title(r.get("title_en"), r.get("title"), r.get("key"))
 
 
 # ---------------------------------------------------------------------------
 # Headline (一句话总结)
 # ---------------------------------------------------------------------------
 
-def _headline(breached: List[Dict[str, Any]]) -> str:
+def _headline(breached: List[Dict[str, Any]], lang: str = "zh") -> str:
+    en = lang == "en"
     if not breached:
-        return "本小时所有核心指标正常"
+        return "All core metrics normal this hour" if en else "本小时所有核心指标正常"
 
     # 按 tier 分组
     p0 = [r for r in breached if r["tier"] == "P0"]
@@ -102,6 +114,28 @@ def _headline(breached: List[Dict[str, Any]]) -> str:
         return abs(c)
 
     worst = max(breached, key=_severity)
+
+    if en:
+        parts_en = []
+        if p0:
+            parts_en.append(f"{len(p0)} P0 core metric(s) anomalous")
+        if p1:
+            parts_en.append(f"{len(p1)} P1 performance metric(s) anomalous")
+        summary_en = ", ".join(parts_en)
+        title_en = _title_for(worst, "en")
+        if _is_band(worst):
+            emoji, level = _sigma_level(worst.get("change"), "en")
+            return (
+                f"{summary_en}: {emoji} **{title_en}** outside prediction band by "
+                f"`{abs(worst.get('change') or 0):.1f}σ` ({level}, baseline = recent same hour). "
+                f"Follow up immediately."
+            )
+        direction_word = _direction_word(worst["direction"], worst["change"], "en")
+        change_str = _fmt_change(worst["value_type"], worst["change"])
+        return (
+            f"{summary_en}: **{title_en}** {direction_word} `{change_str}` "
+            f"(vs same hour last week). Follow up immediately."
+        )
 
     parts = []
     if p0:
@@ -149,10 +183,15 @@ def _breached_block(
     cur_start_ms: int, cur_end_ms: int,
     base_start_ms: int, base_end_ms: int,
     dashboard_id: str, datadog_site: str,
+    lang: str = "zh",
 ) -> str:
-    """单条异常的展示块（lark_md）— 当前值 / 上周值各挂一条 Datadog 深链。"""
+    """单条异常的展示块（lark_md）— 当前值 / 上周值各挂一条 Datadog 深链。
+
+    lang="en" 给 Slack 出口用；默认 zh，飞书逐字不变。
+    """
+    en = lang == "en"
     tier = r["tier"]
-    title = r["title"]
+    title = _title_for(r, lang)
     vt = r["value_type"]
     cur = _fmt_value(vt, r["current_value"])
     widget_id = r.get("datadog_widget_id")
@@ -160,11 +199,18 @@ def _breached_block(
 
     # 带引擎：展示 穿出σ + 预测μ + 正常带
     if _is_band(r):
-        emoji, level = _sigma_level(r.get("change"))
+        emoji, level = _sigma_level(r.get("change"), lang)
         mu = _fmt_value(vt, r.get("baseline_value"))
         lo = _fmt_value(vt, r.get("band_lower"))
         hi = _fmt_value(vt, r.get("band_upper"))
         n = r.get("baseline_n")
+        if en:
+            return (
+                f"**[{tier}] {title}** {emoji}\n"
+                f"\u2003Outside prediction band by `{abs(r.get('change') or 0):.1f}σ` ({level})\n"
+                f"\u2003Current [`{cur}`]({cur_url}) · Predicted μ`{mu}` · Normal band `[{lo}, {hi}]`"
+                f"{f' ({n} baseline points)' if n else ''}"
+            )
         return (
             f"**[{tier}] {title}** {emoji}\n"
             f"　偏离预测带 `{abs(r.get('change') or 0):.1f}σ`（{level}）\n"
@@ -176,9 +222,15 @@ def _breached_block(
     base = _fmt_value(vt, r["baseline_value"])
     chg = _fmt_change(vt, r["change"])
     th = _fmt_threshold(vt, r["threshold"]) if r.get("threshold") else "—"
-    direction_word = _direction_word(r["direction"], r["change"])
+    direction_word = _direction_word(r["direction"], r["change"], lang)
     emoji = _bad_emoji(r["direction"], r["change"])
     base_url = _build_dashboard_url(dashboard_id, datadog_site, base_start_ms, base_end_ms, widget_id)
+    if en:
+        return (
+            f"**[{tier}] {title}** {emoji}\n"
+            f"\u2003{direction_word} `{chg}` (threshold {th})\n"
+            f"\u2003Current [`{cur}`]({cur_url}) · Last week [`{base}`]({base_url})"
+        )
     return (
         f"**[{tier}] {title}** {emoji}\n"
         f"　{direction_word} `{chg}` (阈值 {th})\n"

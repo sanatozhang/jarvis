@@ -306,7 +306,28 @@ async def _notify_review_activity(
             lines.append(f"  · …还有 {len(human_items) - 5} 条")
         text = "\n".join(lines)
         from app.crashguard.services import notify
-        await notify.send_text(text, email=target_email, s=s, what="pr_sync_review")
+
+        # Slack 一律英文（2026-10-09）。评论正文是用户数据：纯英文才原样带，
+        # 含中文的只标注一下，让人去 PR 上看
+        def _en(v: str) -> str:
+            return "?" if notify.has_cjk(v) else v
+
+        en_lines = [
+            f"🔔 Crashguard PR review activity: {pr_row.pr_url}",
+            f"   Branch: {_en(pr_row.branch_name or '?')}  Status: {_en(pr_row.pr_status or '?')}",
+        ]
+        if review_decision:
+            en_lines.append(f"   reviewDecision: {_en(review_decision)}")
+        for a in human_items[:5]:
+            prefix = f"[{a['type']}/{a['state']}]" if a['state'] else f"[{a['type']}]"
+            body = (a['body'] or "").replace("\n", " ").strip()[:200]
+            if notify.has_cjk(body):
+                body = "(non-English comment, see PR)"
+            en_lines.append(f"  · {_en(prefix)} {_en(a['author'] or '?')}: {body}")
+        if len(human_items) > 5:
+            en_lines.append(f"  · …{len(human_items) - 5} more")
+        await notify.send_text(text, text_en="\n".join(en_lines), email=target_email,
+                               s=s, what="pr_sync_review")
     except Exception:
         logger.exception("crashguard pr_sync review-notify failed (non-fatal)")
 

@@ -253,6 +253,16 @@ _FALLBACK_REASON_ZH = {
     "all_unresolved": "找到 author 但飞书账号无法解析",
 }
 
+# Slack 一律英文（2026-10-09）：build_fallback_card(lang="en") 用这份
+_FALLBACK_REASON_EN = {
+    "pr_url_missing": "PR URL missing",
+    "diff_empty": "could not fetch diff",
+    "blame_empty": "no blameable lines after parsing diff",
+    "repo_missing": "local repo path missing",
+    "bot_only": "all blamed authors are bots",
+    "all_unresolved": "authors found but their IM accounts could not be resolved",
+}
+
 
 def build_reviewer_card(
     pr_url: str,
@@ -261,9 +271,46 @@ def build_reviewer_card(
     crash_url: str,
     line_count: int,
     total_lines: int,
+    lang: str = "zh",
 ) -> dict:
-    """飞书 interactive card：请你 review crashguard 自动 PR。"""
+    """飞书 interactive card：请你 review crashguard 自动 PR。
+
+    `lang="en"` 给 Slack 用（Slack 一律英文，2026-10-09）；默认 zh 产出不变。
+    """
     pct = int(line_count * 100 / max(total_lines, 1))
+    if lang == "en":
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "🔍 Please review a crashguard auto PR"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "div", "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"**PR**: {pr_title}\n"
+                        f"**Triggering crash**: {crash_title}\n"
+                        f"**Why you**: you authored {line_count} of the modified lines"
+                        f" ({pct}% of the change)"
+                    ),
+                }},
+                {"tag": "action", "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Open PR"},
+                        "url": pr_url,
+                        "type": "primary",
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "View crash details"},
+                        "url": crash_url,
+                        "type": "default",
+                    },
+                ]},
+            ],
+        }
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -303,8 +350,36 @@ def build_fallback_card(
     pr_title: str,
     reason: str,
     unresolved_emails: Optional[List[str]] = None,
+    lang: str = "zh",
 ) -> dict:
-    """兜底卡片：发给 sanato，告知需手动指派。"""
+    """兜底卡片：发给 sanato，告知需手动指派。
+
+    `lang="en"` 给 Slack 用（Slack 一律英文，2026-10-09）；默认 zh 产出不变。
+    """
+    if lang == "en":
+        reason_en = _FALLBACK_REASON_EN.get(reason, reason)
+        extra_en = ("\n**Unresolved authors**: " + ", ".join(unresolved_emails)
+                    if unresolved_emails else "")
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text",
+                          "content": "⚠️ Crashguard PR needs a reviewer assigned manually"},
+                "template": "orange",
+            },
+            "elements": [
+                {"tag": "div", "text": {
+                    "tag": "lark_md",
+                    "content": f"**PR**: {pr_title}\n**Fallback reason**: {reason_en}{extra_en}",
+                }},
+                {"tag": "action", "actions": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Open PR to assign"},
+                    "url": pr_url,
+                    "type": "primary",
+                }]},
+            ],
+        }
     reason_zh = _FALLBACK_REASON_ZH.get(reason, reason)
     extra = ""
     if unresolved_emails:
@@ -379,7 +454,7 @@ async def notify_reviewers(
         sent: List[str] = []
         for email in resolution.emails:
             n = resolution.line_counts.get(email, 0)
-            card = build_reviewer_card(
+            card_kw = dict(
                 pr_url=pr.pr_url,
                 pr_title=pr_title,
                 crash_title=crash_title,
@@ -387,13 +462,17 @@ async def notify_reviewers(
                 line_count=n,
                 total_lines=total,
             )
+            card = build_reviewer_card(**card_kw)
             # 收件人是**算出来的**（PR 的 reviewer），不是配置里的固定地址，
             # 所以走 send_card_to 而不是 alert_target()。
             from app.crashguard.services import notify
             from app.services.im.feishu_to_slack import compile_card
 
-            ok = await notify.send_card_to(email, card, lambda: compile_card(card),
-                                           s=settings, what="pr_reviewer")
+            # Slack 一律英文：同一份数据按 lang="en" 再构一张卡编译
+            ok = await notify.send_card_to(
+                email, card,
+                lambda: compile_card(build_reviewer_card(**card_kw, lang="en")),
+                s=settings, what="pr_reviewer")
             if ok:
                 sent.append(email)
                 logger.info("reviewer notified pr=%s email=%s lines=%d",
@@ -442,8 +521,12 @@ async def _send_fallback(
     from app.crashguard.services import notify
     from app.services.im.feishu_to_slack import compile_card
 
-    if await notify.send_card_to(fallback_email, card, lambda: compile_card(card),
-                                 what="pr_reviewer_fallback"):
+    # Slack 一律英文：同一份数据按 lang="en" 再构一张卡编译
+    if await notify.send_card_to(
+            fallback_email, card,
+            lambda: compile_card(build_fallback_card(pr_url, pr_title, reason, unresolved_emails,
+                                                     lang="en")),
+            what="pr_reviewer_fallback"):
         logger.info("fallback sent to %s for pr=%s reason=%s",
                     fallback_email, pr_url, reason)
 

@@ -328,9 +328,22 @@ class _WorsenCandidate:
     d2: _Cell      # 上上一个工作日（第二次对比的基线，用于"连续两天"判定）
 
 
+@dataclass
+class WorsenItem:
+    """恶化条目的结构化版本（Slack 英文版用；飞书/网页端仍用拼好的 worsen_lines）。"""
+
+    platform: str
+    tier_label: str     # "大盘" / "主要版本"
+    key: str            # metric key
+    value: str          # 今日值（已按 cell_format 格式化）
+    arrow: str          # ▲ / ▼
+    delta: str          # +37.7% / +0.12pp
+
+
 def _build_worsen_lines(
     candidates: List[_WorsenCandidate],
     directionality_by_key: Dict[str, Optional[str]],
+    items_out: Optional[List[WorsenItem]] = None,
 ) -> List[str]:
     """连续两个工作日同向恶化才标记：今日 vs 上一工作日 要恶化，且上一工作日
     vs 上上工作日 也要恶化（同一子值维度），单日波动不会触发。"""
@@ -362,10 +375,13 @@ def _build_worsen_lines(
             cur_str = c.spec.cell_format.format(p75=c.today.value[0], p90=c.today.value[1])
         else:
             cur_str = c.spec.cell_format.format(v=c.today.value)
+        delta_str = _format_delta(c.spec, worst_delta, worst_baseline)
         lines.append(
             f"- {_PLATFORM_LABEL[c.platform]} [{c.tier_label}] {_metric_name(c.spec)} "
-            f"{cur_str} {arrow} {_format_delta(c.spec, worst_delta, worst_baseline)}（连续2个工作日）"
+            f"{cur_str} {arrow} {delta_str}（连续2个工作日）"
         )
+        if items_out is not None:
+            items_out.append(WorsenItem(c.platform, c.tier_label, c.spec.key, cur_str, arrow, delta_str))
     return lines
 
 
@@ -549,6 +565,7 @@ class GraygateReportData:
     metric_rows: List[Tuple[str, str, bool]] = field(default_factory=list)  # (key, 展示名, 是否核心指标)
     tiers: Dict[str, List[TierSummary]] = field(default_factory=dict)       # platform → [大盘, 主要版本]
     new_crash_count: int = 0
+    worsen_items: List[WorsenItem] = field(default_factory=list)
 
     @property
     def is_red(self) -> bool:
@@ -606,7 +623,8 @@ async def collect_report_data(target_date: date) -> Optional[GraygateReportData]
         )
         columns_md.append(col_md)
 
-    worsen_lines = _build_worsen_lines(worsen_candidates, directionality_by_key)
+    worsen_items: List[WorsenItem] = []
+    worsen_lines = _build_worsen_lines(worsen_candidates, directionality_by_key, worsen_items)
 
     new_crashes = await find_new_crashes(target_date)
     top_crashes = await find_top_crashes(target_date)
@@ -624,6 +642,7 @@ async def collect_report_data(target_date: date) -> Optional[GraygateReportData]
         metric_rows=[(m.key, _metric_name(m), m.key in _CORE_WORSEN_KEYS) for m in metrics_config.metrics],
         tiers=tiers,
         new_crash_count=len(new_crashes),
+        worsen_items=worsen_items,
     )
 
 

@@ -121,11 +121,12 @@ def _check_journal_mode_sync(db_path: str) -> tuple[bool, str]:
     return True, mode
 
 
-async def _send_alert(text: str) -> None:
+async def _send_alert(text: str, text_en: str = "") -> None:
+    """`text` 发飞书；`text_en` 发 Slack（Slack 一律英文，2026-10-09）。"""
     settings = get_settings()
     target = getattr(settings, "db_health_alert_email", "") or "sanato.zhang@plaud.ai"
     from app.services import system_notify
-    if not await system_notify.send_text(target, text):
+    if not await system_notify.send_text(target, text, text_en=text_en):
         logger.error("db_health_monitor: failed to send alert to %s", target)
 
 
@@ -138,7 +139,14 @@ async def _check_io_error_frequency() -> None:
     await _send_alert(
         f"⚠️ SQLite 过去 10 分钟内出现 {count} 次 disk I/O error（阈值 {_IO_ERROR_THRESHOLD}）。\n"
         "目前是软提醒——可能只是 virtiofs 抖动，业务连接会自动重试，但频率异常本身"
-        "值得留意，之前的数据库损坏事故就是先有一段时间的密集报错。"
+        "值得留意，之前的数据库损坏事故就是先有一段时间的密集报错。",
+        text_en=(
+            f"⚠️ SQLite hit {count} disk I/O errors in the last 10 minutes "
+            f"(threshold {_IO_ERROR_THRESHOLD}).\n"
+            "Soft warning for now — possibly just virtiofs jitter and connections retry automatically, "
+            "but the frequency itself is worth watching: the previous DB corruption incident was "
+            "preceded by a period of dense errors."
+        ),
     )
 
 
@@ -163,7 +171,13 @@ async def _check_integrity_and_snapshot() -> None:
         await _send_alert(
             f"🔴 数据库完整性检查失败：{detail}\n"
             "这不是瞬时抖动，是真的结构性问题，需要人工介入（评估从最近快照恢复）。\n"
-            f"快照目录：{snapshot_dir}"
+            f"快照目录：{snapshot_dir}",
+            text_en=(
+                f"🔴 Database integrity check failed: {detail}\n"
+                "This is not transient jitter but a real structural problem; manual intervention "
+                "needed (evaluate restoring from the latest snapshot).\n"
+                f"Snapshot dir: {snapshot_dir}"
+            ),
         )
 
 
@@ -178,7 +192,12 @@ async def _check_journal_mode() -> None:
         await _send_alert(
             f"🟡 SQLite journal_mode 配置漂移：{detail}\n"
             "预期一直是 DELETE 模式（WAL 在 virtiofs 上会导致数据库损坏，8月20日事故的根因）。"
-            "如果不是有意改回去的，需要马上查为什么。"
+            "如果不是有意改回去的，需要马上查为什么。",
+            text_en=(
+                f"🟡 SQLite journal_mode drifted: {detail}\n"
+                "Expected to always be DELETE mode (WAL on virtiofs corrupts the database — root cause "
+                "of the Aug 20 incident). If this was not changed back on purpose, investigate now."
+            ),
         )
 
 

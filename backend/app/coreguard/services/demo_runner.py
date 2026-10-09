@@ -27,18 +27,22 @@ from app.db.database import get_session
 logger = logging.getLogger("coreguard.demo_runner")
 
 
-async def _send_feishu(card: Dict[str, Any]) -> bool:
+async def _send_feishu(card: Dict[str, Any], slack_card: Optional[Dict[str, Any]] = None) -> bool:
     """名字保持不变（调用方和测试都按这个名字来），但内部已经 provider 无关。
 
     demo 走 `send_simple_card`，**刻意不走群配额路由** —— 手动触发的一次性
     演示不该消耗当天留给真实告警的群配额。
+
+    Slack 一律英文（2026-10-09）：`slack_card` 是同一份数据 `lang="en"` 渲染的
+    飞书形状 card，只拿来转 Slack blocks；没给就退回 `card`（老调用方）。
     """
     from app.coreguard.services import notify
 
+    src = slack_card or card
     return await notify.send_simple_card(
         card,
-        slack_blocks=_demo_slack_blocks(card),
-        text=_demo_title(card),
+        slack_blocks=_demo_slack_blocks(src),
+        text=_demo_title(src),
         color="#1D9BD1",
     )
 
@@ -61,10 +65,19 @@ def _demo_slack_blocks(card: Dict[str, Any]) -> list:
 
     blocks = [_header(_demo_title(card))]
     for el in card.get("elements") or []:
-        content = ((el.get("text") or {}).get("content")
-                   if isinstance(el.get("text"), dict) else None)
-        if content:
-            blocks.append(section(lark_md_to_mrkdwn(content)))
+        contents = []
+        if isinstance(el.get("text"), dict):
+            contents.append(el["text"].get("content"))
+        # div.fields（当前/基线/变化/Sessions）和 note.elements（Datadog 链接）
+        for f in el.get("fields") or []:
+            if isinstance(f.get("text"), dict) and f["text"].get("content") != "---":
+                contents.append(f["text"].get("content"))
+        for sub in el.get("elements") or []:
+            if isinstance(sub, dict) and sub.get("tag") == "lark_md":
+                contents.append(sub.get("content"))
+        for content in contents:
+            if content:
+                blocks.append(section(lark_md_to_mrkdwn(content)))
     return blocks
 
 
@@ -179,8 +192,7 @@ async def run_demo(force_alert: bool = False, now: Optional[datetime] = None) ->
             f"https://app.{s.datadog_site}/dashboard/{s.dashboard_id}"
             f"?from_ts={_from_ts}&to_ts={_to_ts}&live=false"
         )
-        card = build_demo_alert_card(
-            metric_title=dm.METRIC_TITLE,
+        card_kwargs = dict(
             current_value=current_value if current_value is not None else float("nan"),
             baseline_value=baseline_value,
             change_pp=change_pp,
@@ -191,7 +203,15 @@ async def run_demo(force_alert: bool = False, now: Optional[datetime] = None) ->
             dashboard_url=dashboard_url,
             forced=force_alert,
         )
-        alert_sent = await _send_feishu(card)
+        card = build_demo_alert_card(metric_title=dm.METRIC_TITLE, **card_kwargs)
+        # Slack 版：英文 + 英文指标名（METRIC_TITLE 本身就是英文，兜底仍走 english_title）
+        from app.coreguard.services.dashboard_loader import english_title
+
+        slack_card = build_demo_alert_card(
+            metric_title=english_title(getattr(dm, "METRIC_TITLE_EN", ""), dm.METRIC_TITLE, dm.METRIC_KEY),
+            lang="en", **card_kwargs,
+        )
+        alert_sent = await _send_feishu(card, slack_card)
         if alert_sent:
             async with get_session() as session:
                 row = (await session.execute(

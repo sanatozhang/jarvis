@@ -104,8 +104,9 @@ async def test_dirty_pr_is_not_touched_only_notified(tmp_path, monkeypatch):
     import app.crashguard.services.notify as notify_mod
     import app.crashguard.services.pr_conflict_resync as mod
 
-    async def _capture(text, *, email="", s=None, what=""):
+    async def _capture(text, *, text_en="", email="", s=None, what=""):
         await _fake_send(text=text, email=email)
+        sent["text_en"] = text_en  # Slack 腿的英文版（2026-10-09）
         return True
 
     monkeypatch.setattr(notify_mod, "send_text", _capture)
@@ -115,6 +116,7 @@ async def test_dirty_pr_is_not_touched_only_notified(tmp_path, monkeypatch):
     assert res["conflicts"] == 1
     assert "yancy@plaud.ai" in sent.get("text", "")
     assert "pull/202" in sent.get("text", "")
+    assert "yancy@plaud.ai" in sent["text_en"] and "pull/202" in sent["text_en"]
 
 
 @pytest.mark.asyncio

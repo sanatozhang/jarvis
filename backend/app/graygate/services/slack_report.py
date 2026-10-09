@@ -25,8 +25,10 @@ crashguard），所以这里的划分是重新定的，判据是「这条消息�
 的那几个，`metric_rows` 里 is_core=True），新增崩溃只给条数，其余（非核心指标、
 新增崩溃堆栈、Top5 崩溃/卡顿）全部收进「查看完整日报 →」链接，**不再发 thread**——
 跟 crashguard 早报同一个处理方式。完整版 markdown 见 `report_markdown.py`，发送时
-落库缓存（`report_store.py`）。没有 `report_url`（前端地址没配）时退回上面那张表的
-老排版，保证信息不丢。
+落库缓存（`report_store.py`）。没有 `report_url`（前端地址没配）时附录退回 thread，
+保证信息不丢。
+
+**Slack 全英文**：见下方 `_METRIC_EN` 那段注释。
 
 ## 色条
 
@@ -44,7 +46,6 @@ from app.services.im.base import Fold, Rendered
 from app.services.im.mrkdwn import (
     context,
     divider,
-    header,
     lark_md_to_mrkdwn,
     section,
     two_column,
@@ -59,87 +60,162 @@ _COLOR_RED = "#E01E5A"
 _COLOR_OK = "#2EB67D"
 
 
-_PLATFORM_LABEL = {"ios": "🍎 iOS", "android": "🤖 Android"}
+# ---------------------------------------------------------------------------
+# 2026-10-09：Slack 全英文（用户要求 Slack 消息不含中文；飞书 / 网页端仍是中文）。
+# 所以 Slack 不复用 columns_md / worsen_lines / *_md 这些拼好的中文片段，而是从
+# 结构化字段（tiers / metric_rows / worsen_items）重新渲染。
+# ---------------------------------------------------------------------------
+_PLATFORM_EN = {"ios": "🍎 iOS", "android": "🤖 Android"}
+_TIER_EN = {"大盘": "Overall", "主要版本": "Primary"}
+
+# metrics.yaml 里的 title 是 Datadog 看板上的 widget 名，部分是中文，这里给英文展示名
+_METRIC_EN = {
+    "crash_free": "Crash-free sessions",
+    "android_anr": "ANR rate",
+    "hang_rate": "Hang rate",
+    "refresh_rate": "Refresh rate",
+    "fps": "Avg FPS per run",
+    "jank": "Jank per session (p75/p90)",
+    "cold_startup_p90": "Cold startup p90",
+    "memory_usage": "Memory usage",
+    "home_render": "Home list load (p75/p90)",
+    "detail_render_p90": "Detail first screen p90",
+    "summary_render_p90": "Detail WebView render p90",
+}
+
+# card_builder 的 sentinel 文案 → 英文
+_SENTINEL_EN = {
+    "—（不适用）": "— (n/a)",
+    "—（无数据）": "— (no data)",
+    "—（样本不足）": "— (low sample)",
+    "—（取数失败）": "— (query failed)",
+}
 
 
-def _core_column_md(data: GraygateReportData, platform: str) -> str:
-    """一个平台的核心指标列：大盘 / 主要版本 各列出核心指标，「不适用」的不列。"""
+def _metric_en(key: str, fallback: str = "") -> str:
+    if key in _METRIC_EN:
+        return _METRIC_EN[key]
+    return fallback if fallback.isascii() and fallback else key
+
+
+def _cell_en(v: str) -> str:
+    return _SENTINEL_EN.get(v, v)
+
+
+def _title_en(data: GraygateReportData) -> str:
+    return f"🆕 [4.0.3 Gray] Daily Metrics · {data.target_date.isoformat()}"
+
+
+def _banner_en(data: GraygateReportData) -> str:
+    return (
+        f"📊 Window {data.target_date.strftime('%m-%d')} 00:00–24:00 BJT · "
+        f"baseline {data.d1_day.strftime('%m-%d')} (previous workday) · "
+        f"overall version pattern `{data.version_pattern}`"
+    )
+
+
+def _tier_head(t) -> str:
+    if t.label == "大盘":
+        head = f"_Overall ({t.version})_"
+    elif t.version:
+        head = f"_Primary_ `{t.version}`" + (" (manual)" if t.manual else "")
+    else:
+        head = "_Primary_ — (no data)"
+    if t.sessions is not None:
+        head += f" · {t.sessions:,} sessions"
+    return head
+
+
+def _core_column(data: GraygateReportData, platform: str) -> str:
+    """一个平台的核心指标列：主要版本在前、大盘在后；「不适用」的格子不列。"""
     core = [(k, name) for k, name, is_core in data.metric_rows if is_core]
-    lines: List[str] = [f"**{_PLATFORM_LABEL[platform]}**"]
-    for t in data.tiers.get(platform) or []:
-        if t.label == "大盘":
-            head = f"__大盘（{t.version}）__"
-        elif t.version:
-            head = f"__主要版本__ `{t.version}`" + ("（人工指定）" if t.manual else "")
-        else:
-            head = "__主要版本__"
-        if t.sessions is not None:
-            head += f" · {t.sessions:,} sessions"
-        lines += ["", head]
+    tiers = data.tiers.get(platform) or []
+    # 主要版本是这次灰度真正在看的包，排最前（2026-10-09 用户要求）
+    tiers = sorted(tiers, key=lambda t: 0 if t.label == "主要版本" else 1)
+    lines: List[str] = [f"*{_PLATFORM_EN[platform]}*"]
+    for t in tiers:
+        lines += ["", _tier_head(t)]
         for key, name in core:
             v = t.cells.get(key, "")
             if not v or "不适用" in v:
                 continue
-            lines.append(f"· {name}：{v}")
+            lines.append(f"• {_metric_en(key, name)}: {_cell_en(v)}")
     return "\n".join(lines)
 
 
-def assemble_slack_message(data: GraygateReportData, report_url: Optional[str] = None) -> Rendered:
-    """`GraygateReportData` → Slack 主消息 blocks（+ 无 report_url 时的 thread 折叠段）。"""
-    blocks: List[dict] = [
-        header(data.title),
-        context(lark_md_to_mrkdwn(data.banner_md)),
-    ]
-    compact = bool(report_url) and bool(data.tiers) and bool(data.metric_rows)
+def _worsen_en(data: GraygateReportData) -> List[str]:
+    out = []
+    for w in data.worsen_items:
+        out.append(
+            f"• {_PLATFORM_EN.get(w.platform, w.platform)} [{_TIER_EN.get(w.tier_label, w.tier_label)}] "
+            f"{_metric_en(w.key)} {w.value} {w.arrow} {w.delta} (2 workdays in a row)"
+        )
+    return out
 
-    if data.worsen_lines:
+
+def _list_body(md: Optional[str]) -> str:
+    """`**中文标题**\n\n- 条目...` → 只要条目（条目本身是平台/版本/events/英文 issue 标题）。"""
+    if not md:
+        return ""
+    _, _, body = md.partition("\n")
+    return lark_md_to_mrkdwn(body.strip())
+
+
+def assemble_slack_message(data: GraygateReportData, report_url: Optional[str] = None) -> Rendered:
+    """`GraygateReportData` → Slack 主消息（英文）。
+
+    标题只放在 `text` 里：带色条时 Slack 把 text 显示在 attachment 上方，blocks 里
+    再放 header 就会出现两遍（2026-10-09 用户反馈）。
+    """
+    n_worse = len(data.worsen_items) or len(data.worsen_lines)
+    blocks: List[dict] = [context(_banner_en(data))]
+
+    if data.worsen_items:
         blocks.append(divider())
         blocks.append(section(
-            "*🔴 恶化（核心指标，连续 2 个工作日同向恶化）*\n\n"
-            + lark_md_to_mrkdwn("\n".join(data.worsen_lines))
+            "*🔴 Regressions (core metrics, worse 2 workdays in a row)*\n" + "\n".join(_worsen_en(data))
         ))
+    elif data.worsen_lines:
+        # 老数据没有结构化条目：只给条数，细节看完整日报
+        blocks.append(divider())
+        blocks.append(section(f"*🔴 {n_worse} regression(s) in core metrics* — see full report"))
 
     blocks.append(divider())
-    if compact:
-        blocks.append(two_column(
-            lark_md_to_mrkdwn(_core_column_md(data, "ios")),
-            lark_md_to_mrkdwn(_core_column_md(data, "android")),
-        ))
+    if data.tiers and data.metric_rows:
+        blocks.append(two_column(_core_column(data, "ios"), _core_column(data, "android")))
     else:
-        blocks.append(two_column(
-            lark_md_to_mrkdwn(data.columns_md[0]),
-            lark_md_to_mrkdwn(data.columns_md[1]),
-        ))
+        blocks.append(section("_No per-version metrics available._"))
 
     folds: List[Fold] = []
     if report_url:
         if data.new_crash_count:
-            blocks.append(section(f"*🆕 新增崩溃 {data.new_crash_count} 个*（堆栈见完整日报）"))
+            blocks.append(section(
+                f"*🆕 {data.new_crash_count} new crash(es)* (stack traces in the full report)"
+            ))
         blocks.append(context(
-            f"<{report_url}|查看完整日报 →>  全部指标 · 新增崩溃堆栈 · Top5 崩溃 / 卡顿"
+            f"<{report_url}|View full report →>  All metrics · New crash stacks · Top 5 crashes / jank"
         ))
-    elif data.new_crash_md:
-        folds.append(Fold(
-            title="🆕 新增崩溃堆栈",
-            blocks=[section(lark_md_to_mrkdwn(data.new_crash_md))],
-            text="🆕 新增崩溃堆栈",
-        ))
-    if not report_url and (data.top_crash_md or data.top_jank_md):
+    else:
+        # 前端地址没配：没有地方可跳，附录只能挂 thread
+        if data.new_crash_md:
+            folds.append(Fold(title="🆕 New crash stacks",
+                              blocks=[section("*🆕 New crash stacks*\n" + _list_body(data.new_crash_md))],
+                              text="🆕 New crash stacks"))
         inner: List[dict] = []
         if data.top_crash_md:
-            inner.append(section(lark_md_to_mrkdwn(data.top_crash_md)))
+            inner.append(section("*🔥 Top 5 crashes (by events)*\n" + _list_body(data.top_crash_md)))
         if data.top_jank_md:
-            inner.append(section(lark_md_to_mrkdwn(data.top_jank_md)))
-        folds.append(Fold(title="🔥 Top 崩溃 / 卡顿", blocks=inner,
-                          text="🔥 Top 崩溃 / 卡顿"))
+            inner.append(section("*🟠 Top 5 jank (by events)*\n" + _list_body(data.top_jank_md)))
+        if inner:
+            folds.append(Fold(title="🔥 Top crashes / jank", blocks=inner, text="🔥 Top crashes / jank"))
 
+    status = f"🔴 {n_worse} regression(s)" if n_worse else "no regressions"
     return Rendered(
         payload=blocks,
         folds=tuple(folds),
-        # text 是通知栏/推送看到的那一行。带上恶化条数，让人在锁屏上就能判断
-        # 要不要现在点开——只写"灰度日报"的话每天长一个样，很快就被无视了。
-        text=(f"{data.title} · 🔴 {len(data.worsen_lines)} 项恶化"
-              if data.worsen_lines else f"{data.title} · 无恶化"),
+        # 带色条时这一行显示在消息最上面（也是锁屏推送看到的那一行），所以标题
+        # 只放这里；带上恶化条数，让人不点开就能判断今天要不要看。
+        text=f"*{_title_en(data)}* · {status}",
         color=_COLOR_RED if data.is_red else _COLOR_OK,
     )
 
@@ -176,15 +252,19 @@ async def build_report_message(target_date: date) -> Optional[Rendered]:
     return assemble_slack_message(data, report_url_for(target_date))
 
 
-def assemble_focus_change_message(platform: str, action: str,
-                                  old_note: str, operator: str) -> Rendered:
-    """「主要版本」变更通知的 Slack 版（对应 `focus_version.py` 里那张蓝色小卡）。"""
+def assemble_focus_change_message(platform: str, old_value: str, new_value: str,
+                                  operator: str) -> Rendered:
+    """「主要版本」变更通知的 Slack 版（英文；对应 `focus_version.py` 里那张蓝色小卡）。"""
+    plat = platform.upper()
+    action = f"set to `{new_value}`" if new_value else "cleared (falls back to auto-detected top version)"
+    old = f"`{old_value}`" if old_value else "not set (auto-detected)"
+    title = f"🔖 [4.0.3 Gray] Primary version changed · {plat}"
     return Rendered(
         payload=[
-            header(f"🔖 4.0.3 灰度「主要版本」变更 · {platform.upper()}"),
-            section(f"*{platform.upper()}* {lark_md_to_mrkdwn(action)}"),
-            context(f"{lark_md_to_mrkdwn(old_note)} · 操作人：{operator}"),
+            section(f"*{plat}* primary version {action}"),
+            # operator 兜底文案是中文（"未知（调用方未提供身份）"），Slack 统一成 unknown
+            context(f"Previous: {old} · Changed by: {operator if operator.isascii() else 'unknown'}"),
         ],
-        text=f"🔖 4.0.3 灰度「主要版本」变更 · {platform.upper()}",
+        text=f"*{title}*",
         color="#1D9BD1",   # 对应飞书的 template: blue
     )

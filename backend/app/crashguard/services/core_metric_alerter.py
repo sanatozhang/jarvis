@@ -407,13 +407,14 @@ async def run_core_metric_tick(
 
     # 发卡片
     from app.crashguard.services.feishu_card import build_core_metric_alert_card
-    card = build_core_metric_alert_card(
+    card_kw = dict(
         window_start=window_start,
         items=alert_items,
         threshold_pp=threshold_pp,
         frontend_base_url=s.frontend_base_url,
         alert_id=alert_id,
     )
+    card = build_core_metric_alert_card(**card_kw)
     sent_ok = False
     if not s.feishu_enabled:
         logger.info("core_metric_alerter: feishu_enabled=False, skip send (data 已落表)")
@@ -422,8 +423,10 @@ async def run_core_metric_tick(
         from app.crashguard.services import notify
         from app.services.im.feishu_to_slack import compile_card
 
-        sent_ok = await notify.send_alert(card, lambda: compile_card(card),
-                                          s=s, what="core_metric_alert")
+        # Slack 一律英文：同一份数据按 lang="en" 再构一张卡编译
+        sent_ok = await notify.send_alert(
+            card, lambda: compile_card(build_core_metric_alert_card(**card_kw, lang="en")),
+            s=s, what="core_metric_alert")
 
     logger.info(
         "core_metric_alerter fired: window=%s alerts=%d direction=%s sent=%s",

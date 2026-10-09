@@ -18,16 +18,34 @@ def build_demo_alert_card(
     baseline_window_label: str,
     dashboard_url: str,
     forced: bool = False,
+    lang: str = "zh",
 ) -> Dict[str, Any]:
     """飞书 v2 interactive card。
 
     forced=True 时 (force_alert query param 触发) 加 "🧪 演示" 标记，避免被当成真告警。
+    lang="en" 产出英文版（只给 Slack 出口转换用）；默认 zh，飞书逐字不变。
     """
+    if lang == "en":
+        L = {
+            "forced": " (🧪 forced demo)",
+            "cur": "Current window", "base": "Same hour last week (SHoW)", "val": "Value",
+            "chg": "Change", "th": "threshold", "sess": "Sessions (current window)",
+            "dash": "Open Datadog dashboard",
+            "foot": "Demo mode — production version adds Ack / escalation / auto-recovery",
+        }
+    else:
+        L = {
+            "forced": " (🧪 强制演示)",
+            "cur": "当前窗口", "base": "上周同时段（SHoW）", "val": "值",
+            "chg": "变化", "th": "阈值", "sess": "Sessions（当前窗口）",
+            "dash": "打开 Datadog Dashboard",
+            "foot": "Demo 模式 — 正式版含 Ack / 升级 / 自动恢复",
+        }
     # 卡片头部颜色：恶化 → red，演示 → blue
     template = "blue" if forced else ("red" if (change_pp is not None and change_pp <= -threshold_pp) else "yellow")
     title = f"[coreguard·demo] {metric_title}"
     if forced:
-        title += " (🧪 强制演示)"
+        title += L["forced"]
 
     def _fmt(v: Optional[float], suffix: str = "") -> str:
         return "N/A" if v is None else f"{v:.3f}{suffix}"
@@ -37,14 +55,14 @@ def build_demo_alert_card(
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"**当前窗口**\n{current_window_label}\n值: {_fmt(current_value, '%')}",
+                "content": f"**{L['cur']}**\n{current_window_label}\n{L['val']}: {_fmt(current_value, '%')}",
             },
         },
         {
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"**上周同时段（SHoW）**\n{baseline_window_label}\n值: {_fmt(baseline_value, '%')}",
+                "content": f"**{L['base']}**\n{baseline_window_label}\n{L['val']}: {_fmt(baseline_value, '%')}",
             },
         },
         {"is_short": False, "text": {"tag": "lark_md", "content": "---"}},
@@ -52,14 +70,14 @@ def build_demo_alert_card(
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"**变化**\n{_fmt(change_pp, ' pp')} (阈值 {threshold_pp} pp)",
+                "content": f"**{L['chg']}**\n{_fmt(change_pp, ' pp')} ({L['th']} {threshold_pp} pp)",
             },
         },
         {
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"**Sessions（当前窗口）**\n{sessions_count if sessions_count is not None else 'N/A'}",
+                "content": f"**{L['sess']}**\n{sessions_count if sessions_count is not None else 'N/A'}",
             },
         },
     ]
@@ -79,8 +97,8 @@ def build_demo_alert_card(
                     {
                         "tag": "lark_md",
                         "content": (
-                            f"📊 [打开 Datadog Dashboard]({dashboard_url})  "
-                            f"·  Demo 模式 — 正式版含 Ack / 升级 / 自动恢复"
+                            f"📊 [{L['dash']}]({dashboard_url})  "
+                            f"·  {L['foot']}"
                         ),
                     }
                 ],

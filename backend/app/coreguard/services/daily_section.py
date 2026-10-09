@@ -50,6 +50,8 @@ class _AggMetric:
     baseline_breach_windows: int = 0
     baseline_total_windows: int = 0
     baseline_longest_consecutive: int = 0
+    # 英文名（yaml title_en）—— 只给 Slack 出口的 headline_hint_en 用
+    title_en: str = ""
 
 
 def _date_range_utc(target_date: _date_t) -> Tuple[datetime, datetime]:
@@ -145,6 +147,7 @@ async def _aggregate_snapshots(
         agg = _AggMetric(
             key=key,
             title=(meta.title if meta else key),
+            title_en=(getattr(meta, "title_en", "") if meta else ""),
             tier=(meta.tier if meta else snaps[0].tier or "P2"),
             value_type=(meta.value_type if meta else snaps[0].value_type or "percent_pp"),
             direction=(meta.direction if meta else "down_is_bad"),
@@ -270,10 +273,37 @@ def _render_section_md(
     return "\n\n".join(parts)
 
 
-def _build_headline_hint(persistent: List[_AggMetric], transient: List[_AggMetric]) -> Optional[str]:
-    """给 crashguard headline 提供一句话提示（None = 业务侧没事，crashguard 用自己原 headline）。"""
+def _english_title(title_en: Optional[str], title: Optional[str], key: Optional[str]) -> str:
+    from app.coreguard.services.dashboard_loader import english_title
+
+    return english_title(title_en, title, key)
+
+
+def _build_headline_hint(persistent: List[_AggMetric], transient: List[_AggMetric],
+                         lang: str = "zh") -> Optional[str]:
+    """给 crashguard headline 提供一句话提示（None = 业务侧没事，crashguard 用自己原 headline）。
+
+    lang="en" → Slack 早报用的 `headline_hint_en`（全英文、指标名走 title_en）。
+    """
     p0 = [m for m in persistent if m.tier == "P0"]
     p1 = [m for m in persistent if m.tier == "P1"]
+    if lang == "en":
+        if p0:
+            worst = p0[0]
+            ch = _fmt_change(worst.value_type, worst.worst_change)
+            name = _english_title(worst.title_en, worst.title, worst.key)
+            return (f"Business core metrics: {len(p0)} P0 persistent anomal"
+                    f"{'y' if len(p0) == 1 else 'ies'}: **{name}** Δ `{ch}` ≥{worst.longest_consecutive}h")
+        if p1:
+            worst = p1[0]
+            ch = _fmt_change(worst.value_type, worst.worst_change)
+            name = _english_title(worst.title_en, worst.title, worst.key)
+            return (f"Business: {len(p1)} P1 persistent anomal"
+                    f"{'y' if len(p1) == 1 else 'ies'}: **{name}** Δ `{ch}`")
+        if transient:
+            return (f"Business: {len(transient)} transient blip(s) "
+                    f"(suppressed by N=2 debounce, no immediate action needed)")
+        return None
     if p0:
         worst = p0[0]
         ch = _fmt_change(worst.value_type, worst.worst_change)
@@ -358,6 +388,7 @@ async def _check_day_level(target_date: _date_t) -> List[_AggMetric]:
         agg = _AggMetric(
             key=m.key,
             title=m.title + " (day-level)",
+            title_en=_english_title(getattr(m, "title_en", ""), m.title, m.key) + " (day-level)",
             tier=m.tier,
             value_type=m.value_type,
             direction=m.direction,
@@ -391,6 +422,7 @@ async def build_morning_section(
         "section_title_suffix": str,   # 折叠区标题后缀（"⚠️ (持续 N · 偶发 M)" 这种 chip）
         "auto_expand": bool,           # 有持续异常 → True（自动展开）
         "headline_hint": Optional[str], # 给 headline 拼装用的一句话
+        "headline_hint_en": Optional[str], # 同上的英文版（Slack 早报用；None = 业务侧没事）
         "summary_chip": str,           # 给 Σ 摘要行用的 chip
         "persistent_count": int,
         "transient_count": int,
@@ -409,6 +441,7 @@ async def build_morning_section(
             "section_title_suffix": "",
             "auto_expand": False,
             "headline_hint": None,
+            "headline_hint_en": None,
             "summary_chip": "业务指标 `无数据`",
             "persistent_count": 0,
             "transient_count": 0,
@@ -486,6 +519,7 @@ async def build_morning_section(
         "section_title_suffix": suffix,
         "auto_expand": bool(persistent),  # 仅持续异常才自动展开
         "headline_hint": _build_headline_hint(persistent, transient),
+        "headline_hint_en": _build_headline_hint(persistent, transient, lang="en"),
         "summary_chip": _build_summary_chip(persistent, transient, total_metrics),
         "persistent_count": len(persistent),
         "transient_count": len(transient),

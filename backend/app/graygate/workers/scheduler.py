@@ -136,8 +136,23 @@ async def _send_failure_alert(status: str, target_date: date, error: Optional[st
             f"summary: {summary}\n"
             "可能是飞书 API 抖动，也可能是 chat_id 配置有问题，需要人工确认。"
         )
+    # Slack 发英文版（2026-10-09：Slack 消息一律英文）
+    if status == "failed":
+        text_en = (
+            f"🔴 4.0 gray daily report failed to build ({target_date.isoformat()}); nothing will be posted today.\n"
+            f"error: {error}\n"
+            "Please check the logs (heartbeat table coreguard_job_heartbeats, "
+            "job_name=graygate_daily_report)."
+        )
+    else:
+        text_en = (
+            f"🟡 4.0 gray daily report was computed but failed to send ({target_date.isoformat()}); "
+            "the channel did not receive it.\n"
+            f"summary: {summary}\n"
+            "Possibly an IM API hiccup or a wrong channel config; please check."
+        )
     try:
-        await notify.send_ops_alert(text)
+        await notify.send_ops_alert(text, text_en)
     except Exception:
         logger.exception("graygate_daily_report: failed to send failure alert itself")
 
@@ -309,8 +324,15 @@ async def _check_staleness() -> None:
         "调度本身停了，检查 scheduler_loop 是否还活着、enabled/scheduler_enabled "
         "开关有没有被静默改掉。"
     )
+    text_en = (
+        f"🔴 4.0 gray daily report has not succeeded for {age_hours:.0f} hours "
+        f"(last success: {row.fired_at.isoformat()} UTC).\n"
+        "This is different from a data-fetch failure (that has its own alert) — most likely the "
+        "scheduler itself stopped. Check that scheduler_loop is alive and that the "
+        "enabled / scheduler_enabled switches were not changed."
+    )
     try:
-        await notify.send_ops_alert(text)
+        await notify.send_ops_alert(text, text_en)
     except Exception:
         logger.exception("graygate staleness alert: failed to send itself")
 

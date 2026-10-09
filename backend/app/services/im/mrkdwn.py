@@ -82,7 +82,7 @@ MAX_FIELDS_PER_SECTION = 10
 MAX_HEADER_TEXT = 150
 
 
-def clip(text: str, limit: int, *, marker: str = "\n…（已截断）") -> str:
+def clip(text: str, limit: int, *, marker: str = "\n…(truncated)") -> str:
     """按 limit 裁剪，裁掉时在末尾留痕。
 
     留痕不是装饰：不留的话"内容被截断"和"内容本来就这么短"在界面上完全

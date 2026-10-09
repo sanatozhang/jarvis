@@ -46,7 +46,7 @@ async def test_io_error_frequency_alert_fires_above_threshold(monkeypatch):
 
     sent = []
 
-    async def _fake_alert(text):
+    async def _fake_alert(text, text_en=""):
         sent.append(text)
 
     monkeypatch.setattr(mon, "_send_alert", _fake_alert)
@@ -62,7 +62,7 @@ async def test_io_error_frequency_respects_cooldown(monkeypatch):
 
     sent = []
 
-    async def _fake_alert(text):
+    async def _fake_alert(text, text_en=""):
         sent.append(text)
 
     monkeypatch.setattr(mon, "_send_alert", _fake_alert)
@@ -77,7 +77,7 @@ async def test_io_error_frequency_below_threshold_no_alert(monkeypatch):
 
     sent = []
 
-    async def _fake_alert(text):
+    async def _fake_alert(text, text_en=""):
         sent.append(text)
 
     monkeypatch.setattr(mon, "_send_alert", _fake_alert)
@@ -147,7 +147,7 @@ async def test_check_integrity_and_snapshot_alerts_on_failure(tmp_path, monkeypa
 
     sent = []
 
-    async def _fake_alert(text):
+    async def _fake_alert(text, text_en=""):
         sent.append(text)
 
     monkeypatch.setattr(mon, "_send_alert", _fake_alert)

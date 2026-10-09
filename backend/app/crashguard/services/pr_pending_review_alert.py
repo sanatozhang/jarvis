@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from app.crashguard.services.version_util import GEN_BADGE, classify_generation
 
@@ -109,6 +109,7 @@ def build_pending_review_card(
     yesterday_merged_prs: List[Dict] = None,
     yesterday_closed_prs: List[Dict] = None,
     yesterday_created_prs: List[Dict] = None,
+    lang: str = "zh",
 ) -> Dict:
     """构造飞书 interactive card：昨日交付 stats + 4 个 PR 清单（merged/closed/新建/approved）+ 当前积压清单。
 
@@ -119,7 +120,11 @@ def build_pending_review_card(
     yesterday_created_prs: 昨日新建清单
     stats: 计数 dict，向后兼容
     frontend_base_url: "完整 PR 列表"链接，空字符串则不渲染
+    lang: "en" 给 Slack 用（Slack 一律英文，2026-10-09）；默认 zh 产出逐字节不变
     """
+    def _tr(zh: str, en: str) -> str:
+        return en if lang == "en" else zh
+
     approved_prs = approved_prs or []
     yesterday_merged_prs = yesterday_merged_prs or []
     yesterday_closed_prs = yesterday_closed_prs or []
@@ -154,14 +159,21 @@ def build_pending_review_card(
     yesterday_str = _yesterday_local_date_str()
     blocks.append({"tag": "div", "text": {
         "tag": "lark_md",
-        "content": (
+        "content": _tr(
             f"**📅 今日 {today_str} · 昨日收尾汇总**\n\n"
             f"📊 **昨日 PR 流速（{yesterday_str}）**:\n"
             f"  ✅ merged: **{yesterday_merged}**\n"
             f"  ❌ closed (未合): **{yesterday_closed}**\n"
             f"  🆕 新建: **{yesterday_created}**\n"
             f"  ⏳ 当前 pending (等 review): **{total_pending}**\n"
-            f"  🟢 已 approve 待 merge: **{total_approved}**"
+            f"  🟢 已 approve 待 merge: **{total_approved}**",
+            f"**📅 Today {today_str} · Yesterday's wrap-up**\n\n"
+            f"📊 **Yesterday's PR flow ({yesterday_str})**:\n"
+            f"  ✅ merged: **{yesterday_merged}**\n"
+            f"  ❌ closed (not merged): **{yesterday_closed}**\n"
+            f"  🆕 created: **{yesterday_created}**\n"
+            f"  ⏳ pending (awaiting review): **{total_pending}**\n"
+            f"  🟢 approved, awaiting merge: **{total_approved}**",
         ),
     }})
     # 加一行"完整 PR 列表"入口（按状态可筛 merged/closed/draft/open）
@@ -169,14 +181,16 @@ def build_pending_review_card(
         pr_list_url = f"{frontend_base_url.rstrip('/')}/crashguard/pull-requests"
         blocks.append({"tag": "div", "text": {
             "tag": "lark_md",
-            "content": (
+            "content": _tr(
                 f"🔗 **查看完整 PR 列表（merged / closed / draft / open 全状态）**："
-                f"[{pr_list_url}]({pr_list_url})"
+                f"[{pr_list_url}]({pr_list_url})",
+                f"🔗 **Full PR list (merged / closed / draft / open)**: "
+                f"[{pr_list_url}]({pr_list_url})",
             ),
         }})
 
     def _render_pr_section(title: str, prs_in: List[Dict], emoji: str, suffix_fn,
-                            always_show: bool = True, empty_hint: str = "（昨日无）") -> None:
+                            always_show: bool = True, empty_hint: Optional[str] = None) -> None:
         """渲染一个 PR 清单小节：分隔线 + 标题 + 按 repo 分组 + 每个 PR 一行带链接。
 
         always_show=True：即便 prs_in 为空也渲染小节 + empty_hint 占位（保持结构对称）。
@@ -184,10 +198,12 @@ def build_pending_review_card(
         """
         if not prs_in and not always_show:
             return
+        if empty_hint is None:
+            empty_hint = _tr("（昨日无）", "(none yesterday)")
         blocks.append({"tag": "hr"})
         blocks.append({"tag": "div", "text": {
             "tag": "lark_md",
-            "content": f"**{title}（{len(prs_in)} 条）**",
+            "content": _tr(f"**{title}（{len(prs_in)} 条）**", f"**{title} ({len(prs_in)})**"),
         }})
         if not prs_in:
             blocks.append({"tag": "div", "text": {
@@ -206,7 +222,7 @@ def build_pending_review_card(
                     -x.get("age_days", 0),
                 ),
             )
-            lines = [f"\n**📦 {r} ({len(repo_prs)} 条)**"]
+            lines = [_tr(f"\n**📦 {r} ({len(repo_prs)} 条)**", f"\n**📦 {r} ({len(repo_prs)})**")]
             for p in repo_prs:
                 gb = GEN_BADGE.get(p.get("generation", ""), "")
                 gb_str = f" {gb}" if gb else ""
@@ -220,7 +236,7 @@ def build_pending_review_card(
 
     # 「✅ 昨日 merged」清单 — 即便 0 也展示，对称用户期望
     _render_pr_section(
-        title="✅ 昨日 merged",
+        title=_tr("✅ 昨日 merged", "✅ Merged yesterday"),
         prs_in=yesterday_merged_prs,
         emoji="✅",
         suffix_fn=lambda p: f"{p.get('repo','')} merged",
@@ -229,7 +245,7 @@ def build_pending_review_card(
 
     # 「❌ 昨日 closed 未合」清单 — 即便 0 也展示
     _render_pr_section(
-        title="❌ 昨日 closed（未合）",
+        title=_tr("❌ 昨日 closed（未合）", "❌ Closed yesterday (not merged)"),
         prs_in=yesterday_closed_prs,
         emoji="❌",
         suffix_fn=lambda p: f"{p.get('repo','')} closed",
@@ -238,7 +254,7 @@ def build_pending_review_card(
 
     # 「🆕 昨日新建」清单 — 即便 0 也展示
     _render_pr_section(
-        title="🆕 昨日新建",
+        title=_tr("🆕 昨日新建", "🆕 Created yesterday"),
         prs_in=yesterday_created_prs,
         emoji="🆕",
         suffix_fn=lambda p: f"{p.get('repo','')} created",
@@ -247,20 +263,23 @@ def build_pending_review_card(
 
     # 「🟢 已 approve 待 merge」清单 — 即便 0 也展示
     _render_pr_section(
-        title="🟢 已 approve 待 merge —— PR 作者请尽快合入",
+        title=_tr("🟢 已 approve 待 merge —— PR 作者请尽快合入",
+                  "🟢 Approved, awaiting merge — PR authors please merge soon"),
         prs_in=approved_prs,
         emoji="🟢",
         suffix_fn=lambda p: (
-            f"{(p.get('age_days') or 0)}天" if (p.get('age_days') or 0) > 0 else "今天"
+            _tr(f"{(p.get('age_days') or 0)}天", f"{(p.get('age_days') or 0)}d")
+            if (p.get('age_days') or 0) > 0 else _tr("今天", "today")
         ) + " · approved",
         always_show=True,
-        empty_hint="（暂无 approved 待合的 PR）",
+        empty_hint=_tr("（暂无 approved 待合的 PR）", "(no approved PRs awaiting merge)"),
     )
 
     blocks.append({"tag": "hr"})
     blocks.append({"tag": "div", "text": {
         "tag": "lark_md",
-        "content": f"**📋 当前积压（{n} 条等 review）**——按仓库分组：",
+        "content": _tr(f"**📋 当前积压（{n} 条等 review）**——按仓库分组：",
+                       f"**📋 Current backlog ({n} awaiting review)** — grouped by repo:"),
     }})
 
     for repo in sorted(by_repo.keys()):
@@ -271,14 +290,14 @@ def build_pending_review_card(
                 -x.get("age_days", 0),
             ),
         )
-        lines = [f"\n**📦 {repo} ({len(repo_prs)} 条)**"]
+        lines = [_tr(f"\n**📦 {repo} ({len(repo_prs)} 条)**", f"\n**📦 {repo} ({len(repo_prs)})**")]
         for p in repo_prs:
             revs = p.get("reviewer_emails") or []
-            rev_short = ", ".join(e.split("@")[0] for e in revs[:2]) if revs else "(未指派)"
+            rev_short = ", ".join(e.split("@")[0] for e in revs[:2]) if revs else _tr("(未指派)", "(unassigned)")
             if len(revs) > 2:
                 rev_short += f" +{len(revs)-2}"
             age = p.get("age_days", 0)
-            age_str = f"{age}天" if age > 0 else "今天"
+            age_str = _tr(f"{age}天", f"{age}d") if age > 0 else _tr("今天", "today")
             status_emoji = "📝" if p.get("pr_status") == "draft" else "🔵"
             gb = GEN_BADGE.get(p.get("generation", ""), "")
             gb_str = f" {gb}" if gb else ""
@@ -294,7 +313,11 @@ def build_pending_review_card(
     blocks.append({"tag": "hr"})
     blocks.append({"tag": "note", "elements": [{
         "tag": "plain_text",
-        "content": "每个工作日 10:00 自动发送；昨日完整 24h 交付 + 当前积压；merged / closed / 已 review 过的不再列出。",
+        "content": _tr(
+            "每个工作日 10:00 自动发送；昨日完整 24h 交付 + 当前积压；merged / closed / 已 review 过的不再列出。",
+            "Sent every weekday at 10:00; yesterday's full 24h delivery + current backlog; "
+            "merged / closed / already-reviewed PRs are not listed.",
+        ),
     }]})
 
     return {
@@ -302,9 +325,11 @@ def build_pending_review_card(
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": (
+                "content": _tr(
                     f"📊 crashguard PR 日报 · 昨日 +{yesterday_merged} merged "
-                    f"/ 待 merge {total_approved} / pending {total_pending}"
+                    f"/ 待 merge {total_approved} / pending {total_pending}",
+                    f"📊 crashguard PR daily · yesterday +{yesterday_merged} merged "
+                    f"/ awaiting merge {total_approved} / pending {total_pending}",
                 ),
             },
             "template": template,
@@ -471,8 +496,8 @@ async def run_pending_review_alert() -> Dict:
     yesterday_closed_prs = [_row_to_dict(r, gen_map.get(r.datadog_issue_id, "")) for r in breakdown["closed"]]
     yesterday_created_prs = [_row_to_dict(r, gen_map.get(r.datadog_issue_id, "")) for r in breakdown["created"]]
 
-    card = build_pending_review_card(
-        prs,
+    card_kw = dict(
+        prs=prs,
         stats={
             **stats,
             "total_pending": total_pending,
@@ -484,13 +509,17 @@ async def run_pending_review_alert() -> Dict:
         yesterday_closed_prs=yesterday_closed_prs,
         yesterday_created_prs=yesterday_created_prs,
     )
+    card = build_pending_review_card(**card_kw)
 
     from app.crashguard.services import notify
     from app.services.im.feishu_to_slack import compile_card
 
     # send_card_to 内部已经吞异常并记日志；这里只看结果。
-    ok = await notify.send_card_to(target_email, card, lambda: compile_card(card),
-                                   s=s, what="pr_pending_review")
+    # Slack 一律英文：同一份数据按 lang="en" 再构一张卡编译
+    ok = await notify.send_card_to(
+        target_email, card,
+        lambda: compile_card(build_pending_review_card(**card_kw, lang="en")),
+        s=s, what="pr_pending_review")
 
     if not ok:
         return {

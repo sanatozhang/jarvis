@@ -102,32 +102,52 @@ async def get_report(target_date: date) -> Optional[Dict[str, Any]]:
     return {**_row_dict(row), "markdown": row.report_markdown or ""}
 
 
+# 缓存缺失时的后台生成任务。现算要把 Datadog 全查一遍，102 上实测好几分钟，
+# 同步放在请求里前端必超时（2026-10-09 首发就是这样，页面一直空白）——改成后台跑、
+# 前端轮询。进程内状态就够：生成完会落库，进程重启后再点一次重新生成即可。
+_jobs: Dict[date, "asyncio.Task"] = {}
+_failures: Dict[date, str] = {}
+
+
+async def _generate(target_date: date) -> None:
+    try:
+        data = await collect_report_data(target_date)
+        if data is None:
+            _failures[target_date] = _NO_DATA_MD
+            return
+        await save_report(data)
+        if not (await get_report(target_date) or {}).get("markdown"):
+            # 落库失败（比如 database is locked）：至少让这次能看到，下次点再重试落库
+            _failures[target_date] = assemble_report_markdown(data)
+    except Exception as e:
+        logger.exception("graygate report generation failed date=%s", target_date)
+        _failures[target_date] = f"_生成失败：{type(e).__name__}，稍后刷新重试。_\n"
+    finally:
+        _jobs.pop(target_date, None)
+
+
+def _empty(target_date: date) -> Dict[str, Any]:
+    return {"date": target_date.isoformat(), "title": "", "is_red": False,
+            "worsen_count": 0, "new_crash_count": 0}
+
+
 async def ensure_report_markdown(target_date: date) -> Dict[str, Any]:
-    """详情页入口：有缓存直接读；没有就现算（保留期内）并回填。"""
+    """详情页入口。`status`：ready = markdown 可用；generating = 后台生成中，前端轮询。"""
+    import asyncio
+
     cached = await get_report(target_date)
     if cached and cached["markdown"]:
-        return {**cached, "cached": True}
+        return {**cached, "cached": True, "status": "ready"}
 
+    base = cached or _empty(target_date)
     if (date.today() - target_date).days >= REPORT_MARKDOWN_RETENTION_DAYS:
-        base = cached or {"date": target_date.isoformat(), "title": "", "is_red": False,
-                          "worsen_count": 0, "new_crash_count": 0}
-        return {**base, "markdown": _EXPIRED_MD, "cached": False}
+        return {**base, "markdown": _EXPIRED_MD, "cached": False, "status": "ready"}
 
-    data = await collect_report_data(target_date)
-    if data is None:
-        base = cached or {"date": target_date.isoformat(), "title": "", "is_red": False,
-                          "worsen_count": 0, "new_crash_count": 0}
-        return {**base, "markdown": _NO_DATA_MD, "cached": False}
+    if target_date in _jobs:
+        return {**base, "markdown": "", "cached": False, "status": "generating"}
+    if target_date in _failures:
+        # 一次性：展示完就清掉，下次再点重新生成
+        return {**base, "markdown": _failures.pop(target_date), "cached": False, "status": "ready"}
 
-    md = assemble_report_markdown(data)
-    await save_report(data, md)
-    return {
-        "date": target_date.isoformat(),
-        "title": data.title,
-        "is_red": data.is_red,
-        "worsen_count": len(data.worsen_lines),
-        "new_crash_count": data.new_crash_count,
-        "has_markdown": True,
-        "markdown": md,
-        "cached": False,
-    }
+    _jobs[target_date] = asyncio.create_task(_generate(target_date))
+    return {**base, "markdown": "", "cached": False, "status": "generating"}

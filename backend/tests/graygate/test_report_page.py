@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -57,10 +58,11 @@ def _data(target=date(2026, 8, 18), *, new_crashes=0) -> GraygateReportData:
 # ---------------------------------------------------------------------------
 def test_full_markdown_is_one_gfm_table_with_core_metrics_first():
     md = assemble_report_markdown(_data(new_crashes=1))
-    assert "| 指标 | 🍎 iOS · 大盘 | 🍎 iOS · 主要版本 | 🤖 Android · 大盘 | 🤖 Android · 主要版本 |" in md
+    # 主要版本在前、大盘在后
+    assert "| 指标 | 🍎 iOS · 主要版本 | 🍎 iOS · 大盘 | 🤖 Android · 主要版本 | 🤖 Android · 大盘 |" in md
     assert "|---|---|---|---|---|" in md
     assert "`4.0.301-1038`（人工指定）" in md          # iOS 主要版本人工指定
-    assert "| Sessions | 12,345 | 900 | 12,345 | 900 |" in md
+    assert "| Sessions | 900 | 12,345 | 900 | 12,345 |" in md
     core_pos = md.index("**Crash-free sessions**")
     sep_pos = md.index("其他指标（不参与恶化判定）")
     assert core_pos < sep_pos < md.index("APP单次运行平均FPS")
@@ -82,18 +84,51 @@ def test_slack_compact_has_only_core_metrics_and_link_no_thread():
     msg = assemble_slack_message(_data(new_crashes=2), URL)
     body = json.dumps(msg.payload, ensure_ascii=False)
     assert msg.folds == ()                              # 不再发 thread
-    assert "查看完整日报" in body and URL in body
+    assert "View full report" in body and URL in body
     assert "Crash-free sessions" in body
     assert "FPS" not in body                            # 非核心指标不进主消息
-    assert "不适用" not in body                          # 不适用的格子不列
-    assert "新增崩溃 2 个" in body
+    assert "n/a" not in body                            # 不适用的格子不列
+    assert "2 new crash(es)" in body
+    # 主要版本在大盘前面
+    assert body.index("Primary") < body.index("Overall")
 
 
-def test_slack_without_url_keeps_old_layout():
+def test_slack_without_url_puts_appendix_in_thread():
     msg = assemble_slack_message(_data(new_crashes=1))
     body = json.dumps(msg.payload, ensure_ascii=False)
-    assert "全量指标" in body and "查看完整日报" not in body
-    assert [f.title for f in msg.folds] == ["🆕 新增崩溃堆栈", "🔥 Top 崩溃 / 卡顿"]
+    assert "View full report" not in body
+    assert [f.title for f in msg.folds] == ["🆕 New crash stacks", "🔥 Top crashes / jank"]
+
+
+_CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
+
+
+@pytest.mark.parametrize("url", [URL, None])
+def test_slack_message_has_no_chinese(url):
+    """2026-10-09 用户要求：Slack 消息全英文。中文只能出现在飞书 / 网页端。"""
+    from app.graygate.services.card_builder import WorsenItem
+    from app.graygate.services.slack_report import assemble_focus_change_message
+
+    d = _data(new_crashes=1)
+    d.worsen_lines = ["- 🤖 Android [大盘] Cold Startup p90 0.74s ▲ +37.7%（连续2个工作日）"]
+    d.worsen_items = [WorsenItem("android", "大盘", "cold_startup_p90", "0.74s", "▲", "+37.7%")]
+    d.tiers["android"][1].cells["crash_free"] = "—（样本不足）"
+    msg = assemble_slack_message(d, url)
+    dumped = json.dumps([msg.payload, [f.blocks for f in msg.folds], [f.title for f in msg.folds], msg.text],
+                        ensure_ascii=False)
+    assert not _CJK.findall(dumped), _CJK.findall(dumped)
+    assert "low sample" in dumped and "Cold startup p90 0.74s ▲ +37.7%" in dumped
+
+    for args in (("ios", "", "4.0.302-1203", "未知（调用方未提供身份）"), ("android", "4.0.1", "", "a@b.c")):
+        fc = assemble_focus_change_message(*args)
+        assert not _CJK.findall(json.dumps([fc.payload, fc.text], ensure_ascii=False))
+
+
+def test_title_appears_once():
+    """带色条时 text 显示在 attachment 上方；blocks 里再放 header 标题就出现两遍。"""
+    msg = assemble_slack_message(_data(), URL)
+    assert all(b["type"] != "header" for b in msg.payload)
+    assert "Daily Metrics · 2026-08-18" in msg.text
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +187,29 @@ async def test_save_then_read_from_cache_without_recompute(patched_session):
 
 
 @pytest.mark.asyncio
-async def test_missing_cache_recomputes_and_backfills(patched_session):
+async def test_missing_cache_generates_in_background_then_serves_cache(patched_session):
+    """现算要几分钟，不能放在请求里同步跑：先返回 generating，后台算完落库，再读就是缓存。"""
     day = date.today() - timedelta(days=2)
-    with patch.object(report_store, "collect_report_data", AsyncMock(return_value=_data(target=day))):
+    with patch.object(report_store, "collect_report_data", AsyncMock(return_value=_data(target=day))) as collect:
+        r1 = await report_store.ensure_report_markdown(day)
+        assert r1["status"] == "generating"
+        r2 = await report_store.ensure_report_markdown(day)       # 生成中不重复起任务
+        assert r2["status"] == "generating"
+        await report_store._jobs[day]
+        r3 = await report_store.ensure_report_markdown(day)
+    assert collect.await_count == 1
+    assert r3["status"] == "ready" and r3["cached"] is True and "| 指标 |" in r3["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_no_data_day_reports_once_then_retries(patched_session):
+    day = date.today() - timedelta(days=3)
+    with patch.object(report_store, "collect_report_data", AsyncMock(return_value=None)):
+        await report_store.ensure_report_markdown(day)
+        await report_store._jobs[day]
         r = await report_store.ensure_report_markdown(day)
-    assert r["cached"] is False and "| 指标 |" in r["markdown"]
-    assert (await report_store.get_report(day))["markdown"] == r["markdown"]
+    assert r["status"] == "ready" and "没有灰度版本数据" in r["markdown"]
+    assert day not in report_store._failures
 
 
 @pytest.mark.asyncio

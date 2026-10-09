@@ -177,8 +177,8 @@ async def test_db_health_alert_goes_to_slack(slack_system):
     post = AsyncMock(return_value="1.0")
     with patch("app.services.slack_cli.uid_for_email", AsyncMock(return_value="U1")), \
          patch("app.services.slack_cli.post_message", post):
-        await db_health_monitor._send_alert("db 坏了")
-    assert post.call_args.kwargs["text"] == "db 坏了"
+        await db_health_monitor._send_alert("db 坏了", text_en="db is broken")
+    assert post.call_args.kwargs["text"] == "db is broken"   # Slack 发英文版
 
 
 async def test_release_notify_goes_to_slack_per_recipient(slack_system, monkeypatch):
@@ -189,7 +189,7 @@ async def test_release_notify_goes_to_slack_per_recipient(slack_system, monkeypa
     monkeypatch.setattr(release.get_settings().jenkins, "notify_emails", ["b@plaud.ai"])
     sent = []
 
-    async def _send(email, text):
+    async def _send(email, text, *, text_en=""):
         sent.append(email)
         return email != "a@plaud.ai"      # 第一个人失败不能影响第二个
 

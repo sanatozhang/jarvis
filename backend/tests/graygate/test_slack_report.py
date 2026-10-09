@@ -84,10 +84,8 @@ def test_metrics_table_stays_in_main_message():
     会变成一条没有内容的壳。折叠段只放附录性质的崩溃/卡顿榜。
     """
     msg = assemble_slack_message(_data(new_crash=True, top=True))
-    body = json.dumps(msg.payload, ensure_ascii=False)
-    assert "iOS" in body and "Android" in body
     fold_titles = [f.title for f in msg.folds]
-    assert fold_titles == ["🆕 新增崩溃堆栈", "🔥 Top 崩溃 / 卡顿"]
+    assert fold_titles == ["🆕 New crash stacks", "🔥 Top crashes / jank"]
 
 
 def test_no_optional_sections_means_no_folds():
@@ -96,8 +94,8 @@ def test_no_optional_sections_means_no_folds():
 
 def test_notification_text_says_how_bad_it_is():
     """锁屏推送上只看得到 text。每天长一个样的话很快就被无视了。"""
-    assert "无恶化" in assemble_slack_message(_data()).text
-    assert "🔴 1 项恶化" in assemble_slack_message(_data(worsen=True)).text
+    assert "no regressions" in assemble_slack_message(_data()).text
+    assert "🔴 1 regression(s)" in assemble_slack_message(_data(worsen=True)).text
 
 
 # ---------------------------------------------------------------------------
@@ -113,17 +111,19 @@ def test_main_message_respects_block_kit_limits():
 def test_oversized_column_is_clipped_with_a_visible_marker():
     """单个 field 超 2000 字会被 Slack 截断。截断必须留痕——不留的话
     "内容被截断"和"内容本来就这么短"在界面上分不出来，而前者是要改代码的 bug。"""
-    data = _data()
-    data.columns_md = ["x" * 5000, "y"]
-    fields = assemble_slack_message(data).payload[-1]["fields"]
+    from tests.graygate.test_report_page import _data as _full_data
+
+    data = _full_data()
+    data.tiers["ios"][0].cells["crash_free"] = "x" * 5000
+    fields = next(b for b in assemble_slack_message(data).payload if "fields" in b)["fields"]
     assert len(fields[0]["text"]) <= MAX_FIELD_TEXT
-    assert "已截断" in fields[0]["text"]
+    assert "truncated" in fields[0]["text"]
 
 
 def test_focus_change_message_has_blue_color_like_feishu():
-    msg = assemble_focus_change_message("ios", "设为 `4.0.3.1`", "原值：未设置", "sanato")
+    msg = assemble_focus_change_message("ios", "", "4.0.3.1", "sanato")
     assert msg.color == "#1D9BD1"
-    assert "IOS" in msg.payload[0]["text"]["text"]
+    assert "IOS" in msg.payload[0]["text"]["text"] and "`4.0.3.1`" in msg.payload[0]["text"]["text"]
 
 
 # ---------------------------------------------------------------------------

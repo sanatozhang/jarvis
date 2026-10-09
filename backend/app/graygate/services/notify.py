@@ -100,7 +100,8 @@ async def _send_report_data(data) -> bool:
 
 @dual_send(_raw_provider)
 async def send_focus_change(platform: str, action: str,
-                            old_note: str, operator: str) -> bool:
+                            old_note: str, operator: str, *,
+                            old_value: str = "", new_value: str = "") -> bool:
     """「主要版本」变更通知。"""
     target = report_target()
     transport = resolve_transport(target.provider)
@@ -108,7 +109,8 @@ async def send_focus_change(platform: str, action: str,
     if target.provider == "slack":
         from app.graygate.services.slack_report import assemble_focus_change_message
 
-        msg = assemble_focus_change_message(platform, action, old_note, operator)
+        # Slack 是英文版，从原始值重新渲染（action / old_note 是给飞书的中文文案）
+        msg = assemble_focus_change_message(platform, old_value, new_value, operator)
     else:
         msg = Rendered(payload={
             "config": {"wide_screen_mode": True},
@@ -128,7 +130,8 @@ async def send_focus_change(platform: str, action: str,
 
 
 @dual_send(_raw_provider)
-async def send_ops_alert(text: str) -> bool:
-    """运维告警私聊。纯文本，两个渠道都不需要卡片。"""
+async def send_ops_alert(text: str, text_en: str = "") -> bool:
+    """运维告警私聊。纯文本，两个渠道都不需要卡片。Slack 发 `text_en`（英文）。"""
     target = alert_target()
-    return await resolve_transport(target.provider).send_text(target, text)
+    body = (text_en or text) if target.provider == "slack" else text
+    return await resolve_transport(target.provider).send_text(target, body)

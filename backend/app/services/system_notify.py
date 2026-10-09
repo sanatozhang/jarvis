@@ -40,15 +40,19 @@ def provider() -> str:
     return name
 
 
-async def send_text(email: str, text: str) -> bool:
-    """给一个人发纯文本私聊。返回是否发出；**不抛**（调用方都是 best-effort）。"""
+async def send_text(email: str, text: str, *, text_en: str = "") -> bool:
+    """给一个人发纯文本私聊。返回是否发出；**不抛**（调用方都是 best-effort）。
+
+    `text_en`：Slack 一律发英文（2026-10-09），飞书发 `text`。
+    """
     if not (email or "").strip():
         logger.warning("system_notify.send_text: 收件邮箱为空，跳过")
         return False
     prov = provider()
     try:
+        body = (text_en or text) if prov == "slack" else text
         return bool(await resolve_transport(prov).send_text(
-            NotifyTarget(provider=prov, email=email.strip()), text))
+            NotifyTarget(provider=prov, email=email.strip()), body))
     except Exception as e:
         logger.warning("system_notify.send_text(%s, via %s) 失败: %s", email, prov, e)
         return False

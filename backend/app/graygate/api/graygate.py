@@ -218,8 +218,9 @@ async def list_reports_endpoint(limit: int = Query(60, ge=1, le=200)) -> dict:
 async def get_report_endpoint(report_date: str) -> dict:
     """某天的完整日报（网页端，Slack「查看完整日报 →」跳这里）。
 
-    优先读发送时缓存的 markdown；缺失（老报告 / 缓存被清）且在保留期内时现算一次
-    并回填——现算要把 Datadog 全查一遍，可能几十秒，前端超时放宽到 120s。
+    优先读发送时缓存的 markdown；缺失（老报告 / 缓存被清）且在保留期内时在后台
+    现算并回填，立即返回 `status=generating`，前端轮询——现算要把 Datadog 全查一遍，
+    实测要几分钟，同步做前端必超时。
     """
     from app.graygate.services.report_store import ensure_report_markdown
 

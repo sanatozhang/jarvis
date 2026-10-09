@@ -2245,6 +2245,20 @@ async def _auto_analyze_attention(issue_ids: List[str]) -> int:
 REPORT_MARKDOWN_RETENTION_DAYS = 30
 
 
+def _slack_text_fallback(report_type: str, target_date: str, frontend_base_url: str) -> str:
+    """早晚报 Slack 卡片发失败时的纯文本降级：一行英文标题 + Web 端链接。
+
+    飞书腿降级发的是整份中文 markdown；Slack 一律英文（2026-10-09），不能把它原样
+    发过去，只给能点开完整报告的入口。
+    """
+    is_morning = report_type == "morning"
+    title = (f"🌅 [Core Metrics] Daily recap · {target_date}" if is_morning
+             else f"🌇 [Core Metrics] Evening flash · {target_date}")
+    url = (f"{frontend_base_url.rstrip('/')}/crashguard/reports"
+           f"?type={report_type}&date={target_date}")
+    return f"{title}\nView full report on web: {url}"
+
+
 async def prune_report_markdown_cache(session, *, today: Optional[date] = None) -> int:
     """清掉超过保留期的 report_markdown，返回清掉的行数。失败不影响主流程。"""
     from sqlalchemy import update
@@ -2480,7 +2494,12 @@ async def send_daily_report(
             ok = await transport.send(target, msg)
             if not ok:
                 logger.warning("daily_report 卡片发送失败，降级成纯文本再试一次")
-                ok = await transport.send_text(target, text)
+                # Slack 一律英文（2026-10-09）：`text` 是整份中文 markdown，Slack
+                # 腿只发一行英文标题 + Web 端链接
+                ok = await transport.send_text(target, _slack_text_fallback(
+                    report_type, target_date.isoformat(),
+                    s.frontend_base_url or "http://localhost:3000",
+                ) if prov == "slack" else text)
             return bool(ok)
 
         sent = bool(await _deliver())
