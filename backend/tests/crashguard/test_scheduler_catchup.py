@@ -151,3 +151,25 @@ async def test_worker_survives_job_exception():
     await _drain()
     assert ran == ["ok"]                  # 一个 job 抛异常不影响后续
     assert sched._queued_jobs == set()    # 异常路径也清标志
+
+
+async def test_worker_times_out_hung_job_and_unblocks_queue(monkeypatch):
+    # 2026-10-09 回归：一个永不返回的 job 不能堵死整条串行队列
+    _reset_worker()
+    monkeypatch.setattr(sched, "_JOB_TIMEOUT_SEC", 0.05)
+    ran = []
+    cancelled = []
+    async def hung():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+    async def ok():
+        ran.append("ok")
+    sched._enqueue_job("hung", hung)
+    sched._enqueue_job("ok", ok)
+    await _drain()
+    assert cancelled == [True]            # 超时的 job 被 cancel
+    assert ran == ["ok"]                  # 后续 job 照常执行
+    assert sched._queued_jobs == set()    # 超时路径也清标志 → 下次可再入队

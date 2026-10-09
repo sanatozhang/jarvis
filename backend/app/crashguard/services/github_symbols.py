@@ -20,7 +20,7 @@ import tarfile
 import zipfile
 import zlib
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger("crashguard.github_symbols")
 
@@ -639,6 +639,44 @@ _EXTRACT_LOCKS: "dict[tuple[str, str, str], asyncio.Lock]" = {}
 _EXTRACT_LOCK_GUARD = asyncio.Lock()
 
 
+async def _ensure_tag_asset_extracted(
+    tag: str,
+    asset_name: str,
+    cache_dir: Path,
+    repo: str,
+    extract: "Callable[[Path], None]",
+) -> bool:
+    """GitHub release 归档「下载 → 解压 → 删归档 → 打 .extracted」整段加锁 + 锁内复检 marker。
+
+    2026-10-09 实战根因（102 上 analyze_tick 被卡 4h+）：以前调用方在锁外查 marker、
+    `_download_asset` 锁内只复检归档文件本身——但第一个 task 解压完会把归档删掉，
+    排队的 N 个 task 拿到锁后看不到归档 → 每个都重新下载一遍（5h 内 103 次、单包
+    24~300MB）。挂在 heavy-job 串行队列上的 analyze_tick 的 enrichment 排在这条
+    长队后面，整个队列被堵死。这里改为锁住整段并在锁内复检 marker，后到者直接复用。
+
+    extract 在线程里跑（几百 MB 的 tar/zip 解压不阻塞事件循环），负责自己的成功日志。
+    """
+    marker = cache_dir / ".extracted"
+    if marker.exists():
+        return True
+    lock = await _get_extract_lock("github", tag, str(cache_dir))
+    async with lock:
+        if marker.exists():  # 锁内复检：等锁期间可能已被前一个 task 下完并解压
+            return True
+        archive_path = cache_dir / asset_name
+        result = await _download_asset(tag, asset_name, archive_path, repo=repo)
+        if not result:
+            return False
+        try:
+            await asyncio.to_thread(extract, archive_path)
+            archive_path.unlink(missing_ok=True)
+            marker.touch()
+            return True
+        except Exception as exc:
+            logger.warning("failed to extract %s (tag=%s): %s", asset_name, tag, exc)
+            return False
+
+
 def _uploaded_symbols_root() -> Path:
     """与 api/crash.py::upload_symbol_package 的 dest_dir 解析方式保持一致
     （同样直接用 DATA_DIR 环境变量，默认 /data，不做额外可写性探测）。"""
@@ -747,23 +785,15 @@ async def get_ios_dsyms_dir(
 
     # 不同 asset_name 解压到不同子目录，避免 flutter/native 复用同一 tag 时互相覆盖
     cache_dir = _tag_cache_dir(tag) / "ios" / asset_name
-    marker = cache_dir / ".extracted"
-    if not marker.exists():
-        zip_path = cache_dir / asset_name
-        result = await _download_asset(tag, asset_name, zip_path, repo=repo)
-        if not result:
-            return None
 
-        try:
-            with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(cache_dir)
-            zip_path.unlink(missing_ok=True)
-            marker.touch()
-            logger.info("iOS dSYMs extracted to %s (tag=%s, shared by app_version=%s)",
-                        cache_dir, tag, app_version)
-        except Exception as exc:
-            logger.warning("failed to extract iOS dSYMs: %s", exc)
-            return None
+    def _extract(zip_path: Path) -> None:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(cache_dir)
+        logger.info("iOS dSYMs extracted to %s (tag=%s, shared by app_version=%s)",
+                    cache_dir, tag, app_version)
+
+    if not await _ensure_tag_asset_extracted(tag, asset_name, cache_dir, repo, _extract):
+        return None
 
     if is_native:
         parsed = _parse_semver_build(app_version)
@@ -909,16 +939,8 @@ async def get_android_native_symbols_dir(app_version: str, repo: str = _DEFAULT_
         return None
 
     cache_dir = _tag_cache_dir(tag) / "native"
-    marker = cache_dir / ".extracted"
-    if marker.exists():
-        return str(cache_dir)
 
-    tar_path = cache_dir / _ASSET_ANDROID_NATIVE_SYMBOLS
-    result = await _download_asset(tag, _ASSET_ANDROID_NATIVE_SYMBOLS, tar_path, repo=repo)
-    if not result:
-        return None
-
-    try:
+    def _extract(tar_path: Path) -> None:
         # 选择性解压：只保留 global_apk merged_native_libs arm64-v8a 下的
         # libflutter.so 和 libapp.so（占 crash 帧 99%+），其他全丢。
         # 原 661MB tar → 全解 2GB → 仅 arm64 merged 380MB → 仅 flutter+app ~172MB
@@ -947,16 +969,16 @@ async def get_android_native_symbols_dir(app_version: str, repo: str = _DEFAULT_
                 else:
                     skipped += 1
             tf.extractall(cache_dir, members=members_to_extract)
-        tar_path.unlink(missing_ok=True)
-        marker.touch()
         logger.info(
             "Android native symbols extracted to %s (tag=%s, kept=%d/%d, skipped=%d)",
             cache_dir, tag, kept, kept + skipped, skipped,
         )
-        return str(cache_dir)
-    except Exception as exc:
-        logger.warning("failed to extract Android native symbols: %s", exc)
+
+    if not await _ensure_tag_asset_extracted(
+        tag, _ASSET_ANDROID_NATIVE_SYMBOLS, cache_dir, repo, _extract,
+    ):
         return None
+    return str(cache_dir)
 
 
 async def _find_uploaded_dart_symbols_dir(app_version: str) -> Optional[str]:
@@ -1012,22 +1034,12 @@ async def get_dart_symbols_dir(app_version: str, repo: str = _DEFAULT_REPO) -> O
         return None
 
     cache_dir = _tag_cache_dir(tag) / "dart"
-    marker = cache_dir / ".extracted"
-    if marker.exists():
-        return str(cache_dir)
 
-    tar_path = cache_dir / _ASSET_DART_SYMBOLS
-    result = await _download_asset(tag, _ASSET_DART_SYMBOLS, tar_path, repo=repo)
-    if not result:
-        return None
-
-    try:
+    def _extract(tar_path: Path) -> None:
         with tarfile.open(tar_path) as tf:
             tf.extractall(cache_dir)
-        tar_path.unlink(missing_ok=True)
-        marker.touch()
         logger.info("Dart symbols extracted to %s (tag=%s)", cache_dir, tag)
-        return str(cache_dir)
-    except Exception as exc:
-        logger.warning("failed to extract Dart symbols: %s", exc)
+
+    if not await _ensure_tag_asset_extracted(tag, _ASSET_DART_SYMBOLS, cache_dir, repo, _extract):
         return None
+    return str(cache_dir)

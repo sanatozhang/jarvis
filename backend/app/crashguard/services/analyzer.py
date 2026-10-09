@@ -691,7 +691,11 @@ async def analyze_issue(issue_id: str) -> AnalysisOutput:
         await session.commit()
 
     try:
-        snapshot_data["enrichment_block"] = await _build_enrichment_block(issue_id)
+        # enrichment 里有 Datadog 拉取 + 符号包下载/解压，此前没有任何超时：一旦卡住，
+        # 占位行永远停在 running、调用方（analyze_tick）也永不返回（2026-10-09 实测 4h+）。
+        snapshot_data["enrichment_block"] = await asyncio.wait_for(
+            _build_enrichment_block(issue_id), timeout=_ENRICHMENT_TIMEOUT,
+        )
         workspace = _prepare_workspace(issue_id)
         snapshot_data["code_hint"] = _platform_code_hint(snapshot_data.get("platform", ""), workspace)
         snapshot_data["stack_paths_block"] = _build_stack_paths_block(
@@ -707,9 +711,14 @@ async def analyze_issue(issue_id: str) -> AnalysisOutput:
 
         output = await _run_agent(workspace, prompt)
         output.raw_output = output.raw_output[:8000] if output.raw_output else ""
+    except asyncio.CancelledError:
+        # 上层（如 heavy-job worker 总超时）取消时也要收尾占位行，否则永远 running
+        logger.warning("analyze_issue cancelled issue=%s run_id=%s", issue_id, run_id)
+        await asyncio.shield(_update_failed(run_id, "cancelled (job timeout)"))
+        raise
     except Exception as exc:
         logger.exception("analyze_issue failed issue=%s run_id=%s", issue_id, run_id)
-        await _update_failed(run_id, str(exc))
+        await _update_failed(run_id, str(exc) or repr(exc))  # TimeoutError 的 str 为空
         raise
 
     await _persist_analysis_legacy(run_id, output)
@@ -980,6 +989,7 @@ def _platform_code_hint(platform: str, workspace: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+_ENRICHMENT_TIMEOUT = 600  # enrichment（Datadog + 符号化）硬上限，正常 <2min；超时按 failed 收尾
 _CRASHGUARD_AGENT_TIMEOUT = 600  # 10 分钟硬超时——AI 要 Read 源码 + 写 fix_diff，5 分钟太紧；保留 hard cap 防 macOS 子进程被 SIGKILL 后父端干等
 
 

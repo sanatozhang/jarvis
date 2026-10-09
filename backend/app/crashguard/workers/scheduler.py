@@ -168,6 +168,12 @@ def _daily_fire_decision(
 # 避免 analyze 自动建 PR 与 top_crash_auto_pr 等并发 git push 撞车。
 # 时间敏感且短的任务（早晚报 / hourly_alert / core_metric / job_health）仍内联执行。
 # ---------------------------------------------------------------------------
+# 单个 heavy job 的总时长上限。串行 worker 只有一个消费者，任何一个 job 卡在永不返回的
+# await 上都会堵死整条队列（2026-10-09 实测：analyze_tick 卡在符号包重复下载上 4h+，
+# 之后 analyze_tick/jank_backfill/pr_sync/symbol_prewarm 全部 "previous run still
+# queued/running"）。上限取最长的合法任务（deep_analyze_auto ~30min）的 2 倍；超时即
+# cancel，record_heartbeat 会把 CancelledError 记成 failed 心跳，健康告警照常可见。
+_JOB_TIMEOUT_SEC = 60 * 60
 _job_queue: Optional["asyncio.Queue"] = None
 _queued_jobs: set = set()       # 已入队/执行中的 heavy job 名——防重复入队（替代旧的 _xxx_running 标志）
 _worker_started: bool = False
@@ -196,7 +202,12 @@ async def _job_worker_loop() -> None:
     while True:
         job_name, coro_factory = await q.get()
         try:
-            await coro_factory()
+            await asyncio.wait_for(coro_factory(), timeout=_JOB_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            logger.error(
+                "crashguard job worker: %s exceeded %ds — cancelled to unblock queue",
+                job_name, _JOB_TIMEOUT_SEC,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
