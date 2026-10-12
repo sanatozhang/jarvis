@@ -215,6 +215,11 @@ class CrashguardSettings(BaseSettings):
     # 但不设名额限制——这里数的是"今天总共积压了多少个"，不是"这次选几个进池"）。
     fatal_backlog_alert_threshold: int = 10  # 超过此数才告警
     fatal_backlog_alert_cooldown_minutes: int = 240  # 告警节流（默认 4 小时一次，避免刷屏）
+    # 容器内 claude CLI 登录态探测（2026-10-12，见 services/claude_auth_probe.py）：
+    # 登录失效时 AI 分析静默全挂、任务心跳仍正常，曾静默 20 天无人发现。
+    claude_auth_probe_enabled: bool = True
+    claude_auth_probe_interval_minutes: int = 30  # 真实调用 CLI 的间隔（挂在 5min 的 job_health tick 上）
+    claude_auth_alert_cooldown_minutes: int = 120  # 持续失效时的重复告警间隔
 
     # Feishu
     feishu_target_chat_id: str = ""
@@ -694,6 +699,9 @@ def _yaml_overrides() -> Dict[str, Any]:
             ("fatal_backlog_max_slots", "fatal_backlog_max_slots"),
             ("fatal_backlog_alert_threshold", "fatal_backlog_alert_threshold"),
             ("fatal_backlog_alert_cooldown_minutes", "fatal_backlog_alert_cooldown_minutes"),
+            ("claude_auth_probe_enabled", "claude_auth_probe_enabled"),
+            ("claude_auth_probe_interval_minutes", "claude_auth_probe_interval_minutes"),
+            ("claude_auth_alert_cooldown_minutes", "claude_auth_alert_cooldown_minutes"),
         ]:
             if k_yaml in t:
                 flat[k_py] = t[k_yaml]

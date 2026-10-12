@@ -228,8 +228,18 @@ async def run_job_health_check() -> Dict[str, Any]:
     async with get_session() as fb_session:
         fatal_backlog_result = await _check_fatal_backlog_and_alert(fb_session)
 
+    # 容器内 claude 登录态探测：AI 分析失败不会体现在任务心跳上，必须真调 CLI 才看得见。
+    # 自身按 claude_auth_probe_interval_minutes 节流；异常不影响下面的心跳扫描。
+    try:
+        from app.crashguard.services.claude_auth_probe import check_claude_auth_and_alert
+        claude_auth_result = await check_claude_auth_and_alert()
+    except Exception as exc:
+        logger.exception("claude auth probe crashed")
+        claude_auth_result = {"error": repr(exc)}
+
     if not getattr(s, "job_health_alert_enabled", True):
-        return {"skipped": "job_health_alert_disabled", "fatal_backlog": fatal_backlog_result}
+        return {"skipped": "job_health_alert_disabled", "fatal_backlog": fatal_backlog_result,
+                "claude_auth": claude_auth_result}
 
     # 与 _JOB_META 保持对齐——但本服务避免反向 import api 层，重新声明一份精简元数据
     # enabled_field: 任务自身的 kill switch；为 "" 表示该任务无独立开关（受 enabled/feishu_enabled 总控）
@@ -456,6 +466,8 @@ async def run_job_health_check() -> Dict[str, Any]:
             "skipped_disabled": skipped_disabled,
             "auto_retried": auto_retried,
             "fatal_backlog": fatal_backlog_result,
+        "claude_auth": claude_auth_result,
+            "claude_auth": claude_auth_result,
         }
 
     # 发送聚合飞书卡片
@@ -493,4 +505,5 @@ async def run_job_health_check() -> Dict[str, Any]:
         "skipped_disabled": skipped_disabled,
         "auto_retried": auto_retried,
         "fatal_backlog": fatal_backlog_result,
+        "claude_auth": claude_auth_result,
     }

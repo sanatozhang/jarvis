@@ -1083,6 +1083,59 @@ def build_fatal_backlog_alert_card(
     }
 
 
+def build_claude_auth_alert_card(
+    kind: str,
+    detail: str,
+    consecutive: int,
+    recovery_command: str,
+    lang: str = "zh",
+) -> Dict[str, Any]:
+    """容器内 claude CLI 探测失败告警（见 claude_auth_probe）。
+
+    kind="auth" 是登录失效（需人工重新登录）；其他是超时/网络/CLI 缺失。
+    `lang="en"` 给 Slack 用（见 `_tr`）。
+    """
+    if kind == "auth":
+        title_text = _tr(lang, "🔴 Crashguard AI 分析不可用 · claude 登录已失效",
+                         "🔴 Crashguard AI analysis down · claude login expired")
+        what = _tr(
+            lang,
+            "容器内 `claude` CLI 鉴权失败。在重新登录之前，**所有 AI 分析和自动 PR 都会失败**"
+            "（任务心跳仍显示正常，不会触发任务超期告警）。",
+            "The `claude` CLI in the container failed to authenticate. Until it is logged in again, "
+            "**all AI analyses and auto-PRs will fail** (job heartbeats still look healthy).",
+        )
+        fix = _tr(lang, "**恢复**：在 102 的 `/Users/mac/jarvis` 下执行（交互式，需浏览器授权）：",
+                  "**Fix**: on 102, in `/Users/mac/jarvis`, run (interactive, needs browser auth):")
+    else:
+        title_text = _tr(lang, f"🟠 Crashguard claude CLI 探测连续失败 {consecutive} 次",
+                         f"🟠 Crashguard claude CLI probe failed {consecutive} times in a row")
+        what = _tr(
+            lang,
+            "容器内 `claude` CLI 探测失败（非鉴权类：超时 / 网络 / CLI 缺失），AI 分析可能受影响。",
+            "The `claude` CLI probe in the container failed (not auth: timeout / network / missing CLI); "
+            "AI analysis may be affected.",
+        )
+        fix = _tr(lang, "**排查**：先在容器内手动复现；若输出提示登录问题，执行：",
+                  "**Investigate**: reproduce inside the container; if it mentions login, run:")
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "red" if kind == "auth" else "orange",
+            "title": {"tag": "plain_text", "content": title_text},
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": what}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": _tr(
+                lang, f"**CLI 输出**：\n```\n{detail}\n```", f"**CLI output**:\n```\n{detail}\n```")}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md",
+                                    "content": f"{fix}\n```\n{recovery_command}\n```"}},
+        ],
+    }
+
+
 def build_job_health_alert_card(
     items: List[Dict[str, Any]],
     cooldown_minutes: int = 30,
