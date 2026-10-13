@@ -50,8 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && find /usr/bin -name 'llvm-symbolizer-*' | sort -V | tail -1 \
        | xargs -I{} ln -sf {} /usr/bin/llvm-symbolizer 2>/dev/null || true
 
-# Install Node.js 20 (needed for Codex CLI)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# Install Node.js 22 (needed for Codex CLI; claude-code 2.1.2xx+ declares engines.node >=22)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -81,7 +81,7 @@ RUN npm install -g @openai/codex 2>/dev/null || echo "Codex install skipped (opt
 # 未来再涨，但至少保证每次 rebuild 装的是「当时验证过可用」的确定版本，而不是构建时随机的最新版。
 # 门槛再涨时，重新验证一个满足门槛的版本号并更新这里（同时 102 容器内可先 exec npm install -g
 # @anthropic-ai/claude-code@latest 应急，见 [[project_claude_cli_inplace_upgrade_102]]）。
-RUN npm install -g @anthropic-ai/claude-code@2.1.207 2>/dev/null || echo "Claude install skipped (optional)"
+RUN npm install -g @anthropic-ai/claude-code@2.1.296 2>/dev/null || echo "Claude install skipped (optional)"
 
 # Install Feishu CLI (for Bitable read/write)
 # 锁版本：2026-08-25 不锁版本时一次常规重建就拉到了 1.0.89，其 `api` 命令新增了
