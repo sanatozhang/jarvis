@@ -206,6 +206,43 @@ async def get_focus_version_history_endpoint(
     return {"items": await get_focus_version_audit_history(platform or "", limit)}
 
 
+class ReportFrequencyPatch(BaseModel):
+    frequency: str  # daily / 30m / 2h / 6h / 12h
+
+
+@router.get("/report-frequency")
+async def get_report_frequency_endpoint() -> dict:
+    """当前发布频率 + 可选值。读 DB（不读本进程单例：scheduler_enabled=False 的实例
+    不会回灌，单例上会是默认值）。"""
+    from app.graygate.services.frequency import (
+        DEFAULT_FREQUENCY, FREQUENCY_KEY, FREQUENCY_MINUTES,
+    )
+
+    f = await db.get_oncall_config(FREQUENCY_KEY, "")
+    return {
+        "frequency": f if f in FREQUENCY_MINUTES else DEFAULT_FREQUENCY,
+        "options": list(FREQUENCY_MINUTES),
+    }
+
+
+@router.put("/report-frequency")
+async def set_report_frequency_endpoint(
+    body: ReportFrequencyPatch,
+    request: Request,
+    x_graygate_api_key: Optional[str] = Header(None, alias="X-Graygate-Api-Key"),
+) -> dict:
+    """设置发布频率，立刻对运行中的调度生效。鉴权同 focus-version（`_resolve_caller`）。"""
+    from app.graygate.services.frequency import FREQUENCY_MINUTES, set_frequency
+
+    changed_by = _resolve_caller(request, x_graygate_api_key)
+    try:
+        f = await set_frequency(body.frequency)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    logger.info("graygate report frequency set to %s by %s", f, changed_by)
+    return {"frequency": f, "options": list(FREQUENCY_MINUTES)}
+
+
 @router.get("/reports")
 async def list_reports_endpoint(limit: int = Query(60, ge=1, le=200)) -> dict:
     """已发送的日报列表（新→旧），只读。"""

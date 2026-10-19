@@ -36,6 +36,9 @@ class GraygateSettings(BaseSettings):
     # 发送方看起来成功、收件人是空气。没配就是没配，启动期会报出来。
     slack_channel: str = ""
     report_hour_bjt: int = 9
+    # 发布频率（设置页开关，见 services/frequency.py）：daily = 只发 9 点日报；
+    # 30m/2h/6h/12h = 日报照发 + 按间隔发「今日至今」报告。运行时由 DB 回灌覆盖。
+    report_frequency: str = "daily"
     min_sessions: int = 50            # 样本地板，低于此不出该单元格
     # 2026-08-23：报告构建/发送失败时私聊告警的收件人（跟 crashguard 那几个
     # fallback_email 是同一个模式）——之前失败只是悄悄写进心跳表，没人会主动

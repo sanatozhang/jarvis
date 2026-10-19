@@ -3,7 +3,7 @@
 import { useT } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Toast } from "@/components/Toast";
-import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, getGraygateFocusVersions, setGraygateFocusVersion, getGraygateFocusVersionHistory, triggerGraygateReport, fetchNotifyStatus, updateNotifyProvider, type NotifyStatus, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult, type GraygateFocusVersions, type GraygateFocusVersionAuditItem, type GraygateTriggerResult } from "@/lib/api";
+import { fetchAgentConfig, fetchHealth, checkAgents, updateAgentConfig, fetchUsers, formatLocalTime, fetchEscalationMembers, updateEscalationMembers, fetchCondensationConfig, updateCondensationConfig, fetchAutoDeepAnalysisConfig, updateAutoDeepAnalysisConfig, fetchSymbolSettings, updateSymbolSettings, fetchQaCaptureSettings, updateQaCaptureSettings, getRepoRouting, updateRepoRouting, previewRepoRouting, getGraygateFocusVersions, setGraygateFocusVersion, getGraygateReportFrequency, setGraygateReportFrequency, getGraygateFocusVersionHistory, triggerGraygateReport, fetchNotifyStatus, updateNotifyProvider, type NotifyStatus, type AgentConfig, type HealthCheck, type UserListItem, type CondensationConfig, type AutoDeepAnalysisConfig, type SymbolSettings, type QaCaptureSettings, type RepoBand, type RepoRoutingConfig, type RepoRoutingPreviewResult, type GraygateFocusVersions, type GraygateReportFrequency, type GraygateFocusVersionAuditItem, type GraygateTriggerResult } from "@/lib/api";
 import { getBatchTopN, setBatchTopN, BATCH_TOP_N_BOUNDS } from "@/lib/crashguard-prefs";
 
 interface EnvField { key: string; label: string; value: string; has_value: boolean; sensitive: boolean; }
@@ -602,6 +602,76 @@ function GraygateFocusVersionSection() {
         {row("android", "Android", androidDraft, setAndroidDraft)}
         {error && <span className="text-xs" style={{ color: "#EF4444" }}>{error}</span>}
       </div>
+    </section>
+  );
+}
+
+
+const GRAYGATE_FREQUENCY_LABELS: Record<GraygateReportFrequency, string> = {
+  daily: "每天一次（默认）",
+  "30m": "每半小时",
+  "2h": "每 2 小时",
+  "6h": "每 6 小时",
+  "12h": "每 12 小时",
+};
+
+function GraygateFrequencySection() {
+  const t = useT();
+  const [current, setCurrent] = useState<GraygateReportFrequency | null>(null);
+  const [saving, setSaving] = useState<GraygateReportFrequency | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    getGraygateReportFrequency().then((d) => setCurrent(d.frequency)).catch(console.error);
+  }, []);
+
+  const onPick = async (f: GraygateReportFrequency) => {
+    if (f === current || saving) return;
+    setSaving(f); setError(""); setSaved(false);
+    try {
+      const d = await setGraygateReportFrequency(f);
+      setCurrent(d.frequency);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) {
+      setError(t("保存失败") + ": " + (e.message || ""));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
+      <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
+        {t("4.0.3 灰度 · 发布频率")}
+      </h2>
+      <p className="text-[11px] mb-4" style={{ color: S.text3 }}>
+        {t("每天 9 点照常发「昨天全天」日报。选了更高频率后，另外按这个间隔发「今日至今」报告（当天 00:00 到发送时刻，对比上一个工作日同一时段），改完立刻生效。")}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        {(Object.keys(GRAYGATE_FREQUENCY_LABELS) as GraygateReportFrequency[]).map((f) => {
+          const active = current === f;
+          return (
+            <button
+              key={f}
+              onClick={() => onPick(f)}
+              disabled={current === null || saving !== null}
+              className="rounded px-3 py-1.5 text-sm font-medium"
+              style={{
+                background: active ? S.accent : "transparent",
+                color: active ? "white" : S.text2,
+                border: `1px solid ${active ? S.accent : S.border}`,
+                cursor: saving !== null ? "not-allowed" : "pointer",
+              }}
+            >
+              {saving === f ? t("保存中...") : t(GRAYGATE_FREQUENCY_LABELS[f])}
+            </button>
+          );
+        })}
+        {saved && <span className="text-xs" style={{ color: S.accent }}>✓ {t("已保存")}</span>}
+      </div>
+      {error && <p className="text-xs mt-2" style={{ color: "#EF4444" }}>{error}</p>}
     </section>
   );
 }
@@ -1436,6 +1506,9 @@ export default function SettingsPage() {
 
         {/* GRAYGATE 4.0.3 灰度 主要版本人工指定 */}
         <GraygateFocusVersionSection />
+
+        {/* GRAYGATE 4.0.3 灰度 发布频率 */}
+        <GraygateFrequencySection />
 
         {/* GRAYGATE 4.0.3 灰度 每日指标 · 重新发布 + 主要版本变更记录 */}
         <GraygateReportSection />

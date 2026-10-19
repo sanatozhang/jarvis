@@ -2632,6 +2632,22 @@ export interface GraygateTriggerResult {
   reason: string;
 }
 
+export type GraygateReportFrequency = "daily" | "30m" | "2h" | "6h" | "12h";
+
+export interface GraygateReportFrequencyState {
+  frequency: GraygateReportFrequency;
+  options: GraygateReportFrequency[];
+}
+
+export const getGraygateReportFrequency = () =>
+  request<GraygateReportFrequencyState>("/graygate/report-frequency");
+
+export const setGraygateReportFrequency = (frequency: GraygateReportFrequency) =>
+  request<GraygateReportFrequencyState>(
+    "/graygate/report-frequency",
+    { method: "PUT", body: JSON.stringify({ frequency }) },
+  );
+
 export const triggerGraygateReport = (
   username: string,
   opts?: { dryRun?: boolean; targetDate?: string }

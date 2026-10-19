@@ -106,9 +106,12 @@ class VersionRow:
     sample_rate: float
 
 
-def _window_ms(day: date) -> Tuple[int, int]:
+def _window_ms(day: date, until: Optional[time] = None) -> Tuple[int, int]:
+    """`day` 的 BJT 00:00 → 24:00；给了 `until`（钟点）就是 00:00 → 当天这个钟点
+    （「今日至今」报告，基线日也截到同一钟点，同时段对比）。"""
     start = datetime.combine(day, time.min, tzinfo=_BJT)
-    end = start + timedelta(days=1)
+    end = (datetime.combine(day, until, tzinfo=_BJT) if until is not None
+           else start + timedelta(days=1))
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
@@ -626,6 +629,11 @@ class GraygateReportData:
     new_crash_count: int = 0
     worsen_items: List[WorsenItem] = field(default_factory=list)
     version_rows: Dict[str, List[VersionRow]] = field(default_factory=dict)  # platform → 全版本明细
+    until: Optional[time] = None  # 非空 = 「今日至今」高频报告，窗口截到这个 BJT 钟点
+
+    @property
+    def window_end_label(self) -> str:
+        return self.until.strftime("%H:%M") if self.until else "24:00"
 
     @property
     def is_red(self) -> bool:
@@ -635,27 +643,33 @@ class GraygateReportData:
     @property
     def banner_md(self) -> str:
         return (
-            f"📊 窗口 {self.target_date.strftime('%m-%d')} 00:00~24:00 BJT · "
-            f"基线 {self.d1_day.strftime('%m-%d')}（上一个工作日）· "
+            f"📊 窗口 {self.target_date.strftime('%m-%d')} 00:00~{self.window_end_label} BJT · "
+            f"基线 {self.d1_day.strftime('%m-%d')}（上一个工作日"
+            f"{'同时段' if self.until else ''}）· "
             f"大盘版本模式 `{self.version_pattern}`"
         )
 
     @property
     def title(self) -> str:
+        if self.until:
+            return (f"🆕 [4.0.3 灰度] 今日至今 · {self.target_date.isoformat()} "
+                    f"00:00–{self.window_end_label}")
         return f"🆕 [4.0.3 灰度] 每日指标 · {self.target_date.isoformat()}"
 
 
-async def collect_report_data(target_date: date) -> Optional[GraygateReportData]:
+async def collect_report_data(target_date: date,
+                              until: Optional[time] = None) -> Optional[GraygateReportData]:
     """跑完取数并拼好所有 markdown 片段。两平台版本枚举都空时返回 `None`。
 
-    `target_date` 是 BJT 日历日（代表"昨日"）。
+    `target_date` 是 BJT 日历日（日报代表"昨日"）。`until`（BJT 钟点）非空时是
+    「今日至今」高频报告：窗口 00:00 → until，两个基线工作日同样截到 until。
     """
     settings = get_graygate_settings()
-    today_ms = _window_ms(target_date)
+    today_ms = _window_ms(target_date, until)
     d1_day = _prev_workday(target_date)       # 上一个工作日
     d2_day = _prev_workday(d1_day)             # 上上个工作日（连续两天判定用）
-    d1_ms = _window_ms(d1_day)
-    d2_ms = _window_ms(d2_day)
+    d1_ms = _window_ms(d1_day, until)
+    d2_ms = _window_ms(d2_day, until)
 
     versions = await resolve_versions(*today_ms)
     ios_v, android_v = versions["ios"], versions["android"]
@@ -708,6 +722,7 @@ async def collect_report_data(target_date: date) -> Optional[GraygateReportData]
         new_crash_count=len(new_crashes),
         worsen_items=worsen_items,
         version_rows=version_rows,
+        until=until,
     )
 
 

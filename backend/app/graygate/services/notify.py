@@ -11,7 +11,7 @@ focus_version 的变更通知）全部收口到下面三个函数。
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, time
 from typing import Optional
 
 from app.services.im import NotifyTarget, Rendered, dual_send, effective_provider, resolve_transport
@@ -61,7 +61,7 @@ def alert_target() -> NotifyTarget:
     return NotifyTarget(provider=provider, email=s.alert_email)
 
 
-async def send_daily_report(target_date: date) -> Optional[bool]:
+async def send_daily_report(target_date: date, until: Optional[time] = None) -> Optional[bool]:
     """发一次日报。
 
     返回 `None` 表示**没有数据可报**（两平台版本枚举都空），这跟"发送失败"
@@ -74,7 +74,8 @@ async def send_daily_report(target_date: date) -> Optional[bool]:
     from app.graygate.services.card_builder import collect_report_data
     from app.graygate.services.report_store import save_report
 
-    data = await collect_report_data(target_date)
+    # until 非空 = 「今日至今」高频报告（见 services/frequency.py），其余流程一样
+    data = await collect_report_data(target_date, until)
     if data is None:
         return None
     await save_report(data)

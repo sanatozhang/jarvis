@@ -103,13 +103,19 @@ def _cell_en(v: str) -> str:
 
 
 def _title_en(data: GraygateReportData) -> str:
+    if getattr(data, "until", None):
+        return (f"🆕 [4.0.3 Gray] Today so far · {data.target_date.isoformat()} "
+                f"00:00–{data.window_end_label} BJT")
     return f"🆕 [4.0.3 Gray] Daily Metrics · {data.target_date.isoformat()}"
 
 
 def _banner_en(data: GraygateReportData) -> str:
+    intraday = bool(getattr(data, "until", None))
+    end = data.window_end_label if intraday else "24:00"
     return (
-        f"📊 Window {data.target_date.strftime('%m-%d')} 00:00–24:00 BJT · "
-        f"baseline {data.d1_day.strftime('%m-%d')} (previous workday) · "
+        f"📊 Window {data.target_date.strftime('%m-%d')} 00:00–{end} BJT · "
+        f"baseline {data.d1_day.strftime('%m-%d')} "
+        f"({'previous workday, same hours' if intraday else 'previous workday'}) · "
         f"overall version pattern `{data.version_pattern}`"
     )
 

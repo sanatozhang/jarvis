@@ -84,6 +84,14 @@ _JOB_NAME = "graygate_daily_report"
 
 _last_fired_date: Optional[date] = None  # 进程级幂等，粒度是"天"（不是"分钟"）
 
+# 「今日至今」高频报告（设置页频率开关，见 services/frequency.py）。日报照常走上面那套；
+# 高频报告单独一个 job_name，幂等粒度是「槽位」（30m → 每个 :00/:30 …）。
+_INTRADAY_JOB_NAME = "graygate_intraday_report"
+_last_intraday_slot: Optional[datetime] = None
+# 高频报告失败不能每 30 分钟私聊一次，告警冷却
+_INTRADAY_ALERT_COOLDOWN_HOURS = 6
+_last_intraday_alert_at: Optional[datetime] = None
+
 # 每天一次的 job，超过这个阈值还没成功过 → 大概率不是取数失败（那种情况
 # _send_failure_alert 已经覆盖），是调度本身停了。26h 留 2h 缓冲，避免跟正常的
 # "今天还没到 9 点"状态打架。
@@ -101,7 +109,8 @@ def _now_bjt() -> datetime:
     return datetime.now(_BJT)
 
 
-async def _write_heartbeat(status: str, duration_ms: int, summary: dict, error: Optional[str] = None) -> None:
+async def _write_heartbeat(status: str, duration_ms: int, summary: dict, error: Optional[str] = None,
+                           job_name: str = _JOB_NAME) -> None:
     """写 `coreguard_job_heartbeats` 表——字段/写法照抄
     `app.coreguard.workers.scheduler._write_heartbeat`（同一个表模型）。
     """
@@ -109,7 +118,7 @@ async def _write_heartbeat(status: str, duration_ms: int, summary: dict, error: 
         from app.coreguard.models import CoreguardJobHeartbeat
         async with get_session() as session:
             session.add(CoreguardJobHeartbeat(
-                job_name=_JOB_NAME,
+                job_name=job_name,
                 fired_at=datetime.utcnow(),
                 status=status,
                 duration_ms=duration_ms,
@@ -281,6 +290,97 @@ async def _tick_once() -> None:
     await _run_daily_report_once(target_date)
 
 
+async def _intraday_slot_handled(slot: datetime) -> bool:
+    """心跳表（持久态）里最近一次高频报告是不是就是这个槽位——防重启后同槽位重发。"""
+    try:
+        from sqlalchemy import select
+        from app.coreguard.models import CoreguardJobHeartbeat
+        async with get_session() as session:
+            row = (await session.execute(
+                select(CoreguardJobHeartbeat)
+                .where(CoreguardJobHeartbeat.job_name == _INTRADAY_JOB_NAME)
+                .order_by(CoreguardJobHeartbeat.fired_at.desc())
+                .limit(1)
+            )).scalars().first()
+    except Exception:
+        logger.exception("graygate: intraday heartbeat lookup failed")
+        return False
+    if row is None:
+        return False
+    try:
+        return json.loads(row.summary or "{}").get("slot") == slot.isoformat()
+    except Exception:
+        return False
+
+
+async def _run_intraday_report_once(slot: datetime) -> None:
+    """跑一次「今日至今」报告：窗口 slot 当天 00:00 → slot 钟点。三态同日报。"""
+    global _last_intraday_alert_at
+    start = time.monotonic()
+    status = "success"
+    error: Optional[str] = None
+    summary: dict = {"slot": slot.isoformat(), "target_date": slot.date().isoformat()}
+    try:
+        settings = get_graygate_settings()
+        summary["provider"] = settings.notify_provider
+        summary["frequency"] = settings.report_frequency
+        if not settings.send_enabled:
+            summary["available"] = None
+            summary["sent"] = False
+            summary["skip_reason"] = "send_enabled=False"
+        else:
+            sent = await notify.send_daily_report(slot.date(), until=slot.time())
+            summary["available"] = sent is not None
+            summary["sent"] = bool(sent)
+            if sent is False:
+                status = "degraded"
+    except Exception as e:
+        status = "failed"
+        error = repr(e)[:500]
+        logger.exception("graygate_intraday_report failed")
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    await _write_heartbeat(status, duration_ms, summary, error, job_name=_INTRADAY_JOB_NAME)
+    logger.info("graygate_intraday_report done: status=%s duration_ms=%d summary=%s",
+                status, duration_ms, summary)
+    if status in ("failed", "degraded"):
+        now = datetime.utcnow()
+        if _last_intraday_alert_at is None or (
+                now - _last_intraday_alert_at >= timedelta(hours=_INTRADAY_ALERT_COOLDOWN_HOURS)):
+            _last_intraday_alert_at = now
+            text = (f"🟡 4.0 灰度「今日至今」报告 {slot.strftime('%m-%d %H:%M')} {status}"
+                    f"（{_INTRADAY_ALERT_COOLDOWN_HOURS}h 内不再重复提醒）\nerror: {error}\nsummary: {summary}")
+            text_en = (f"🟡 4.0 gray today-so-far report {slot.strftime('%m-%d %H:%M')} {status} "
+                       f"(no repeat alert for {_INTRADAY_ALERT_COOLDOWN_HOURS}h)\nerror: {error}\nsummary: {summary}")
+            try:
+                await notify.send_ops_alert(text, text_en)
+            except Exception:
+                logger.exception("graygate_intraday_report: failed to send failure alert itself")
+
+
+async def _intraday_tick_once() -> None:
+    """高频报告 tick：频率不是 daily 时，每到一个新槽位发一次。
+
+    错过的槽位不补发（比如一次报告跑超过 30 分钟、或进程重启），只发当前最新的
+    槽位——「今日至今」是累计窗口，最新一份已经包含了错过那份的全部数据。
+    """
+    global _last_intraday_slot
+    from app.graygate.services.frequency import current_slot
+
+    settings = get_graygate_settings()
+    if not settings.enabled or not settings.scheduler_enabled:
+        return
+    slot = current_slot(_now_bjt())
+    if slot is None or slot == _last_intraday_slot:
+        return
+    if await _intraday_slot_handled(slot):
+        _last_intraday_slot = slot
+        return
+    _last_intraday_slot = slot
+    logger.info("graygate_intraday_report fired for slot %s", slot.isoformat())
+    await _run_intraday_report_once(slot)
+
+
 async def _check_staleness() -> None:
     """跟 crashguard job_health_alerter 的 stale 判定"对齐一下"（简化版，见模块
     docstring）：查最近一次 status=success 的心跳，超过 `_STALENESS_THRESHOLD_HOURS`
@@ -342,9 +442,15 @@ async def scheduler_loop() -> None:
     logger.info("graygate scheduler starting (interval=%ds)", _TICK_INTERVAL_SEC)
     # 启动后先等一个 tick，避免与启动阶段的其他任务抢跑。
     await asyncio.sleep(5)
+    try:
+        from app.graygate.services.frequency import apply_frequency_from_db
+        await apply_frequency_from_db()
+    except Exception:
+        logger.exception("graygate: apply report frequency from DB failed")
     while True:
         try:
             await _tick_once()
+            await _intraday_tick_once()
             await _check_staleness()
         except Exception as e:
             logger.exception("graygate scheduler tick error: %s", e)
