@@ -1077,6 +1077,7 @@ class DatadogClient:
         start_ms: int,
         end_ms: int,
         group_by_facets: Optional[List[str]] = None,
+        group_limit: int = 30,
     ) -> Dict[Any, int]:
         """通用 F&F scalar API + cardinality(@usr.id) 查询。
 
@@ -1100,7 +1101,7 @@ class DatadogClient:
                         "group_by": [
                             {
                                 "facet": f,
-                                "limit": 30,
+                                "limit": group_limit,
                                 "sort": {
                                     "order": "desc",
                                     "aggregation": "cardinality",
@@ -1477,6 +1478,166 @@ class DatadogClient:
                 continue
             top_ver, top_users = max(versions.items(), key=lambda kv: kv[1])
             out[platform] = {"version": top_ver, "users": top_users}
+        return out
+
+    async def count_users_by_platform_version(
+        self, window_hours: int = 24,
+    ) -> Dict[str, Dict[str, int]]:
+        """最近 N 小时 distinct user 数按 平台 × 版本（一次 scalar 调用）。
+
+        返回 {"ios": {"4.0.302-1203": 217, ...}, "android": {...}}；失败返回 {} 不致命。
+        """
+        try:
+            return await asyncio.to_thread(self._sync_users_by_platform_version, window_hours)
+        except Exception as exc:
+            logger.warning("count_users_by_platform_version failed: %s", exc)
+            return {}
+
+    def _sync_users_by_platform_version(self, window_hours: int) -> Dict[str, Dict[str, int]]:
+        now_ms = int(time.time() * 1000)
+        rows = self._scalar_user_cardinality(
+            filter_query=self._USER_TOTAL_FILTER,
+            start_ms=now_ms - max(1, int(window_hours)) * 3600 * 1000, end_ms=now_ms,
+            group_by_facets=["@os.name", "version"],
+            group_limit=100,
+        )
+        out: Dict[str, Dict[str, int]] = {}
+        for key, count in rows.items():
+            if not isinstance(key, tuple) or len(key) != 2:
+                continue
+            os_name, ver = (key[0] or "").strip().lower(), str(key[1] or "").strip()
+            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                plat = "ios"
+            elif os_name.startswith("android"):
+                plat = "android"
+            else:
+                continue
+            if not ver or int(count) <= 0:
+                continue
+            out.setdefault(plat, {})[ver] = out.get(plat, {}).get(ver, 0) + int(count)
+        return out
+
+    async def session_volume_by_version(
+        self,
+        window_hours: int = 24,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """最近 N 小时 session 数按 平台 × 版本，带 RUM 采样率还原。
+
+        RUM SDK 按 `sessionSampleRate` 在端上丢弃 session，Datadog 里看到的只是样本：
+        COUNT 出来的是「采样内」数量，要按每个 session 自带的
+        `@_dd.configuration.session_sample_rate` 还原成估算全量（n × 100 / rate）。
+        rate 是按 build 配的，不同版本可能不同，所以按版本逐桶还原，不用平台统一系数。
+
+        两次 aggregate：
+          A. group_by os × version → 采样内总数
+          B. group_by os × version × sample_rate → 各采样率下的数量
+        缺 sample_rate 字段的 session 在 B 里会被 Datadog 丢掉，用 A−ΣB 补回按 100% 计。
+
+        返回 {"ios": {"4.0.302-1203": {"sampled": 1808, "estimated": 1808,
+                                        "min_sample_rate": 100.0}}, "android": {...}}
+        失败返回 {} 不致命。
+        """
+        try:
+            return await asyncio.to_thread(self._sync_session_volume_by_version, window_hours)
+        except Exception as exc:
+            logger.warning("session_volume_by_version failed: %s", exc)
+            return {}
+
+    def _sync_session_volume_by_version(
+        self, window_hours: int,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        from datadog_api_client import ApiClient
+        from datadog_api_client.exceptions import ApiException
+        from datadog_api_client.v2.api.rum_api import RUMApi
+        from datadog_api_client.v2.model.rum_aggregate_request import RUMAggregateRequest
+        from datadog_api_client.v2.model.rum_aggregation_function import RUMAggregationFunction
+        from datadog_api_client.v2.model.rum_compute import RUMCompute
+        from datadog_api_client.v2.model.rum_compute_type import RUMComputeType
+        from datadog_api_client.v2.model.rum_group_by import RUMGroupBy
+        from datadog_api_client.v2.model.rum_query_filter import RUMQueryFilter
+
+        def _body(with_rate: bool) -> RUMAggregateRequest:
+            # Datadog 限制各维度 limit 乘积 ≤ 10000：5 × 100 × 10 = 5000
+            # （os.name 只有 iOS / iPadOS / Android 这几种，5 足够）
+            group_by = [
+                RUMGroupBy(facet="@os.name", limit=5),
+                RUMGroupBy(facet="version", limit=100),
+            ]
+            if with_rate:
+                group_by.append(
+                    RUMGroupBy(facet="@_dd.configuration.session_sample_rate", limit=10)
+                )
+            return RUMAggregateRequest(
+                filter=RUMQueryFilter(
+                    query=self._inject_service("@type:session"),
+                    _from=f"now-{max(1, int(window_hours))}h",
+                    to="now",
+                ),
+                compute=[RUMCompute(aggregation=RUMAggregationFunction.COUNT, type=RUMComputeType.TOTAL)],
+                group_by=group_by,
+            )
+
+        def _plat(os_name: str) -> str:
+            os_name = (os_name or "").strip().lower()
+            if os_name.startswith("ipados") or os_name.startswith("ios") or "iphone" in os_name:
+                return "ios"
+            if os_name.startswith("android"):
+                return "android"
+            return ""
+
+        def _count(b) -> int:
+            comp = getattr(b, "computes", {}) or {}
+            try:
+                return int(next(iter(comp.values())))
+            except (StopIteration, TypeError, ValueError):
+                return 0
+
+        with ApiClient(self._build_configuration()) as api_client:
+            rum = RUMApi(api_client)
+            try:
+                resp_total = rum.aggregate_rum_events(body=_body(False))
+                resp_rate = rum.aggregate_rum_events(body=_body(True))
+            except ApiException as exc:
+                if getattr(exc, "status", None) == _RATE_LIMIT_STATUS:
+                    self._record_rate_limit_event()
+                raise
+
+        out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for b in (getattr(getattr(resp_total, "data", None), "buckets", None) or []):
+            by = getattr(b, "by", {}) or {}
+            plat = _plat(by.get("@os.name") or "")
+            ver = str(by.get("version") or "").strip()
+            n = _count(b)
+            if not plat or not ver or n <= 0:
+                continue
+            slot = out.setdefault(plat, {}).setdefault(
+                ver, {"sampled": 0, "estimated": 0.0, "_rated": 0, "min_sample_rate": 100.0},
+            )
+            slot["sampled"] += n
+
+        for b in (getattr(getattr(resp_rate, "data", None), "buckets", None) or []):
+            by = getattr(b, "by", {}) or {}
+            plat = _plat(by.get("@os.name") or "")
+            ver = str(by.get("version") or "").strip()
+            slot = (out.get(plat) or {}).get(ver)
+            n = _count(b)
+            if slot is None or n <= 0:
+                continue
+            try:
+                rate = float(by.get("@_dd.configuration.session_sample_rate"))
+            except (TypeError, ValueError):
+                continue
+            if not (0 < rate <= 100):
+                continue
+            slot["estimated"] += n * 100.0 / rate
+            slot["_rated"] += n
+            slot["min_sample_rate"] = min(slot["min_sample_rate"], rate)
+
+        for vers in out.values():
+            for slot in vers.values():
+                # 没带 sample_rate 的 session 按 100% 计
+                unrated = max(0, slot["sampled"] - slot.pop("_rated"))
+                slot["estimated"] = int(round(slot["estimated"] + unrated))
         return out
 
     async def version_distribution_by_platform(

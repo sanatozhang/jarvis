@@ -166,6 +166,160 @@ def _classify_platform(raw: str) -> Optional[str]:
     return None  # BROWSER 等忽略
 
 
+def build_native_volume(
+    volume: Dict[str, Dict[str, Dict[str, Any]]],
+    users_all: Dict[str, int],
+    users_by_version: Dict[str, Dict[str, int]],
+) -> Dict[str, Any]:
+    """4.0 Native 量级（会话 + 用户）：大盘 + 主要版本两档 + 全版本明细，per 平台 + 汇总。
+
+    volume 来自 `DatadogClient.session_volume_by_version`（已带采样还原）；
+    主要版本 = 该平台还原后会话数最大的 4.0 版本（与全量「主要版本」同为 session 口径）。
+    会话数取还原后的估算全量；用户数是采样内 distinct，无法按采样率还原
+    （同一用户多 session 被采中的概率不是线性的），采样 <100% 时下游标注「偏低」。
+    `versions` 是全版本明细（按会话降序），Slack / 飞书只用大盘 + 主要版本，
+    网页完整早报渲染全表。无任何 4.0 会话返回 {}。
+    """
+    platforms: Dict[str, Any] = {}
+    for plat_lc in ("ios", "android"):
+        vers = volume.get(plat_lc) or {}
+        if not vers:
+            continue
+        sampled = sum(int(v.get("sampled") or 0) for v in vers.values())
+        est = sum(int(v.get("estimated") or 0) for v in vers.values())
+        if sampled <= 0:
+            continue
+        plat_users = users_by_version.get(plat_lc) or {}
+        rows = sorted(
+            (
+                {
+                    "version": ver,
+                    "sessions": int(slot.get("estimated") or 0),
+                    "sampled_sessions": int(slot.get("sampled") or 0),
+                    "users": int(plat_users.get(ver, 0) or 0),
+                    "min_sample_rate": float(slot.get("min_sample_rate") or 100.0),
+                    "share_of_native_pct": round(int(slot.get("estimated") or 0) / est * 100.0, 1)
+                    if est > 0 else None,
+                }
+                for ver, slot in vers.items()
+            ),
+            key=lambda r: (-r["sessions"], r["version"]),
+        )
+        platforms[plat_lc.upper()] = {
+            "overall": {
+                "sessions": est,
+                "sampled_sessions": sampled,
+                "users": int(users_all.get(plat_lc, 0) or 0),
+                "min_sample_rate": min(r["min_sample_rate"] for r in rows),
+            },
+            "main": dict(rows[0]),
+            "versions": rows,
+        }
+    if not platforms:
+        return {}
+
+    def _sum(tier: str) -> Dict[str, Any]:
+        rows = [p[tier] for p in platforms.values()]
+        return {
+            "sessions": sum(r["sessions"] for r in rows),
+            "sampled_sessions": sum(r["sampled_sessions"] for r in rows),
+            "users": sum(r["users"] for r in rows),
+            "min_sample_rate": min(r["min_sample_rate"] for r in rows),
+        }
+
+    return {
+        "platforms": platforms,
+        "summary": {"overall": _sum("overall"), "main": _sum("main")},
+    }
+
+
+async def _fetch_native_volume(s_cfg: Any, window_hours: int) -> Dict[str, Any]:
+    """拉 4.0 Native 会话/用户数（只查 native service，env:production）。失败返回 {}。"""
+    from app.crashguard.services.datadog_client import DatadogClient
+    from app.crashguard.services.version_util import service_filter_for_generation
+
+    client = DatadogClient(
+        api_key=s_cfg.datadog_api_key,
+        app_key=s_cfg.datadog_app_key,
+        site=s_cfg.datadog_site,
+        service_filter=service_filter_for_generation("native", s_cfg.datadog_service_filter),
+    )
+    volume = await client.session_volume_by_version(window_hours=window_hours)
+    if not volume:
+        return {}
+    users_all = await client.count_users_by_platform(window_hours=window_hours) or {}
+    users_by_version = await client.count_users_by_platform_version(window_hours=window_hours) or {}
+    return build_native_volume(volume, users_all, users_by_version)
+
+
+def _native_sess_str(tier: Optional[Dict[str, Any]]) -> str:
+    if not tier:
+        return "—"
+    s = f"{int(tier.get('sessions') or 0):,}"
+    return f"≈{s}" if float(tier.get("min_sample_rate") or 100) < 100 else s
+
+
+def _native_users_str(tier: Optional[Dict[str, Any]]) -> str:
+    return f"{int(tier['users']):,}" if tier and tier.get("users") else "—"
+
+
+def _native_volume_md(native: Dict[str, Any]) -> List[str]:
+    """网页完整早报的 4.0 Native 段（英文）：大盘 + 主要版本汇总表 + 各平台全版本明细。"""
+    plats = native.get("platforms") or {}
+    if not plats:
+        return []
+    ios = plats.get("IOS") or {}
+    and_ = plats.get("ANDROID") or {}
+    sm = native.get("summary") or {}
+
+    def _ver(tier: Optional[Dict[str, Any]]) -> str:
+        if not tier or not tier.get("version"):
+            return "—"
+        share = tier.get("share_of_native_pct")
+        return f"`{tier['version']}`" + (f" ({share:.0f}%)" if share is not None else "")
+
+    out = [
+        "### 🆕 4.0 Native sessions / users",
+        "",
+        "|  | 🍎 iOS | 📱 Android | Total |",
+        "|---|---|---|---|",
+        f"| Overall sessions | {_native_sess_str(ios.get('overall'))} | "
+        f"{_native_sess_str(and_.get('overall'))} | {_native_sess_str(sm.get('overall'))} |",
+        f"| Overall users | {_native_users_str(ios.get('overall'))} | "
+        f"{_native_users_str(and_.get('overall'))} | {_native_users_str(sm.get('overall'))} |",
+        f"| Primary version | {_ver(ios.get('main'))} | {_ver(and_.get('main'))} | — |",
+        f"| Primary sessions | {_native_sess_str(ios.get('main'))} | "
+        f"{_native_sess_str(and_.get('main'))} | {_native_sess_str(sm.get('main'))} |",
+        f"| Primary users | {_native_users_str(ios.get('main'))} | "
+        f"{_native_users_str(and_.get('main'))} | {_native_users_str(sm.get('main'))} |",
+        "",
+    ]
+    for key, label in (("IOS", "🍎 iOS"), ("ANDROID", "📱 Android")):
+        rows = (plats.get(key) or {}).get("versions") or []
+        if not rows:
+            continue
+        out.append(f"#### {label} — all 4.0 versions")
+        out.append("")
+        out.append("| Version | Sessions | Share | Users | Sample rate |")
+        out.append("|---|---|---|---|---|")
+        for r in rows:
+            share = r.get("share_of_native_pct")
+            out.append(
+                f"| `{r['version']}` | {_native_sess_str(r)} | "
+                f"{f'{share:.1f}%' if share is not None else '—'} | {_native_users_str(r)} | "
+                f"{float(r.get('min_sample_rate') or 100):g}% |"
+            )
+        out.append("")
+    rate = float((sm.get("overall") or {}).get("min_sample_rate") or 100)
+    if rate < 100:
+        out.append(
+            f"> ⚠️ Datadog RUM sampling (lowest {rate:g}%): sessions are extrapolated "
+            "by sample rate (≈); users are distinct within the sample and undercounted."
+        )
+        out.append("")
+    return out
+
+
 def _line_for_issue(
     issue_id: str,
     title: str,
@@ -326,6 +480,8 @@ async def compose_report(
     top_ver_crash_users: Dict[str, int] = {}
     latest_ver_total_users: Dict[str, int] = {}
     latest_ver_crash_users: Dict[str, int] = {}
+    # 🆕 4.0 Native 会话 / 用户数（大盘 + 主要版本，带 RUM 采样还原）
+    native_volume: Dict[str, Any] = {}
     if s_cfg.datadog_api_key:
         try:
             from app.crashguard.services.datadog_client import DatadogClient
@@ -531,6 +687,11 @@ async def compose_report(
                     ) or {}
             except Exception:
                 logger.exception("latest-version user-dim pull failed (non-fatal)")
+
+            try:
+                native_volume = await _fetch_native_volume(s_cfg, data_window_hours)
+            except Exception:
+                logger.exception("4.0 native volume pull failed (non-fatal)")
 
         except Exception:
             logger.exception("count_sessions failed (non-fatal)")
@@ -915,6 +1076,8 @@ async def compose_report(
             "top_user_versions": {"platforms": top_ver_plats, "summary": top_ver_summary},
             "latest_versions": {"platforms": latest_ver_plats, "summary": latest_ver_summary},
         }
+        if native_volume:
+            crash_free_detail_payload["native_40"] = native_volume
 
         # 渲染 markdown 段：紧凑的 markdown 表格（前端 reports 页用）
         # 飞书卡片：build_daily_card 会拦截本段，直接读 payload.crash_free_detail 用 column_set 渲染
@@ -1035,6 +1198,8 @@ async def compose_report(
                 f"| Crash-free 会话率 | {_pct_cell(ios_v)} | {_pct_cell(and_v)} | {_pct_cell(tvs)} |"
             )
             cf_lines.append("")
+
+        cf_lines.extend(_native_volume_md(native_volume))
 
         cf_lines.append("---")
         cf_lines.append("")

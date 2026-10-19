@@ -266,8 +266,9 @@ def _build_crash_free_column_md(
     ver_stats: Dict[str, Any] | None,
     wow: Dict[str, Any] | None = None,
     latest_stats: Dict[str, Any] | None = None,
+    native_stats: Dict[str, Any] | None = None,
 ) -> str:
-    """单平台一栏的 markdown（全版本 + 主要版本 + 最新版本三段）。
+    """单平台一栏的 markdown（全版本 + 主要版本 + 最新版本 + 4.0 Native 量级）。
 
     2026-05-21：user 维度主指标，sessions 作 FYI 副数字。
     """
@@ -317,7 +318,39 @@ def _build_crash_free_column_md(
         if spp is not None:
             lines.append(f"· 占平台：{spp:.2f}% · 占全部：{sap:.2f}%")
         _emit_block_md(lines, latest_stats)
+    if native_stats:
+        if latest_stats:
+            lines.append("")
+        lines.extend(_native_volume_lines(native_stats))
     return "\n".join(lines)
+
+
+def _native_sess(tier: Dict[str, Any]) -> str:
+    s = _fmt_n(tier.get("sessions"))
+    return f"≈{s}" if float(tier.get("min_sample_rate") or 100) < 100 else s
+
+
+def _native_volume_lines(native_stats: Dict[str, Any]) -> List[str]:
+    """4.0 Native 大盘 + 主要版本的会话/用户数（payload.crash_free_detail.native_40，文案英文）。"""
+    lines = ["__🆕 4.0 Native__"]
+    overall = native_stats.get("overall") or {}
+    main = native_stats.get("main") or {}
+    if overall:
+        lines.append(
+            f"· Overall: **{_native_sess(overall)}** sessions · "
+            f"**{_fmt_n(overall.get('users'))}** users"
+        )
+    if main.get("version"):
+        share = main.get("share_of_native_pct")
+        share_str = f" ({share:.0f}%)" if share is not None else ""
+        lines.append(
+            f"· Primary `{main['version']}`{share_str}: **{_native_sess(main)}** sessions · "
+            f"**{_fmt_n(main.get('users'))}** users"
+        )
+    rate = float(overall.get("min_sample_rate") or 100)
+    if rate < 100:
+        lines.append(f"· _RUM sampled {rate:g}%: sessions extrapolated (≈), users undercounted_")
+    return lines
 
 
 def _build_summary_md(
@@ -459,6 +492,7 @@ def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any
     all_plats = all_block.get("platforms") or {}
     ver_plats = ver_block.get("platforms") or {}
     latest_plats = latest_block.get("platforms") or {}
+    native_plats = (detail.get("native_40") or {}).get("platforms") or {}
     dw_plats = (dual_window or {}).get("platforms") or {}
 
     out: List[Dict[str, Any]] = []
@@ -470,11 +504,13 @@ def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any
         "🍎 iOS", all_plats.get("IOS"), ver_plats.get("IOS"),
         wow=dw_plats.get("IOS"),
         latest_stats=latest_plats.get("IOS"),
+        native_stats=native_plats.get("IOS"),
     )
     and_md = _build_crash_free_column_md(
         "📱 Android", all_plats.get("ANDROID"), ver_plats.get("ANDROID"),
         wow=dw_plats.get("ANDROID"),
         latest_stats=latest_plats.get("ANDROID"),
+        native_stats=native_plats.get("ANDROID"),
     )
 
     out.append({
@@ -506,6 +542,17 @@ def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any
         all_block.get("summary"),
         ver_block.get("summary"),
     )
+    native_sm = (detail.get("native_40") or {}).get("summary") or {}
+    if native_sm.get("overall"):
+        o, m = native_sm["overall"], native_sm.get("main") or {}
+        native_line = (
+            f"**🆕 4.0 Native total** · Overall {_native_sess(o)} sessions · "
+            f"{_fmt_n(o.get('users'))} users"
+        )
+        if m:
+            native_line += (f" | Primary {_native_sess(m)} sessions · "
+                            f"{_fmt_n(m.get('users'))} users")
+        summary_md = f"{summary_md}\n\n{native_line}" if summary_md else native_line
     if summary_md:
         out.append(_div(summary_md))
     return out

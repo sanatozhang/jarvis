@@ -8,7 +8,7 @@ Slack 版单独排版，只保留一屏能读完的东西，其余收进一个�
 |---|---|---|
 | 总判断（headline） | 主消息首行 | 去掉"建议工程师跟进"这类话术，只留数字 |
 | 今日重点 + 必看 | 主消息 | 必看只在有异常 issue 时出现 |
-| Crash-free 详表 | 主消息，原生两列 | 大盘 / 主要版本 / 新版分开列，各自 crash-free + 崩溃用户；大盘带 fatal 同比 |
+| Crash-free 详表 | 主消息，原生两列 | 大盘 / 主要版本 / 新版分开列，各自 crash-free + 崩溃用户；大盘带 fatal 同比；末尾 4.0 Native 大盘 + 主要版本的 sessions / users |
 | 数据口径、昨日承诺、4.0 Native、卡顿、关注点 Top3、分平台明细、核心指标详表 | 不发 | 全部在「查看完整早报」链接里 |
 
 **不发 thread**：没有 fold，消息就是完整的一条。飞书卡片不受影响。
@@ -125,10 +125,32 @@ def _tier_lines(stats: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _native_sess(tier: Dict[str, Any]) -> str:
+    n = f"{int(tier.get('sessions') or 0):,}"
+    return f"≈{n}" if float(tier.get("min_sample_rate") or 100) < 100 else n
+
+
+def _native_lines(native: Dict[str, Any]) -> List[str]:
+    """4.0 Native 大盘 + 主要版本的 sessions / users（采样 <100% 时会话标 ≈）。"""
+    overall = native.get("overall") or {}
+    main = native.get("main") or {}
+    lines = ["__4.0 Native__"]
+    if overall:
+        lines.append(f"Overall  {_native_sess(overall)} sessions · {int(overall.get('users') or 0):,} users")
+    if main.get("version"):
+        lines.append(f"Primary `{main['version']}`  {_native_sess(main)} sessions · "
+                     f"{int(main.get('users') or 0):,} users")
+    rate = float(overall.get("min_sample_rate") or 100)
+    if rate < 100:
+        lines.append(f"_RUM sampled {rate:g}%: sessions extrapolated, users undercounted_")
+    return lines
+
+
 def _crash_free_column(label: str, all_stats: Optional[Dict[str, Any]],
                        main_stats: Optional[Dict[str, Any]],
                        latest_stats: Optional[Dict[str, Any]],
-                       wow: Optional[Dict[str, Any]]) -> str:
+                       wow: Optional[Dict[str, Any]],
+                       native: Optional[Dict[str, Any]] = None) -> str:
     """单平台一栏：大盘 / 主要版本 / 新版 三个口径分开列，各自 crash-free + 崩溃用户。"""
     lines = [f"**{label}**"]
     if all_stats:
@@ -152,6 +174,8 @@ def _crash_free_column(label: str, all_stats: Optional[Dict[str, Any]],
             not main_stats or latest_stats.get("version") != main_stats.get("version")):
         lines.append(f"__Latest version__ `{latest_stats['version']}`")
         lines.extend(_tier_lines(latest_stats))
+    if native:
+        lines.extend(_native_lines(native))
     return "\n".join(lines)
 
 
@@ -163,8 +187,10 @@ def _crash_free_block(payload: Dict[str, Any]) -> Optional[dict]:
     main_p = (detail.get("top_user_versions") or {}).get("platforms") or {}
     latest_p = (detail.get("latest_versions") or {}).get("platforms") or {}
     wow_p = (payload.get("dual_window") or {}).get("platforms") or {}
+    native_p = (detail.get("native_40") or {}).get("platforms") or {}
     cols = [
-        _crash_free_column(label, all_p.get(key), main_p.get(key), latest_p.get(key), wow_p.get(key))
+        _crash_free_column(label, all_p.get(key), main_p.get(key), latest_p.get(key), wow_p.get(key),
+                           native_p.get(key))
         for key, label in (("IOS", "🍎 iOS"), ("ANDROID", "📱 Android"))
     ]
     return two_column(*(lark_md_to_mrkdwn(c) for c in cols))
