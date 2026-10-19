@@ -260,12 +260,20 @@ async def test_build_report_card_falls_back_to_top_version_without_override(monk
 
 
 @pytest.mark.asyncio
-async def test_build_report_card_shows_active_users_for_market_tier(monkeypatch):
-    """大盘层要展示"活跃用户数"（session 代理，pv.total_events）——这是这次新加的
-    需求；主要版本层的标题本来就带"(N sessions)"括注，不重复展示同一个数字。"""
+async def test_build_report_card_shows_sessions_and_users_for_both_tiers(monkeypatch):
+    """2026-10-19：大盘 / 主要版本标题都带「会话 · 用户」；用户数是真实 distinct
+    @usr.id（取代原来的「活跃用户数（session 代理）」行）。"""
+    users = {"4.0.3*": 230, "4.0.301-1043": 214}
+
+    async def fake_count_users(platform, version, from_ms, to_ms):
+        return users.get(version)
+
+    monkeypatch.setattr(cb, "count_users", fake_count_users)
     result = await _run_build_report_card_with(monkeypatch, None)
     ios_col = _ios_column_text(result)
-    assert "· 活跃用户数（session 代理）：1,005" in ios_col
+    assert "__大盘（4.0.3*）__（1,005 sessions · 230 users）" in ios_col
+    assert "__主要版本__ `4.0.301-1043`（1,000 sessions · 214 users）" in ios_col
+    assert "session 代理" not in ios_col
 
 
 @pytest.mark.asyncio

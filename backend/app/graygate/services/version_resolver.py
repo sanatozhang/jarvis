@@ -46,6 +46,23 @@ class PlatformVersions:
     top_version: Optional[str] = None       # session 数最大的 build（自动判定的"主力包"）
     top_version_events: int = 0
     total_events: int = 0
+    # RUM 采样还原（2026-10-19）：上面的 *_events 是 Datadog 里看到的**采样内**会话数，
+    # 样本地板 / 主力包判定继续用它（真实样本量）；展示给人看的会话数用下面的估算全量
+    # = Σ n × 100 / session_sample_rate（按版本逐桶，rate 是按 build 配的）。
+    estimated: Dict[str, int] = field(default_factory=dict)   # version → 估算全量会话数
+    sample_rates: Dict[str, float] = field(default_factory=dict)  # version → 该版本最低采样率
+
+    def est_sessions(self, version: Optional[str] = None) -> int:
+        """单版本（或 version=None 时全部版本）的估算全量会话数；没有还原数据时回落采样内数。"""
+        if version is None:
+            return sum(self.estimated.get(v, n) for v, n in self.versions)
+        return self.estimated.get(version, dict(self.versions).get(version, 0))
+
+    def sample_rate(self, version: Optional[str] = None) -> float:
+        """单版本（或全部版本）的最低采样率，100 = 未采样。"""
+        if version is None:
+            return min(self.sample_rates.values(), default=100.0)
+        return self.sample_rates.get(version, 100.0)
 
     # 2026-08-19：build 号最大的"🆕最新版本"自动层被用户下线——刚发布的包流量太薄，
     # 自动判定意义不大，改成人工指定主要版本（见 services/focus_version.py），
@@ -117,6 +134,10 @@ async def _resolve_one_platform(
         events = int(b.get("computes", {}).get("c0") or 0)
         versions.append((version, events))
 
+    estimated, sample_rates = await _restore_sampling(
+        url, headers, payload, dict(versions), platform,
+    )
+
     # 不带 sort 请求 Datadog（带会 400），在本地按 events 降序排序。
     versions.sort(key=lambda vc: vc[1], reverse=True)
 
@@ -132,7 +153,69 @@ async def _resolve_one_platform(
         top_version=top_version,
         top_version_events=top_version_events,
         total_events=total_events,
+        estimated=estimated,
+        sample_rates=sample_rates,
     )
+
+
+async def _restore_sampling(
+    url: str,
+    headers: Dict[str, str],
+    base_payload: dict,
+    sampled_by_version: Dict[str, int],
+    platform: str,
+) -> Tuple[Dict[str, int], Dict[str, float]]:
+    """按 `@_dd.configuration.session_sample_rate` 把采样内会话数还原成估算全量。
+
+    同一个 filter 再按 version × sample_rate 聚合一次。缺这个字段的 session 会被
+    Datadog 从分组里丢掉，用「采样内总数 − 有 rate 的部分」补回、按 100% 计。
+    查询失败 → 返回空 dict，调用方回落采样内数（等价于假定 100%），不影响日报。
+    """
+    if not sampled_by_version:
+        return {}, {}
+    payload = {
+        **base_payload,
+        "group_by": [
+            {"facet": "version", "limit": 30},
+            {"facet": "@_dd.configuration.session_sample_rate", "limit": 10},
+        ],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                logger.warning("sample-rate aggregate HTTP %s (%s): %s",
+                               resp.status_code, platform, resp.text[:300])
+                return {}, {}
+            buckets = resp.json().get("data", {}).get("buckets", [])
+    except Exception as e:
+        logger.warning("sample-rate aggregate failed (%s): %s", platform, e)
+        return {}, {}
+
+    est: Dict[str, float] = {}
+    rated: Dict[str, int] = {}
+    rates: Dict[str, float] = {}
+    for b in buckets:
+        by = b.get("by") or {}
+        version = by.get("version")
+        if version not in sampled_by_version:
+            continue
+        try:
+            rate = float(by.get("@_dd.configuration.session_sample_rate"))
+        except (TypeError, ValueError):
+            continue
+        n = int(b.get("computes", {}).get("c0") or 0)
+        if n <= 0 or not (0 < rate <= 100):
+            continue
+        est[version] = est.get(version, 0.0) + n * 100.0 / rate
+        rated[version] = rated.get(version, 0) + n
+        rates[version] = min(rates.get(version, 100.0), rate)
+
+    out: Dict[str, int] = {}
+    for version, sampled in sampled_by_version.items():
+        unrated = max(0, sampled - rated.get(version, 0))
+        out[version] = int(round(est.get(version, 0.0) + unrated))
+    return out, rates
 
 
 async def resolve_versions(

@@ -47,7 +47,10 @@ def _metrics_table(data: GraygateReportData) -> List[str]:
     lines = [header, "|---" * (len(cols) + 1) + "|"]
     lines.append("| 版本 | " + " | ".join(_version_cell(t) for _, t in cols) + " |")
     lines.append("| Sessions | " + " | ".join(
-        f"{t.sessions:,}" if t.sessions is not None else "—" for _, t in cols
+        (t.display_sessions or "—") for _, t in cols
+    ) + " |")
+    lines.append("| Users | " + " | ".join(
+        f"{t.users:,}" if t.users is not None else "—" for _, t in cols
     ) + " |")
 
     core = [r for r in data.metric_rows if r[2]]
@@ -60,6 +63,35 @@ def _metrics_table(data: GraygateReportData) -> List[str]:
         for key, name, _ in other:
             lines.append(f"| {_cell(name)} | " + " | ".join(
                 _cell(t.cells.get(key, "—")) for _, t in cols) + " |")
+    return lines
+
+
+def _version_rows_md(data: GraygateReportData) -> List[str]:
+    """`version_pattern` 下每个 build 的会话 / 用户 / 采样率——Slack 只给大盘 + 主要版本，
+    完整数据在这里。"""
+    if not any(data.version_rows.values()):
+        return []
+    lines = ["", f"## 📦 All `{data.version_pattern}` versions — sessions / users", ""]
+    sampled = False
+    for p in ("ios", "android"):
+        rows = data.version_rows.get(p) or []
+        if not rows:
+            continue
+        total = sum(r.est_sessions for r in rows) or 1
+        lines += [f"### {_PLATFORM_LABEL[p]}", "",
+                  "| Version | Sessions | Share | Users | Sample rate |", "|---|---|---|---|---|"]
+        for r in rows:
+            approx = "≈" if r.sample_rate < 100 else ""
+            sampled = sampled or r.sample_rate < 100
+            lines.append(
+                f"| `{r.version}` | {approx}{r.est_sessions:,} | {r.est_sessions / total * 100:.1f}% | "
+                f"{f'{r.users:,}' if r.users is not None else '—'} | {r.sample_rate:g}% |"
+            )
+        lines.append("")
+    if sampled:
+        lines.append("> ⚠️ Datadog RUM sampling: sessions are extrapolated by sample rate (≈); "
+                     "users are distinct within the sample and undercounted.")
+        lines.append("")
     return lines
 
 
@@ -81,6 +113,7 @@ def assemble_report_markdown(data: GraygateReportData) -> str:
         for col in data.columns_md:
             lines += ["", col.replace("\n", "  \n"), ""]
 
+    lines += _version_rows_md(data)
     lines += _section(data.new_crash_md)
     lines += _section(data.top_crash_md)
     lines += _section(data.top_jank_md)

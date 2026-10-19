@@ -36,6 +36,7 @@ from app.graygate.services.version_resolver import PlatformVersions, resolve_ver
 from app.graygate.services.new_crashes import NewCrash, find_new_crashes
 from app.graygate.services.top_issues import TopCrash, TopJank, find_top_crashes, find_top_jank
 from app.graygate.services.focus_version import get_focus_version
+from app.graygate.services.user_counts import count_users, count_users_by_version
 
 _BJT = ZoneInfo("Asia/Shanghai")
 _PLATFORMS = ("ios", "android")
@@ -76,6 +77,33 @@ class TierSummary:
     sessions: Optional[int]
     manual: bool                  # 主要版本是否人工指定
     cells: Dict[str, str]         # metric key → 带色点的格式化值 / sentinel 文案
+    # 2026-10-19：用户数 + 采样还原。`sessions` 仍是采样内会话数（样本量）；
+    # 展示用 `display_sessions`（采样 <100% 时是 ≈估算全量）。
+    users: Optional[int] = None   # distinct @usr.id（采样内）；取数失败为 None
+    est_sessions: Optional[int] = None
+    sample_rate: float = 100.0
+
+    @property
+    def sampled(self) -> bool:
+        return self.sample_rate < 100
+
+    @property
+    def display_sessions(self) -> Optional[str]:
+        n = self.est_sessions if self.est_sessions is not None else self.sessions
+        if n is None:
+            return None
+        return f"≈{n:,}" if self.sampled else f"{n:,}"
+
+
+@dataclass
+class VersionRow:
+    """网页完整日报「全版本明细」的一行：version_pattern 下每个 build。"""
+
+    version: str
+    sessions: int                 # 采样内
+    est_sessions: int
+    users: Optional[int]
+    sample_rate: float
 
 
 def _window_ms(day: date) -> Tuple[int, int]:
@@ -241,6 +269,11 @@ def _tier_md(
 
 def _fmt_n(n: int) -> str:
     return f"{n:,}"
+
+
+def _volume_str(sessions: str, users: Optional[int]) -> str:
+    """`1,670 sessions · 214 users`；用户数取数失败时只给会话数。"""
+    return f"{sessions} sessions" + (f" · {_fmt_n(users)} users" if users is not None else "")
 
 
 # ---------------------------------------------------------------------------
@@ -444,17 +477,21 @@ async def _build_platform_column(
         dashboard_json, metrics, platform, version_pattern, pv.total_events,
         min_sessions, template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
     )
+    market = TierSummary(
+        "大盘", version_pattern, pv.total_events, False,
+        {m.key: _fmt_cell_value(m, market_today[m.key]) for m in metrics},
+        users=await count_users(platform, version_pattern, *today_ms) if pv.total_events else None,
+        est_sessions=pv.est_sessions(),
+        sample_rate=pv.sample_rate(),
+    )
     lines += _tier_md(
-        f"__大盘（{version_pattern}）__", metrics, market_today,
-        active_users=pv.total_events,
+        f"__大盘（{version_pattern}）__（{_volume_str(market.display_sessions, market.users)}）",
+        metrics, market_today,
     )
     lines.append("")
     _collect("大盘", market_today, market_d1, market_d2)
     if tiers_out is not None:
-        tiers_out.append(TierSummary(
-            "大盘", version_pattern, pv.total_events, False,
-            {m.key: _fmt_cell_value(m, market_today[m.key]) for m in metrics},
-        ))
+        tiers_out.append(market)
 
     # 主要版本：优先用人工指定的 focus version（发新版本时运营手动设置，见
     # services/focus_version.py）；未设置时回落到 session 数自动判定的 top_version。
@@ -473,16 +510,21 @@ async def _build_platform_column(
             dashboard_json, metrics, platform, primary_version, primary_sessions,
             min_sessions, template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
         )
+        primary = TierSummary(
+            "主要版本", primary_version, primary_sessions, bool(override_version),
+            {m.key: _fmt_cell_value(m, primary_today[m.key]) for m in metrics},
+            users=await count_users(platform, primary_version, *today_ms) if primary_sessions else None,
+            est_sessions=pv.est_sessions(primary_version),
+            sample_rate=pv.sample_rate(primary_version),
+        )
         lines += _tier_md(
-            f"__主要版本__ `{primary_version}`（{_fmt_n(primary_sessions)} sessions）{primary_suffix}",
+            f"__主要版本__ `{primary_version}`（{_volume_str(primary.display_sessions, primary.users)}）"
+            f"{primary_suffix}",
             metrics, primary_today,
         )
         _collect("主要版本", primary_today, primary_d1, primary_d2)
         if tiers_out is not None:
-            tiers_out.append(TierSummary(
-                "主要版本", primary_version, primary_sessions, bool(override_version),
-                {m.key: _fmt_cell_value(m, primary_today[m.key]) for m in metrics},
-            ))
+            tiers_out.append(primary)
     else:
         lines += _tier_md("__主要版本__", metrics, None, _NO_DATA)
         if tiers_out is not None:
@@ -490,7 +532,24 @@ async def _build_platform_column(
                 "主要版本", None, None, False, {m.key: _NO_DATA for m in metrics},
             ))
 
+    rate = pv.sample_rate()
+    if rate < 100:
+        lines += ["", f"_RUM 采样 {rate:g}%：会话数已按采样率还原（≈），用户数为采样内去重，偏低_"]
     return "\n".join(lines)
+
+
+async def _version_rows(pv: PlatformVersions, version_pattern: str,
+                        today_ms: Tuple[int, int]) -> List[VersionRow]:
+    """version_pattern 下每个 build 的会话 / 用户 / 采样率（网页完整日报全版本明细）。"""
+    if not pv.versions:
+        return []
+    users = await count_users_by_version(pv.platform, version_pattern, *today_ms)
+    rows = [
+        VersionRow(v, n, pv.est_sessions(v), users.get(v) if users else None, pv.sample_rate(v))
+        for v, n in pv.versions
+    ]
+    rows.sort(key=lambda r: (-r.est_sessions, r.version))
+    return rows
 
 
 def _div(content: str) -> Dict[str, Any]:
@@ -566,6 +625,7 @@ class GraygateReportData:
     tiers: Dict[str, List[TierSummary]] = field(default_factory=dict)       # platform → [大盘, 主要版本]
     new_crash_count: int = 0
     worsen_items: List[WorsenItem] = field(default_factory=list)
+    version_rows: Dict[str, List[VersionRow]] = field(default_factory=dict)  # platform → 全版本明细
 
     @property
     def is_red(self) -> bool:
@@ -622,6 +682,10 @@ async def collect_report_data(target_date: date) -> Optional[GraygateReportData]
             worsen_candidates, tiers[platform],
         )
         columns_md.append(col_md)
+    version_rows = {
+        platform: await _version_rows(pv, settings.version_pattern, today_ms)
+        for platform, pv in (("ios", ios_v), ("android", android_v))
+    }
 
     worsen_items: List[WorsenItem] = []
     worsen_lines = _build_worsen_lines(worsen_candidates, directionality_by_key, worsen_items)
@@ -643,6 +707,7 @@ async def collect_report_data(target_date: date) -> Optional[GraygateReportData]
         tiers=tiers,
         new_crash_count=len(new_crashes),
         worsen_items=worsen_items,
+        version_rows=version_rows,
     )
 
 

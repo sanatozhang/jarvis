@@ -121,8 +121,14 @@ def _tier_head(t) -> str:
         head = f"_Primary_ `{t.version}`" + (" (manual)" if t.manual else "")
     else:
         head = "_Primary_ — (no data)"
-    if t.sessions is not None:
-        head += f" · {t.sessions:,} sessions"
+    sessions = getattr(t, "display_sessions", None)
+    if sessions is None and t.sessions is not None:
+        sessions = f"{t.sessions:,}"
+    if sessions is not None:
+        head += f" · {sessions} sessions"
+    users = getattr(t, "users", None)
+    if users is not None:
+        head += f" · {users:,} users"
     return head
 
 
@@ -140,6 +146,9 @@ def _core_column(data: GraygateReportData, platform: str) -> str:
             if not v or "不适用" in v:
                 continue
             lines.append(f"• {_metric_en(key, name)}: {_cell_en(v)}")
+    rate = min((getattr(t, "sample_rate", 100.0) for t in tiers), default=100.0)
+    if rate < 100:
+        lines += ["", f"_RUM sampled {rate:g}%: sessions extrapolated (≈), users undercounted_"]
     return "\n".join(lines)
 
 
