@@ -48,7 +48,6 @@ _PLATFORM_LABEL = {"ios": "🍎 iOS", "android": "🤖 Android"}
 
 _NOT_APPLICABLE = "—（不适用）"
 _NO_DATA = "—（无数据）"
-_INSUFFICIENT_SAMPLE = "—（样本不足）"
 _QUERY_FAILED = "—（取数失败）"
 
 CellValue = Any  # float | Tuple[float, float]
@@ -205,9 +204,8 @@ def _gate_tier(
     platform: str,
     version_value: Optional[str],
     sample_proxy: int,
-    min_sessions: int,
 ) -> Dict[str, _TierGate]:
-    """判定每个指标该不该查（不适用平台/无版本数据/样本不足），只判一次，
+    """判定每个指标该不该查（不适用平台/无版本数据/0 会话），只判一次，
     今日窗口和基线窗口共用同一份判定结果（避免基线样本量单独判定导致两天
     走不同分支、口径不一致）。"""
     gates: Dict[str, _TierGate] = {}
@@ -216,8 +214,11 @@ def _gate_tier(
             gates[spec.key] = _TierGate(None, _NOT_APPLICABLE)
         elif version_value is None:
             gates[spec.key] = _TierGate(None, _NO_DATA)
-        elif sample_proxy < min_sessions:
-            gates[spec.key] = _TierGate(version_value, _INSUFFICIENT_SAMPLE)
+        elif sample_proxy <= 0:
+            # 2026-10-20：灰度报表取消 min_sessions=50 样本地板——灰度包放量初期
+            # 会话很少，但哪怕只有 1 个会话也要按时出数；只有 0 会话才标无数据。
+            # （crashguard/coreguard 各自的样本门槛不受影响。）
+            gates[spec.key] = _TierGate(version_value, _NO_DATA)
         else:
             gates[spec.key] = _TierGate(version_value, None)
     return gates
@@ -429,7 +430,6 @@ async def _fetch_tier_history(
     platform: str,
     version_value: Optional[str],
     sample_proxy: int,
-    min_sessions: int,
     template_vars_base: Dict[str, str],
     today_ms: Tuple[int, int],
     core_metrics: List[MetricSpec],
@@ -440,11 +440,11 @@ async def _fetch_tier_history(
     核心指标（用于恶化的连续两天判定，非核心指标不需要历史数据）。三次查询
     用同一个 version_value——"同一个包比较三天"，不是各自重新挑主力包
     （对齐 report_builder.py 已验证过的设计：DoD 对比要 apples-to-apples）。"""
-    gates = _gate_tier(metrics, platform, version_value, sample_proxy, min_sessions)
+    gates = _gate_tier(metrics, platform, version_value, sample_proxy)
     today_cells = await _resolve_tier_for_window(
         dashboard_json, metrics, platform, gates, template_vars_base, *today_ms,
     )
-    core_gates = _gate_tier(core_metrics, platform, version_value, sample_proxy, min_sessions)
+    core_gates = _gate_tier(core_metrics, platform, version_value, sample_proxy)
     d1_cells = await _resolve_tier_for_window(
         dashboard_json, core_metrics, platform, core_gates, template_vars_base, *d1_ms,
     )
@@ -460,7 +460,6 @@ async def _build_platform_column(
     platform: str,
     pv: PlatformVersions,
     version_pattern: str,
-    min_sessions: int,
     template_vars_base: Dict[str, str],
     today_ms: Tuple[int, int],
     d1_ms: Tuple[int, int],
@@ -480,7 +479,7 @@ async def _build_platform_column(
     # 大盘
     market_today, market_d1, market_d2 = await _fetch_tier_history(
         dashboard_json, metrics, platform, version_pattern, pv.total_events,
-        min_sessions, template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
+        template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
     )
     market = TierSummary(
         "大盘", version_pattern, pv.total_events, False,
@@ -516,7 +515,7 @@ async def _build_platform_column(
     if primary_version:
         primary_today, primary_d1, primary_d2 = await _fetch_tier_history(
             dashboard_json, metrics, platform, primary_version, primary_sessions,
-            min_sessions, template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
+            template_vars_base, today_ms, core_metrics, d1_ms, d2_ms,
         )
         primary = TierSummary(
             "主要版本", primary_version, primary_sessions, bool(override_version),
@@ -696,7 +695,7 @@ async def collect_report_data(target_date: date,
         tiers[platform] = []
         col_md = await _build_platform_column(
             dashboard_json, metrics_config.metrics, platform, pv,
-            settings.version_pattern, settings.min_sessions,
+            settings.version_pattern,
             metrics_config.template_variables, today_ms, d1_ms, d2_ms,
             worsen_candidates, tiers[platform],
         )

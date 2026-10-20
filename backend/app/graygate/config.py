@@ -39,7 +39,9 @@ class GraygateSettings(BaseSettings):
     # 发布频率（设置页开关，见 services/frequency.py）：daily = 只发 9 点日报；
     # 30m/2h/6h/12h = 日报照发 + 按间隔发「今日至今」报告。运行时由 DB 回灌覆盖。
     report_frequency: str = "daily"
-    min_sessions: int = 50            # 样本地板，低于此不出该单元格
+    # 样本地板。⚠️ 2026-10-20 起线上日报（card_builder）已不用它——灰度包 1 个会话
+    # 也要出数；只剩没人调用的旧实现 report_builder.py 还在读。
+    min_sessions: int = 50
     # 2026-08-23：报告构建/发送失败时私聊告警的收件人（跟 crashguard 那几个
     # fallback_email 是同一个模式）——之前失败只是悄悄写进心跳表，没人会主动
     # 去查，导致连续两天没发都没人发现。

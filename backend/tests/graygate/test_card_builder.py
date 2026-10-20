@@ -262,6 +262,13 @@ async def test_build_report_card_focus_version_outside_pattern_is_looked_up(monk
     assert "样本不足" not in ios_col
 
 
+def test_gate_tier_has_no_sample_floor_only_zero_sessions_is_no_data():
+    """2026-10-20：灰度报表取消 min_sessions 样本地板——1 个会话也要查数，0 会话才是无数据。"""
+    spec = MetricSpec(key="fps", title="FPS", cell_format="{v:.2f}")
+    assert cb._gate_tier([spec], "ios", "4.0.1-1268", 1)["fps"].sentinel is None
+    assert cb._gate_tier([spec], "ios", "4.0.1-1268", 0)["fps"].sentinel == cb._NO_DATA
+
+
 @pytest.mark.asyncio
 async def test_build_report_card_falls_back_to_top_version_without_override(monkeypatch):
     """未设置 focus version（返回 None）时，"主要版本"层回落到 session 数
@@ -300,6 +307,6 @@ async def test_collect_report_data_fills_structured_tiers_for_web_and_slack(monk
     assert (ios_market.label, ios_market.sessions) == ("大盘", 1005)
     assert (ios_primary.version, ios_primary.sessions, ios_primary.manual) == ("4.0.302-2000", 5, True)
     assert ios_market.cells["fps"] == "60.00"
-    assert ios_primary.cells["fps"] == "—（样本不足）"   # 5 sessions 低于样本门槛
+    assert ios_primary.cells["fps"] == "60.00"   # 2026-10-20 取消样本地板：5 sessions 也出数
     assert [t.label for t in data.tiers["android"]] == ["大盘", "主要版本"]
     assert data.metric_rows == [("fps", "FPS", False)]
