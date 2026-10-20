@@ -180,8 +180,9 @@ async def set_focus_version_endpoint(
     传空字符串 `version` 清空指定，回落到 session 数自动判定的 top_version。
 
     2026-09-15/16：每次变更都写审计（谁/何时/旧值→新值，落 DB 不随重启消失，
-    同时打一行 INFO 日志方便 `docker compose logs` 直接 grep）+ 飞书通知到
-    4.0灰度数据跟进群（见 focus_version.py::_record_and_notify）。调用方鉴权
+    同时打一行 INFO 日志方便 `docker compose logs` 直接 grep）+ 变更通知发到
+    灰度日报同一个渠道（2026-10 起是 Slack `#v4-graygate-data`，见
+    focus_version.py::_record_and_notify）。调用方鉴权
     见 `_resolve_caller`：SSO 登录态用邮箱，否则必须带合法的 API key，两者都
     没有直接 401——不再允许匿名调用。
     """

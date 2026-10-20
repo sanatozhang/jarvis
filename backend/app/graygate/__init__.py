@@ -1,7 +1,8 @@
 """Graygate — 4.0.3 灰度期临时监控模块。
 
 灰度期每日拉取 Datadog Native 看板（`mbn-8h9-m2p`）11 项核心指标，按平台
-（iOS/Android）× 版本口径（最新版/大盘）汇总，推送飞书「4.0灰度数据跟进群」。
+（iOS/Android）× 版本口径（最新版/大盘）汇总，推送 Slack `#v4-graygate-data`
+（2026-10 起；之前是飞书「4.0灰度数据跟进群」）。
 
 独立模块，灰度结束可整体摘除，不侵入 crashguard / coreguard 现有告警链路。
 

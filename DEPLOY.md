@@ -283,7 +283,7 @@ sudo systemctl reload nginx
 | `SECRET_KEY` | 否 | 安全密钥（生产环境必改） | 随机字符串 |
 | `SLACK_BOT_TOKEN` | 否 | Slack bot token，仅在有模块切到 slack 时必填 | `xoxb-...` |
 | `GRAYGATE_NOTIFY_PROVIDER` | 否 | graygate 走哪个渠道（`feishu`/`slack`） | `feishu` |
-| `GRAYGATE_SLACK_CHANNEL` | 否 | graygate 的 Slack 频道 id | `C0C3P854KN1` |
+| `GRAYGATE_SLACK_CHANNEL` | 否 | graygate 的 Slack 频道 id | `C0C656J8SMU` |
 | `SYSTEM_NOTIFY_PROVIDER` | 否 | 系统私聊（发版通知 / modulehub / DB 健康告警 / 站内反馈）走哪个渠道；配了会禁用设置页「system」那行开关 | `slack` |
 
 #### ⚠️ `SLACK_BOT_TOKEN` 与 Apollo 共用
@@ -301,7 +301,8 @@ jarvis 和 Apollo 用的是**同一个 Slack app**（Apollo Notify，bot uid
    jarvis 是 08:00/17:00 + 每 3h，Apollo 是 09:00 催办扫描，频道也不同。
 
 现有频道：`#jarvis-crashguard`（`C0C3S90ULGN`，crashguard + coreguard 共用）、
-`#jarvis-graygate`（`C0C3P854KN1`）。都是**私有**频道，bot 必须在里面
+`#v4-graygate-data`（`C0C656J8SMU`，graygate 日报 + 主要版本变更通知；旧的
+`#jarvis-graygate` `C0C3P854KN1` 已停用）。都是**私有**频道，bot 必须在里面
 ——否则发送会报 `not_in_channel`，而且这个错误只会进日志。
 
 ### 4.2 全局配置 (config.yaml)

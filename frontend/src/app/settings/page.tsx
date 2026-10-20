@@ -724,7 +724,7 @@ function GraygateReportSection() {
         {t("[4.0.3 灰度] 每日指标 · 重新发布")}
       </h2>
       <p className="text-[11px] mb-4" style={{ color: S.text3 }}>
-        {t("按日期重新生成并发送灰度日报到「4.0灰度数据跟进群」——已经发过的日期也能重发，不受去重限制。")}
+        {t("按日期重新生成并发送灰度日报到灰度数据频道（#v4-graygate-data）——已经发过的日期也能重发，不受去重限制。")}
       </p>
       <div className="flex items-center gap-2 mb-3">
         <input

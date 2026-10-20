@@ -1204,8 +1204,8 @@ const EN: Record<string, string> = {
 
   // Graygate report resend + focus-version audit (2026-09-15)
   "[4.0.3 灰度] 每日指标 · 重新发布": "[4.0.3 Grayscale] Daily Metrics · Republish",
-  "按日期重新生成并发送灰度日报到「4.0灰度数据跟进群」——已经发过的日期也能重发，不受去重限制。":
-    "Regenerate and resend the grayscale daily report for a given date to the tracking group — already-sent dates can be resent too, no dedup restriction.",
+  "按日期重新生成并发送灰度日报到灰度数据频道（#v4-graygate-data）——已经发过的日期也能重发，不受去重限制。":
+    "Regenerate and resend the grayscale daily report for a given date to the grayscale data channel (#v4-graygate-data) — already-sent dates can be resent too, no dedup restriction.",
   "重新发布到群": "Republish to group",
   "已发送": "Sent",
   "数据可用": "Data available",
