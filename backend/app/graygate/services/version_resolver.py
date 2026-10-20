@@ -267,6 +267,67 @@ async def _restore_sampling(
     return out, rates
 
 
+async def total_sessions(
+    platform: str,
+    version_pattern: str,
+    from_ms: int,
+    to_ms: int,
+) -> Optional[int]:
+    """`version_pattern` 下该平台的估算全量会话数（占比分母用）。
+
+    不按 version 分组——`4.*` 下 build 可能超过 group_by 的 30 个上限，分组会截断。
+    总数单独 count 一次，再只按采样率分组还原；缺 rate 的部分按 100% 计（同
+    `_restore_sampling`）。任何失败返回 None。
+    """
+    s = get_graygate_settings()
+    if not s.datadog_api_key or not s.datadog_app_key:
+        return None
+    url = f"https://api.{s.datadog_site}/api/v2/rum/analytics/aggregate"
+    headers = {
+        "DD-API-KEY": s.datadog_api_key,
+        "DD-APPLICATION-KEY": s.datadog_app_key,
+        "Content-Type": "application/json",
+    }
+    base = {
+        "compute": [{"aggregation": "count", "type": "total"}],
+        "filter": {
+            "from": from_ms,
+            "to": to_ms,
+            "query": f"@type:session env:production @service:{_PLATFORM_SERVICE[platform]} "
+                     f"version:{version_pattern}",
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r_total = await client.post(url, json=base, headers=headers)
+            r_rated = await client.post(url, json={**base, "group_by": [
+                {"facet": "@_dd.configuration.session_sample_rate", "limit": 10},
+            ]}, headers=headers)
+        if r_total.status_code != 200 or r_rated.status_code != 200:
+            logger.warning("total sessions HTTP %s/%s (%s)",
+                           r_total.status_code, r_rated.status_code, platform)
+            return None
+        t_buckets = r_total.json().get("data", {}).get("buckets", [])
+        rated_buckets = r_rated.json().get("data", {}).get("buckets", [])
+    except Exception as e:
+        logger.warning("total sessions failed (%s): %s", platform, e)
+        return None
+
+    sampled = sum(int(b.get("computes", {}).get("c0") or 0) for b in t_buckets)
+    est, rated = 0.0, 0
+    for b in rated_buckets:
+        try:
+            rate = float((b.get("by") or {}).get("@_dd.configuration.session_sample_rate"))
+        except (TypeError, ValueError):
+            continue
+        n = int(b.get("computes", {}).get("c0") or 0)
+        if n <= 0 or not (0 < rate <= 100):
+            continue
+        est += n * 100.0 / rate
+        rated += n
+    return int(round(est + max(0, sampled - rated)))
+
+
 async def resolve_versions(
     from_ms: int,
     to_ms: int,

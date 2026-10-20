@@ -135,6 +135,9 @@ def _tier_head(t) -> str:
     users = getattr(t, "users", None)
     if users is not None:
         head += f" · {users:,} users"
+    share = getattr(t, "share_str", None)
+    if share:
+        head += f"\n    _Share of Native 4.x: {share}_"
     return head
 
 

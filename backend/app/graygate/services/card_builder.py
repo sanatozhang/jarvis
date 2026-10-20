@@ -33,7 +33,7 @@ from app.graygate.services.dashboard_query import (
     load_metrics_config,
 )
 from app.graygate.services.version_resolver import (
-    PlatformVersions, resolve_extra_version, resolve_versions,
+    PlatformVersions, resolve_extra_version, resolve_versions, total_sessions,
 )
 from app.graygate.services.new_crashes import NewCrash, find_new_crashes
 from app.graygate.services.top_issues import TopCrash, TopJank, find_top_crashes, find_top_jank
@@ -83,6 +83,18 @@ class TierSummary:
     users: Optional[int] = None   # distinct @usr.id（采样内）；取数失败为 None
     est_sessions: Optional[int] = None
     sample_rate: float = 100.0
+    # 2026-10-20：占同平台全部 Native 4.x（share_base_pattern）的比例，单位 %；
+    # 分子 / 分母任一取数失败为 None
+    user_share: Optional[float] = None
+    session_share: Optional[float] = None
+
+    @property
+    def share_str(self) -> Optional[str]:
+        """`12.3% users / 10.1% sessions`；两个都没有时 None。"""
+        if self.user_share is None and self.session_share is None:
+            return None
+        fmt = lambda v: f"{v:.1f}%" if v is not None else "—"
+        return f"{fmt(self.user_share)} users / {fmt(self.session_share)} sessions"
 
     @property
     def sampled(self) -> bool:
@@ -496,6 +508,8 @@ async def _build_platform_column(
     _collect("大盘", market_today, market_d1, market_d2)
     if tiers_out is not None:
         tiers_out.append(market)
+    base_users, base_sessions = await _share_base(platform, today_ms)
+    _fill_share(market, base_users, base_sessions)
 
     # 主要版本：优先用人工指定的 focus version（发新版本时运营手动设置，见
     # services/focus_version.py）；未设置时回落到 session 数自动判定的 top_version。
@@ -530,6 +544,7 @@ async def _build_platform_column(
             metrics, primary_today,
         )
         _collect("主要版本", primary_today, primary_d1, primary_d2)
+        _fill_share(primary, base_users, base_sessions)
         if tiers_out is not None:
             tiers_out.append(primary)
     else:
@@ -543,6 +558,25 @@ async def _build_platform_column(
     if rate < 100:
         lines += ["", f"_RUM 采样 {rate:g}%：会话数已按采样率还原（≈），用户数为采样内去重，偏低_"]
     return "\n".join(lines)
+
+
+def _pct(part: Optional[int], whole: Optional[int]) -> Optional[float]:
+    if part is None or not whole:
+        return None
+    return part / whole * 100.0
+
+
+async def _share_base(platform: str, today_ms: Tuple[int, int]) -> Tuple[Optional[int], Optional[int]]:
+    """占比分母：同平台全部 Native 4.x 的（去重用户数, 估算会话数）。"""
+    pattern = get_graygate_settings().share_base_pattern
+    return (await count_users(platform, pattern, *today_ms),
+            await total_sessions(platform, pattern, *today_ms))
+
+
+def _fill_share(t: TierSummary, base_users: Optional[int], base_sessions: Optional[int]) -> None:
+    t.user_share = _pct(t.users, base_users)
+    sessions = t.est_sessions if t.est_sessions is not None else t.sessions
+    t.session_share = _pct(sessions, base_sessions)
 
 
 async def _version_rows(pv: PlatformVersions, version_pattern: str,

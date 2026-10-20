@@ -227,6 +227,8 @@ async def _run_build_report_card_with(monkeypatch, focus_version_return):
     monkeypatch.setattr(cb, "find_top_crashes", _fake_empty_list)
     monkeypatch.setattr(cb, "find_top_jank", _fake_empty_list)
     monkeypatch.setattr(cb, "get_focus_version", AsyncMock(return_value=focus_version_return))
+    if not hasattr(cb.total_sessions, "assert_awaited"):   # 测试可先行覆盖
+        monkeypatch.setattr(cb, "total_sessions", AsyncMock(return_value=None))
 
     return await cb.build_report_card(date(2026, 8, 18))
 
@@ -295,6 +297,29 @@ async def test_build_report_card_shows_sessions_and_users_for_both_tiers(monkeyp
     assert "__大盘（4.0.3*）__（1,005 sessions · 230 users）" in ios_col
     assert "__主要版本__ `4.0.301-1043`（1,000 sessions · 214 users）" in ios_col
     assert "session 代理" not in ios_col
+
+
+@pytest.mark.asyncio
+async def test_share_of_native_4x_users_and_sessions(monkeypatch):
+    """2026-10-20：主要版本 / 大盘都带「占同平台全部 Native 4.x」的用户占比 + 会话占比。"""
+    users = {"4.0.3*": 230, "4.0.301-1043": 214, "4.*": 1000}
+
+    async def fake_count_users(platform, version, from_ms, to_ms):
+        return users.get(version) if platform == "ios" else None
+
+    async def fake_total_sessions(platform, pattern, from_ms, to_ms):
+        assert pattern == "4.*"
+        return 4000 if platform == "ios" else None
+
+    monkeypatch.setattr(cb, "count_users", fake_count_users)
+    monkeypatch.setattr(cb, "total_sessions", AsyncMock(side_effect=fake_total_sessions))
+    await _run_build_report_card_with(monkeypatch, None)
+    data = await cb.collect_report_data(date(2026, 8, 18))
+    market, primary = data.tiers["ios"]
+    assert primary.share_str == "21.4% users / 25.0% sessions"   # 214/1000, 1000/4000
+    assert market.share_str == "23.0% users / 25.1% sessions"    # 230/1000, 1005/4000
+    # 分母取数失败 → 不显示
+    assert data.tiers["android"][0].share_str is None
 
 
 @pytest.mark.asyncio

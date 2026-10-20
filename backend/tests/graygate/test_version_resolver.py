@@ -285,3 +285,34 @@ async def test_resolve_extra_version_failure_keeps_zero(monkeypatch):
 
     assert pv.sessions("4.0.1-1268") == 0
     assert pv.extra == {}
+
+
+@pytest.mark.asyncio
+async def test_total_sessions_restores_sampling_without_version_grouping(monkeypatch):
+    """占比分母：不按 version 分组（4.* 可能超过 30 个 build），总数 + 按采样率还原。"""
+    seen: list = []
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            seen.append(json)
+            if "group_by" not in json:
+                return _FakeResponse(200, {"data": {"buckets": [{"by": {}, "computes": {"c0": 130}}]}})
+            return _FakeResponse(200, {"data": {"buckets": [
+                {"by": {"@_dd.configuration.session_sample_rate": 20}, "computes": {"c0": 100}},
+                {"by": {"@_dd.configuration.session_sample_rate": 100}, "computes": {"c0": 10}},
+            ]}})
+
+    monkeypatch.setattr(vr.httpx, "AsyncClient", _FakeAsyncClient)
+    n = await vr.total_sessions("ios", "4.*", 0, 1)
+    assert n == 500 + 10 + 20          # 100/0.2 + 10 + 未带 rate 的 20 按 100%
+    assert "version:4.*" in seen[0]["filter"]["query"]
+    assert all(g["facet"] != "version" for j in seen for g in j.get("group_by", []))

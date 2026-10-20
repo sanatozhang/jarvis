@@ -71,6 +71,9 @@ def _metrics_table(data: GraygateReportData) -> List[str]:
     lines.append("| Users | " + " | ".join(
         f"{t.users:,}" if t.users is not None else "—" for _, t in cols
     ) + " |")
+    lines.append("| Share of Native 4.x (users / sessions) | " + " | ".join(
+        (t.share_str or "—") for _, t in cols
+    ) + " |")
 
     core = [r for r in data.metric_rows if r[2]]
     other = [r for r in data.metric_rows if not r[2]]
