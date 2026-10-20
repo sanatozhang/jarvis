@@ -249,6 +249,20 @@ async def test_build_report_card_uses_focus_version_override_when_set(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_build_report_card_focus_version_outside_pattern_is_looked_up(monkeypatch):
+    """2026-10-20：指定的 build 不在 version_pattern 内（枚举里没有）时，要单独补查
+    会话数，不能取成 0 被判「样本不足」。"""
+    async def fake_resolve_extra_version(pv, version, from_ms, to_ms):
+        pv.extra[version] = 812
+
+    monkeypatch.setattr(cb, "resolve_extra_version", fake_resolve_extra_version)
+    result = await _run_build_report_card_with(monkeypatch, "4.0.1-1268")
+    ios_col = _ios_column_text(result)
+    assert "__主要版本__ `4.0.1-1268`（812 sessions）（人工指定）" in ios_col
+    assert "样本不足" not in ios_col
+
+
+@pytest.mark.asyncio
 async def test_build_report_card_falls_back_to_top_version_without_override(monkeypatch):
     """未设置 focus version（返回 None）时，"主要版本"层回落到 session 数
     自动判定的 top_version，不带"人工指定"标注。"""

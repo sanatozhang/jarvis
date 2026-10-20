@@ -32,7 +32,9 @@ from app.graygate.services.dashboard_query import (
     get_metric_scalar,
     load_metrics_config,
 )
-from app.graygate.services.version_resolver import PlatformVersions, resolve_versions
+from app.graygate.services.version_resolver import (
+    PlatformVersions, resolve_extra_version, resolve_versions,
+)
 from app.graygate.services.new_crashes import NewCrash, find_new_crashes
 from app.graygate.services.top_issues import TopCrash, TopJank, find_top_crashes, find_top_jank
 from app.graygate.services.focus_version import get_focus_version
@@ -501,7 +503,10 @@ async def _build_platform_column(
     override_version = await get_focus_version(platform)
     if override_version:
         primary_version = override_version
-        primary_sessions = dict(pv.versions).get(override_version, 0)
+        # 指定的 build 可能不在 version_pattern 内（枚举里没有）→ 单独补查会话数，
+        # 否则会取成 0、全部指标被判「样本不足」（2026-10-20 4.0.1-1268 全 0 事故）。
+        await resolve_extra_version(pv, override_version, *today_ms)
+        primary_sessions = pv.sessions(override_version)
         primary_suffix = "（人工指定）"
     else:
         primary_version = pv.top_version

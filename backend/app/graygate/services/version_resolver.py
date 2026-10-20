@@ -51,17 +51,28 @@ class PlatformVersions:
     # = Σ n × 100 / session_sample_rate（按版本逐桶，rate 是按 build 配的）。
     estimated: Dict[str, int] = field(default_factory=dict)   # version → 估算全量会话数
     sample_rates: Dict[str, float] = field(default_factory=dict)  # version → 该版本最低采样率
+    # 2026-10-20：人工指定的主要版本可以不在 version_pattern 内（如 pattern=4.0.3*、
+    # 指定 4.0.1-1268），上面的枚举查不到它 → 会话数取成 0 → 全部指标被判「样本不足」。
+    # 这类版本由 resolve_extra_version 单独补查，采样内会话数放这里；不进 versions，
+    # 免得污染大盘合计和「全版本明细」。
+    extra: Dict[str, int] = field(default_factory=dict)
+
+    def sessions(self, version: str) -> int:
+        """单版本的采样内会话数（pattern 内枚举到的 + 单独补查的）。"""
+        return dict(self.versions).get(version, self.extra.get(version, 0))
 
     def est_sessions(self, version: Optional[str] = None) -> int:
         """单版本（或 version=None 时全部版本）的估算全量会话数；没有还原数据时回落采样内数。"""
         if version is None:
             return sum(self.estimated.get(v, n) for v, n in self.versions)
-        return self.estimated.get(version, dict(self.versions).get(version, 0))
+        return self.estimated.get(version, self.sessions(version))
 
     def sample_rate(self, version: Optional[str] = None) -> float:
         """单版本（或全部版本）的最低采样率，100 = 未采样。"""
         if version is None:
-            return min(self.sample_rates.values(), default=100.0)
+            # 只看 pattern 内版本——extra 补查进来的 build 不属于大盘
+            in_pattern = dict(self.versions)
+            return min((r for v, r in self.sample_rates.items() if v in in_pattern), default=100.0)
         return self.sample_rates.get(version, 100.0)
 
     # 2026-08-19：build 号最大的"🆕最新版本"自动层被用户下线——刚发布的包流量太薄，
@@ -79,15 +90,17 @@ def _empty(platform: str) -> PlatformVersions:
     )
 
 
-async def _resolve_one_platform(
+async def _aggregate_versions(
     platform: str,
+    version_clause: str,
     from_ms: int,
     to_ms: int,
-) -> PlatformVersions:
+) -> Optional[Tuple[List[Tuple[str, int]], Dict[str, int], Dict[str, float]]]:
+    """按 version 分组聚合会话数 + 采样还原。失败返回 None（调用方各自降级）。"""
     s = get_graygate_settings()
     if not s.datadog_api_key or not s.datadog_app_key:
         logger.warning("datadog keys not configured")
-        return _empty(platform)
+        return None
 
     service = _PLATFORM_SERVICE[platform]
     url = f"https://api.{s.datadog_site}/api/v2/rum/analytics/aggregate"
@@ -107,7 +120,7 @@ async def _resolve_one_platform(
             # 只有 1629）。用户发现卡片上显示的"events"数字大得不合理，两者一核对
             # 才确认是口径错了。加 @type:session 后取到的才是真正的会话数，
             # min_sessions 样本地板也才名副其实（之前拿 17 万比 50 这个阈值形同虚设）。
-            "query": f"@type:session env:production @service:{service} version:{s.version_pattern}",
+            "query": f"@type:session env:production @service:{service} {version_clause}",
         },
         "group_by": [{"facet": "version", "limit": 30}],
     }
@@ -120,11 +133,11 @@ async def _resolve_one_platform(
                     "version aggregate HTTP %s (%s): %s",
                     resp.status_code, platform, resp.text[:300],
                 )
-                return _empty(platform)
+                return None
             buckets = resp.json().get("data", {}).get("buckets", [])
     except Exception as e:
         logger.warning("version aggregate failed (%s): %s", platform, e)
-        return _empty(platform)
+        return None
 
     versions: List[Tuple[str, int]] = []
     for b in buckets:
@@ -137,6 +150,19 @@ async def _resolve_one_platform(
     estimated, sample_rates = await _restore_sampling(
         url, headers, payload, dict(versions), platform,
     )
+    return versions, estimated, sample_rates
+
+
+async def _resolve_one_platform(
+    platform: str,
+    from_ms: int,
+    to_ms: int,
+) -> PlatformVersions:
+    s = get_graygate_settings()
+    agg = await _aggregate_versions(platform, f"version:{s.version_pattern}", from_ms, to_ms)
+    if agg is None:
+        return _empty(platform)
+    versions, estimated, sample_rates = agg
 
     # 不带 sort 请求 Datadog（带会 400），在本地按 events 降序排序。
     versions.sort(key=lambda vc: vc[1], reverse=True)
@@ -156,6 +182,29 @@ async def _resolve_one_platform(
         estimated=estimated,
         sample_rates=sample_rates,
     )
+
+
+async def resolve_extra_version(
+    pv: PlatformVersions,
+    version: str,
+    from_ms: int,
+    to_ms: int,
+) -> None:
+    """`version` 不在 pv 已枚举的版本里（人工指定了 pattern 之外的 build）时，单独
+    补查它的会话数 / 采样率写回 pv.extra / estimated / sample_rates。已在 → no-op；
+    查询失败 → 不写，pv.sessions(version) 仍是 0（等价于修复前的行为）。"""
+    if version in dict(pv.versions) or version in pv.extra:
+        return
+    # 具体 build 号加引号防 `-` 被当运算符（同 user_counts._version_clause）
+    agg = await _aggregate_versions(pv.platform, f'version:"{version}"', from_ms, to_ms)
+    if agg is None:
+        return
+    versions, estimated, sample_rates = agg
+    pv.extra[version] = dict(versions).get(version, 0)
+    if version in estimated:
+        pv.estimated[version] = estimated[version]
+    if version in sample_rates:
+        pv.sample_rates[version] = sample_rates[version]
 
 
 async def _restore_sampling(

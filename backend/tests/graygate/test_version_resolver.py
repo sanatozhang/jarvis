@@ -217,3 +217,71 @@ async def test_resolve_versions_empty_buckets(monkeypatch):
         assert pv.top_version is None
         assert pv.top_version_events == 0
         assert pv.total_events == 0
+
+
+# ---------------------------------------------------------------------------
+# resolve_extra_version：人工指定的 build 不在 version_pattern 内时单独补查
+# （2026-10-20 pattern=4.0.3*、指定 4.0.1-1268 → 会话数取成 0 全部样本不足）
+# ---------------------------------------------------------------------------
+
+def _make_recording_client(response: _FakeResponse, queries: list):
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            queries.append(json["filter"]["query"])
+            return response
+
+    return _FakeAsyncClient
+
+
+@pytest.mark.asyncio
+async def test_resolve_extra_version_fills_out_of_pattern_version(monkeypatch):
+    queries: list = []
+    monkeypatch.setattr(vr.httpx, "AsyncClient",
+                        _make_recording_client(_buckets_response([("4.0.1-1268", 812)]), queries))
+    pv = vr.PlatformVersions(platform="ios", versions=[("4.0.301-1043", 1000)],
+                             top_version="4.0.301-1043", top_version_events=1000, total_events=1000)
+
+    await vr.resolve_extra_version(pv, "4.0.1-1268", 0, 1)
+
+    assert pv.sessions("4.0.1-1268") == 812
+    assert pv.est_sessions("4.0.1-1268") == 812
+    assert 'version:"4.0.1-1268"' in queries[0]
+    # 不污染大盘：versions / total / 全部版本合计都不变
+    assert pv.versions == [("4.0.301-1043", 1000)]
+    assert pv.total_events == 1000
+    assert pv.est_sessions() == 1000
+
+
+@pytest.mark.asyncio
+async def test_resolve_extra_version_noop_when_already_enumerated(monkeypatch):
+    queries: list = []
+    monkeypatch.setattr(vr.httpx, "AsyncClient",
+                        _make_recording_client(_buckets_response([]), queries))
+    pv = vr.PlatformVersions(platform="ios", versions=[("4.0.301-1043", 1000)])
+
+    await vr.resolve_extra_version(pv, "4.0.301-1043", 0, 1)
+
+    assert queries == []
+    assert pv.sessions("4.0.301-1043") == 1000
+
+
+@pytest.mark.asyncio
+async def test_resolve_extra_version_failure_keeps_zero(monkeypatch):
+    queries: list = []
+    monkeypatch.setattr(vr.httpx, "AsyncClient",
+                        _make_recording_client(_FakeResponse(status_code=500, text="boom"), queries))
+    pv = vr.PlatformVersions(platform="ios", versions=[("4.0.301-1043", 1000)])
+
+    await vr.resolve_extra_version(pv, "4.0.1-1268", 0, 1)
+
+    assert pv.sessions("4.0.1-1268") == 0
+    assert pv.extra == {}
