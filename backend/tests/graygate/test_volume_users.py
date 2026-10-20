@@ -60,7 +60,7 @@ def test_slack_sampled_marks_approx_and_note():
 
 def test_web_markdown_has_users_row_and_all_versions_table():
     md = assemble_report_markdown(_data())
-    assert "| Users | 214 | 230 | 214 | 230 |" in md
+    assert "| Users | 214 | 214 | 230 | 230 |" in md
     assert "All `4.0.3*` versions" in md
     assert "| `4.0.302-1203` | 1,670 | 98.1% | 214 | 100% |" in md
     assert "| `4.0.301-1058` | 32 | 1.9% | 6 | 100% |" in md

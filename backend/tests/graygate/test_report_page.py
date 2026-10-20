@@ -58,23 +58,24 @@ def _data(target=date(2026, 8, 18), *, new_crashes=0) -> GraygateReportData:
 # ---------------------------------------------------------------------------
 def test_full_markdown_is_one_gfm_table_with_core_metrics_first():
     md = assemble_report_markdown(_data(new_crashes=1))
-    # 主要版本在前、大盘在后
-    assert "| 指标 | 🍎 iOS · 主要版本 | 🍎 iOS · 大盘 | 🤖 Android · 主要版本 | 🤖 Android · 大盘 |" in md
+    # 2026-10-20：两平台主要版本相邻、大盘在后；全英文
+    assert "| Metric | 🍎 iOS · Primary | 🤖 Android · Primary | 🍎 iOS · Overall | 🤖 Android · Overall |" in md
     assert "|---|---|---|---|---|" in md
-    assert "`4.0.301-1038`（人工指定）" in md          # iOS 主要版本人工指定
-    assert "| Sessions | 900 | 12,345 | 900 | 12,345 |" in md
+    assert "`4.0.301-1038` (manual)" in md          # iOS 主要版本人工指定
+    assert "| Sessions | 900 | 900 | 12,345 | 12,345 |" in md
     core_pos = md.index("**Crash-free sessions**")
-    sep_pos = md.index("其他指标（不参与恶化判定）")
-    assert core_pos < sep_pos < md.index("APP单次运行平均FPS")
-    # 附录段：加粗首行变成 ## 标题
-    assert "## 🆕 新增崩溃堆栈" in md and "## 🔥 Top 5 崩溃" in md
+    sep_pos = md.index("Other metrics (not used for regression detection)")
+    assert core_pos < sep_pos < md.index("Avg FPS per run")
+    # 附录段：英文 ## 标题
+    assert "## 🆕 New crash stacks" in md and "## 🔥 Top 5 crashes" in md
+    assert not _CJK.search(md), _CJK.findall(md)
 
 
 def test_full_markdown_falls_back_to_columns_without_structured_tiers():
     d = _data()
     d.tiers = {}
     md = assemble_report_markdown(d)
-    assert "· 全量指标" in md and "| 指标 |" not in md
+    assert "· 全量指标" in md and "| Metric |" not in md
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +184,7 @@ async def test_save_then_read_from_cache_without_recompute(patched_session):
     with patch.object(report_store, "collect_report_data", collect):
         r = await report_store.ensure_report_markdown(d.target_date)
     collect.assert_not_awaited()
-    assert r["cached"] is True and "| 指标 |" in r["markdown"]
+    assert r["cached"] is True and "| Metric |" in r["markdown"]
 
 
 @pytest.mark.asyncio
@@ -198,7 +199,7 @@ async def test_missing_cache_generates_in_background_then_serves_cache(patched_s
         await report_store._jobs[day]
         r3 = await report_store.ensure_report_markdown(day)
     assert collect.await_count == 1
-    assert r3["status"] == "ready" and r3["cached"] is True and "| 指标 |" in r3["markdown"]
+    assert r3["status"] == "ready" and r3["cached"] is True and "| Metric |" in r3["markdown"]
 
 
 @pytest.mark.asyncio
@@ -208,7 +209,7 @@ async def test_no_data_day_reports_once_then_retries(patched_session):
         await report_store.ensure_report_markdown(day)
         await report_store._jobs[day]
         r = await report_store.ensure_report_markdown(day)
-    assert r["status"] == "ready" and "没有灰度版本数据" in r["markdown"]
+    assert r["status"] == "ready" and "No gray-release version data" in r["markdown"]
     assert day not in report_store._failures
 
 
@@ -223,7 +224,7 @@ async def test_expired_date_is_not_recomputed_and_old_cache_is_pruned(patched_se
     with patch.object(report_store, "collect_report_data", collect):
         r = await report_store.ensure_report_markdown(old)
     collect.assert_not_awaited()
-    assert "已过期" in r["markdown"]
+    assert "expired" in r["markdown"]
 
 
 @pytest.mark.asyncio

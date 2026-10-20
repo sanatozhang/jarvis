@@ -125,7 +125,7 @@ def _prev_workday(d: date) -> date:
 
 
 def _metric_name(spec: MetricSpec) -> str:
-    _OVERRIDES = {"jank": "APP单次使用的卡顿次数", "home_render": "首页文件列表加载耗时"}
+    _OVERRIDES = {"jank": "App Jank Count per Session", "home_render": "Home File List Load Time"}
     override = _OVERRIDES.get(spec.key)
     if override:
         return override

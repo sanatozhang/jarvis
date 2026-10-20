@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -223,12 +224,18 @@ async def query_scalar(payload: Dict[str, Any]) -> Optional[float]:
 # 进程内缓存：同一 dashboard_id 一次运行只拉一次（照 coreguard/dashboard_loader.py
 # 的 `_cached` 模式，这里按 dashboard_id 分 key，因为 graygate 未来可能同时服务
 # 多个看板）。
+# 2026-10-20 加 TTL：原来进程生命周期内永不刷新，看板 widget 改名后旧进程还拿着
+# 旧 JSON「碰巧能用」，一重启就集体「取数失败」——问题被推迟到不相干的部署时才暴露。
+_DASHBOARD_TTL_SECONDS = 1800
 _cached_dashboards: Dict[str, Dict[str, Any]] = {}
+_cached_at: Dict[str, float] = {}
 
 
 async def get_dashboard_json(dashboard_id: str) -> Dict[str, Any]:
-    """GET /api/v1/dashboard/{id}，进程内缓存（同一 dashboard_id 只拉一次）。"""
-    if dashboard_id in _cached_dashboards:
+    """GET /api/v1/dashboard/{id}，进程内缓存 30 分钟。"""
+    if dashboard_id in _cached_dashboards and (
+        time.monotonic() - _cached_at.get(dashboard_id, 0.0) < _DASHBOARD_TTL_SECONDS
+    ):
         return _cached_dashboards[dashboard_id]
 
     s = get_graygate_settings()
@@ -248,6 +255,7 @@ async def get_dashboard_json(dashboard_id: str) -> Dict[str, Any]:
         dj = resp.json()
 
     _cached_dashboards[dashboard_id] = dj
+    _cached_at[dashboard_id] = time.monotonic()
     return dj
 
 

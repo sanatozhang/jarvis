@@ -1,6 +1,9 @@
 # graygate/metrics.yaml — 11 项 Native 看板 (mbn-8h9-m2p) 指标映射
 # 移植自 ~/.claude/skills/weekly-report-core-metrics-sync/native-mapping.yaml，
 # 补 Android ANR / Refresh Rate（该文件没有，2026-08-19 现场核对 widget 标题新增）。
+# 2026-10-20：看板 widget 标题整体英文化，FPS / Jank / 首页 / 详情页 4 组标题同步改成英文
+# （旧中文标题已不存在 → 日报「取数失败」）。对应关系按 metric/formula/target 核对过，
+# 与 weekly-report-core-metrics-sync/native-mapping.yaml 一致。
 #
 # version 不写死在这里 —— 由调用方（version_resolver 产出的每平台主力 build，
 # 或 config.version_pattern 的大盘通配符）作为 template_variables 在查询时动态传入。
@@ -41,14 +44,14 @@ metrics:
     target: { op: ">=", value: 59 }   # 无官方 SOTA 来源，按 60Hz 屏幕近满帧粗定，供参考用色点
 
   - key: fps
-    title: "APP单次运行平均FPS"
+    title: "APP Runtime FPS"   # 原「APP单次运行平均FPS」，@context.avg_fps
     cell_format: "{v:.2f}"
     target: { op: ">=", value: 60 }
 
   - key: jank
     # 双 widget 合一行；formula 各自独立查询，渲染时拼成一个 cell
-    title_p75: "APP单次使用的卡顿次数（p75）"
-    title_p90: "APP单次使用的卡顿次数（p90）"
+    title_p75: "App Jank Count per Session (p75)"
+    title_p90: "App Jank Count per Session (p90)"
     cell_format: "{p75:.1f}/{p90:.1f}"
     target_p75: { op: "<=", value: 20 }
     target_p90: { op: "<=", value: 40 }
@@ -66,18 +69,18 @@ metrics:
     target: { op: "<=", value: 400 }
 
   - key: home_render
-    title_p75: "首页文件列表加载P75时长"
-    title_p90: "首页文件列表加载P90时长"
+    title_p75: "Home File List Load Time P75"
+    title_p90: "Home File List Load Time P90"
     cell_format: "{p75:.2f}ms / {p90:.2f}ms"
     target_p75: { op: "<=", value: 200 }
     target_p90: { op: "<=", value: 200 }
 
   - key: detail_render_p90
-    title: "详情页首屏加载耗时P90"
+    title: "Detail Page First Screen End-to-End Load Time P90"   # 原「详情页首屏加载耗时P90」，阈值同为 50/60ms
     cell_format: "{v:.2f}ms"
     target: { op: "<=", value: 50 }
 
   - key: summary_render_p90
-    title: "详情页 WebView 首屏渲染时长 P90"
+    title: "Detail Page WebView Ready Time P90"   # 原「详情页 WebView 首屏渲染时长 P90」(@total_load_ms)
     cell_format: "{v:.2f}ms"
     target: { op: "<=", value: 500 }

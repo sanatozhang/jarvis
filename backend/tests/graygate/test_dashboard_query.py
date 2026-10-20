@@ -356,8 +356,8 @@ def test_load_metrics_config_dual_widget_metrics_carry_p75_p90_titles():
     cfg = dq.load_metrics_config()
     jank = cfg.by_key("jank")
     assert jank.title is None
-    assert jank.title_p75 == "APP单次使用的卡顿次数（p75）"
-    assert jank.title_p90 == "APP单次使用的卡顿次数（p90）"
+    assert jank.title_p75 == "App Jank Count per Session (p75)"
+    assert jank.title_p90 == "App Jank Count per Session (p90)"
     assert jank.cell_format == "{p75:.1f}/{p90:.1f}"
 
 

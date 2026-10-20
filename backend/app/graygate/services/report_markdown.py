@@ -6,46 +6,65 @@
 
 和飞书卡片的区别：飞书是 iOS / Android 双列 bullet，网页端宽度够，改成
 「指标 × 平台口径」一张表，四个口径横向对比；核心指标（参与恶化判定的）排在前面，
-其余指标放在分隔行之后。
+其余指标放在分隔行之后。2026-10-20 起全英文。
 """
 from __future__ import annotations
 
 from typing import List, Optional
 
 from app.graygate.services.card_builder import GraygateReportData, TierSummary
+from app.graygate.services.slack_report import (
+    _PLATFORM_EN as _PLATFORM_LABEL,
+    _TIER_EN,
+    _banner_en,
+    _cell_en,
+    _metric_en,
+    _worsen_en,
+)
 
-_PLATFORM_LABEL = {"ios": "🍎 iOS", "android": "🤖 Android"}
+# 2026-10-20：网页端完整日报改全英文（用户要求），文案与 Slack 版共用一套英文映射。
+_SECTION_EN = {
+    "new_crash": "🆕 New crash stacks",
+    "top_crash": "🔥 Top 5 crashes (by events, new or not)",
+    "top_jank": "🟠 Top 5 jank (by events, new or not)",
+}
 
 
-def _section(md: Optional[str]) -> List[str]:
-    """`**🆕 新增崩溃堆栈**\\n\\n- ...` 这种片段：首行加粗标题改成 `##`，正文原样。"""
+def _section(md: Optional[str], title: str) -> List[str]:
+    """`**中文标题**\n\n- ...` 这种片段：标题换成英文 `##`，正文（平台/版本/events/
+    英文 issue 标题）原样。"""
     if not md:
         return []
-    head, _, body = md.partition("\n")
-    title = head.strip().strip("*").strip()
+    _, _, body = md.partition("\n")
     return ["", f"## {title}", "", body.strip(), ""]
 
 
 def _cell(text: str) -> str:
     # 表格单元格里的 | 会把列切断
-    return text.replace("|", "\\|")
+    return _cell_en(text).replace("|", "\\|")
 
 
 def _version_cell(t: TierSummary) -> str:
     if not t.version:
         return "—"
-    return f"`{t.version}`" + ("（人工指定）" if t.manual else "")
+    return f"`{t.version}`" + (" (manual)" if t.manual else "")
 
 
 def _metrics_table(data: GraygateReportData) -> List[str]:
-    # 每个平台主要版本在前、大盘在后（主要版本是这次灰度真正在看的包）
+    # 2026-10-20 用户要求：两个平台的主要版本相邻（方便直接对比灰度包），大盘排在后面：
+    # iOS·Primary | Android·Primary | iOS·Overall | Android·Overall
     cols: List[tuple] = [
-        (p, t) for p in ("ios", "android")
-        for t in sorted(data.tiers.get(p) or [], key=lambda t: 0 if t.label == "主要版本" else 1)
+        (p, t)
+        for want in ("主要版本", "大盘")
+        for p in ("ios", "android")
+        for t in (data.tiers.get(p) or [])
+        if t.label == want
     ]
-    header = "| 指标 | " + " | ".join(f"{_PLATFORM_LABEL[p]} · {t.label}" for p, t in cols) + " |"
+    header = "| Metric | " + " | ".join(
+        f"{_PLATFORM_LABEL[p]} · {_TIER_EN.get(t.label, t.label)}" for p, t in cols
+    ) + " |"
     lines = [header, "|---" * (len(cols) + 1) + "|"]
-    lines.append("| 版本 | " + " | ".join(_version_cell(t) for _, t in cols) + " |")
+    lines.append("| Version | " + " | ".join(_version_cell(t) for _, t in cols) + " |")
     lines.append("| Sessions | " + " | ".join(
         (t.display_sessions or "—") for _, t in cols
     ) + " |")
@@ -56,12 +75,12 @@ def _metrics_table(data: GraygateReportData) -> List[str]:
     core = [r for r in data.metric_rows if r[2]]
     other = [r for r in data.metric_rows if not r[2]]
     for key, name, _ in core:
-        lines.append(f"| **{_cell(name)}** | " + " | ".join(
+        lines.append(f"| **{_metric_en(key, name)}** | " + " | ".join(
             _cell(t.cells.get(key, "—")) for _, t in cols) + " |")
     if other:
-        lines.append("| _—— 其他指标（不参与恶化判定）——_ |" + " |" * len(cols))
+        lines.append("| _—— Other metrics (not used for regression detection) ——_ |" + " |" * len(cols))
         for key, name, _ in other:
-            lines.append(f"| {_cell(name)} | " + " | ".join(
+            lines.append(f"| {_metric_en(key, name)} | " + " | ".join(
                 _cell(t.cells.get(key, "—")) for _, t in cols) + " |")
     return lines
 
@@ -96,17 +115,20 @@ def _version_rows_md(data: GraygateReportData) -> List[str]:
 
 
 def assemble_report_markdown(data: GraygateReportData) -> str:
-    lines: List[str] = [f"> {data.banner_md}", ""]
+    lines: List[str] = [f"> {_banner_en(data)}", ""]
 
-    if data.worsen_lines:
-        lines += ["## 🔴 恶化（核心指标，连续 2 个工作日同向恶化）", ""]
-        lines += data.worsen_lines
+    if data.worsen_items:
+        lines += ["## 🔴 Regressions (core metrics, worse 2 workdays in a row)", ""]
+        lines += [f"- {w.lstrip('• ')}" for w in _worsen_en(data)]
         lines.append("")
+    elif data.worsen_lines:
+        # 老数据没有结构化条目，只能给条数
+        lines += [f"## 🔴 {len(data.worsen_lines)} regression(s) in core metrics", ""]
 
-    lines += ["## 📊 指标总览", ""]
+    lines += ["## 📊 Metrics overview", ""]
     if data.tiers and data.metric_rows:
         lines += _metrics_table(data)
-        lines += ["", "🟩 / 🟥 = 达标 / 未达标（对照 metrics.yaml 的 target）；加粗为核心指标"]
+        lines += ["", "🟩 / 🟥 = meets / misses target (per metrics.yaml); **bold** = core metric"]
     else:
         # 老数据没有结构化分层：退回飞书那两列原文
         # （"· 指标：值" 是逐行的，markdown 里要硬换行才不会糊成一段）
@@ -114,7 +136,7 @@ def assemble_report_markdown(data: GraygateReportData) -> str:
             lines += ["", col.replace("\n", "  \n"), ""]
 
     lines += _version_rows_md(data)
-    lines += _section(data.new_crash_md)
-    lines += _section(data.top_crash_md)
-    lines += _section(data.top_jank_md)
+    lines += _section(data.new_crash_md, _SECTION_EN["new_crash"])
+    lines += _section(data.top_crash_md, _SECTION_EN["top_crash"])
+    lines += _section(data.top_jank_md, _SECTION_EN["top_jank"])
     return "\n".join(lines).strip() + "\n"

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from app.graygate.services.card_builder import GraygateReportData, collect_report_data
 from app.graygate.services.report_markdown import assemble_report_markdown
+from app.graygate.services.slack_report import _title_en
 
 logger = logging.getLogger("jarvis.graygate.report_store")
 
@@ -21,8 +22,8 @@ logger = logging.getLogger("jarvis.graygate.report_store")
 # 保留期对齐：再往前现算也算不出来了。
 REPORT_MARKDOWN_RETENTION_DAYS = 30
 
-_NO_DATA_MD = "_当天两平台都没有灰度版本数据，未生成日报。_\n"
-_EXPIRED_MD = "_报告内容已过期，无法重新生成（超出 Datadog 数据保留期）。_\n"
+_NO_DATA_MD = "_No gray-release version data on either platform for this day; no report generated._\n"
+_EXPIRED_MD = "_Report content expired and can no longer be regenerated (beyond Datadog data retention)._\n"
 
 
 def _row_dict(row) -> Dict[str, Any]:
@@ -46,7 +47,7 @@ async def save_report(data: GraygateReportData, markdown: Optional[str] = None) 
 
     md = markdown if markdown is not None else assemble_report_markdown(data)
     values = dict(
-        title=data.title,
+        title=_title_en(data),   # 网页端列表标题，2026-10-20 起英文（同 Slack）
         is_red=data.is_red,
         worsen_count=len(data.worsen_lines),
         new_crash_count=data.new_crash_count,
@@ -121,7 +122,7 @@ async def _generate(target_date: date) -> None:
             _failures[target_date] = assemble_report_markdown(data)
     except Exception as e:
         logger.exception("graygate report generation failed date=%s", target_date)
-        _failures[target_date] = f"_生成失败：{type(e).__name__}，稍后刷新重试。_\n"
+        _failures[target_date] = f"_Generation failed: {type(e).__name__}. Refresh later to retry._\n"
     finally:
         _jobs.pop(target_date, None)
 
