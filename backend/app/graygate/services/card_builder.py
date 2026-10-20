@@ -38,7 +38,9 @@ from app.graygate.services.version_resolver import (
 from app.graygate.services.new_crashes import NewCrash, find_new_crashes
 from app.graygate.services.top_issues import TopCrash, TopJank, find_top_crashes, find_top_jank
 from app.graygate.services.focus_version import get_focus_version
-from app.graygate.services.user_counts import count_users, count_users_by_version
+from app.graygate.services.user_counts import (
+    all_app_query, count_all_app_users, count_users, count_users_by_version,
+)
 
 _BJT = ZoneInfo("Asia/Shanghai")
 _PLATFORMS = ("ios", "android")
@@ -83,7 +85,7 @@ class TierSummary:
     users: Optional[int] = None   # distinct @usr.id（采样内）；取数失败为 None
     est_sessions: Optional[int] = None
     sample_rate: float = 100.0
-    # 2026-10-20：占同平台全部 Native 4.x（share_base_pattern）的比例，单位 %；
+    # 2026-10-20：占同平台全部 App 用户（Flutter 3.x + Native 4.x）的比例，单位 %；
     # 分子 / 分母任一取数失败为 None
     user_share: Optional[float] = None
     session_share: Optional[float] = None
@@ -567,10 +569,9 @@ def _pct(part: Optional[int], whole: Optional[int]) -> Optional[float]:
 
 
 async def _share_base(platform: str, today_ms: Tuple[int, int]) -> Tuple[Optional[int], Optional[int]]:
-    """占比分母：同平台全部 Native 4.x 的（去重用户数, 估算会话数）。"""
-    pattern = get_graygate_settings().share_base_pattern
-    return (await count_users(platform, pattern, *today_ms),
-            await total_sessions(platform, pattern, *today_ms))
+    """占比分母：同平台全部 App（Flutter 3.x + Native 4.x）的（去重用户数, 估算会话数）。"""
+    return (await count_all_app_users(platform, *today_ms),
+            await total_sessions(all_app_query(platform), *today_ms))
 
 
 def _fill_share(t: TierSummary, base_users: Optional[int], base_sessions: Optional[int]) -> None:

@@ -312,7 +312,7 @@ async def test_total_sessions_restores_sampling_without_version_grouping(monkeyp
             ]}})
 
     monkeypatch.setattr(vr.httpx, "AsyncClient", _FakeAsyncClient)
-    n = await vr.total_sessions("ios", "4.*", 0, 1)
+    n = await vr.total_sessions("@type:session Q", 0, 1)
     assert n == 500 + 10 + 20          # 100/0.2 + 10 + 未带 rate 的 20 按 100%
-    assert "version:4.*" in seen[0]["filter"]["query"]
+    assert seen[0]["filter"]["query"] == "@type:session Q"
     assert all(g["facet"] != "version" for j in seen for g in j.get("group_by", []))

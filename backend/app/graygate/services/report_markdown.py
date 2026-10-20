@@ -71,7 +71,7 @@ def _metrics_table(data: GraygateReportData) -> List[str]:
     lines.append("| Users | " + " | ".join(
         f"{t.users:,}" if t.users is not None else "—" for _, t in cols
     ) + " |")
-    lines.append("| Share of Native 4.x (users / sessions) | " + " | ".join(
+    lines.append("| Share of all app 3.x + 4.x (users / sessions) | " + " | ".join(
         (t.share_str or "—") for _, t in cols
     ) + " |")
 

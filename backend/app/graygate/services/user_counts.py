@@ -90,6 +90,23 @@ async def _scalar(query: str, from_ms: int, to_ms: int,
     return out
 
 
+# 占比分母：同平台**全部 App 用户**（Flutter 3.x + Native 4.x，不限版本）。Flutter 是
+# 单 service `plaud-flutter`，平台靠 @os.name 分（iOS 侧含 iPadOS）；2026-10-20 实测
+# Flutter 也是 env:production、采样 100%。
+_ALL_APP_OS = {"ios": "(iOS OR iPadOS)", "android": "Android"}
+
+
+def all_app_query(platform: str) -> str:
+    return (f"@type:session env:production ((@service:plaud-flutter @os.name:{_ALL_APP_OS[platform]})"
+            f" OR @service:{_PLATFORM_SERVICE[platform]})")
+
+
+async def count_all_app_users(platform: str, from_ms: int, to_ms: int) -> Optional[int]:
+    """同平台 3.x + 4.x 去重用户数——一条查询统一去重，当天两代都用过的用户只算一次。"""
+    rows = await _scalar(all_app_query(platform), from_ms, to_ms)
+    return None if rows is None else rows.get("", 0)
+
+
 def _base_query(platform: str) -> str:
     return f"@type:session env:production @service:{_PLATFORM_SERVICE[platform]}"
 

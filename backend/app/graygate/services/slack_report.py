@@ -137,7 +137,7 @@ def _tier_head(t) -> str:
         head += f" · {users:,} users"
     share = getattr(t, "share_str", None)
     if share:
-        head += f"\n    _Share of Native 4.x: {share}_"
+        head += f"\n    _Share of all app (3.x + 4.x): {share}_"
     return head
 
 

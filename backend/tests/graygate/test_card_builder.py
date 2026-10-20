@@ -229,6 +229,8 @@ async def _run_build_report_card_with(monkeypatch, focus_version_return):
     monkeypatch.setattr(cb, "get_focus_version", AsyncMock(return_value=focus_version_return))
     if not hasattr(cb.total_sessions, "assert_awaited"):   # 测试可先行覆盖
         monkeypatch.setattr(cb, "total_sessions", AsyncMock(return_value=None))
+    if cb.count_all_app_users.__module__ != __name__:
+        monkeypatch.setattr(cb, "count_all_app_users", AsyncMock(return_value=None))
 
     return await cb.build_report_card(date(2026, 8, 18))
 
@@ -301,17 +303,21 @@ async def test_build_report_card_shows_sessions_and_users_for_both_tiers(monkeyp
 
 @pytest.mark.asyncio
 async def test_share_of_native_4x_users_and_sessions(monkeypatch):
-    """2026-10-20：主要版本 / 大盘都带「占同平台全部 Native 4.x」的用户占比 + 会话占比。"""
-    users = {"4.0.3*": 230, "4.0.301-1043": 214, "4.*": 1000}
+    """2026-10-20：主要版本 / 大盘都带「占同平台全部 App 用户（3.x + 4.x）」的用户占比 + 会话占比。"""
+    users = {"4.0.3*": 230, "4.0.301-1043": 214}
 
     async def fake_count_users(platform, version, from_ms, to_ms):
         return users.get(version) if platform == "ios" else None
 
-    async def fake_total_sessions(platform, pattern, from_ms, to_ms):
-        assert pattern == "4.*"
-        return 4000 if platform == "ios" else None
+    async def fake_all_app_users(platform, from_ms, to_ms):
+        return 1000 if platform == "ios" else None
+
+    async def fake_total_sessions(query, from_ms, to_ms):
+        assert "plaud-flutter" in query      # 分母含 Flutter 3.x
+        return 4000 if "plaud_ios" in query else None
 
     monkeypatch.setattr(cb, "count_users", fake_count_users)
+    monkeypatch.setattr(cb, "count_all_app_users", fake_all_app_users)
     monkeypatch.setattr(cb, "total_sessions", AsyncMock(side_effect=fake_total_sessions))
     await _run_build_report_card_with(monkeypatch, None)
     data = await cb.collect_report_data(date(2026, 8, 18))

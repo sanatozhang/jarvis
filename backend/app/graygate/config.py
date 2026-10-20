@@ -25,8 +25,6 @@ class GraygateSettings(BaseSettings):
 
     dashboard_id: str = "mbn-8h9-m2p"
     version_pattern: str = "4.0.3*"   # 灰度批次，可随版本推进改
-    # 2026-10-20：用户 / 会话占比的分母口径——同平台全部 Native 4.x（plaud_ios / plaud_android）
-    share_base_pattern: str = "4.*"
     feishu_chat_id: str = ""
 
     # --- 通知渠道（Slack 迁移，2026-09）---------------------------------

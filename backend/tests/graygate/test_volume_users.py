@@ -116,3 +116,12 @@ async def test_restore_sampling_per_version_and_unrated(monkeypatch):
                              "4.0.302-1203", 120, 152, est, rates)
     assert pv.est_sessions() == 552 and pv.est_sessions("4.0.302-1203") == 520
     assert pv.sample_rate() == 20.0 and pv.sample_rate("4.0.301-1058") == 100.0
+
+
+def test_all_app_query_covers_flutter_and_native_per_platform():
+    from app.graygate.services.user_counts import all_app_query
+    ios = all_app_query("ios")
+    assert "@service:plaud-flutter @os.name:(iOS OR iPadOS)" in ios and "@service:plaud_ios" in ios
+    assert "version:" not in ios                      # 不限版本：3.x + 4.x 全部
+    android = all_app_query("android")
+    assert "@os.name:Android" in android and "@service:plaud_android" in android
