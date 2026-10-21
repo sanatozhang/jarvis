@@ -156,7 +156,7 @@ def _status_dot(target: Optional[Dict[str, Any]], value: Optional[float]) -> str
     op = target.get("op")
 
     def _passes(th: float) -> bool:
-        return (value >= th) if op == ">=" else (value <= th)
+        return {">=": value >= th, ">": value > th, "<": value < th}.get(op, value <= th)
 
     if "green" in target:
         if _passes(target["green"]):

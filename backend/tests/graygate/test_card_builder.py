@@ -372,3 +372,16 @@ def test_metrics_yaml_crash_free_thresholds():
     spec = load_metrics_config().by_key("crash_free")
     assert cb._status_dot(spec.target_for("ios"), 99.94) == "🟨 "
     assert cb._status_dot(spec.target_for("android"), 99.94) == "🟩 "
+
+
+def test_metrics_yaml_anr_and_hang_thresholds():
+    from app.graygate.services.dashboard_query import load_metrics_config
+    cfg = load_metrics_config()
+    anr = cfg.by_key("android_anr").target_for("android")
+    assert cb._status_dot(anr, 0.29) == "🟩 "
+    assert cb._status_dot(anr, 0.39) == "🟨 "
+    assert cb._status_dot(anr, 0.47) == "🟥 "
+    hang = cfg.by_key("hang_rate").target_for("ios")
+    assert cb._status_dot(hang, 385.289) == "🟩 "
+    assert cb._status_dot(hang, 8000) == "🟨 "
+    assert cb._status_dot(hang, 12001) == "🟥 "
