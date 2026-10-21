@@ -479,24 +479,32 @@ class CrashguardSettings(BaseSettings):
     auto_pr_fixable_platforms: List[str] = Field(default_factory=lambda: ["android", "ios", "flutter"])
 
     # === PR Review 自动响应（Step 3）===
-    # 2026-05-21 灰度通过后翻 True：pr_sync tick 内拉每条 open PR 的 reviews，
-    # 对未响应的 review 调 LLM 评判：问题真存在 → 修复 commit；不存在 → 发评论解释。
-    # Gate#13 + rebase 兜底 + max_iter 3 + cooldown 30min 多层保护。
+    # pr_sync tick（*/30）内拉每条 open PR 的**未 resolve review thread**，
+    # 对 AI reviewer 的 comment 调 LLM 评判：合理 → 修复 commit 并回复已采纳；
+    # 不合理 → 回复拒绝理由。两种都把 thread 标记 resolved。
+    # Gate#13 + rebase 兜底 + max_iter + cooldown 多层保护。
     pr_review_response_enabled: bool = True
-    # 每条 PR 最多自动响应 N 轮（防 fix-break-refix 循环）
+    # 每条 PR 最多自动响应 N 轮（一轮处理当时全部待处理 thread；防 fix → bot 再评 → 再 fix 循环）
     pr_review_response_max_iterations: int = 3
-    # 同 PR 距上次 dispatch ≤ N min 跳过（cooldown 节流）
-    pr_review_response_cooldown_minutes: int = 30
-    # 允许响应的 reviewer 白名单——其它 author（特别是 owner 本人 / unknown bot）跳过
-    # 默认覆盖 Copilot / Codex / Claude；人工评审走人工 PR 流程，agent 不抢
-    # 注意：不放 "claude"——GitHub 上的 claude bot 大量发"组织 Code Review 配额超额"
-    # 模板消息（body=317 字符但内容是计费警告），不是真 review；放进来会被
-    # collect_actionable_reviews 的 break 抢占，跳过 copilot/codex 真实建议。
+    # 同 PR 距上一轮 ≤ N min 跳过（给 bot 对新 push 重新 review 的时间）。
+    # 2026-10-21：30→20，避免与 pr_sync */30 节拍撞车导致实际隔一小时才跑。
+    pr_review_response_cooldown_minutes: int = 20
+    # 单轮最多带几条 thread 进 agent（prompt 体积控制），超出的下一轮处理
+    pr_review_response_max_threads_per_round: int = 10
+    # thread root 作者是 GitHub Bot 账号（__typename=Bot）即视为 AI reviewer。
+    # 2026-10-21：native 仓的 reviewer 已换成 github-actions[bot]（Codex action）/
+    # claude[bot]，旧的精确白名单把它们全滤掉了，3 个月没有响应过一条。
+    pr_review_response_accept_any_bot: bool = True
+    # 额外放行的非 Bot 类型 AI 账号（login 去掉 "[bot]" 后比较）。人工评审永远不碰。
+    # 只处理行级 review thread——"claude" 的配额超额模板消息是 PR-level review 正文，
+    # 不会进入候选。
     pr_review_response_allowed_authors: list[str] = [
         "copilot-pull-request-reviewer",
         "chatgpt-codex-connector",
+        "github-actions",
+        "claude",
     ]
-    # review body 字符数下限——太短的 review（如 "LGTM" "+1"）信噪比低，直接跳过
+    # comment body 字符数下限——太短的（如 "LGTM" "+1"）信噪比低，直接跳过
     pr_review_response_min_body_chars: int = 50
 
     # === Top crash 专属自动 PR（解决 Top N 因全局阈值过保守而无 PR 的问题）===

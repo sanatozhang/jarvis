@@ -119,15 +119,15 @@ async def test_try_run_review_responder_no_actionable_returns_zero(patched_sessi
     s = get_crashguard_settings()
     s.pr_review_response_enabled = True
     try:
-        # fetch_pr_reviews 返回空，collect 自然返回空 actionable
+        # fetch_pr_review_threads 返回空，collect 自然返回空 actionable
         with patch(
-            "app.crashguard.services.pr_review_responder.fetch_pr_reviews",
+            "app.crashguard.services.pr_review_responder.fetch_pr_review_threads",
             return_value=(True, [], ""),
         ), patch.object(
             pr_sync, "_try_run_review_responder",
             wraps=pr_sync._try_run_review_responder,
         ), patch(
-            "app.crashguard.services.pr_review_responder.dispatch_review_response"
+            "app.crashguard.services.pr_review_responder.dispatch_review_round"
         ) as m_dispatch:
             r = await pr_sync._try_run_review_responder(
                 pr_id=pid, repo_slug="x/y", pr_number=42,
@@ -141,21 +141,21 @@ async def test_try_run_review_responder_no_actionable_returns_zero(patched_sessi
 
 @pytest.mark.asyncio
 async def test_try_run_review_responder_fetch_failed():
-    """fetch_pr_reviews 失败 → 立刻返回 stage=fetch_pr_reviews，不进 collect"""
+    """fetch_pr_review_threads 失败 → 立刻返回 stage=fetch_review_threads，不进 collect"""
     from app.crashguard.services import pr_sync
     from app.crashguard.config import get_crashguard_settings
     s = get_crashguard_settings()
     s.pr_review_response_enabled = True
     try:
         with patch(
-            "app.crashguard.services.pr_review_responder.fetch_pr_reviews",
+            "app.crashguard.services.pr_review_responder.fetch_pr_review_threads",
             return_value=(False, [], "gh err"),
         ):
             r = await pr_sync._try_run_review_responder(
                 pr_id=1, repo_slug="x/y", pr_number=42,
             )
         assert r["ok"] is False
-        assert r["stage"] == "fetch_pr_reviews"
+        assert r["stage"] == "fetch_review_threads"
     finally:
         s.pr_review_response_enabled = False
 
@@ -435,3 +435,80 @@ def test_detect_new_review_activity_robust_against_malformed():
     items = _detect_new_review_activity(payload, datetime(2026, 5, 20, 9, 0, 0))
     assert len(items) == 1
     assert items[0]["author"] == "string-not-dict"
+
+
+async def _seed_open_pr():
+    from app.crashguard.models import CrashPullRequest
+    from app.db.database import get_session
+    async with get_session() as session:
+        pr = CrashPullRequest(
+            analysis_id=1, datadog_issue_id="dummy",
+            repo="plaud-native-ios", branch_name="fix/crashguard/x",
+            pr_url="https://github.com/x/y/pull/42", pr_number=42,
+            pr_status="open",
+        )
+        session.add(pr)
+        await session.commit()
+        return pr.id
+
+
+def _bot_thread():
+    from app.crashguard.services.pr_review_responder import ReviewItem
+    return ReviewItem(
+        review_id="REST_C_7", author="github-actions", state="COMMENTED",
+        submitted_at=datetime.utcnow(), body="x" * 200, source_comment_id=7,
+        thread_id="PRRT_7", author_is_bot=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dirty", [False, True])
+async def test_try_run_review_responder_checkout_and_restore(patched_session, dirty):
+    """有 actionable：checkout -B 对齐 origin 分支 → dispatch 一轮 → 切回原分支；
+    工作区脏时不动 git、不 dispatch。"""
+    from unittest.mock import AsyncMock
+    from app.crashguard.services import pr_sync
+    from app.crashguard.config import get_crashguard_settings
+
+    pid = await _seed_open_pr()
+    git_calls = []
+
+    def fake_git(args, repo_path, timeout=30):
+        git_calls.append(tuple(args))
+        if args[:2] == ["git", "status"]:
+            return 0, (" M foo.swift" if dirty else ""), ""
+        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return 0, "main", ""
+        return 0, "", ""
+
+    s = get_crashguard_settings()
+    s.pr_review_response_enabled = True
+    try:
+        with patch(
+            "app.crashguard.services.pr_review_responder.fetch_pr_review_threads",
+            return_value=(True, [_bot_thread()], ""),
+        ), patch(
+            "app.crashguard.services.pr_review_responder._run_git", side_effect=fake_git,
+        ), patch(
+            "app.crashguard.services.pr_reviewer._resolve_repo_path_for_pr",
+            return_value="/tmp/fake-repo",
+        ), patch.object(
+            pr_sync, "_workspace_wrapper_for", return_value="",
+        ), patch(
+            "app.crashguard.services.pr_review_responder.dispatch_review_round",
+            new=AsyncMock(return_value={"ok": True, "verdicts": ["explained"]}),
+        ) as m_dispatch:
+            r = await pr_sync._try_run_review_responder(
+                pr_id=pid, repo_slug="x/y", pr_number=42, base_ref="develop",
+            )
+        if dirty:
+            assert r["stage"] == "dirty_worktree"
+            m_dispatch.assert_not_called()
+            assert not any(c[:2] == ("git", "checkout") for c in git_calls)
+        else:
+            assert r["ok"] and r["dispatched"] == 1 and r["verdicts"] == ["explained"]
+            assert ("git", "checkout", "-B", "fix/crashguard/x", "origin/fix/crashguard/x") in git_calls
+            assert git_calls[-1] == ("git", "checkout", "main")
+            assert m_dispatch.await_args.kwargs["base_ref"] == "develop"
+    finally:
+        s.pr_review_response_enabled = False

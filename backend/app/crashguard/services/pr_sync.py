@@ -34,7 +34,7 @@ _TERMINAL_STATUSES = {"merged", "closed"}
 # - reviewDecision：APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED 总决定
 _GH_FIELDS = (
     "state,isDraft,mergedAt,closedAt,statusCheckRollup,headRefName,createdAt,files,"
-    "reviews,comments,reviewDecision,reviewRequests"
+    "reviews,comments,reviewDecision,reviewRequests,baseRefName"
 )
 
 # 污染文件名 / glob — 出现在 PR diff 里即视为 stale-base 或 build artifact 泄漏
@@ -509,14 +509,14 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
             pr_id, old_status, new_status, repo_slug, pr_number,
         )
 
-    # === Stage D: PR review responder（AI 自动读 PR comment + 回复 + 修复）===
-    # 默认 enabled=False；开启后每次 pr_sync tick 跑一遍 collect → dispatch。
-    # 任何异常 catch 不阻塞 sync 主流程。
+    # === Stage D: PR review responder（AI 自动处理 review thread：采纳/拒绝 + resolve）===
+    # 每次 pr_sync tick 跑一遍 collect → dispatch。任何异常 catch 不阻塞 sync 主流程。
     responder_result: Optional[Dict[str, Any]] = None
     if new_status in ("draft", "open"):
         try:
             responder_result = await _try_run_review_responder(
                 pr_id, repo_slug, pr_number,
+                base_ref=str(payload.get("baseRefName") or ""),
             )
         except Exception:
             logger.exception(
@@ -537,11 +537,32 @@ async def sync_pr(pr_id: int) -> Dict[str, Any]:
     }
 
 
+def _workspace_wrapper_for(repo_path: str) -> str:
+    """repo_path → repo_routing 的 wrapper 目录（`.jarvis.lock` 所在处）；找不到返回 ""。"""
+    import os as _os
+    try:
+        from app.config import get_repo_routing
+        target = _os.path.realpath(repo_path)
+        for _cfg in (get_repo_routing() or {}).values():
+            for band in _cfg.get("bands", []):
+                wrap = _os.path.expanduser(band.get("wrapper", "") or "")
+                if not wrap:
+                    continue
+                sub = (band.get("sub") or "").strip()
+                path = _os.path.join(wrap, sub) if sub else wrap
+                if _os.path.realpath(path) == target:
+                    return wrap
+    except Exception as e:
+        logger.warning("workspace wrapper lookup failed for %s: %s", repo_path, e)
+    return ""
+
+
 async def _try_run_review_responder(
-    pr_id: int, repo_slug: str, pr_number: int,
+    pr_id: int, repo_slug: str, pr_number: int, base_ref: str = "",
 ) -> Dict[str, Any]:
     """Stage D 接线层：当 pr_review_response_enabled=True 时
-    拉 reviews → 过滤 actionable → checkout PR 分支 → dispatch agent。
+    拉未 resolve 的 review thread → 过滤 actionable → 持 workspace 锁 checkout PR 分支
+    → dispatch 一轮 agent（采纳/拒绝 + 回复 + resolve）→ 切回原分支。
 
     任何子步骤失败都返回 dict 不抛异常，由上层 catch。
     """
@@ -551,27 +572,18 @@ async def _try_run_review_responder(
         return {"ok": True, "enabled": False, "skipped": "disabled"}
 
     from app.crashguard.services.pr_review_responder import (
-        fetch_pr_reviews,
-        fetch_pr_review_comments,
+        _run_git,
         collect_actionable_reviews,
-        dispatch_review_response,
+        dispatch_review_round,
+        fetch_pr_review_threads,
     )
     from app.crashguard.services.pr_reviewer import _resolve_repo_path_for_pr
 
-    # 1. 拉 reviews — 优先行级 review comment（可 reply 到 thread），PR-level review 兜底
-    reviews = []
-    ok_lvl, lvl_items, lvl_err = fetch_pr_review_comments(repo_slug, pr_number)
-    if ok_lvl:
-        reviews.extend(lvl_items)
-    else:
-        logger.info("pr_review_responder fetch_pr_review_comments failed (continue with PR-level): %s", lvl_err)
-    ok, top_items, err = fetch_pr_reviews(repo_slug, pr_number)
+    # 1. 拉未 resolve 的 review thread
+    ok, threads, err = fetch_pr_review_threads(repo_slug, pr_number)
     if not ok:
-        if not reviews:
-            logger.info("pr_review_responder fetch_pr_reviews failed: %s", err)
-            return {"ok": False, "stage": "fetch_pr_reviews", "error": err}
-    else:
-        reviews.extend(top_items)
+        logger.info("pr_review_responder fetch_pr_review_threads failed: %s", err)
+        return {"ok": False, "stage": "fetch_review_threads", "error": err}
 
     # 2. 加载 PR 行 + collect actionable
     async with get_session() as session:
@@ -579,7 +591,7 @@ async def _try_run_review_responder(
         if pr_row is None:
             return {"ok": False, "stage": "load_pr", "error": "pr_not_found"}
         actionable_list, counters = await collect_actionable_reviews(
-            pr_row, reviews, session,
+            pr_row, threads, session,
         )
     if not actionable_list:
         return {"ok": True, "enabled": True, "counters": counters, "dispatched": 0}
@@ -591,72 +603,80 @@ async def _try_run_review_responder(
             "ok": False, "stage": "resolve_repo_path",
             "error": "repo_path_missing", "counters": counters,
         }
-
-    # 4. git fetch + checkout PR 分支（副作用！失败即停）
     branch = pr_row.branch_name or ""
     if not branch:
         return {
             "ok": False, "stage": "checkout",
             "error": "branch_name_missing", "counters": counters,
         }
+
+    # 4. 持 workspace 文件锁（与 pr_drafter / repo_updater 共用同一工作区，防并发 git 打架）
+    from pathlib import Path as _Path
+    from app.services.mt_runner import (
+        acquire_workspace_lock_async, release_workspace_lock_async,
+    )
+    wrapper = _workspace_wrapper_for(repo_path)
+    ws_fd = None
+    if wrapper:
+        try:
+            ws_fd = await acquire_workspace_lock_async(_Path(wrapper), timeout_sec=120)
+        except TimeoutError:
+            return {
+                "ok": False, "stage": "workspace_lock",
+                "error": "workspace lock busy", "counters": counters,
+            }
     try:
-        r_f = subprocess.run(
-            ["git", "fetch", "origin", branch],
-            cwd=repo_path, capture_output=True, text=True, timeout=60,
+        # 5. 工作区有别人的未提交改动 → 不动；否则 checkout -B 对齐远端 PR 分支
+        rc_st, st_out, _ = _run_git(
+            ["git", "status", "--porcelain", "--", ".", ":!.crashguard"], repo_path,
         )
-        if r_f.returncode != 0:
+        if rc_st != 0 or st_out.strip():
+            return {
+                "ok": False, "stage": "dirty_worktree",
+                "error": st_out[:200], "counters": counters,
+            }
+        _, orig_ref, _ = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_path)
+        rc_f, _, err_f = _run_git(["git", "fetch", "origin", branch], repo_path, timeout=60)
+        if rc_f != 0:
             return {
                 "ok": False, "stage": "git_fetch",
-                "error": (r_f.stderr or "")[:200], "counters": counters,
+                "error": err_f[:200], "counters": counters,
             }
-        r_c = subprocess.run(
-            ["git", "checkout", branch],
-            cwd=repo_path, capture_output=True, text=True, timeout=30,
+        rc_c, _, err_c = _run_git(
+            ["git", "checkout", "-B", branch, f"origin/{branch}"], repo_path,
         )
-        if r_c.returncode != 0:
+        if rc_c != 0:
             return {
                 "ok": False, "stage": "git_checkout",
-                "error": (r_c.stderr or "")[:200], "counters": counters,
+                "error": err_c[:200], "counters": counters,
             }
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-        return {
-            "ok": False, "stage": "git_subprocess",
-            "error": str(e)[:200], "counters": counters,
-        }
 
-    # 5. dispatch — 每个 actionable 跑一遍 agent
-    dispatched = 0
-    verdicts: List[str] = []
-    async with get_session() as session:
-        # 重新加载 PR row（绑定到 session）
-        pr_row2 = await session.get(CrashPullRequest, pr_id)
-        # 取得 issue_title / datadog_issue_id 给 prompt
-        from app.crashguard.models import CrashIssue
-        ci_row = (await session.execute(
-            select(CrashIssue).where(
-                CrashIssue.datadog_issue_id == pr_row2.datadog_issue_id
-            )
-        )).scalar_one_or_none()
-        issue_title = (ci_row.title if ci_row else "") or ""
-        for actionable in actionable_list:
-            try:
-                r = await dispatch_review_response(
-                    actionable, session, repo_path,
-                    issue_title=issue_title,
-                    datadog_issue_id=pr_row2.datadog_issue_id or "",
+        # 6. dispatch — 一轮处理该 PR 全部 actionable thread
+        try:
+            async with get_session() as session:
+                from app.crashguard.models import CrashIssue
+                ci_row = (await session.execute(
+                    select(CrashIssue).where(
+                        CrashIssue.datadog_issue_id == pr_row.datadog_issue_id
+                    )
+                )).scalar_one_or_none()
+                r = await dispatch_review_round(
+                    actionable_list, session, repo_path,
+                    issue_title=(ci_row.title if ci_row else "") or "",
+                    datadog_issue_id=pr_row.datadog_issue_id or "",
+                    base_ref=base_ref,
                 )
-                if r.get("ok"):
-                    dispatched += 1
-                verdicts.append(r.get("verdict") or "?")
-            except Exception as e:
-                logger.exception(
-                    "pr_review_responder dispatch failed pr=%d review=%s: %s",
-                    pr_id, actionable.review.review_id, e,
-                )
+        finally:
+            if orig_ref and orig_ref not in ("HEAD", branch):
+                _run_git(["git", "checkout", orig_ref], repo_path)
+    finally:
+        if ws_fd is not None:
+            await release_workspace_lock_async(ws_fd)
 
     return {
-        "ok": True, "enabled": True,
-        "counters": counters, "dispatched": dispatched, "verdicts": verdicts,
+        "ok": bool(r.get("ok")), "enabled": True, "counters": counters,
+        "dispatched": len(actionable_list), "verdicts": r.get("verdicts", []),
+        "fix_commit_sha": r.get("fix_commit_sha", ""), "error": r.get("error", ""),
     }
 
 
