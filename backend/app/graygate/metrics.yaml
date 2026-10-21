@@ -32,11 +32,12 @@ metrics:
     title: "Android ANR"
     cell_format: "{v:.2f}%"
     not_applicable_platform: ios     # iOS 查询会返回 0.0000（非缺数据），但 ANR 概念不适用 iOS —— 报告显示 "—（不适用）"
-    # 2026-10-21：看板 widget 口径是 sum(rum.measure.error.anr) / sum(session.inactive)，即 ANR 事件数 /
-    # 会话数（Datadog SDK 主线程阻塞 ≥5s 检测，is_crash=false 的非致命 ANR 也算），**不是** Google Play
-    # 的 User-Perceived ANR Rate（按 DAU 去重、只算用户感知）。所以不直接套 APM 体系的 0.10/0.30，
-    # 而是：🟩 <0.30（APM 体系 Critical 线，提前预警）/ 🟨 <0.47（Google Play 官方红线 = 看板自身配色）/ 🟥
-    target: { op: "<", green: 0.30, yellow: 0.47 }
+    # 2026-10-21：看板 "Android ANR" widget 公式改为「用户感知」近似口径：
+    #   cardinality(@usr.id | ANR 且 -@view.name:Background) / cardinality(@usr.id | session) × 100
+    # 即「前台发生过 ANR 的用户 / 活跃用户」（原来是 rum.measure.error.anr 事件数 / 会话数，含后台 ANR）。
+    # 日报窗口=1 天 → 接近 Google Play User-Perceived ANR Rate（按 DAU），套 APM 体系三档。
+    # 注意 Datadog 是 SDK 看门狗（主线程阻塞 ≥5s）检测 + RUM 采样，与 Play Console 数值不会完全一致。
+    target: { op: "<=", green: 0.10, yellow: 0.30 }
 
   - key: hang_rate
     title: "Hang Rate (iOS only)"

@@ -378,9 +378,9 @@ def test_metrics_yaml_anr_and_hang_thresholds():
     from app.graygate.services.dashboard_query import load_metrics_config
     cfg = load_metrics_config()
     anr = cfg.by_key("android_anr").target_for("android")
-    assert cb._status_dot(anr, 0.29) == "🟩 "
-    assert cb._status_dot(anr, 0.39) == "🟨 "
-    assert cb._status_dot(anr, 0.47) == "🟥 "
+    assert cb._status_dot(anr, 0.10) == "🟩 "
+    assert cb._status_dot(anr, 0.30) == "🟨 "
+    assert cb._status_dot(anr, 0.39) == "🟥 "
     hang = cfg.by_key("hang_rate").target_for("ios")
     assert cb._status_dot(hang, 385.289) == "🟩 "
     assert cb._status_dot(hang, 8000) == "🟨 "
