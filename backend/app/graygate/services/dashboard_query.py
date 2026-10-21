@@ -344,12 +344,21 @@ class MetricSpec:
     # "ios" / "android" —— 该指标概念在这个平台上不适用（如 Android ANR 之于
     # iOS），report_builder 渲染时应显示 "—（不适用）" 而不是查回来的 0.0000。
     not_applicable_platform: Optional[str] = None
-    # SOTA 目标阈值，用于卡片颜色点判定（🟩达标/🟨接近/🟥未达标）；{op: ">="/"<=" , value: float}
+    # 目标阈值，用于卡片颜色点判定。两种写法：
+    #   二档 {op, value}：达标 🟩 / 未达标 🟥
+    #   三档 {op, green, yellow}：过 green 🟩 / 过 yellow 🟨 / 否则 🟥
     # 单 widget 指标用 target；双 widget（jank/home_render）用 target_p75/target_p90。
+    # target_by_platform（{ios: {...}, android: {...}}）优先于 target，用于两端阈值不同的指标。
     # 无 target 的指标（如未设定的场景）不参与颜色判定，只显示数值。
     target: Optional[Dict[str, Any]] = None
+    target_by_platform: Optional[Dict[str, Dict[str, Any]]] = None
     target_p75: Optional[Dict[str, Any]] = None
     target_p90: Optional[Dict[str, Any]] = None
+
+    def target_for(self, platform: Optional[str]) -> Optional[Dict[str, Any]]:
+        if platform and self.target_by_platform and platform in self.target_by_platform:
+            return self.target_by_platform[platform]
+        return self.target
 
 
 @dataclass
@@ -390,6 +399,7 @@ def load_metrics_config() -> MetricsConfig:
             scale=float(m.get("scale", 1.0)),
             not_applicable_platform=m.get("not_applicable_platform"),
             target=m.get("target"),
+            target_by_platform=m.get("target_by_platform"),
             target_p75=m.get("target_p75"),
             target_p90=m.get("target_p90"),
         )

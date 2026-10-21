@@ -131,7 +131,7 @@ def assemble_report_markdown(data: GraygateReportData) -> str:
     lines += ["## 📊 Metrics overview", ""]
     if data.tiers and data.metric_rows:
         lines += _metrics_table(data)
-        lines += ["", "🟩 / 🟥 = meets / misses target (per metrics.yaml); **bold** = core metric"]
+        lines += ["", "🟩 / 🟨 / 🟥 = healthy / warning / critical vs target (per metrics.yaml); **bold** = core metric"]
     else:
         # 老数据没有结构化分层：退回飞书那两列原文
         # （"· 指标：值" 是逐行的，markdown 里要硬换行才不会糊成一段）

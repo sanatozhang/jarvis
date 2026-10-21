@@ -15,6 +15,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from app.crashguard.services.stability_targets import cf_emoji
+
 
 def _split_sections(markdown: str) -> List[Dict[str, str]]:
     """按 ## 标题切段。返回 [{title, content}]，第一段无 title 则归到 _intro。"""
@@ -196,14 +198,6 @@ def _build_tldr_elements(
     return elements
 
 
-def _cf_emoji(pct: float) -> str:
-    if pct >= 99.9:
-        return "🟩"
-    if pct >= 99.5:
-        return "🟨"
-    return "🟥"
-
-
 def _fmt_n(n: Any) -> str:
     if n is None:
         return "—"
@@ -214,7 +208,8 @@ def _fmt_n(n: Any) -> str:
 
 
 def _emit_block_md(
-    lines: List[str], stats: Dict[str, Any], *, with_breakdown: bool = False
+    lines: List[str], stats: Dict[str, Any], *, with_breakdown: bool = False,
+    platform: Optional[str] = None,
 ) -> None:
     """共用：给一个 stats dict（含 sessions + 可选 user 维度）渲染主+副指标。
 
@@ -224,7 +219,7 @@ def _emit_block_md(
     if has_user:
         u_pct = stats.get("crash_free_users_pct")
         u_pct_str = (
-            f"{_cf_emoji(float(u_pct))} **{float(u_pct):.2f}%**"
+            f"{cf_emoji(float(u_pct), platform, 'users')} **{float(u_pct):.2f}%**"
             if u_pct is not None else "—"
         )
         lines.append(f"· 👤 用户总数：**{_fmt_n(stats.get('total_users'))}**")
@@ -232,7 +227,7 @@ def _emit_block_md(
         lines.append(f"· **Crash-free 用户率：{u_pct_str}**")
     s_pct = stats.get("crash_free_pct")
     s_pct_str = (
-        f"{_cf_emoji(float(s_pct))} **{float(s_pct):.2f}%**"
+        f"{cf_emoji(float(s_pct), platform, 'sessions')} **{float(s_pct):.2f}%**"
         if s_pct is not None else "—"
     )
     if has_user:
@@ -267,6 +262,7 @@ def _build_crash_free_column_md(
     wow: Dict[str, Any] | None = None,
     latest_stats: Dict[str, Any] | None = None,
     native_stats: Dict[str, Any] | None = None,
+    platform: Optional[str] = None,
 ) -> str:
     """单平台一栏的 markdown（全版本 + 主要版本 + 最新版本 + 4.0 Native 量级）。
 
@@ -275,7 +271,7 @@ def _build_crash_free_column_md(
     lines: List[str] = [f"**{plat_label}**", ""]
     if all_stats:
         lines.append("__全版本（大盘）__")
-        _emit_block_md(lines, all_stats, with_breakdown=True)
+        _emit_block_md(lines, all_stats, with_breakdown=True, platform=platform)
         # WoW 对比（双窗口数据，只看 fatal 趋势）
         if wow:
             sess_pct = wow.get("sess_delta_pct")
@@ -308,7 +304,7 @@ def _build_crash_free_column_md(
         sap = ver_stats.get("share_of_all_pct")
         if spp is not None:
             lines.append(f"· 占平台：{spp:.2f}% · 占全部：{sap:.2f}%")
-        _emit_block_md(lines, ver_stats)
+        _emit_block_md(lines, ver_stats, platform=platform)
         lines.append("")
     if latest_stats:
         ver = latest_stats.get("version") or "—"
@@ -317,7 +313,7 @@ def _build_crash_free_column_md(
         sap = latest_stats.get("share_of_all_pct")
         if spp is not None:
             lines.append(f"· 占平台：{spp:.2f}% · 占全部：{sap:.2f}%")
-        _emit_block_md(lines, latest_stats)
+        _emit_block_md(lines, latest_stats, platform=platform)
     if native_stats:
         if latest_stats:
             lines.append("")
@@ -362,13 +358,13 @@ def _build_summary_md(
     def _line(prefix: str, stats: Dict[str, Any]) -> str:
         s_pct = stats.get("crash_free_pct")
         s_pct_str = (
-            f"{_cf_emoji(float(s_pct))} **{float(s_pct):.2f}%**" if s_pct is not None else "—"
+            f"{cf_emoji(float(s_pct), None, 'sessions')} **{float(s_pct):.2f}%**" if s_pct is not None else "—"
         )
         has_user = int(stats.get("total_users") or 0) > 0
         if has_user:
             u_pct = stats.get("crash_free_users_pct")
             u_pct_str = (
-                f"{_cf_emoji(float(u_pct))} **{float(u_pct):.2f}%**" if u_pct is not None else "—"
+                f"{cf_emoji(float(u_pct), None, 'users')} **{float(u_pct):.2f}%**" if u_pct is not None else "—"
             )
             return (
                 f"{prefix} · 👤 {_fmt_n(stats.get('total_users'))} 用户 · "
@@ -505,12 +501,14 @@ def _build_crash_free_columns(detail: Dict[str, Any], dual_window: Dict[str, Any
         wow=dw_plats.get("IOS"),
         latest_stats=latest_plats.get("IOS"),
         native_stats=native_plats.get("IOS"),
+        platform="ios",
     )
     and_md = _build_crash_free_column_md(
         "📱 Android", all_plats.get("ANDROID"), ver_plats.get("ANDROID"),
         wow=dw_plats.get("ANDROID"),
         latest_stats=latest_plats.get("ANDROID"),
         native_stats=native_plats.get("ANDROID"),
+        platform="android",
     )
 
     out.append({

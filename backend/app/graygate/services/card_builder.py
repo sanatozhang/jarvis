@@ -3,7 +3,7 @@
 用户反馈第一版纯文本消息（`send_message(text=...)`）太丑——飞书 `msg_type: text`
 不解析 `**加粗**` / `<details>` 折叠，整段消息挤成一坨。改用 interactive card，
 照抄 `app/crashguard/services/feishu_card.py` 里已验证过的视觉语言：iOS/Android
-双列布局、每列内"大盘 → 主要版本 → 🆕最新版本"三层、🟩/🟥 状态色点。
+双列布局、每列内"大盘 → 主要版本 → 🆕最新版本"三层、🟩/🟨/🟥 状态色点。
 
 两层版本口径（2026-08-19：原有的第三层"🆕最新版本"自动判定被用户下线）：
   大盘（{version_pattern}）—— version_pattern 通配符全量聚合
@@ -147,16 +147,25 @@ def _metric_name(spec: MetricSpec) -> str:
 
 
 def _status_dot(target: Optional[Dict[str, Any]], value: Optional[float]) -> str:
-    """target 缺失或取数失败 → 不打点，只显示数值。"""
+    """target 缺失或取数失败 → 不打点，只显示数值。
+
+    三档写法 {op, green, yellow} → 🟩/🟨/🟥；二档写法 {op, value} → 🟩/🟥。
+    """
     if target is None or value is None:
         return ""
     op = target.get("op")
-    th = target.get("value")
-    ok = (value >= th) if op == ">=" else (value <= th)
-    return "🟩 " if ok else "🟥 "
+
+    def _passes(th: float) -> bool:
+        return (value >= th) if op == ">=" else (value <= th)
+
+    if "green" in target:
+        if _passes(target["green"]):
+            return "🟩 "
+        return "🟨 " if _passes(target["yellow"]) else "🟥 "
+    return "🟩 " if _passes(target.get("value")) else "🟥 "
 
 
-def _fmt_cell_value(spec: MetricSpec, cell: _Cell) -> str:
+def _fmt_cell_value(spec: MetricSpec, cell: _Cell, platform: Optional[str] = None) -> str:
     if cell.sentinel:
         return cell.sentinel
     if isinstance(cell.value, tuple):
@@ -166,9 +175,9 @@ def _fmt_cell_value(spec: MetricSpec, cell: _Cell) -> str:
         formatted = spec.cell_format.format(p75=p75, p90=p90)
         # cell_format 形如 "{p75:.1f}/{p90:.1f}"，分别给两段插色点不好拆，
         # 简化：整行前缀取"较差的那个"点（有一个不达标就标红）。
-        dot = "🟥 " if ("🟥" in dot75 or "🟥" in dot90) else (dot75 or dot90)
+        dot = next((d for d in ("🟥 ", "🟨 ") if d in (dot75, dot90)), dot75 or dot90)
         return f"{dot}{formatted}"
-    dot = _status_dot(spec.target, cell.value)
+    dot = _status_dot(spec.target_for(platform), cell.value)
     return f"{dot}{spec.cell_format.format(v=cell.value)}"
 
 
@@ -266,6 +275,7 @@ def _tier_md(
     cells: Optional[Dict[str, _Cell]],
     note: str = "",
     active_users: Optional[int] = None,
+    platform: Optional[str] = None,
 ) -> List[str]:
     # active_users：session 数代理（version_resolver 里本来就为了选主力版本/样本
     # 地板算过的数字，这里加一行明确展示出来，不是新起一次 Datadog 查询——2026-08-23
@@ -283,7 +293,7 @@ def _tier_md(
     if active_line:
         lines.append(active_line)
     for spec in metrics:
-        lines.append(f"· {_metric_name(spec)}：{_fmt_cell_value(spec, cells[spec.key])}")
+        lines.append(f"· {_metric_name(spec)}：{_fmt_cell_value(spec, cells[spec.key], platform)}")
     return lines
 
 
@@ -497,14 +507,14 @@ async def _build_platform_column(
     )
     market = TierSummary(
         "大盘", version_pattern, pv.total_events, False,
-        {m.key: _fmt_cell_value(m, market_today[m.key]) for m in metrics},
+        {m.key: _fmt_cell_value(m, market_today[m.key], platform) for m in metrics},
         users=await count_users(platform, version_pattern, *today_ms) if pv.total_events else None,
         est_sessions=pv.est_sessions(),
         sample_rate=pv.sample_rate(),
     )
     lines += _tier_md(
         f"__大盘（{version_pattern}）__（{_volume_str(market.display_sessions, market.users)}）",
-        metrics, market_today,
+        metrics, market_today, platform=platform,
     )
     lines.append("")
     _collect("大盘", market_today, market_d1, market_d2)
@@ -535,7 +545,7 @@ async def _build_platform_column(
         )
         primary = TierSummary(
             "主要版本", primary_version, primary_sessions, bool(override_version),
-            {m.key: _fmt_cell_value(m, primary_today[m.key]) for m in metrics},
+            {m.key: _fmt_cell_value(m, primary_today[m.key], platform) for m in metrics},
             users=await count_users(platform, primary_version, *today_ms) if primary_sessions else None,
             est_sessions=pv.est_sessions(primary_version),
             sample_rate=pv.sample_rate(primary_version),
@@ -543,7 +553,7 @@ async def _build_platform_column(
         lines += _tier_md(
             f"__主要版本__ `{primary_version}`（{_volume_str(primary.display_sessions, primary.users)}）"
             f"{primary_suffix}",
-            metrics, primary_today,
+            metrics, primary_today, platform=platform,
         )
         _collect("主要版本", primary_today, primary_d1, primary_d2)
         _fill_share(primary, base_users, base_sessions)

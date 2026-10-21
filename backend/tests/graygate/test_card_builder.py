@@ -341,3 +341,34 @@ async def test_collect_report_data_fills_structured_tiers_for_web_and_slack(monk
     assert ios_primary.cells["fps"] == "60.00"   # 2026-10-20 取消样本地板：5 sessions 也出数
     assert [t.label for t in data.tiers["android"]] == ["大盘", "主要版本"]
     assert data.metric_rows == [("fps", "FPS", False)]
+
+
+def test_status_dot_three_tier():
+    t = {"op": ">=", "green": 99.95, "yellow": 99.90}
+    assert cb._status_dot(t, 99.96) == "🟩 "
+    assert cb._status_dot(t, 99.94) == "🟨 "
+    assert cb._status_dot(t, 99.89) == "🟥 "
+    le = {"op": "<=", "green": 0.10, "yellow": 0.30}
+    assert cb._status_dot(le, 0.10) == "🟩 "
+    assert cb._status_dot(le, 0.25) == "🟨 "
+    assert cb._status_dot(le, 0.31) == "🟥 "
+
+
+def test_fmt_cell_value_per_platform_target():
+    spec = MetricSpec(
+        key="crash_free", title="CF", cell_format="{v:.2f}%",
+        target_by_platform={
+            "ios": {"op": ">=", "green": 99.95, "yellow": 99.90},
+            "android": {"op": ">=", "green": 99.90, "yellow": 99.80},
+        },
+    )
+    cell = cb._Cell(value=99.92, sentinel=None)
+    assert cb._fmt_cell_value(spec, cell, "ios") == "🟨 99.92%"
+    assert cb._fmt_cell_value(spec, cell, "android") == "🟩 99.92%"
+
+
+def test_metrics_yaml_crash_free_thresholds():
+    from app.graygate.services.dashboard_query import load_metrics_config
+    spec = load_metrics_config().by_key("crash_free")
+    assert cb._status_dot(spec.target_for("ios"), 99.94) == "🟨 "
+    assert cb._status_dot(spec.target_for("android"), 99.94) == "🟩 "

@@ -34,6 +34,7 @@ from app.crashguard.models import (
     CrashSnapshot,
 )
 from app.crashguard.services.version_util import GEN_BADGE, classify_generation
+from app.crashguard.services.stability_targets import cf_emoji
 from app.db.database import get_session
 
 logger = logging.getLogger("crashguard.daily_report")
@@ -1084,20 +1085,15 @@ async def compose_report(
         def _fmt_n(n: int) -> str:
             return f"{n:,}"
 
-        def _cf_emoji(pct: float) -> str:
-            if pct >= 99.9:
-                return "🟩"
-            if pct >= 99.5:
-                return "🟨"
-            return "🟥"
 
         def _num_cell(d, k):
             v = (d or {}).get(k)
             return _fmt_n(int(v)) if v is not None else "—"
 
-        def _pct_cell(d, key: str = "crash_free_pct"):
+        def _pct_cell(d, key: str = "crash_free_pct", platform: Optional[str] = None):
             v = (d or {}).get(key)
-            return f"{_cf_emoji(float(v))} **{float(v):.2f}%**" if v is not None else "—"
+            dim = "users" if key == "crash_free_users_pct" else "sessions"
+            return f"{cf_emoji(float(v), platform, dim)} **{float(v):.2f}%**" if v is not None else "—"
 
         def _have_users(*dicts) -> bool:
             """任一 stats 字典含 total_users 字段才走 user 主指标渲染。"""
@@ -1131,8 +1127,8 @@ async def compose_report(
                 f"{_num_cell(and_, 'crashed_users')} | {_num_cell(sm, 'crashed_users')} |"
             )
             cf_lines.append(
-                f"| **Crash-free 用户率** | {_pct_cell(ios, 'crash_free_users_pct')} | "
-                f"{_pct_cell(and_, 'crash_free_users_pct')} | {_pct_cell(sm, 'crash_free_users_pct')} |"
+                f"| **Crash-free 用户率** | {_pct_cell(ios, 'crash_free_users_pct', 'ios')} | "
+                f"{_pct_cell(and_, 'crash_free_users_pct', 'android')} | {_pct_cell(sm, 'crash_free_users_pct')} |"
             )
             cf_lines.append("| _—— 会话维度（FYI）——_ |   |   |   |")
         cf_lines.append(
@@ -1144,7 +1140,7 @@ async def compose_report(
             f"{_num_cell(and_, 'crashed_sessions')} | {_num_cell(sm, 'crashed_sessions')} |"
         )
         cf_lines.append(
-            f"| Crash-free 会话率 | {_pct_cell(ios)} | {_pct_cell(and_)} | {_pct_cell(sm)} |"
+            f"| Crash-free 会话率 | {_pct_cell(ios, platform='ios')} | {_pct_cell(and_, platform='android')} | {_pct_cell(sm)} |"
         )
         cf_lines.append("")
 
@@ -1182,8 +1178,8 @@ async def compose_report(
                     f"{_num_cell(and_v, 'crashed_users')} | {_num_cell(tvs, 'crashed_users')} |"
                 )
                 cf_lines.append(
-                    f"| **Crash-free 用户率** | {_pct_cell(ios_v, 'crash_free_users_pct')} | "
-                    f"{_pct_cell(and_v, 'crash_free_users_pct')} | {_pct_cell(tvs, 'crash_free_users_pct')} |"
+                    f"| **Crash-free 用户率** | {_pct_cell(ios_v, 'crash_free_users_pct', 'ios')} | "
+                    f"{_pct_cell(and_v, 'crash_free_users_pct', 'android')} | {_pct_cell(tvs, 'crash_free_users_pct')} |"
                 )
                 cf_lines.append("| _—— 会话维度（FYI）——_ |   |   |   |")
             cf_lines.append(
@@ -1195,7 +1191,7 @@ async def compose_report(
                 f"{_num_cell(and_v, 'crashed_sessions')} | {_num_cell(tvs, 'crashed_sessions')} |"
             )
             cf_lines.append(
-                f"| Crash-free 会话率 | {_pct_cell(ios_v)} | {_pct_cell(and_v)} | {_pct_cell(tvs)} |"
+                f"| Crash-free 会话率 | {_pct_cell(ios_v, platform='ios')} | {_pct_cell(and_v, platform='android')} | {_pct_cell(tvs)} |"
             )
             cf_lines.append("")
 

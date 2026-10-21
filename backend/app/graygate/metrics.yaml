@@ -22,13 +22,18 @@ metrics:
   - key: crash_free
     title: "Crash-free sessions"
     cell_format: "{v:.2f}%"
-    target: { op: ">=", value: 99.97 }   # 照抄 native-mapping.yaml 同一指标的 SOTA 目标
+    # 2026-10-21：按团队 APM 指标体系改成分平台三档（🟩 Healthy / 🟨 Warning / 🟥 Critical），
+    # 原单一阈值 ≥99.97（照抄 native-mapping.yaml SOTA）过严，99.94% 也标红。
+    target_by_platform:
+      ios:     { op: ">=", green: 99.95, yellow: 99.90 }
+      android: { op: ">=", green: 99.90, yellow: 99.80 }
 
   - key: android_anr
     title: "Android ANR"
     cell_format: "{v:.2f}%"
     not_applicable_platform: ios     # iOS 查询会返回 0.0000（非缺数据），但 ANR 概念不适用 iOS —— 报告显示 "—（不适用）"
-    target: { op: "<=", value: 0.47 }   # Google Play 合规线（coreguard/metrics.yaml 注释里的口径来源）
+    # 2026-10-21：APM 指标体系 User-Perceived ANR Rate 三档；Google Play 官方红线 0.47% 远松于此
+    target: { op: "<=", green: 0.10, yellow: 0.30 }
 
   - key: hang_rate
     title: "Hang Rate (iOS only)"
