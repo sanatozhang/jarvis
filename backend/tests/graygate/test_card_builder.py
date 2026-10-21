@@ -382,6 +382,8 @@ def test_metrics_yaml_anr_and_hang_thresholds():
     assert cb._status_dot(anr, 0.30) == "🟨 "
     assert cb._status_dot(anr, 0.39) == "🟥 "
     hang = cfg.by_key("hang_rate").target_for("ios")
-    assert cb._status_dot(hang, 385.289) == "🟩 "
-    assert cb._status_dot(hang, 8000) == "🟨 "
-    assert cb._status_dot(hang, 12001) == "🟥 "
+    # 2026-10-21 晚：口径改为「≥2s hang 会话占比 %」，阈值对齐看板 0.10/0.30
+    assert cb._status_dot(hang, 0.10) == "🟩 "
+    assert cb._status_dot(hang, 0.30) == "🟨 "
+    assert cb._status_dot(hang, 1.00) == "🟥 "
+    assert cfg.by_key("hang_rate").scale == 1.0

@@ -40,14 +40,16 @@ metrics:
     target: { op: "<=", green: 0.10, yellow: 0.30 }
 
   - key: hang_rate
-    title: "Hang Rate (iOS only)"
-    scale: 0.000001   # raw → ms/hr（照抄 native-mapping.yaml 同一 widget 的换算系数；本次实施时漏抄，2026-08-19
-                       # 真实数据验证时发现原始值离谱地大——577,521,825.606——才补上，target ≤80ms/hr）
-    cell_format: "{v:.3f}ms/hr"
+    # 2026-10-21 晚：看板 widget 改名 + 改口径 ——
+    #   旧「Hang Rate (iOS only)」= 每小时累计 hang 时长（ns/h，scale 换算成 ms/hr）
+    #   新「Hang Rate (iOS only, % sessions with ≥2s hang)」=
+    #     cardinality(@session.id | App Hang ≥2s 且 -@view.name:Background) / sessions × 100
+    # 旧标题既不精确匹配也不是新标题前缀（"only)" vs "only,"）→ 半小时报「取数失败」。
+    # 写完整标题而非前缀：card_builder 取 directionality 只认精确标题，前缀匹配会让恶化判定静默失效。
+    title: "Hang Rate (iOS only, % sessions with ≥2s hang)"
+    cell_format: "{v:.2f}%"
     not_applicable_platform: android # Android 无 app hang 指标，对应概念是上面的 android_anr
-    # 2026-10-21：原 ≤80ms/hr（照抄周报 SOTA）比看板 conditional_format 严 75 倍，385ms/hr 也标红。
-    # 改为与看板一致：🟩 ≤6s/hr / 🟨 ≤12s/hr / 🟥。APM 体系的「≥2s Hang 用户占比」看板暂无对应 widget。
-    target: { op: "<=", green: 6000, yellow: 12000 }
+    target: { op: "<=", green: 0.10, yellow: 0.30 }   # 与看板 conditional_format 一致
 
   - key: refresh_rate
     title: "Refresh Rate"
@@ -55,9 +57,9 @@ metrics:
     target: { op: ">=", value: 59 }   # 无官方 SOTA 来源，按 60Hz 屏幕近满帧粗定，供参考用色点
 
   - key: fps
-    title: "APP Runtime FPS"   # 原「APP单次运行平均FPS」，@context.avg_fps
+    title: "APP Runtime FPS (P10)"   # 2026-10-21 晚：看板改为 pc10(@context.avg_fps)，原为均值
     cell_format: "{v:.2f}"
-    target: { op: ">=", value: 60 }
+    target: { op: ">=", value: 50 }   # 与看板 conditional_format 一致
 
   - key: jank
     # 双 widget 合一行；formula 各自独立查询，渲染时拼成一个 cell
@@ -87,11 +89,13 @@ metrics:
     target_p90: { op: "<=", value: 200 }
 
   - key: detail_render_p90
-    title: "Detail Page First Screen End-to-End Load Time P90"   # 原「详情页首屏加载耗时P90」，阈值同为 50/60ms
+    # 2026-10-21 晚：看板删除 P90 widget，只剩 P75；key 保留 detail_render_p90 不动（历史/展示映射引用它）
+    title: "Detail Page First Screen End-to-End Load Time P75"
     cell_format: "{v:.2f}ms"
-    target: { op: "<=", value: 50 }
+    target: { op: "<=", green: 1000, yellow: 2000 }   # 与看板 conditional_format 一致
 
   - key: summary_render_p90
-    title: "Detail Page WebView Ready Time P90"   # 原「详情页 WebView 首屏渲染时长 P90」(@total_load_ms)
+    # 2026-10-21 晚：看板删除 P90 widget，只剩 P75；key 保留 summary_render_p90 不动
+    title: "Detail Page WebView Ready Time P75"   # @total_load_ms
     cell_format: "{v:.2f}ms"
     target: { op: "<=", value: 500 }

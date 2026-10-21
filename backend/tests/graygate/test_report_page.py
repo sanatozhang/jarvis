@@ -65,7 +65,7 @@ def test_full_markdown_is_one_gfm_table_with_core_metrics_first():
     assert "| Sessions | 900 | 900 | 12,345 | 12,345 |" in md
     core_pos = md.index("**Crash-free sessions**")
     sep_pos = md.index("Other metrics (not used for regression detection)")
-    assert core_pos < sep_pos < md.index("Avg FPS per run")
+    assert core_pos < sep_pos < md.index("Runtime FPS p10")
     # 附录段：英文 ## 标题
     assert "## 🆕 New crash stacks" in md and "## 🔥 Top 5 crashes" in md
     assert not _CJK.search(md), _CJK.findall(md)

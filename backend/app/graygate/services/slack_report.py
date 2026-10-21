@@ -72,15 +72,15 @@ _TIER_EN = {"大盘": "Overall", "主要版本": "Primary"}
 _METRIC_EN = {
     "crash_free": "Crash-free sessions",
     "android_anr": "ANR rate",
-    "hang_rate": "Hang rate",
+    "hang_rate": "Hang rate (≥2s, % sessions)",
     "refresh_rate": "Refresh rate",
-    "fps": "Avg FPS per run",
+    "fps": "Runtime FPS p10",
     "jank": "Jank per session (p75/p90)",
     "cold_startup_p90": "Cold startup p90",
     "memory_usage": "Memory usage",
     "home_render": "Home list load (p75/p90)",
-    "detail_render_p90": "Detail first screen p90",
-    "summary_render_p90": "Detail WebView render p90",
+    "detail_render_p90": "Detail first screen p75",
+    "summary_render_p90": "Detail WebView ready p75",
 }
 
 # card_builder 的 sentinel 文案 → 英文
