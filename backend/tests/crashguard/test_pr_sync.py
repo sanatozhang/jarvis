@@ -475,8 +475,6 @@ async def test_try_run_review_responder_checkout_and_restore(patched_session, di
 
     def fake_git(args, repo_path, timeout=30):
         git_calls.append(tuple(args))
-        if args[:2] == ["git", "status"]:
-            return 0, (" M foo.swift" if dirty else ""), ""
         if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
             return 0, "main", ""
         return 0, "", ""
@@ -492,6 +490,9 @@ async def test_try_run_review_responder_checkout_and_restore(patched_session, di
         ), patch(
             "app.crashguard.services.pr_reviewer._resolve_repo_path_for_pr",
             return_value="/tmp/fake-repo",
+        ), patch(
+            "app.crashguard.services.pr_drafter._worktree_dirty",
+            return_value=(dirty, " M foo.swift" if dirty else ""),
         ), patch.object(
             pr_sync, "_workspace_wrapper_for", return_value="",
         ), patch(

@@ -626,14 +626,15 @@ async def _try_run_review_responder(
                 "error": "workspace lock busy", "counters": counters,
             }
     try:
-        # 5. 工作区有别人的未提交改动 → 不动；否则 checkout -B 对齐远端 PR 分支
-        rc_st, st_out, _ = _run_git(
-            ["git", "status", "--porcelain", "--", ".", ":!.crashguard"], repo_path,
-        )
-        if rc_st != 0 or st_out.strip():
+        # 5. 已跟踪文件有未提交改动 → 不动；否则 checkout -B 对齐远端 PR 分支。
+        # 口径与 pr_drafter 一致：忽略 submodule 指针偏移和 untracked（agent 残留的
+        # .claude/ 等）——2026-10-21 上线首轮用更严口径，6 个 PR 全被这些常态噪声拦下。
+        from app.crashguard.services.pr_drafter import _worktree_dirty
+        dirty, dirty_detail = _worktree_dirty(repo_path)
+        if dirty:
             return {
                 "ok": False, "stage": "dirty_worktree",
-                "error": st_out[:200], "counters": counters,
+                "error": dirty_detail[:200], "counters": counters,
             }
         _, orig_ref, _ = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_path)
         rc_f, _, err_f = _run_git(["git", "fetch", "origin", branch], repo_path, timeout=60)
