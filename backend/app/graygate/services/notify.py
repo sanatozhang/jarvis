@@ -118,7 +118,7 @@ async def send_focus_change(platform: str, action: str,
             "header": {
                 "template": "blue",
                 "title": {"tag": "plain_text",
-                          "content": f"🔖 4.0.3 灰度「主要版本」变更 · {platform.upper()}"},
+                          "content": f"🔖 {_settings().version_pattern} 灰度「主要版本」变更 · {platform.upper()}"},
             },
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md",

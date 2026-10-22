@@ -130,7 +130,7 @@ function GraygateReportsInner() {
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text1 }}>
       <div style={{ maxWidth: 1280, margin: "0 auto", padding: "24px 16px" }}>
         <div style={{ marginBottom: 16 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>{t("4.0.3 灰度 · 每日指标")}</h1>
+          <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>{t("4.* 灰度 · 每日指标")}</h1>
           <div style={{ color: D.text2, fontSize: 12, marginTop: 4 }}>
             {t("Slack 只推核心指标，这里是完整日报（全部指标 · 新增崩溃堆栈 · Top5 崩溃 / 卡顿）")}
           </div>

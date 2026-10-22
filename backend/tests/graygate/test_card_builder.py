@@ -288,7 +288,7 @@ async def test_build_report_card_falls_back_to_top_version_without_override(monk
 async def test_build_report_card_shows_sessions_and_users_for_both_tiers(monkeypatch):
     """2026-10-19：大盘 / 主要版本标题都带「会话 · 用户」；用户数是真实 distinct
     @usr.id（取代原来的「活跃用户数（session 代理）」行）。"""
-    users = {"4.0.3*": 230, "4.0.301-1043": 214}
+    users = {"4.*": 230, "4.0.301-1043": 214}
 
     async def fake_count_users(platform, version, from_ms, to_ms):
         return users.get(version)
@@ -296,7 +296,7 @@ async def test_build_report_card_shows_sessions_and_users_for_both_tiers(monkeyp
     monkeypatch.setattr(cb, "count_users", fake_count_users)
     result = await _run_build_report_card_with(monkeypatch, None)
     ios_col = _ios_column_text(result)
-    assert "__大盘（4.0.3*）__（1,005 sessions · 230 users）" in ios_col
+    assert "__大盘（4.*）__（1,005 sessions · 230 users）" in ios_col
     assert "__主要版本__ `4.0.301-1043`（1,000 sessions · 214 users）" in ios_col
     assert "session 代理" not in ios_col
 
@@ -304,7 +304,7 @@ async def test_build_report_card_shows_sessions_and_users_for_both_tiers(monkeyp
 @pytest.mark.asyncio
 async def test_share_of_native_4x_users_and_sessions(monkeypatch):
     """2026-10-20：主要版本 / 大盘都带「占同平台全部 App 用户（3.x + 4.x）」的用户占比 + 会话占比。"""
-    users = {"4.0.3*": 230, "4.0.301-1043": 214}
+    users = {"4.*": 230, "4.0.301-1043": 214}
 
     async def fake_count_users(platform, version, from_ms, to_ms):
         return users.get(version) if platform == "ios" else None

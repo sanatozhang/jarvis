@@ -592,7 +592,7 @@ function GraygateFocusVersionSection() {
   return (
     <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
       <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-        {t("4.0.3 灰度 · 主要版本")}
+        {t("4.* 灰度 · 主要版本")}
       </h2>
       <p className="text-[11px] mb-4" style={{ color: S.text3 }}>
         {t("发布新版本时在这里指定 iOS/Android 各自的精确 build 号，每日灰度报告的「主要版本」会立刻切换到这个版本，不用等它自然爬到 session 数第一。")}
@@ -644,7 +644,7 @@ function GraygateFrequencySection() {
   return (
     <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
       <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-        {t("4.0.3 灰度 · 发布频率")}
+        {t("4.* 灰度 · 发布频率")}
       </h2>
       <p className="text-[11px] mb-4" style={{ color: S.text3 }}>
         {t("每天 9 点照常发「昨天全天」日报。选了更高频率后，另外按这个间隔发「今日至今」报告（当天 00:00 到发送时刻，对比上一个工作日同一时段），改完立刻生效。")}
@@ -721,7 +721,7 @@ function GraygateReportSection() {
   return (
     <section className="rounded-xl p-5" style={{ background: S.surface, border: `1px solid ${S.border}` }}>
       <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider" style={{ color: S.text3 }}>
-        {t("[4.0.3 灰度] 每日指标 · 重新发布")}
+        {t("[4.* 灰度] 每日指标 · 重新发布")}
       </h2>
       <p className="text-[11px] mb-4" style={{ color: S.text3 }}>
         {t("按日期重新生成并发送灰度日报到灰度数据频道（#v4-graygate-data）——已经发过的日期也能重发，不受去重限制。")}
@@ -1504,13 +1504,13 @@ export default function SettingsPage() {
         {/* CRASHGUARD PREFERENCES (per-browser) */}
         <CrashguardPrefsSection />
 
-        {/* GRAYGATE 4.0.3 灰度 主要版本人工指定 */}
+        {/* GRAYGATE 4.* 灰度 主要版本人工指定 */}
         <GraygateFocusVersionSection />
 
-        {/* GRAYGATE 4.0.3 灰度 发布频率 */}
+        {/* GRAYGATE 4.* 灰度 发布频率 */}
         <GraygateFrequencySection />
 
-        {/* GRAYGATE 4.0.3 灰度 每日指标 · 重新发布 + 主要版本变更记录 */}
+        {/* GRAYGATE 4.* 灰度 每日指标 · 重新发布 + 主要版本变更记录 */}
         <GraygateReportSection />
 
         {/* USER MANAGEMENT (Admin only) */}

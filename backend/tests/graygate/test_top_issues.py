@@ -42,7 +42,7 @@ async def test_find_top_crashes_query_includes_crash_family_filter():
         await ti.find_top_crashes(date(2026, 8, 18))
     _, kwargs = mock.call_args
     assert "@error.is_crash:true" in kwargs["query"]
-    assert "version:4.0.3*" in kwargs["query"]
+    assert "version:4.*" in kwargs["query"]
 
 
 @pytest.mark.asyncio

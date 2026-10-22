@@ -64,7 +64,7 @@ def _data(target_date: date = date(2026, 8, 18), *, worsen: bool = False):
     return GraygateReportData(
         target_date=target_date,
         d1_day=date(2026, 8, 17),
-        version_pattern="4.0.3*",
+        version_pattern="4.*",
         worsen_lines=["- 🍎 iOS 大盘 crash-free 掉了 0.3%"] if worsen else [],
         columns_md=["**🍎 iOS**\n\n大盘 ok", "**🤖 Android**\n\n大盘 ok"],
         new_crash_md=None,
@@ -104,7 +104,7 @@ async def test_dry_run_default_returns_markdown_without_sending(api_client):
     assert body["provider"] == "feishu"
     # 真渲染出来的飞书 card（不是桩），至少得是 v2 schema + 带上标题
     assert body["card"]["schema"] == "2.0"
-    assert "4.0.3 灰度" in body["card"]["header"]["title"]["content"]
+    assert "[4.* 灰度]" in body["card"]["header"]["title"]["content"]
     assert body["blocks"] == []
     assert body["sent"] is False
     mock_build.assert_awaited_once()

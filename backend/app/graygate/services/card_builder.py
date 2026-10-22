@@ -701,9 +701,9 @@ class GraygateReportData:
     @property
     def title(self) -> str:
         if self.until:
-            return (f"🆕 [4.0.3 灰度] 今日至今 · {self.target_date.isoformat()} "
+            return (f"🆕 [{self.version_pattern} 灰度] 今日至今 · {self.target_date.isoformat()} "
                     f"00:00–{self.window_end_label}")
-        return f"🆕 [4.0.3 灰度] 每日指标 · {self.target_date.isoformat()}"
+        return f"🆕 [{self.version_pattern} 灰度] 每日指标 · {self.target_date.isoformat()}"
 
 
 async def collect_report_data(target_date: date,

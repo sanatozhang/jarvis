@@ -104,9 +104,9 @@ def _cell_en(v: str) -> str:
 
 def _title_en(data: GraygateReportData) -> str:
     if getattr(data, "until", None):
-        return (f"🆕 [4.0.3 Gray] Today so far · {data.target_date.isoformat()} "
+        return (f"🆕 [{data.version_pattern} Gray] Today so far · {data.target_date.isoformat()} "
                 f"00:00–{data.window_end_label} BJT")
-    return f"🆕 [4.0.3 Gray] Daily Metrics · {data.target_date.isoformat()}"
+    return f"🆕 [{data.version_pattern} Gray] Daily Metrics · {data.target_date.isoformat()}"
 
 
 def _banner_en(data: GraygateReportData) -> str:
@@ -276,7 +276,9 @@ def assemble_focus_change_message(platform: str, old_value: str, new_value: str,
     plat = platform.upper()
     action = f"set to `{new_value}`" if new_value else "cleared (falls back to auto-detected top version)"
     old = f"`{old_value}`" if old_value else "not set (auto-detected)"
-    title = f"🔖 [4.0.3 Gray] Primary version changed · {plat}"
+    from app.graygate.config import get_graygate_settings  # 延迟 import，理由见 notify._settings
+
+    title = f"🔖 [{get_graygate_settings().version_pattern} Gray] Primary version changed · {plat}"
     return Rendered(
         payload=[
             section(f"*{plat}* primary version {action}"),

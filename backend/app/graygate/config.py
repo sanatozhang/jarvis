@@ -24,7 +24,9 @@ class GraygateSettings(BaseSettings):
     scheduler_enabled: bool = True    # 该实例是否跑 cron（多机部署兜底）
 
     dashboard_id: str = "mbn-8h9-m2p"
-    version_pattern: str = "4.0.3*"   # 灰度批次，可随版本推进改
+    # 灰度批次通配符，可随版本推进改。2026-10-22 从 `4.0.3*` 放宽到 `4.*`：外发版本
+    # 同时有 4.0.* 和 4.*.* 两种格式，重点观测整个 4 大版本。报告标题也由它派生。
+    version_pattern: str = "4.*"
     feishu_chat_id: str = ""
 
     # --- 通知渠道（Slack 迁移，2026-09）---------------------------------

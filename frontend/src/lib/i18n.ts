@@ -59,7 +59,7 @@ const EN: Record<string, string> = {
   // Crashguard
   "崩溃看板": "Crash Dashboard",
   "灰度日报": "Gray Release Report",
-  "4.0.3 灰度 · 每日指标": "4.0.3 Gray Release · Daily Metrics",
+  "4.* 灰度 · 每日指标": "4.* Gray Release · Daily Metrics",
   "Slack 只推核心指标，这里是完整日报（全部指标 · 新增崩溃堆栈 · Top5 崩溃 / 卡顿）":
     "Slack only shows core metrics; this is the full report (all metrics · new crash stacks · Top 5 crashes / jank)",
   "暂无日报": "No reports yet",
@@ -321,8 +321,8 @@ const EN: Record<string, string> = {
   "追问已提交，等待 AI 回答...": "Follow-up submitted, waiting for AI...",
   "追问已回答": "Follow-up answered",
   "追问失败：": "Follow-up failed: ",
-  "4.0.3 灰度 · 主要版本": "4.0.3 Grayscale · Primary Version",
-  "4.0.3 灰度 · 发布频率": "4.0.3 Grayscale · Report Frequency",
+  "4.* 灰度 · 主要版本": "4.* Grayscale · Primary Version",
+  "4.* 灰度 · 发布频率": "4.* Grayscale · Report Frequency",
   "每天 9 点照常发「昨天全天」日报。选了更高频率后，另外按这个间隔发「今日至今」报告（当天 00:00 到发送时刻，对比上一个工作日同一时段），改完立刻生效。": "The daily full-day report still goes out at 09:00. With a higher frequency, a \"today so far\" report (00:00 to send time, vs. the same hours on the previous workday) is also posted at this interval. Takes effect immediately.",
   "每天一次（默认）": "Once a day (default)",
   "每半小时": "Every 30 min",
@@ -1203,7 +1203,7 @@ const EN: Record<string, string> = {
   "Phase 2 已触发": "Phase 2 triggered",
 
   // Graygate report resend + focus-version audit (2026-09-15)
-  "[4.0.3 灰度] 每日指标 · 重新发布": "[4.0.3 Grayscale] Daily Metrics · Republish",
+  "[4.* 灰度] 每日指标 · 重新发布": "[4.* Grayscale] Daily Metrics · Republish",
   "按日期重新生成并发送灰度日报到灰度数据频道（#v4-graygate-data）——已经发过的日期也能重发，不受去重限制。":
     "Regenerate and resend the grayscale daily report for a given date to the grayscale data channel (#v4-graygate-data) — already-sent dates can be resent too, no dedup restriction.",
   "重新发布到群": "Republish to group",

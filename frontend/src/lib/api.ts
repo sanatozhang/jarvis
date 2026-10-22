@@ -2589,7 +2589,7 @@ export async function submitSiteFeedback(payload: SiteFeedbackPayload): Promise<
 }
 
 // ============================================================
-// Graygate（4.0.3 灰度期临时监控）—— 人工指定"主要版本"
+// Graygate（4.* 灰度期临时监控）—— 人工指定"主要版本"
 // ============================================================
 
 export interface GraygateFocusVersions {

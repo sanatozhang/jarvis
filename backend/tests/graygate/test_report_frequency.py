@@ -151,7 +151,7 @@ async def test_set_frequency_validates_and_applies(monkeypatch):
 
 def test_intraday_title_and_banner():
     data = GraygateReportData(
-        target_date=date(2026, 10, 19), d1_day=date(2026, 10, 17), version_pattern="4.0.3*",
+        target_date=date(2026, 10, 19), d1_day=date(2026, 10, 17), version_pattern="4.*",
         worsen_lines=[], columns_md=["", ""], new_crash_md=None, top_crash_md=None, top_jank_md=None,
         until=time(14, 30),
     )
@@ -159,13 +159,13 @@ def test_intraday_title_and_banner():
     assert "00:00~14:30" in data.banner_md and "同时段" in data.banner_md
     r = assemble_slack_message(data, "https://j/graygate/reports?date=2026-10-19")
     text = json.dumps([r.payload, r.text], ensure_ascii=False)
-    assert "Today so far · 2026-10-19 00:00–14:30 BJT" in text
+    assert "[4.* Gray] Today so far · 2026-10-19 00:00–14:30 BJT" in text
     assert "previous workday, same hours" in text
     assert not _CJK.search(text)
 
     daily = GraygateReportData(
-        target_date=date(2026, 10, 18), d1_day=date(2026, 10, 17), version_pattern="4.0.3*",
+        target_date=date(2026, 10, 18), d1_day=date(2026, 10, 17), version_pattern="4.*",
         worsen_lines=[], columns_md=["", ""], new_crash_md=None, top_crash_md=None, top_jank_md=None,
     )
-    assert daily.title == "🆕 [4.0.3 灰度] 每日指标 · 2026-10-18"
+    assert daily.title == "🆕 [4.* 灰度] 每日指标 · 2026-10-18"
     assert "00:00~24:00" in daily.banner_md
